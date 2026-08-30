@@ -1,5 +1,16 @@
 # NOTES.md — Beslut och kontext
 
+## Pålitligt menyval för riskcelltext (2026-08-30)
+
+`Ändra text…` i riskcellens vänsterklicksmeny väljs nu genom ett stabilt
+åtgärdsvärde i stället för identiteten hos Qt:s tillfälliga Python-objekt.
+Textdialogen öppnas därför konsekvent även när Qt skapar en ny wrapper för det
+valda menyobjektet.
+
+Verifierat med hela riskmatrisadministrationssviten (12 tester),
+`tests.test_smoke` (12 tester) och `py_compile`. Ingen manuell visuell
+GUI-verifiering är gjord.
+
 ## Redigerad riskcelltext syns i riskmatrispopupen (2026-08-30)
 
 Riskmatrispopupen kortade tidigare celltexten till fyra tecken. En ändring av

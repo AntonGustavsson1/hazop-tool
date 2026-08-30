@@ -1797,8 +1797,10 @@ class HAZOPPreparationPanel(QWidget):
     def _cell_edit_menu(self, btn):
         """Build the explicit left-click menu for one risk-matrix cell."""
         menu = QMenu(self)
-        menu.addAction("Ändra färg…")
-        menu.addAction("Ändra text…")
+        change_color = menu.addAction("Ändra färg…")
+        change_color.setData('color')
+        change_text = menu.addAction("Ändra text…")
+        change_text.setData('text')
         return menu
 
     def _edit_cell(self, btn):
@@ -1808,9 +1810,10 @@ class HAZOPPreparationPanel(QWidget):
         # Execute from QMenu.exec()'s returned action rather than relying on
         # a signal attached to a short-lived menu. This keeps a nested text
         # dialog reliable on every Qt platform.
-        if chosen is menu.actions()[0]:
+        choice = chosen.data() if chosen is not None else None
+        if choice == 'color':
             self._edit_cell_color(btn)
-        elif chosen is menu.actions()[1]:
+        elif choice == 'text':
             self._edit_cell_text(btn)
 
     def _edit_cell_color(self, btn):

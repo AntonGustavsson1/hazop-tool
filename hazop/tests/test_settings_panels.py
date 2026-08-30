@@ -827,6 +827,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             menu = panel._cell_edit_menu(button)
             self.assertEqual([action.text() for action in menu.actions()],
                              ['Ändra färg…', 'Ändra text…'])
+            self.assertEqual([action.data() for action in menu.actions()],
+                             ['color', 'text'])
 
             with unittest.mock.patch.object(
                     QColorDialog, 'getColor', return_value=QColor('#fef3c7')):
