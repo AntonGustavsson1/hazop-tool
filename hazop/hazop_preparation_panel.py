@@ -1797,16 +1797,21 @@ class HAZOPPreparationPanel(QWidget):
     def _cell_edit_menu(self, btn):
         """Build the explicit left-click menu for one risk-matrix cell."""
         menu = QMenu(self)
-        change_color = menu.addAction("Ändra färg…")
-        change_text = menu.addAction("Ändra text…")
-        change_color.triggered.connect(lambda: self._edit_cell_color(btn))
-        change_text.triggered.connect(lambda: self._edit_cell_text(btn))
+        menu.addAction("Ändra färg…")
+        menu.addAction("Ändra text…")
         return menu
 
     def _edit_cell(self, btn):
         """Left-click a matrix cell and choose whether to edit colour or text."""
         menu = self._cell_edit_menu(btn)
-        menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        chosen = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        # Execute from QMenu.exec()'s returned action rather than relying on
+        # a signal attached to a short-lived menu. This keeps a nested text
+        # dialog reliable on every Qt platform.
+        if chosen is menu.actions()[0]:
+            self._edit_cell_color(btn)
+        elif chosen is menu.actions()[1]:
+            self._edit_cell_text(btn)
 
     def _edit_cell_color(self, btn):
         color = QColorDialog.getColor(
@@ -1819,6 +1824,8 @@ class HAZOPPreparationPanel(QWidget):
         r, g, b = color.red(), color.green(), color.blue()
         fg = '#000000' if (0.299*r + 0.587*g + 0.114*b) > 160 else '#ffffff'
         btn.set_cell(color.name(), fg_color=fg)
+        btn.update()
+        self._matrix_grid.activate()
 
     def _edit_cell_text(self, btn):
         label, ok = QInputDialog.getText(
@@ -1827,6 +1834,8 @@ class HAZOPPreparationPanel(QWidget):
             text=btn.label())
         if ok and label.strip():
             btn.set_cell(btn.color(), label.strip(), btn.fg_color())
+            btn.update()
+            self._matrix_grid.activate()
 
     def _save_matrix(self):
         n_cons = self._rows_spin.value()   # consequence levels (rows in data)

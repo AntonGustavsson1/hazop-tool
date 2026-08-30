@@ -1,5 +1,17 @@
 # NOTES.md — Beslut och kontext
 
+## Redigerad riskcelltext syns i riskmatrispopupen (2026-08-30)
+
+Riskmatrispopupen kortade tidigare celltexten till fyra tecken. En ändring av
+exempelvis `Kritisk` till en annan text med samma början kunde därför se ut som
+om den inte hade uppdaterats. Popupen använder nu den fullständiga sparade
+etiketten och 64 px breda celler, så ändrad text syns både i inställningen och
+när riskmatrisen öppnas från Scenario eller Worksheet.
+
+Verifierat med 13 riktade redigerings-/riskmatrispopuptester, hela
+riskmatrisadministrationssviten (12 tester), `tests.test_smoke` (12 tester)
+och `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Redigera en riskmatrisruta med vänsterklick (2026-08-30)
 
 Vänsterklick på en ruta i Riskmatris-inställningen öppnar nu ett litet val med

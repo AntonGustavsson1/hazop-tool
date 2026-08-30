@@ -664,6 +664,11 @@ class RiskMatrixPopup(QDialog):
 
         grid = QGridLayout()
         grid.setSpacing(0)
+        # Matrix-cell labels are user-editable in HAZOP Preparation. Keep
+        # enough width to show the actual edited text instead of the old
+        # four-character abbreviation, which made a saved text change look
+        # as though the popup had not refreshed.
+        cell_width = 64
 
         # Determine display dimensions
         if freq_on_x:
@@ -679,7 +684,7 @@ class RiskMatrixPopup(QDialog):
         corner = QLabel(corner_txt)
         corner.setStyleSheet("font-size:9px; color:#666;")
         corner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        corner.setFixedWidth(50)
+        corner.setFixedWidth(cell_width)
         grid.addWidget(corner, 0, 0)
 
         # Column headers — respect x_rev
@@ -690,7 +695,7 @@ class RiskMatrixPopup(QDialog):
             short  = full.split()[0] if full.strip() else str(data_c)
             lbl = QLabel(short)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setFixedWidth(50)
+            lbl.setFixedWidth(cell_width)
             lbl.setStyleSheet("font-size:9px; font-weight:bold; padding:1px;")
             lbl.setToolTip(full)
             grid.addWidget(lbl, 0, c + 1)
@@ -709,7 +714,7 @@ class RiskMatrixPopup(QDialog):
             rl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             rl.setStyleSheet("font-size:9px; font-weight:bold; padding-right:4px;")
             rl.setToolTip(full_r)
-            rl.setFixedWidth(50)
+            rl.setFixedWidth(cell_width)
             grid.addWidget(rl, r + 1, 0)
 
             for c in range(n_dcols):
@@ -737,8 +742,8 @@ class RiskMatrixPopup(QDialog):
                               freq_val == current_freq and cons_val == current_cons)
                 border = '3px solid #000' if is_current else '0px'
 
-                btn = QPushButton(lbl[:4])
-                btn.setFixedSize(50, 32)
+                btn = QPushButton(lbl)
+                btn.setFixedSize(cell_width, 32)
                 btn.setToolTip(f"F={freq_val}  C={cons_val}  →  {lbl}")
                 # Qt auto-assigns one pushbutton in a QDialog as the
                 # "default"/initially-focused button (normally the first
@@ -768,7 +773,7 @@ class RiskMatrixPopup(QDialog):
                 grid.addWidget(btn, r + 1, c + 1)
                 btn.setProperty('risk_color', color)
                 btn.setProperty('risk_fg', fg)
-                self._grid_buttons[(freq_val, cons_val)] = (btn, lbl[:4])
+                self._grid_buttons[(freq_val, cons_val)] = (btn, lbl)
 
         if self._category_mode and self._freq_on_x:
             # Consequence is the Y-axis: place the category selector directly
