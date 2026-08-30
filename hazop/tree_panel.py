@@ -3,7 +3,6 @@
 hazop.py 2026-08-17, see NOTES.md "Förenkla koden + dela upp hazop.py i
 fler filer"."""
 
-import json
 import math
 import re
 import traceback
@@ -547,17 +546,7 @@ class TreePanel(QWidget):
                 # time. Falls back to the frozen comp_tag for a custom/
                 # unmatched tag (equipment_id is None) or a deleted object.
                 eq = self.db.get_equipment_by_id(cause['equipment_id']) if cause['equipment_id'] else None
-                group_ids = []
-                try:
-                    group_ids = [int(value) for value in json.loads(
-                        cause.get('group_equipment_ids') or '[]')]
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    pass
-                if not group_ids:
-                    group_ids = [cause.get('equipment_id'),
-                                 cause.get('secondary_equipment_id')]
-                group_ids = list(dict.fromkeys(value for value in group_ids
-                                               if value is not None))[:20]
+                group_ids = self.db.group_equipment_ids_for_cause(cause)
                 is_group = len(group_ids) >= 2
                 tag = (eq.get('tag') or '').strip() if eq else (cause['comp_tag'] or '').strip()
                 group_tags = []
@@ -565,7 +554,9 @@ class TreePanel(QWidget):
                     group_eq = self.db.get_equipment_by_id(group_id)
                     if group_eq and group_eq.get('tag'):
                         group_tags.append((group_eq.get('tag') or '').strip())
-                desc = (cause['description'] or '').strip()
+                desc = ('\n'.join(self.db.group_cause_description_lines(
+                    cause, group_ids)) if is_group else
+                    (cause['description'] or '')).strip()
                 # A still-untouched placeholder cause (no real content yet)
                 # shows just the tag, if it has one — showing "V-101 — Ny
                 # orsak" would be noise, not information.
@@ -1129,15 +1120,7 @@ class TreePanel(QWidget):
             self._begin_inline_edit(item, type_, id_)
 
     def _group_equipment_ids(self, cause):
-        if not cause:
-            return []
-        try:
-            values = json.loads(cause.get('group_equipment_ids') or '[]')
-        except (TypeError, ValueError, json.JSONDecodeError):
-            values = []
-        if not values:
-            values = [cause.get('equipment_id'), cause.get('secondary_equipment_id')]
-        return list(dict.fromkeys(value for value in values if value is not None))[:20]
+        return self.db.group_equipment_ids_for_cause(cause)
 
     def _open_group_object_tag_popup(self, item, cause_id, group_line):
         """Edit only the object represented by one visual group line."""
@@ -1170,8 +1153,9 @@ class TreePanel(QWidget):
     def _begin_group_line_edit(self, item, cause_id, group_line):
         """Inline-edit only one stored description line of a group."""
         cause = self.db.get_cause(cause_id)
-        lines = (cause.get('description') or '').splitlines() if cause else []
-        if not cause or not (0 <= group_line < len(lines)):
+        group_ids = self._group_equipment_ids(cause)
+        lines = self.db.group_cause_description_lines(cause, group_ids)
+        if not cause or len(group_ids) < 2 or not (0 <= group_line < len(lines)):
             return
         rect = self.tree.visualItemRect(item)
         prefix = item.data(0, self._PREFIX_ROLE) or ''
@@ -1247,8 +1231,22 @@ class TreePanel(QWidget):
             return
         new_tag = tag.strip() or (eq.get('tag') or '')
         new_type = comp_type.strip() or (eq.get('equipment_type') or '')
-        self.db.update_equipment_item(
-            eq_id, new_tag, eq.get('prefix') or '', new_type, eq.get('description') or '')
+        old_tag = (eq.get('tag') or '').strip()
+        try:
+            if new_tag.casefold() != old_tag.casefold():
+                # Keep the tree's legacy tag/type popup on the same guarded
+                # global-rename path as the Scenario object popup.  Apart
+                # from updating all references, this repairs compact group
+                # descriptions before they can strand a secondary editor.
+                self.db.rename_equipment_and_references(eq_id, new_tag)
+                eq = self.db.get_equipment_by_id(eq_id) or eq
+            if new_type != (eq.get('equipment_type') or ''):
+                self.db.update_equipment_item(
+                    eq_id, eq.get('tag') or new_tag, eq.get('prefix') or '',
+                    new_type, eq.get('description') or '')
+        except ValueError as error:
+            QMessageBox.warning(self, 'Kan inte byta namn', str(error))
+            return
         self.refresh(EQUIP_T, eq_id, emit_selection=False)
         self.item_edited_inline.emit(EQUIP_T, eq_id)
 
@@ -1438,9 +1436,8 @@ class TreePanel(QWidget):
         operators = operators[:len(ids) - 1] + ['OR'] * len(ids)
         normal = {'+': '&', '<>': 'OR', 'or': 'OR'}
         operators = [normal.get(str(value).casefold(), value) for value in operators[:len(ids) - 1]]
-        lines = (cause.get('description') or '').splitlines()
-        if len(lines) >= len(ids):
-            lines.insert(target_line, lines.pop(source_line))
+        lines = self.db.group_cause_description_lines(cause, ids)
+        lines.insert(target_line, lines.pop(source_line))
         self.db.update_cause(
             cause_id,
             comp_type=(self.db.get_equipment_by_id(ids[0]) or {}).get('equipment_type', ''),
@@ -1449,7 +1446,7 @@ class TreePanel(QWidget):
             equipment_id=ids[0],
             secondary_equipment_id=ids[1] if len(ids) > 1 else None,
             group_equipment_ids=ids,
-            description='\n'.join(lines) if len(lines) >= len(ids) else cause.get('description', ''))
+            description='\n'.join(lines))
         self.refresh(CAUSE_T, cause_id, emit_selection=False)
         self.item_edited_inline.emit(CAUSE_T, cause_id)
 
@@ -1610,7 +1607,7 @@ class TreePanel(QWidget):
                 rect = self.tree.visualItemRect(item)
                 line_h = max(1, QFontMetrics(self.tree.font()).height())
                 line_no = int((pos.y() - rect.top()) // line_h)
-                if len(group_ids) >= 2 and len(lines) >= 2 and 0 <= line_no < len(group_ids):
+                if len(group_ids) >= 2 and 0 <= line_no < len(group_ids):
                     cause_description = (cause.get('description') or '').strip() if cause else ''
                     if cause_description and cause_description != 'Ny orsak':
                         self._begin_group_line_edit(item, cause_id, line_no)

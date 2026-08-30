@@ -2350,8 +2350,16 @@ class Database:
                 ('safeguards', ('description', 'comp_tag', 'tagged_refs')),
                 ('recommendations', ('description',)),
             ):
+                select_columns = list(columns)
+                if table == 'causes':
+                    # The normalizer needs the live group identity as well
+                    # as its text fields; the ordinary rename loop only
+                    # updates description/comp_tag.
+                    select_columns.extend((
+                        'equipment_id', 'secondary_equipment_id',
+                        'group_equipment_ids'))
                 rows = self.conn.execute(
-                    f"SELECT id, {', '.join(columns)} FROM {table}").fetchall()
+                    f"SELECT id, {', '.join(select_columns)} FROM {table}").fetchall()
                 for row in rows:
                     updates = {}
                     for column in columns:
@@ -2361,6 +2369,23 @@ class Database:
                                      else replace_token(old_value))
                         if new_value != old_value:
                             updates[column] = new_value
+                    if table == 'causes':
+                        # A tag rename is also a natural repair point for an
+                        # old one-line group.  Do this inside the same
+                        # transaction: the freshly renamed tag is then
+                        # visible in every member row, and subsequent inline
+                        # edits cannot be trapped on the primary row merely
+                        # because the legacy text was never split.
+                        normalised_cause = dict(row)
+                        normalised_cause.update(updates)
+                        group_ids = self.group_equipment_ids_for_cause(
+                            normalised_cause)
+                        if len(group_ids) >= 2:
+                            description = '\n'.join(
+                                self.group_cause_description_lines(
+                                    normalised_cause, group_ids))
+                            if description != (normalised_cause.get('description') or ''):
+                                updates['description'] = description
                     if updates:
                         assignments = ', '.join(f'{column}=?' for column in updates)
                         self.conn.execute(
@@ -4116,37 +4141,141 @@ class Database:
             tags.add(comp_tag)
         return tags
 
-    def _group_equipment_ids_for_cause(self, cause):
-        """Return every equipment id represented by a grouped cause.
+    def group_equipment_ids_for_cause(self, cause):
+        """Return a grouped cause's object ids in its visual row order.
 
-        The first id is also stored in ``equipment_id`` for compatibility,
-        while later rows live in ``group_equipment_ids`` (with the older
-        two-object ``secondary_equipment_id`` as a fallback).
+        ``group_equipment_ids`` is the canonical representation for a group.
+        The first two object ids are also mirrored in the old cause columns,
+        so partially migrated rows can otherwise appear as a one-row cause in
+        one view and a two-row cause in another.  Repair that incomplete
+        representation in memory by adding the legacy links *only when* the
+        JSON list is shorter than a group.  This keeps an intentional
+        one-object cause one-object, while making a damaged two-plus-object
+        group behave consistently in the Scenario table, tree and P&ID scope.
         """
+        if not cause:
+            return []
         if not isinstance(cause, dict):
             cause = dict(cause)
-        ids = []
+
         raw = cause.get('group_equipment_ids') or ''
         if isinstance(raw, str):
             try:
                 raw = json.loads(raw) if raw else []
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, json.JSONDecodeError):
                 raw = []
-        if isinstance(raw, (list, tuple)):
-            ids.extend(raw)
-        for key in ('equipment_id', 'secondary_equipment_id'):
-            value = cause.get(key)
-            if value is not None:
-                ids.append(value)
+        raw_ids = list(raw) if isinstance(raw, (list, tuple)) else []
+        legacy_ids = [cause.get('equipment_id'),
+                      cause.get('secondary_equipment_id')]
+        values = list(raw_ids)
+        if len(values) < 2:
+            values.extend(legacy_ids)
+
         result = []
-        for value in ids:
+        for value in values:
             try:
                 value = int(value)
             except (TypeError, ValueError):
                 continue
             if value not in result:
                 result.append(value)
-        return result
+        return result[:20]
+
+    def group_cause_description_lines(self, cause, equipment_ids=None):
+        """Return exactly one display/edit line per grouped-cause member.
+
+        A group is a single cause with multiple independently editable
+        object-event rows.  Older edits could leave the description as one
+        arrow sentence, or with fewer rows than linked objects.  The old
+        views then disagreed about which row existed; the secondary row could
+        not be edited at all.  This method is deliberately pure: callers can
+        render a repaired representation immediately and persist it only when
+        the user changes the group.
+
+        Existing text is never discarded.  If tags identify the old compact
+        sentence, it is split at the later member tags.  Otherwise the text
+        remains on the first member and the missing members receive their
+        bare tag as a stable, editable anchor.
+        """
+        if not cause:
+            return []
+        if not isinstance(cause, dict):
+            cause = dict(cause)
+        ids = list(equipment_ids if equipment_ids is not None
+                   else self.group_equipment_ids_for_cause(cause))
+        if len(ids) < 2:
+            return str(cause.get('description') or '').splitlines()
+
+        fallback_tags = [part.strip() for part in re.split(
+            r'\s+(?:&|OR|<>|->|\+)\s+',
+            str(cause.get('comp_tag') or ''), flags=re.IGNORECASE)
+            if part.strip()]
+        tags = []
+        for index, equipment_id in enumerate(ids):
+            equipment = self.get_equipment_by_id(equipment_id)
+            tag = str((equipment or {}).get('tag') or '').strip()
+            tag = tag or (fallback_tags[index]
+                          if index < len(fallback_tags) else '')
+            tags.append(tag or f'Objekt {index + 1}')
+
+        raw_text = str(cause.get('description') or '')
+        lines = raw_text.splitlines()
+        if len(lines) <= 1:
+            compact = lines[0].strip() if lines else ''
+            if compact in ('', 'Ny orsak'):
+                lines = []
+            else:
+                # Split only at a recognised later member tag.  An arrow in
+                # ordinary prose is not enough evidence to divide a user's
+                # text between objects.
+                starts = []
+                search_from = 0
+                folded = compact.casefold()
+                for index, tag in enumerate(tags):
+                    position = folded.find(tag.casefold(), search_from)
+                    if position < 0:
+                        break
+                    starts.append((position, index))
+                    search_from = position + len(tag)
+                if len(starts) >= 2:
+                    split_lines = []
+                    for position_index, (start, _member_index) in enumerate(starts):
+                        end = (starts[position_index + 1][0]
+                               if position_index + 1 < len(starts)
+                               else len(compact))
+                        part = compact[start:end].strip(' ,:;\u2192->=')
+                        split_lines.append(part)
+                    # Text before the first tag is still user text.  Keep it
+                    # attached to the first row rather than silently losing
+                    # it when repairing a malformed compact group.
+                    before = compact[:starts[0][0]].strip(' ,:;\u2192->=')
+                    if before:
+                        split_lines[0] = f'{before} {split_lines[0]}'.strip()
+                    lines = split_lines
+                else:
+                    lines = [compact]
+
+        if len(lines) > len(tags):
+            # A group row maps to one physical table/tree line.  Keep all
+            # excess user text on the final member rather than letting an
+            # untagged extra line steal another object's editor hit area.
+            lines = (lines[:len(tags) - 1] +
+                     [' '.join(part.strip() for part in lines[len(tags) - 1:]
+                               if part.strip())])
+        while len(lines) < len(tags):
+            lines.append('')
+
+        normalised = []
+        for tag, value in zip(tags, lines):
+            value = str(value or '').strip()
+            if value.casefold().startswith(tag.casefold()):
+                value = value[len(tag):].lstrip(' ,:;\u2192->=')
+            normalised.append(f'{tag} {value}'.strip())
+        return normalised
+
+    def _group_equipment_ids_for_cause(self, cause):
+        """Compatibility wrapper for older database-internal callers."""
+        return self.group_equipment_ids_for_cause(cause)
 
     def equipment_link_types_in_scope(self, type_, id_):
         """Every equipment_catalog id "in scope" of the given HAZOP tree

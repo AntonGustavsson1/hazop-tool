@@ -286,6 +286,42 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         self.assertNotIn(",", cause_item.text(0),
             "a still-trivial cause must show the bare tag, no separator/description")
 
+    def test_compact_three_object_group_has_a_tree_editor_for_each_member(self):
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, 'Low flow')
+        fi_id = self.db.add_equipment_item(
+            'FI-1', 'FI-1', 'FI', 0, 'Flow transmitter', '', 0)
+        fv_id = self.db.add_equipment_item(
+            'FV-1', 'FV-1', 'FV', 0, 'Control valve', '', 0)
+        xv_id = self.db.add_equipment_item(
+            'XV-1', 'XV-1', 'XV', 0, 'Shutdown valve', '', 0)
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(
+            cause_id,
+            description='FI-1 fails low -> FV-1 opens fully -> XV-1 closes',
+            comp_type='Flow transmitter', comp_tag='FI-1 OR FV-1 -> XV-1',
+            equipment_id=fi_id, secondary_equipment_id=fv_id,
+            group_equipment_ids=[fi_id, fv_id, xv_id])
+        self.panel.refresh()
+
+        cause_item = self._find_item(CAUSE_T, cause_id)
+        self.assertIsNotNone(cause_item)
+        self.assertEqual(len(cause_item.text(0).splitlines()), 3)
+        self.assertIn('XV-1 closes', cause_item.text(0))
+
+        self.panel._begin_group_line_edit(cause_item, cause_id, 2)
+        editors = self.panel.tree.viewport().findChildren(QLineEdit)
+        self.assertTrue(editors)
+        editor = editors[-1]
+        self.assertEqual(editor.text(), 'XV-1 closes')
+        editor.setText('XV-1 does not close')
+        editor.editingFinished.emit()
+        self.assertEqual(self.db.get_cause(cause_id)['description'].splitlines(), [
+            'FI-1 fails low',
+            'FV-1 opens fully',
+            'XV-1 does not close',
+        ])
+
     def test_grouped_orsak_row_is_not_bold(self):
         node_id = self.db.add_node()
         dev_id = self.db.get_or_create_deviation(node_id, "LÃ¥gt flÃ¶de")

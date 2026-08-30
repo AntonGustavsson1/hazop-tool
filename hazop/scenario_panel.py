@@ -2527,24 +2527,7 @@ class _PidDelegate(_ScenarioDelegate):
                     meta = item.data(Qt.ItemDataRole.UserRole) if item else None
                     if len(group_tags or []) >= 2 and meta:
                         cause = self._panel.db.get_cause(meta[1])
-                        lines = ((cause.get('description') or '').splitlines()
-                                 if cause else [])
-                        # Older grouped causes stored both events as one
-                        # arrow sentence.  Split that legacy representation
-                        # before selecting the clicked row, otherwise the
-                        # primary editor receives the secondary event too.
-                        if len(lines) == 1 and len(group_tags or []) >= 2:
-                            legacy = lines[0]
-                            secondary_tag = str(group_tags[1]).strip()
-                            secondary_pos = legacy.casefold().find(
-                                secondary_tag.casefold(),
-                                len(str(group_tags[0]).strip()))
-                            if secondary_pos >= 0:
-                                lines = [legacy[:secondary_pos].rstrip(' ,:→-'),
-                                         legacy[secondary_pos:]]
-                            elif '→' in legacy:
-                                left, right = legacy.split('→', 1)
-                                lines = [left.strip(), right.strip()]
+                        lines = self._panel.db.group_cause_description_lines(cause)
                         selected = (lines[group_line[1]].strip()
                                     if group_line[1] < len(lines) else
                                     str(group_tags[group_line[1]]))
@@ -2675,7 +2658,9 @@ class _PidDelegate(_ScenarioDelegate):
             popup.move(max(tl_rect.left(), x), max(tl_rect.top(), y))
             popup.show()
             popup.raise_()
-        except Exception:
+        except Exception as error:
+            if 'closed database' in str(error).casefold():
+                return
             logging.exception('_show_standard_cause_popup: failed to show '
                               'popup (row=%d)', row)
 
@@ -2795,26 +2780,23 @@ class _PidDelegate(_ScenarioDelegate):
             meta = self._panel._table.item(index.row(), index.column()).data(
                 Qt.ItemDataRole.UserRole)
             cause = self._panel.db.get_cause(meta[1]) if meta else None
-            if cause and cause.get('secondary_equipment_id'):
-                lines = (cause.get('description') or '').splitlines()
-                group_tags = self._panel._table.item(
-                    index.row(), index.column()).data(
-                        Qt.ItemDataRole.UserRole + 9) or []
-                if group_line >= len(group_tags):
+            group_ids = self._panel.db.group_equipment_ids_for_cause(cause)
+            if cause and len(group_ids) >= 2:
+                lines = self._panel.db.group_cause_description_lines(
+                    cause, group_ids)
+                if group_line >= len(lines):
                     return
-                while len(lines) < len(group_tags):
-                    lines.append('')
-                # A newly created group may still have an empty description
-                # when the secondary row is edited first. Preserve both
-                # linked object tags as the two visual row anchors instead
-                # of letting the untouched primary row become blank.
-                for line_no in range(len(group_tags)):
-                    if not lines[line_no].strip() and line_no < len(group_tags):
-                        lines[line_no] = str(group_tags[line_no]).strip()
-                tag = str(group_tags[int(group_line)]).strip()
+                # One group member owns one physical row.  Newlines pasted
+                # into the small inline editor must remain prose in that row
+                # rather than create an untagged extra row that steals a
+                # later member's hit area.
+                clean = ' '.join(clean.splitlines()).strip()
+                equipment = self._panel.db.get_equipment_by_id(
+                    group_ids[int(group_line)])
+                tag = str((equipment or {}).get('tag') or '').strip()
+                if not tag:
+                    tag = lines[int(group_line)].split(' ', 1)[0]
                 lines[int(group_line)] = f'{tag} {clean}'.strip() if tag else clean
-                while lines and not lines[-1].strip():
-                    lines.pop()
                 clean = '\n'.join(lines)
         if index.column() == self._panel._C_REK:
             # Be defensive for editors created by an older delegate path:
@@ -5602,7 +5584,11 @@ class ScenarioTablePanel(QWidget):
         dev_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._table.setItem(r, self._C_DEV, dev_item)
 
-        ors = QTableWidgetItem(cause_d['description'])
+        group_ids = self._group_equipment_ids(cause_d)
+        normalised_description = (
+            '\n'.join(self.db.group_cause_description_lines(cause_d, group_ids))
+            if len(group_ids) >= 2 else cause_d['description'])
+        ors = QTableWidgetItem(normalised_description)
         ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
         ors.setData(Qt.ItemDataRole.UserRole + 2, self._cause_tag_display(cause_d))
         ors.setData(Qt.ItemDataRole.UserRole + 3,
@@ -5612,7 +5598,7 @@ class ScenarioTablePanel(QWidget):
         # in the sentence (the old ``primary + secondary`` prefix duplicated
         # the first object visually).
         group_tags = []
-        for _eid in self._group_equipment_ids(cause_d):
+        for _eid in group_ids:
             _eq = self.db.get_equipment_by_id(_eid)
             if _eq and _eq.get('tag'):
                 group_tags.append(_eq.get('tag'))
@@ -5793,7 +5779,11 @@ class ScenarioTablePanel(QWidget):
             _status_icon = '🔴'
             _status_tip  = 'Ingen konsekvens angiven'
 
-        ors = QTableWidgetItem(cause_d['description'])
+        group_ids = self._group_equipment_ids(cause_d)
+        normalised_description = (
+            '\n'.join(self.db.group_cause_description_lines(cause_d, group_ids))
+            if len(group_ids) >= 2 else cause_d['description'])
+        ors = QTableWidgetItem(normalised_description)
         ors.setData(Qt.ItemDataRole.UserRole,     ('cause', cause_d['id']))
         ors.setData(Qt.ItemDataRole.UserRole + 2, self._cause_tag_display(cause_d))
         ors.setData(Qt.ItemDataRole.UserRole + 3,
@@ -5803,7 +5793,7 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole + 10,
                     self._child_number('cause', dev_d.get('id'), cause_d.get('id')))
         group_tags = []
-        for _eid in self._group_equipment_ids(cause_d):
+        for _eid in group_ids:
             _eq = self.db.get_equipment_by_id(_eid)
             if _eq and _eq.get('tag'):
                 group_tags.append(_eq.get('tag'))
@@ -6837,64 +6827,29 @@ class ScenarioTablePanel(QWidget):
         return tag_label, not repeats_previous
 
     def _ors_combined_text(self, item, desc):
-        _group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
-        # Recover legacy grouped tags while a row is being rebuilt.  Some
-        # persisted grouped causes only expose the original ``A + B`` tag;
-        # the display must still keep the two objects on separate lines.
-        if len(_group_tags) < 2 and item:
-            _obj_data = item.data(Qt.ItemDataRole.UserRole + 2)
-            _legacy_tag = (_obj_data[1] if isinstance(_obj_data, (tuple, list))
-                           and len(_obj_data) > 1 else '')
-            if isinstance(_legacy_tag, str) and re.search(
-                    r'\s(?:&|OR|<>|->|\+)\s', _legacy_tag, re.IGNORECASE):
-                _group_tags = [part.strip() for part in re.split(
-                    r'\s+(?:&|OR|<>|->|\+)\s+', _legacy_tag,
-                    flags=re.IGNORECASE) if part.strip()]
-        if len(_group_tags) >= 2:
-            _num = item.data(Qt.ItemDataRole.UserRole + 10) or ''
-            cause_id = item.data(Qt.ItemDataRole.UserRole)[1] if item.data(Qt.ItemDataRole.UserRole) else None
-            cause = self.db.get_cause(cause_id) if cause_id else None
-            # A newly created group with no selected standard choices uses
-            # the two bare tags as its placeholder.  If a description has
-            # nevertheless been entered (for example in the tree), keep it
-            # visible in the Scenario cell; the old condition hid that text
-            # until the cell entered edit mode.
-            if (cause and not cause.get('group_choices_set') and
-                    not (desc or '').strip()):
-                stored = '\n'.join(_group_tags)
-                return f"{_num}.  {stored}" if _num else stored
-            # Once a group has a choice, display the stored text verbatim.
-            # This preserves partial groups (only primary or only secondary)
-            # and also lets the user edit arbitrary group wording later.
-            stored = (desc or '').strip()
-            if '\n' not in stored and len(_group_tags) >= 2:
-                # Older groups stored both events as one arrow sentence.
-                # Keep the visual contract of the Scenario group cell by
-                # splitting that legacy value back into primary/secondary
-                # lines without changing the database text.
-                if '→' in stored:
-                    left, right = stored.split('→', 1)
-                    stored = f'{left.strip()}\n{right.strip()}'
-                else:
-                    positions = [(stored.casefold().find(tag.casefold()), i)
-                                 for i, tag in enumerate(_group_tags[1:], 1)
-                                 if tag and stored.casefold().find(tag.casefold()) >= 0]
-                    if positions:
-                        pos, _ = min(positions)
-                        stored = f'{stored[:pos].strip()}\n{stored[pos:].strip()}'
-                    else:
-                        stored = f'{stored}\n{_group_tags[1]}'
-            lines = stored.splitlines()
-            while len(lines) < len(_group_tags):
-                lines.append(_group_tags[len(lines)])
-            stored = '\n'.join(lines[:len(_group_tags)])
-            return f"{_num}.  {stored}" if _num else stored
-        """The exact string measured (sizeHint) and painted (paint) for
-        an ORS cell — "TAG, beskrivning", just "TAG" while the
-        description is still an untouched placeholder (same "bare tag
-        until something is filled in" rule the HAZOP tree's own Orsak
-        rows use, 2026-08-25, for consistency across the app), or just
-        the plain description when no tag should show."""
+        """Return the exact string measured and painted for an ORS cell.
+
+        A grouped cause has a strict one-object/one-line contract.  The
+        database helper repairs legacy compact descriptions before the table
+        paints them, so paint, hit-testing and the inline editor all see the
+        same number and order of rows.
+        """
+        meta = item.data(Qt.ItemDataRole.UserRole) if item else None
+        try:
+            cause = self.db.get_cause(meta[1]) if meta else None
+            group_ids = self.db.group_equipment_ids_for_cause(cause)
+        except Exception:
+            # A queued Qt repaint can arrive just after a temporary project
+            # window has closed its database.  Painting must remain a safe
+            # no-op in that teardown window rather than turning a harmless
+            # stale cell into an unhandled GUI crash.
+            cause, group_ids = None, []
+        if len(group_ids) >= 2:
+            lines = self.db.group_cause_description_lines(cause, group_ids)
+            number = item.data(Qt.ItemDataRole.UserRole + 10) if item else None
+            stored = '\n'.join(lines)
+            return f"{number}.  {stored}" if number else stored
+
         tag_label, show_tag = self._ors_tag_prefix(item)
         if not show_tag:
             num = item.data(Qt.ItemDataRole.UserRole + 10) if item else None
@@ -6960,23 +6915,23 @@ class ScenarioTablePanel(QWidget):
             f" {self._normalise_group_operator(operators[i - 1])} {tags[i]}"
             for i in range(1, len(tags)))
 
-    def _group_equipment_ids(self, cause):
-        """Return all live equipment links for a group, in display order.
-
-        The first two links remain mirrored in the legacy cause columns for
-        backwards compatibility; newer groups use the JSON list as the
-        authoritative extension point.
-        """
-        if not cause:
+    def _group_link_operators(self, cause, count):
+        """Return the persisted separator before every group row after 0."""
+        if count < 2:
             return []
-        raw = cause.get('group_equipment_ids') or ''
-        try:
-            ids = [int(value) for value in json.loads(raw)] if raw else []
-        except (TypeError, ValueError, json.JSONDecodeError):
-            ids = []
-        if not ids:
-            ids = [cause.get('equipment_id'), cause.get('secondary_equipment_id')]
-        return list(dict.fromkeys(value for value in ids if value is not None))[:MAX_GROUP_OBJECTS]
+        found = [self._normalise_group_operator(value)
+                 for value in re.findall(r'\s(&|OR|<>|->|\+)\s',
+                                        (cause or {}).get('comp_tag') or '',
+                                        re.IGNORECASE)]
+        if not found:
+            found = ['OR']
+        if len(found) == 1:
+            found *= count - 1
+        return (found + ['OR'] * (count - 1))[:count - 1]
+
+    def _group_equipment_ids(self, cause):
+        """Return group ids through the shared database normalizer."""
+        return self.db.group_equipment_ids_for_cause(cause)
 
     def _set_group_operator(self, cause_id, operator):
         cause = self.db.get_cause(cause_id)
@@ -7009,15 +6964,7 @@ class ScenarioTablePanel(QWidget):
             tags.append((equipment.get('tag') if equipment else '') or 'Objekt')
         # Parse the existing expression directly; a single legacy operator is
         # expanded to every separator by the same rule used for painting.
-        old_ops = [self._normalise_group_operator(value)
-                   for value in re.findall(r'\s(&|OR|<>|->|\+)\s',
-                                           cause.get('comp_tag') or '',
-                                           re.IGNORECASE)]
-        if not old_ops:
-            old_ops = ['OR']
-        if len(old_ops) == 1:
-            old_ops *= len(ids) - 1
-        old_ops = (old_ops + ['OR'] * len(ids))[:len(ids) - 1]
+        old_ops = self._group_link_operators(cause, len(ids))
         old_ops[row_index - 1] = operator
         self.db.update_cause(cause_id,
                              comp_tag=self._group_comp_tag(tags, old_ops),
@@ -7036,22 +6983,13 @@ class ScenarioTablePanel(QWidget):
         for equipment_id in ids:
             equipment = self.db.get_equipment_by_id(equipment_id)
             tags.append((equipment.get('tag') if equipment else '') or 'Objekt')
-        old_ops = [self._normalise_group_operator(value)
-                   for value in re.findall(r'\s(&|OR|<>|->|\+)\s',
-                                           cause.get('comp_tag') or '',
-                                           re.IGNORECASE)]
-        if not old_ops:
-            old_ops = ['OR']
-        if len(old_ops) == 1:
-            old_ops *= len(ids) - 1
-        old_ops = (old_ops + ['OR'] * len(ids))[:len(ids) - 1]
+        old_ops = self._group_link_operators(cause, len(ids))
         # Keep operator positions stable while object rows move.  The user
         # can change each affected row's incoming operator independently from
         # its own context menu, without silently changing other connections.
         # Keep group descriptions aligned with their object rows.
-        lines = (cause.get('description') or '').splitlines()
-        if len(lines) >= len(ids):
-            lines[row_index], lines[target] = lines[target], lines[row_index]
+        lines = self.db.group_cause_description_lines(cause, ids)
+        lines[row_index], lines[target] = lines[target], lines[row_index]
         self.db.update_cause(
             cause_id,
             comp_type=(self.db.get_equipment_by_id(ids[0]) or {}).get('equipment_type', ''),
@@ -7059,7 +6997,7 @@ class ScenarioTablePanel(QWidget):
             equipment_id=ids[0],
             secondary_equipment_id=ids[1] if len(ids) > 1 else None,
             group_equipment_ids=ids,
-            description='\n'.join(lines) if len(lines) >= len(ids) else cause.get('description', ''))
+            description='\n'.join(lines))
         self._schedule_rebuild()
 
     def _show_group_tag_menu(self, row, cause_id, group_line, global_pos):
@@ -7110,26 +7048,7 @@ class ScenarioTablePanel(QWidget):
         visually ends."""
         group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
         if len(group_tags) >= 2:
-            low = (desc or '').lower()
-            direction = 'felar lågt' if 'felar lågt' in low else 'felar högt'
-            effect = 'öppnar fullt'
-            for option in ('stänger helt', 'stänger felaktigt', 'stänger',
-                           'öppnar felaktigt', 'öppnar fullt'):
-                if option in low:
-                    effect = option
-                    break
             return 0
-        group_tags = (item.data(Qt.ItemDataRole.UserRole + 9) or []) if item else []
-        if len(group_tags) >= 2:
-            low = (desc or '').lower()
-            direction = 'felar lågt' if 'felar lågt' in low else 'felar högt'
-            effect = 'öppnar fullt'
-            for option in ('stänger helt', 'stänger felaktigt', 'stänger',
-                           'öppnar felaktigt', 'öppnar fullt'):
-                if option in low:
-                    effect = option
-                    break
-            return f"{group_tags[0]} {direction}\n{group_tags[1]} {effect}"
         tag_label, show_tag = self._ors_tag_prefix(item)
         if tag_label == 'ej på P&ID':
             return 0
@@ -7536,6 +7455,7 @@ class ScenarioTablePanel(QWidget):
         equipment_ids = self._group_equipment_ids(cause)
         if group_line < 0 or group_line >= len(equipment_ids):
             return
+        lines = self.db.group_cause_description_lines(cause, equipment_ids)
         old_equipment = self.db.get_equipment_by_id(equipment_ids[group_line])
         old_tag = (old_equipment or {}).get('tag') or ''
         equipment_ids[group_line] = equipment['id']
@@ -7543,30 +7463,20 @@ class ScenarioTablePanel(QWidget):
         for equipment_id in equipment_ids:
             member = self.db.get_equipment_by_id(equipment_id) if equipment_id else None
             tags.append((member or {}).get('tag') or 'Objekt')
-        lines = (cause.get('description') or '').splitlines()
-        if group_line < len(lines):
-            lines[group_line] = self._replace_tag_occurrence(
-                lines[group_line], old_tag, equipment['tag'], 0)
-        operator = self._group_operator_from_cause(cause)
+        lines[group_line] = self._replace_tag_occurrence(
+            lines[group_line], old_tag, equipment['tag'], 0)
+        operator = self._group_link_operators(cause, len(equipment_ids))
         primary = self.db.get_equipment_by_id(equipment_ids[0]) if equipment_ids else None
         self.db.update_cause(
             cause_id,
             comp_type=(primary or {}).get('equipment_type') or cause.get('comp_type') or '',
-            comp_tag=f' {operator} '.join(tags),
+            comp_tag=self._group_comp_tag(tags, operator),
             equipment_id=equipment_ids[0] if equipment_ids else None,
             secondary_equipment_id=(equipment_ids[1] if len(equipment_ids) > 1 else None),
             group_equipment_ids=equipment_ids,
             description='\n'.join(lines))
         self.item_edited.emit(CAUSE_T, cause_id)
         self._schedule_rebuild()
-
-    @staticmethod
-    def _group_operator_from_cause(cause):
-        match = re.search(r'\s(&|OR|<>|->|\+)\s',
-                          str((cause or {}).get('comp_tag') or ''), re.IGNORECASE)
-        if not match or match.group(1) == '+':
-            return '&'
-        return 'OR' if match.group(1).casefold() in ('<>', 'or') else match.group(1)
 
     def _rename_object_from_popup(self, equipment_id, new_tag):
         equipment = self.db.get_equipment_by_id(equipment_id)
@@ -7690,10 +7600,12 @@ class ScenarioTablePanel(QWidget):
         equipment_ids = self._group_equipment_ids(cause)
         if group_line >= len(equipment_ids):
             return
+        lines = self.db.group_cause_description_lines(cause, equipment_ids)
         old_id = equipment_ids[group_line]
         new_tag = (comp_tag or '').strip()
         selected_id = old_id
         selected_tag = ''
+        renamed = False
         old_eq = self.db.get_equipment_by_id(old_id) if old_id else None
         if old_eq:
             selected_tag = (old_eq.get('tag') or '').strip()
@@ -7714,11 +7626,9 @@ class ScenarioTablePanel(QWidget):
                             f"Taggen {new_tag} används redan av ett annat objekt "
                             "på denna P&ID. Välj Koppla för att använda det objektet.")
                         return
-                    self.db.update_equipment_item(
-                        old_id, new_tag, old_eq.get('prefix') or '',
-                        old_eq.get('equipment_type') or comp_type,
-                        old_eq.get('description') or '')
+                    self.db.rename_equipment_and_references(old_id, new_tag)
                     selected_tag = new_tag
+                    renamed = True
         elif new_tag:
             match = self.db.get_equipment_by_tag(new_tag)
             if match:
@@ -7730,6 +7640,10 @@ class ScenarioTablePanel(QWidget):
                     selected_id = match['id']
                     selected_tag = (match.get('tag') or new_tag).strip()
 
+        old_tag = (old_eq or {}).get('tag') or ''
+        if selected_tag and selected_tag.casefold() != old_tag.casefold():
+            lines[group_line] = self._replace_tag_occurrence(
+                lines[group_line], old_tag, selected_tag, 0)
         equipment_ids[group_line] = selected_id
         primary_id = equipment_ids[0] if equipment_ids else None
         secondary_id = equipment_ids[1] if len(equipment_ids) > 1 else None
@@ -7741,19 +7655,19 @@ class ScenarioTablePanel(QWidget):
             if index == group_line and selected_tag:
                 tag = selected_tag
             tags.append(tag or 'Objekt')
-        operator_match = re.search(r'\s(&|OR|<>|->|\+)\s',
-                                   cause.get('comp_tag') or '', re.IGNORECASE)
-        operator = ('&' if not operator_match or operator_match.group(1) == '+'
-                    else ('OR' if operator_match.group(1).casefold() in ('<>', 'or')
-                          else operator_match.group(1)))
+        operators = self._group_link_operators(cause, len(equipment_ids))
         self.db.update_cause(
             cause_id,
             comp_type=(primary.get('equipment_type') if primary
                        else cause.get('comp_type') or comp_type),
-            comp_tag=f" {operator} ".join(tags),
+            comp_tag=self._group_comp_tag(tags, operators),
             equipment_id=primary_id,
             secondary_equipment_id=secondary_id,
-            group_equipment_ids=equipment_ids)
+            group_equipment_ids=equipment_ids,
+            description='\n'.join(lines))
+        if renamed:
+            self.equipment_renamed.emit()
+            self.structure_changed.emit()
         self._schedule_rebuild()
 
     def _show_group_cause_popup(self, row, cause_id, global_pos,
@@ -7814,6 +7728,47 @@ class ScenarioTablePanel(QWidget):
     def _apply_group_cause_choice(self, cause_id, which, choice):
         cause = self.db.get_cause(cause_id)
         if not cause:
+            return
+        # Kept for compatibility with old quick-choice triggers.  Route the
+        # active behaviour through the canonical N-member representation so
+        # this legacy helper cannot collapse tertiary and later rows back
+        # into a primary/secondary-only description.
+        group_ids = self._group_equipment_ids(cause)
+        if len(group_ids) >= 2 and 0 <= which < len(group_ids):
+            lines = self.db.group_cause_description_lines(cause, group_ids)
+            # Older groups often have valid event text but no bitmask.  Keep
+            # the first two legacy choice flags in sync without inferring or
+            # changing any later member rows.
+            choices_set = int(cause.get('group_choices_set') or 0)
+            for line_no, bit in ((0, 1), (1, 2)):
+                if line_no >= len(lines):
+                    continue
+                member = self.db.get_equipment_by_id(group_ids[line_no])
+                member_tag = str((member or {}).get('tag') or '').strip()
+                tail = lines[line_no]
+                if member_tag and tail.casefold().startswith(member_tag.casefold()):
+                    tail = tail[len(member_tag):].strip(' ,:;->')
+                if tail:
+                    choices_set |= bit
+            if str(choice or '').startswith('Skriv'):
+                value, accepted = QInputDialog.getText(
+                    self, 'Eget alternativ',
+                    'Skriv in önskad felmekanism/effekt:')
+                if not accepted or not value.strip():
+                    return
+                choice = value.strip()
+            equipment = self.db.get_equipment_by_id(group_ids[which])
+            tag = str((equipment or {}).get('tag') or '').strip()
+            if not tag:
+                tag = lines[which].split(' ', 1)[0]
+            lines[which] = f'{tag} {str(choice or "").strip().lower()}'.strip()
+            if which == 0:
+                choices_set |= 1
+            elif which == 1:
+                choices_set |= 2
+            self.db.update_cause(cause_id, description='\n'.join(lines),
+                                 group_choices_set=choices_set)
+            self._schedule_rebuild()
             return
         p = self.db.get_equipment_by_id(cause.get('equipment_id'))
         s = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
@@ -7896,30 +7851,11 @@ class ScenarioTablePanel(QWidget):
         self._schedule_rebuild()
 
     def _swap_group_objects(self, cause_id):
-        """Swap the live primary/secondary P&ID links of a group cause."""
+        """Compatibility entry point for the old two-object swap control."""
         cause = self.db.get_cause(cause_id)
-        if not cause or not cause.get('secondary_equipment_id'):
+        if not cause or len(self._group_equipment_ids(cause)) < 2:
             return
-        primary = self.db.get_equipment_by_id(cause.get('equipment_id'))
-        secondary = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
-        if not primary or not secondary:
-            return
-        operator_match = re.search(r'\s(&|OR|<>|->|\+)\s',
-                                   cause.get('comp_tag') or '', re.IGNORECASE)
-        operator = ('&' if not operator_match or operator_match.group(1) == '+'
-                    else ('OR' if operator_match.group(1).casefold() in ('<>', 'or')
-                          else operator_match.group(1)))
-        self.db.update_cause(
-            cause_id,
-            equipment_id=secondary['id'],
-            secondary_equipment_id=primary['id'],
-            comp_type=secondary.get('equipment_type', ''),
-            comp_tag=f"{secondary.get('tag', '')} {operator} {primary.get('tag', '')}",
-            group_equipment_ids=(
-                [self._group_equipment_ids(cause)[1],
-                 self._group_equipment_ids(cause)[0]] +
-                self._group_equipment_ids(cause)[2:]))
-        self._schedule_rebuild()
+        self._move_group_row(cause_id, 0, 1)
 
     def _apply_cause_obj(self, row, cause_id, comp_type, comp_tag, description, frequency):
         # Live tag link (2026-08-13, see NOTES.md: "taggen är kopplad
@@ -7967,10 +7903,8 @@ class ScenarioTablePanel(QWidget):
                             f"Taggen {new_tag} används redan av ett annat objekt "
                             "på denna P&ID. Välj Koppla för att använda det objektet.")
                         return
-                    self.db.update_equipment_item(
-                        old_equipment_id, new_tag, old_eq.get('prefix') or '',
-                        old_eq.get('equipment_type') or comp_type,
-                        old_eq.get('description') or '')
+                    self.db.rename_equipment_and_references(
+                        old_equipment_id, new_tag)
                     self.equipment_renamed.emit()
                     renamed = True
         elif new_tag:

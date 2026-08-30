@@ -4619,6 +4619,98 @@ class CellObjectReferenceEditTests(unittest.TestCase):
         self.assertIn('FI-1 felar lågt', cause['description'])
         self.assertIn('FV-2 öppnar fullt', cause['description'])
 
+    def test_compact_three_object_group_repairs_before_secondary_swap(self):
+        """A legacy one-line group must not strand later member editors."""
+        fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
+                                           'Flow transmitter', '', 0)
+        fv_id = self.db.add_equipment_item('FV-1', 'FV-1', 'FV', 1,
+                                           'Control valve', '', 0)
+        xv_id = self.db.add_equipment_item('XV-1', 'XV-1', 'XV', 1,
+                                           'Shutdown valve', '', 0)
+        replacement_id = self.db.add_equipment_item('FV-2', 'FV-2', 'FV', 1,
+                                                    'Control valve', '', 0)
+        self.db.update_cause(
+            self.cause_id,
+            description='FI-1 fails low -> FV-1 opens fully -> XV-1 closes',
+            comp_type='Flow transmitter', comp_tag='FI-1 OR FV-1 -> XV-1',
+            equipment_id=fi_id, secondary_equipment_id=fv_id,
+            group_equipment_ids=[fi_id, fv_id, xv_id])
+
+        self.panel._replace_object_reference({
+            'kind': 'cause', 'id': self.cause_id, 'group_line': 1,
+            'tag': 'FV-1'}, self.db.get_equipment_by_id(replacement_id))
+
+        cause = self.db.get_cause(self.cause_id)
+        self.assertEqual(self.panel._group_equipment_ids(cause),
+                         [fi_id, replacement_id, xv_id])
+        self.assertEqual(cause['description'].splitlines(), [
+            'FI-1 fails low',
+            'FV-2 opens fully',
+            'XV-1 closes',
+        ])
+
+    def test_tertiary_inline_editor_uses_only_its_own_repaired_line(self):
+        from PyQt6.QtWidgets import QStyleOptionViewItem
+
+        fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
+                                           'Flow transmitter', '', 0)
+        fv_id = self.db.add_equipment_item('FV-1', 'FV-1', 'FV', 1,
+                                           'Control valve', '', 0)
+        xv_id = self.db.add_equipment_item('XV-1', 'XV-1', 'XV', 1,
+                                           'Shutdown valve', '', 0)
+        self.db.update_cause(
+            self.cause_id,
+            description='FI-1 fails low -> FV-1 opens fully -> XV-1 closes',
+            comp_type='Flow transmitter', comp_tag='FI-1 OR FV-1 -> XV-1',
+            equipment_id=fi_id, secondary_equipment_id=fv_id,
+            group_equipment_ids=[fi_id, fv_id, xv_id])
+        self.panel.load_node(self.node_id)
+        row = next(row for row, meta in enumerate(self.panel._row_meta)
+                   if meta[1] == self.cause_id)
+        index = self.panel._table.model().index(row, self.panel._C_ORS)
+        option = QStyleOptionViewItem()
+        option.rect = self.panel._table.visualRect(index)
+        self.panel._group_edit_line = (row, 2)
+        editor = self.panel._pid_delegate.createEditor(self.panel._table, option, index)
+        try:
+            self.panel._pid_delegate.setEditorData(editor, index)
+            self.assertEqual(editor.toPlainText(), 'closes')
+            editor.setText('does not close on demand')
+            self.panel._pid_delegate.setModelData(
+                editor, self.panel._table.model(), index)
+        finally:
+            editor.deleteLater()
+            self.panel._group_edit_line = None
+
+        self.assertEqual(self.db.get_cause(self.cause_id)['description'].splitlines(), [
+            'FI-1 fails low',
+            'FV-1 opens fully',
+            'XV-1 does not close on demand',
+        ])
+
+    def test_global_rename_repairs_a_compact_group_description(self):
+        fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
+                                           'Flow transmitter', '', 0)
+        fv_id = self.db.add_equipment_item('FV-1', 'FV-1', 'FV', 1,
+                                           'Control valve', '', 0)
+        xv_id = self.db.add_equipment_item('XV-1', 'XV-1', 'XV', 1,
+                                           'Shutdown valve', '', 0)
+        self.db.update_cause(
+            self.cause_id,
+            description='FI-1 fails low -> FV-1 opens fully -> XV-1 closes',
+            comp_type='Flow transmitter', comp_tag='FI-1 OR FV-1 -> XV-1',
+            equipment_id=fi_id, secondary_equipment_id=fv_id,
+            group_equipment_ids=[fi_id, fv_id, xv_id])
+
+        self.db.rename_equipment_and_references(fv_id, 'FV-9')
+
+        cause = self.db.get_cause(self.cause_id)
+        self.assertEqual(cause['description'].splitlines(), [
+            'FI-1 fails low',
+            'FV-9 opens fully',
+            'XV-1 closes',
+        ])
+
     def test_popup_has_separate_change_object_and_rename_actions(self):
         from scenario_panel import _ObjectTagActionPopup
         popup = _ObjectTagActionPopup(self.db, self.db.get_equipment_by_id(self.old_id),

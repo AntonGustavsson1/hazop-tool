@@ -4230,6 +4230,27 @@ samt py_compile. Ingen visuell GUI-verifiering Ã¤r gjord.
 Worksheetens inbäddade ScenarioTablePanel uppdaterar nu sig själv och väljer
 det nya fältet efter Enter. Strukturändringar och redigeringar skickas också
 vidare till trädet, P&ID och huvudvyn så att alla vyer hålls synkroniserade.
+## Grupporsaker: en rad per objekt efter namnbyte och objektbyte (2026-08-30)
+
+Grupporsaker har nu en gemensam normalisering i datalagret. Den ger alltid en
+stabil objektsordning och exakt en redigerbar orsaksrad per objekt, upp till 20
+objekt. Äldre kompakta grupptexter delas försiktigt vid igenkända taggar; text
+som inte säkert kan delas behålls på första raden och övriga objekt får egna
+tomma taggankare i stället för att försvinna.
+
+Scenario och trädet använder samma representation för målning, dubbelklick,
+inline-redigering, objektsbyte, radflytt och namnbyte. En ändring av ett senare
+objekt kan därför inte längre slå ihop beskrivningen eller låsa editorn till
+primärraden. Namnbyte via trädet använder också samma globala namnbytesväg som
+Scenario och reparerar berörda äldre grupptexter i samma transaktion.
+
+En fördröjd omritning efter att ett fönster stängts skyddas dessutom mot läsning
+från en stängd databas, så att en gammal cell inte kan orsaka en GUI-krasch.
+
+Verifierat med 8 riktade objekt-/gruppreferenstester, 16 trädgrupperingstester,
+23 integrationsfall för objektfall/grupper, 12 smoke-tester och `py_compile`.
+Ingen manuell visuell GUI-verifiering är gjord.
+
 # Senaste uppföljning (2026-08-29)
 
 - P&ID:s tre objektförekomst-räknare räknar nu aktuella unika avvikelser, konsekvenser och safeguards från databasen. De fångar både direkta objektkopplingar, grupporsaker och aktiva taggar i text, men ignorerar historiska dragreferenser efter att en tagg tagits bort.

@@ -5078,7 +5078,11 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             win.tree_panel.refresh()
             item = _find_tree_item(win.tree_panel.tree, CAUSE_T, cause['id'])
             self.assertIsNotNone(item)
-            self.assertIn('A-101\nB-202', item.text(0))
+            lines = item.text(0).splitlines()
+            self.assertTrue(lines[0].endswith('A-101'))
+            self.assertTrue(lines[1].endswith('B-202'))
+            self.assertEqual(lines[0].rfind('A-101'), lines[1].rfind('B-202'),
+                             'secondary tag must align with the primary tag')
             self.assertNotIn('Ny orsak', item.text(0))
 
     def test_group_choice_buttons_are_independent_and_group_text_remains_editable(self):
