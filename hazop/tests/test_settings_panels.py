@@ -841,15 +841,12 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
                 panel._edit_cell_text(button)
             self.assertEqual(button.label(), 'Ny risktext')
 
-            # Exercise the actual left-click menu route as well, then save
-            # and verify the separate Scenario risk popup reads that text.
+            # Exercise the QAction emitted by a real left-click menu choice,
+            # then save and verify the Scenario popup reads that text.
             menu = panel._cell_edit_menu(button)
             with unittest.mock.patch.object(
-                    menu, 'exec', return_value=menu.actions()[1]), \
-                 unittest.mock.patch.object(
                     QInputDialog, 'getText', return_value=('Text från meny', True)):
-                with unittest.mock.patch.object(panel, '_cell_edit_menu', return_value=menu):
-                    panel._edit_cell(button)
+                menu.actions()[1].trigger()
             self.assertEqual(button.label(), 'Text från meny')
             with unittest.mock.patch.object(QMessageBox, 'information'):
                 panel._save_matrix()

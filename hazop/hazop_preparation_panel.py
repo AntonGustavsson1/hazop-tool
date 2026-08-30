@@ -1801,20 +1801,17 @@ class HAZOPPreparationPanel(QWidget):
         change_color.setData('color')
         change_text = menu.addAction("Ändra text…")
         change_text.setData('text')
+        # QAction.triggered is Qt's stable path for a menu click. Keeping
+        # the edit here avoids depending on which Python wrapper QMenu.exec
+        # happens to return on a given platform.
+        change_color.triggered.connect(lambda: self._edit_cell_color(btn))
+        change_text.triggered.connect(lambda: self._edit_cell_text(btn))
         return menu
 
     def _edit_cell(self, btn):
         """Left-click a matrix cell and choose whether to edit colour or text."""
         menu = self._cell_edit_menu(btn)
-        chosen = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
-        # Execute from QMenu.exec()'s returned action rather than relying on
-        # a signal attached to a short-lived menu. This keeps a nested text
-        # dialog reliable on every Qt platform.
-        choice = chosen.data() if chosen is not None else None
-        if choice == 'color':
-            self._edit_cell_color(btn)
-        elif choice == 'text':
-            self._edit_cell_text(btn)
+        menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
 
     def _edit_cell_color(self, btn):
         color = QColorDialog.getColor(

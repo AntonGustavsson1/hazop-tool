@@ -1,5 +1,15 @@
 # NOTES.md — Beslut och kontext
 
+## Riskcellens textmeny använder Qt:s klicksignal (2026-08-30)
+
+Riskcellens `Ändra text…` är nu direkt kopplad till menyåtgärdens
+`triggered`-signal. Det ersätter den opålitliga returvärdesvägen från
+`QMenu.exec()` och gör att textdialogen och den visuella celluppdateringen
+alltid körs när användaren väljer textalternativet.
+
+Verifierat med 24 riskmatris-/popup-tester, `tests.test_smoke` (12 tester)
+och `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Pålitligt menyval för riskcelltext (2026-08-30)
 
 `Ändra text…` i riskcellens vänsterklicksmeny väljs nu genom ett stabilt
