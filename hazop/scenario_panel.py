@@ -1846,21 +1846,24 @@ class ReductionFactorsDialog(QDialog):
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName('reductionFactorsPopup')
-        self.setFixedWidth(420)
+        self.setFixedWidth(390)
         self.setStyleSheet(
             'QWidget#reductionFactorsPopup{background:#FFFFFF;'
             'border:1px solid #4B5563;border-radius:3px;}'
-            'QTableWidget{border:1px solid #CFD1CE;background:#FFFFFF;}'
-            'QHeaderView::section{background:#F5F5F3;border:0;border-bottom:1px solid #CFD1CE;'
-            'padding:3px 5px;color:#17191C;font-weight:bold;}'
-            'QTableWidget::item{padding:2px 4px;color:#17191C;}'
-            'QPushButton{border:1px solid #8D9299;border-radius:2px;padding:3px 7px;'
-            'background:#F5F5F3;color:#17191C;}'
-            'QPushButton:hover{background:#E8E9E6;}')
+            'QTableWidget{border:1px solid #E2E3E1;background:#FFFFFF;font-size:9px;}'
+            'QHeaderView::section{background:#FFFFFF;border:0;border-bottom:1px solid #E2E3E1;'
+            'padding:2px 3px;color:#6B7280;font-size:9px;font-weight:bold;}'
+            'QTableWidget::item{padding:1px 3px;color:#17191C;}'
+            'QTableWidget::item:selected{background:#E6ECFA;color:#17191C;}'
+            'QCheckBox{font-size:9px;color:#17191C;}'
+            'QCheckBox::indicator{width:13px;height:13px;}'
+            'QPushButton#addEnabler{border:0;background:#F5F5F3;color:#17191C;'
+            'text-align:left;padding:3px 6px;font-size:9px;}'
+            'QPushButton#addEnabler:hover{background:#E8E9E6;}')
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 7, 8, 8)
-        layout.setSpacing(5)
+        layout.setContentsMargins(7, 6, 7, 7)
+        layout.setSpacing(3)
         title = QLabel('Övriga enablers')
         title.setStyleSheet('border:none;font-size:10px;font-weight:bold;color:#17191C;')
         layout.addWidget(title)
@@ -1870,15 +1873,17 @@ class ReductionFactorsDialog(QDialog):
         self._tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self._tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self._tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self._tbl.setColumnWidth(0, 28); self._tbl.setColumnWidth(1, 190)
-        self._tbl.setColumnWidth(2, 62); self._tbl.setColumnWidth(3, 82)
+        self._tbl.setColumnWidth(0, 25); self._tbl.setColumnWidth(1, 170)
+        self._tbl.setColumnWidth(2, 58); self._tbl.setColumnWidth(3, 75)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setShowGrid(False)
-        self._tbl.setMaximumHeight(180)
+        self._tbl.setMaximumHeight(156)
         self._tbl.cellChanged.connect(self._on_cell)
         layout.addWidget(self._tbl)
 
         add_btn = QPushButton("+ Egen enabler")
+        add_btn.setObjectName('addEnabler')
+        add_btn.setFixedHeight(22)
         add_btn.clicked.connect(self._add)
         layout.addWidget(add_btn)
         self._refresh()
@@ -1930,10 +1935,10 @@ class ReductionFactorsDialog(QDialog):
             self._tbl.setItem(r, 2, QTableWidgetItem(self._format_number(rrf)))
             self._tbl.setItem(r, 3, QTableWidgetItem(
                 f'{self._format_number(self._presence_for_rrf(rrf))} %'))
-            self._tbl.setRowHeight(r, 26)
+            self._tbl.setRowHeight(r, 22)
         self._tbl.blockSignals(False)
         self._syncing = False
-        self._tbl.setFixedHeight(min(180, 28 + max(1, self._tbl.rowCount()) * 26))
+        self._tbl.setFixedHeight(min(156, 23 + max(1, self._tbl.rowCount()) * 22))
 
     def _add(self):
         self.db.add_reduction_factor(self.consequence_id, 'Ny enabler', 10)

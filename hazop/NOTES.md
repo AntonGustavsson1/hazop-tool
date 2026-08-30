@@ -16,6 +16,9 @@ Verifierat med nya riktade dialog-/beräkningsprov,
 `EditExtraDeferredRebuildTests`, `tests.test_smoke` och `py_compile`.
 Ingen manuell visuell GUI-verifiering är gjord.
 
+Popupen följer nu standardorsakens tätare typografi med 10 pt rubrik, 9 pt
+listinnehåll, 22 px rader och diskreta ljusgrå gränser/hover-ytor.
+
 ## Plusknappar i Orsak, Konsekvens och Safeguard borttagna (2026-08-30)
 
 De små plusknapparna nere till höger i Orsak-, Konsekvens- och
