@@ -1794,23 +1794,39 @@ class HAZOPPreparationPanel(QWidget):
                     self._x_label_edits[affected_c].setText(new_lbl)
                     self._x_label_edits[affected_c].setCursorPosition(0)
 
+    def _cell_edit_menu(self, btn):
+        """Build the explicit left-click menu for one risk-matrix cell."""
+        menu = QMenu(self)
+        change_color = menu.addAction("Ändra färg…")
+        change_text = menu.addAction("Ändra text…")
+        change_color.triggered.connect(lambda: self._edit_cell_color(btn))
+        change_text.triggered.connect(lambda: self._edit_cell_text(btn))
+        return menu
+
     def _edit_cell(self, btn):
-        """Click a cell → choose background color, label, and text color."""
-        color = QColorDialog.getColor(QColor(btn.color()), self, "Välj bakgrundsfärg för cell")
+        """Left-click a matrix cell and choose whether to edit colour or text."""
+        menu = self._cell_edit_menu(btn)
+        menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+    def _edit_cell_color(self, btn):
+        color = QColorDialog.getColor(
+            QColor(btn.color()), self, "Välj bakgrundsfärg för cell")
         if not color.isValid():
             return
-        label, ok = QInputDialog.getText(
-            self, "Celltext", "Risknivå-etikett (t.ex. Låg, Medium, Hög, Kritisk):",
-            text=btn.label())
-        if not ok:
-            return
-        # Auto-suggest fg based on luminance; let user override
+        # Keep the text legible automatically when only the cell colour is
+        # changed. This avoids forcing the user through an unrelated second
+        # dialog merely to make a small colour adjustment.
         r, g, b = color.red(), color.green(), color.blue()
-        auto_fg = '#000000' if (0.299*r + 0.587*g + 0.114*b) > 160 else '#ffffff'
-        current_fg = btn.fg_color() if btn.fg_color() else auto_fg
-        fg_obj = QColorDialog.getColor(QColor(current_fg), self, "Välj textfärg")
-        fg = fg_obj.name() if fg_obj.isValid() else current_fg
-        btn.set_cell(color.name(), label.strip() or btn.label(), fg)
+        fg = '#000000' if (0.299*r + 0.587*g + 0.114*b) > 160 else '#ffffff'
+        btn.set_cell(color.name(), fg_color=fg)
+
+    def _edit_cell_text(self, btn):
+        label, ok = QInputDialog.getText(
+            self, "Celltext",
+            "Risknivå-etikett (t.ex. Låg, Medium, Hög, Kritisk):",
+            text=btn.label())
+        if ok and label.strip():
+            btn.set_cell(btn.color(), label.strip(), btn.fg_color())
 
     def _save_matrix(self):
         n_cons = self._rows_spin.value()   # consequence levels (rows in data)

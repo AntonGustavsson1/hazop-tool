@@ -816,6 +816,31 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_left_click_matrix_cell_offers_separate_colour_and_text_edits(self):
+        from hazop import HAZOPPreparationPanel
+        from PyQt6.QtGui import QColor
+        from PyQt6.QtWidgets import QColorDialog
+
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            button = panel._cell_buttons[0][1][0]
+            menu = panel._cell_edit_menu(button)
+            self.assertEqual([action.text() for action in menu.actions()],
+                             ['Ändra färg…', 'Ändra text…'])
+
+            with unittest.mock.patch.object(
+                    QColorDialog, 'getColor', return_value=QColor('#fef3c7')):
+                panel._edit_cell_color(button)
+            self.assertEqual(button.color(), '#fef3c7')
+            self.assertEqual(button.fg_color(), '#000000')
+
+            with unittest.mock.patch.object(
+                    QInputDialog, 'getText', return_value=('Ny risktext', True)):
+                panel._edit_cell_text(button)
+            self.assertEqual(button.label(), 'Ny risktext')
+        finally:
+            panel.deleteLater()
+
     def test_saved_axis_text_and_popup_cache_follow_current_matrix(self):
         """Edited consequence/frequency labels must reach the risk popup.
 

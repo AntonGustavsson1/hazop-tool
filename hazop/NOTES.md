@@ -1,5 +1,16 @@
 # NOTES.md — Beslut och kontext
 
+## Redigera en riskmatrisruta med vänsterklick (2026-08-30)
+
+Vänsterklick på en ruta i Riskmatris-inställningen öppnar nu ett litet val med
+`Ändra färg…` och `Ändra text…`. Färgändring väljer endast bakgrundsfärg och
+anpassar textfärgen automatiskt för läsbarhet; textändring öppnar endast
+textfältet. Ändringarna är fortsatt arbetskopior tills `Spara riskmatris`
+trycks.
+
+Verifierat med 12 riskmatrisadministrationstester, `tests.test_smoke`
+(12 tester) och `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Grupporsak uppdateras direkt efter avslutad inline-redigering (2026-08-30)
 
 När primär eller sekundär fritext sparas använder grupporsaken nu samma
