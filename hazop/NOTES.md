@@ -1,5 +1,16 @@
 # NOTES.md — Beslut och kontext
 
+## Justerbar textstorlek i rekommendationslistan (2026-08-30)
+
+Rekommendationsfliken har nu kontrollen `Textstorlek` i filterraden. Den
+ändrar texten i samtliga listrader, inklusive ansvarig-, datum- och
+statusfälten, mellan 8 och 24 pt. Valet sparas i projektets inställningar
+och används igen när rekommendationslistan öppnas nästa gång.
+
+Verifierat med `tests.test_recommendations_panel` (19 tester),
+`tests.test_smoke` (12 tester) och `py_compile`. Ingen manuell visuell
+GUI-verifiering är gjord.
+
 ## Slutkonsekvens öppnar kategori-risken (2026-08-30)
 
 Klick i `Slutkonsekvens` öppnar nu samma kategori-medvetna riskmatrispopup

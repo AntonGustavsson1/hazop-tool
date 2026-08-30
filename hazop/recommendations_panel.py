@@ -28,7 +28,7 @@ from PyQt6.QtCore import Qt, QDate, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QComboBox, QDateEdit, QPushButton, QMessageBox, QLabel,
-    QLineEdit,
+    QLineEdit, QSpinBox,
 )
 
 from database import Database
@@ -37,6 +37,10 @@ _STATUS_ALL = 'Alla statusar'
 _STATUS_VALUES = ('Öppen', 'Pågår', 'Klar', 'Försenad')
 
 _PLACEHOLDER = '—'   # same "no link yet" convention as KON/SG/REK cells elsewhere
+
+_FONT_SIZE_CONFIG_KEY = 'recommendations_font_size'
+_MIN_FONT_SIZE = 8
+_MAX_FONT_SIZE = 24
 
 
 def _build_position_maps(db: Database):
@@ -166,6 +170,13 @@ class RecommendationsPanel(QWidget):
         self._status_filter.addItems(_STATUS_VALUES)
         self._status_filter.currentTextChanged.connect(self._apply_filters)
         filters.addWidget(self._status_filter)
+        filters.addWidget(QLabel('Textstorlek:'))
+        self._font_size_control = QSpinBox()
+        self._font_size_control.setRange(_MIN_FONT_SIZE, _MAX_FONT_SIZE)
+        self._font_size_control.setSuffix(' pt')
+        self._font_size_control.setToolTip(
+            'Ändra textstorleken i rekommendationslistan.')
+        filters.addWidget(self._font_size_control)
         self._count_label = QLabel('Visar 0 av 0')
         filters.addWidget(self._count_label)
         layout.addLayout(filters)
@@ -217,10 +228,40 @@ class RecommendationsPanel(QWidget):
         self._table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self._table)
 
+        initial_font_size = self._stored_font_size(self._table.font().pointSize())
+        self._font_size_control.setValue(initial_font_size)
+        self._font_size_control.valueChanged.connect(self._on_font_size_changed)
+        self._apply_list_font_size(initial_font_size)
+
         self._delete_btn = QPushButton("Ta bort markerad rekommendation")
         self._delete_btn.setEnabled(False)
         self._delete_btn.clicked.connect(self._delete_selected)
         layout.addWidget(self._delete_btn)
+
+    def _stored_font_size(self, default_size):
+        """Return a safe persisted list font size without requiring a migration."""
+        default_size = default_size if default_size > 0 else 10
+        try:
+            stored = int(self.db.get_config(_FONT_SIZE_CONFIG_KEY, default_size))
+        except (TypeError, ValueError):
+            stored = default_size
+        return max(_MIN_FONT_SIZE, min(_MAX_FONT_SIZE, stored))
+
+    def _on_font_size_changed(self, point_size):
+        self.db.set_config(_FONT_SIZE_CONFIG_KEY, str(point_size))
+        self._apply_list_font_size(point_size)
+
+    def _apply_list_font_size(self, point_size):
+        """Apply the selected size to row text and embedded row editors."""
+        font = self._table.font()
+        font.setPointSize(point_size)
+        self._table.setFont(font)
+        for row in range(self._table.rowCount()):
+            for col in range(self._table.columnCount()):
+                widget = self._table.cellWidget(row, col)
+                if widget is not None:
+                    widget.setFont(font)
+        self._table.resizeRowsToContents()
 
     def _update_delete_button(self):
         self._delete_btn.setEnabled(bool(self._selected_recommendation_ids()))
@@ -391,7 +432,7 @@ class RecommendationsPanel(QWidget):
                     lambda text, rid=rec_id: self.db.update_recommendation(
                         rid, status=text))
                 self._table.setCellWidget(row, self._COL_STATUS, status)
-            self._table.resizeRowsToContents()
+            self._apply_list_font_size(self._font_size_control.value())
         finally:
             self._table.blockSignals(False)
             self._table.setSortingEnabled(was_sorting)

@@ -86,6 +86,31 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_list_font_size_is_applied_and_persisted(self):
+        self.db.add_recommendation(description="Större listtext")
+        panel = RecommendationsPanel(self.db)
+        try:
+            panel.load()
+            panel._font_size_control.setValue(15)
+
+            self.assertEqual(self.db.get_config('recommendations_font_size'), '15')
+            self.assertEqual(panel._table.font().pointSize(), 15)
+            self.assertEqual(
+                panel._table.cellWidget(0, panel._COL_RESPONSIBLE).font().pointSize(), 15)
+            self.assertEqual(
+                panel._table.cellWidget(0, panel._COL_DUE).font().pointSize(), 15)
+            self.assertEqual(
+                panel._table.cellWidget(0, panel._COL_STATUS).font().pointSize(), 15)
+        finally:
+            panel.deleteLater()
+
+        reopened = RecommendationsPanel(self.db)
+        try:
+            self.assertEqual(reopened._font_size_control.value(), 15)
+            self.assertEqual(reopened._table.font().pointSize(), 15)
+        finally:
+            reopened.deleteLater()
+
     def test_empty_due_date_stays_blank_until_user_sets_one(self):
         rec_id = self.db.add_recommendation(description="Utan datum")
         panel = RecommendationsPanel(self.db)
