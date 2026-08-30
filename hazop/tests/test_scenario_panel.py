@@ -4815,6 +4815,29 @@ class ReductionFactorsDialogTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
+    def test_enabler_popup_uses_one_surface_and_opens_below_its_anchor(self):
+        """The compact picker has one outer edge, not nested frames.
+
+        Its placement follows the other cell popups: directly below the
+        invoking Enablers button, with only screen-edge clamping.
+        """
+        from hazop import ReductionFactorsDialog
+        from PyQt6.QtWidgets import QFrame
+
+        dialog = ReductionFactorsDialog(self.db, self.cons_id)
+        try:
+            self.assertIn('QTableWidget{border:none', dialog.styleSheet())
+            self.assertIn('QWidget#enablerCategorySection{border:none',
+                          dialog.styleSheet())
+            self.assertNotIsInstance(dialog._category_section, QFrame)
+
+            screen = QApplication.primaryScreen().availableGeometry()
+            anchor = QPoint(screen.left() + 12, screen.top() + 40)
+            dialog.position_below(anchor)
+            self.assertEqual(dialog.pos(), anchor)
+        finally:
+            dialog.deleteLater()
+
     def test_standard_enablers_are_available_and_legacy_values_are_migrated(self):
         catalog = {row['description']: row['rrf']
                    for row in self.db.reduction_factor_catalog()}

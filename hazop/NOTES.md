@@ -4362,3 +4362,18 @@ fortfarande öppnar rätt inline-redigerare.
 Verifierat med 17 trädgrupperingstester, 24 integrationsfall för
 objektfall/grupper, 12 smoke-tester och `py_compile`. Ingen manuell visuell
 GUI-verifiering är gjord.
+
+## Enabler-popup: placering och en enda yta (2026-08-30)
+
+Enabler-popupen öppnas nu direkt under den aktiverade Enablers-knappen, på
+samma sätt som övriga små cellpopupar. Vid skärmkanten hålls den inom den
+synliga ytan och så nära knappen nedåt som möjligt.
+
+Utseendet är förenklat: den tunna mörkgrå ytterramen är kvar, men tabellens
+egen ram och den tidigare ramen runt konsekvenskategorier är borttagna.
+Knappen för att lägga till eller ta bort en egen enabler är också en diskret
+textåtgärd tills pekaren hålls över den. RRF, procent och kategorikryss är
+oförändrade.
+
+Verifierat med 8 enabler-tester, 2 säkra dialog-/rebuild-tester, 12
+smoke-tester och `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.

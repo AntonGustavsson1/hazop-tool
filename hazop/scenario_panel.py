@@ -1849,21 +1849,25 @@ class ReductionFactorsDialog(QDialog):
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName('reductionFactorsPopup')
-        self.setFixedWidth(390)
+        self.setFixedWidth(350)
         self.setStyleSheet(
             'QWidget#reductionFactorsPopup{background:#FFFFFF;'
             'border:1px solid #4B5563;border-radius:3px;}'
-            'QTableWidget{border:1px solid #E2E3E1;background:#FFFFFF;font-size:9px;}'
+            # The popup's outer edge is the only frame.  A table border and
+            # a second category-frame made this small picker look like a
+            # dialog inside another dialog.
+            'QTableWidget{border:none;background:#FFFFFF;font-size:9px;}'
             'QHeaderView::section{background:#FFFFFF;border:0;border-bottom:1px solid #E2E3E1;'
             'padding:2px 3px;color:#6B7280;font-size:9px;font-weight:bold;}'
             'QTableWidget::item{padding:1px 3px;color:#17191C;}'
             'QTableWidget::item:selected{background:#E6ECFA;color:#17191C;}'
             'QCheckBox{font-size:9px;color:#17191C;}'
             'QCheckBox::indicator{width:13px;height:13px;}'
-            'QPushButton#addEnabler{border:0;background:#F5F5F3;color:#17191C;'
+            'QWidget#enablerCategorySection{border:none;}'
+            'QPushButton#addEnabler{border:0;background:transparent;color:#17191C;'
             'text-align:left;padding:3px 6px;font-size:9px;}'
             'QPushButton#addEnabler:hover{background:#E8E9E6;}'
-            'QPushButton#removeEnabler{border:0;background:#F5F5F3;color:#17191C;'
+            'QPushButton#removeEnabler{border:0;background:transparent;color:#17191C;'
             'text-align:left;padding:3px 6px;font-size:9px;}'
             'QPushButton#removeEnabler:hover:enabled{background:#E8E9E6;}'
             'QPushButton#removeEnabler:disabled{color:#9CA3AF;}')
@@ -1874,11 +1878,12 @@ class ReductionFactorsDialog(QDialog):
         self._tbl = QTableWidget(0, 4)
         self._tbl.setHorizontalHeaderLabels(['', 'Enabler', 'RRF', '%'])
         self._tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self._tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self._tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self._tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self._tbl.setColumnWidth(0, 25); self._tbl.setColumnWidth(1, 170)
-        self._tbl.setColumnWidth(2, 58); self._tbl.setColumnWidth(3, 75)
+        self._tbl.setColumnWidth(0, 23)
+        self._tbl.setColumnWidth(2, 52)
+        self._tbl.setColumnWidth(3, 58)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setShowGrid(False)
         self._tbl.setMaximumHeight(156)
@@ -1901,17 +1906,36 @@ class ReductionFactorsDialog(QDialog):
         action_row.addWidget(self._remove_btn)
         layout.addLayout(action_row)
 
-        self._category_section = QFrame()
+        self._category_section = QWidget()
         self._category_section.setObjectName('enablerCategorySection')
         self._category_section.setStyleSheet(
-            'QFrame#enablerCategorySection{border-top:1px solid #E2E3E1;}'
             'QCheckBox{border:none;font-size:9px;color:#17191C;}')
         self._category_layout = QVBoxLayout(self._category_section)
-        self._category_layout.setContentsMargins(0, 4, 0, 0)
+        self._category_layout.setContentsMargins(0, 2, 0, 0)
         self._category_layout.setSpacing(1)
         self._category_section.hide()
         layout.addWidget(self._category_section)
         self._refresh()
+
+    def position_below(self, global_anchor: QPoint):
+        """Place the compact picker under its Enablers cell.
+
+        This matches the other small cell popups.  It opens below the
+        invoking cell whenever space permits; near a screen edge it is kept
+        as low as possible within the available screen area.
+        """
+        self.adjustSize()
+        screen = (QApplication.screenAt(global_anchor)
+                  or QApplication.primaryScreen())
+        if screen is None:
+            self.move(global_anchor)
+            return
+        available = screen.availableGeometry()
+        max_x = available.right() - self.width() + 1
+        max_y = available.bottom() - self.height() + 1
+        x = min(max(global_anchor.x(), available.left() + 4), max_x)
+        y = min(max(global_anchor.y(), available.top() + 4), max_y)
+        self.move(QPoint(x, y))
 
     @staticmethod
     def _number(value, default=10.0, minimum=0.0001, maximum=1_000_000.0):
@@ -6198,6 +6222,16 @@ class ScenarioTablePanel(QWidget):
         # Every other dialog handler in this class defers via
         # _schedule_rebuild() for exactly this reason — do the same here.
         dlg = ReductionFactorsDialog(self.db, cons_id, self)
+        # The Enablers button is a cell widget.  Anchor the popup directly
+        # below it, like the frequency/RRF popups, rather than letting a
+        # modal dialog default to the centre of the main window.
+        source = self.sender()
+        if isinstance(dlg, QDialog):
+            if isinstance(source, QWidget):
+                anchor = source.mapToGlobal(QPoint(0, source.height() + 4))
+            else:
+                anchor = QCursor.pos()
+            dlg.position_below(anchor)
         dlg.exec()
         self._schedule_rebuild()
 
