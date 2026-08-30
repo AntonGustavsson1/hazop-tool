@@ -1484,6 +1484,39 @@ class TreePanelRefreshQueryBatchingTests(unittest.TestCase):
             f"-> {large_tree_count}) — the N+1 query pattern may have regressed")
 
 
+class RRFPopupStyleTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_rrf_popup_uses_the_same_compact_list_presentation(self):
+        """The lightweight RRF route must not regress to wide blue buttons."""
+        from tree_panel import RRFPopup
+
+        popup = RRFPopup(current_rrf=100)
+        try:
+            lists = popup.findChildren(QListWidget)
+            self.assertEqual(len(lists), 1)
+            self.assertEqual(lists[0].count(), 5)
+            selected = lists[0].selectedItems()
+            self.assertEqual(len(selected), 1)
+            self.assertEqual(selected[0].data(Qt.ItemDataRole.UserRole), 100)
+            self.assertEqual(popup.windowType(), Qt.WindowType.Popup)
+            self.assertEqual(popup.objectName(), 'rrfPopup')
+            self.assertIn('border:1px solid #4B5563', popup.styleSheet())
+            self.assertTrue(popup.testAttribute(Qt.WidgetAttribute.WA_StyledBackground))
+
+            chosen = []
+            popup.rrf_selected.connect(lambda value, sg_type: chosen.append((value, sg_type)))
+            popup._spin.setValue(250)
+            next(button for button in popup.findChildren(QPushButton)
+                 if button.text() == 'OK').click()
+            self.assertEqual(chosen, [(250, popup._type_combo.currentText())])
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+
 class FrequencyPickerPopupTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

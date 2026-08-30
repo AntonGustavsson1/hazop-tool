@@ -2763,18 +2763,37 @@ class CauseTagPopup(QDialog):
 
 
 class RRFPopup(QDialog):
-    """Quick-pick popup for setting a safeguard's RRF value and type."""
+    """Compact list popup for setting a safeguard's RRF value and type.
+
+    This is deliberately the same small visual language as the expanded
+    safeguard RRF/category popup: a framed popup, one simple preset list and
+    an optional numeric value. The only difference is that this lightweight
+    route has no consequence-category checkboxes to display.
+    """
     rrf_selected = pyqtSignal(int, str)   # (rrf_value, sg_type)
 
     def __init__(self, current_rrf: int, current_sg_type: str = 'Övrigt', parent=None):
         super().__init__(parent)
         self.setWindowTitle("Ändra RRF")
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setObjectName("rrfPopup")
+        self.setStyleSheet(
+            "QWidget#rrfPopup{background:#FFFFFF;"
+            "border:1px solid #4B5563;border-radius:3px;}"
+            "QListWidget{border:none;background:#FFFFFF;font-size:10px;}"
+            "QListWidget::item{padding:3px 6px;color:#17191C;}"
+            "QListWidget::item:hover{background:#F5F5F3;}"
+            "QListWidget::item:selected{background:#E8E9E6;color:#17191C;}")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(6)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(4)
 
-        layout.addWidget(QLabel("<b>Risk Reduction Factor (RRF)</b>"))
+        title = QLabel("RRF")
+        title.setStyleSheet("border:none;color:#17191C;font-size:10px;"
+                            "font-weight:bold;")
+        layout.addWidget(title)
 
         # Type selector
         type_row = QHBoxLayout()
@@ -2784,34 +2803,49 @@ class RRFPopup(QDialog):
         idx = self._type_combo.findText(current_sg_type)
         if idx >= 0:
             self._type_combo.setCurrentIndex(idx)
-        self._type_combo.setStyleSheet("font-size:10px;")
+        self._type_combo.setStyleSheet("border:1px solid #CFD1CE;font-size:10px;")
         type_row.addWidget(self._type_combo)
         layout.addLayout(type_row)
 
-        # Preset buttons
-        presets = QHBoxLayout()
+        # The full category popup uses exactly this list instead of a wide
+        # row of coloured buttons. Keep the selected preset visible while
+        # allowing an exact value in the field below.
+        presets = QListWidget()
+        presets.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        presets.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        presets.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        presets.setMinimumWidth(150)
+        presets.setMaximumHeight(120)
         for val in (1, 10, 100, 1000, 10000):
-            btn = QPushButton(str(val))
-            btn.setFixedWidth(62)
-            btn.setStyleSheet(
-                "QPushButton{background:#2F5FD0;color:white;border:none;"
-                "border-radius:4px;padding:5px;font-weight:bold;}"
-                "QPushButton:hover{background:#3D6BD8;}")
-            btn.clicked.connect(partial(self._pick, val))
-            presets.addWidget(btn)
-        layout.addLayout(presets)
+            item = QListWidgetItem(str(val))
+            item.setData(Qt.ItemDataRole.UserRole, val)
+            presets.addItem(item)
+            if val == current_rrf:
+                item.setSelected(True)
+        layout.addWidget(presets)
 
         # Custom value
         custom_row = QHBoxLayout()
+        custom_row.setSpacing(4)
         custom_row.addWidget(QLabel("Eget:"))
         self._spin = QSpinBox()
         self._spin.setRange(1, 1_000_000)
         self._spin.setValue(current_rrf)
+        self._spin.setStyleSheet("font-size:10px;")
         custom_row.addWidget(self._spin)
         ok_btn = QPushButton("OK")
-        ok_btn.clicked.connect(partial(self._pick, self._spin.value()))
+        ok_btn.setDefault(True)
+        ok_btn.setStyleSheet(
+            "QPushButton{border:none;font-size:10px;padding:3px 12px;"
+            "background:#2F5FD0;color:white;border-radius:0px;}"
+            "QPushButton:hover{background:#3D6BD8;}")
+        ok_btn.clicked.connect(lambda: self._pick(self._spin.value()))
         custom_row.addWidget(ok_btn)
         layout.addLayout(custom_row)
+
+        presets.itemClicked.connect(
+            lambda item: self._spin.setValue(item.data(Qt.ItemDataRole.UserRole)))
+        self.adjustSize()
 
     def _pick(self, val: int):
         self.rrf_selected.emit(val, self._type_combo.currentText())

@@ -4300,3 +4300,16 @@ Ingen manuell visuell GUI-verifiering är gjord.
 - Tagg skriven i inline-orsak: när taggen matchar ett katalogobjekt utan objekttyp öppnas nu endast den kompakta tagg/typ-rutan. När typen finns används samma standardorsaksstöd som övriga objektkopplade orsaker.
 - Rekommendationens Delete i HAZOP Scenario/Worksheet frågar vid sista kopplingen om rekommendationen ska tas bort globalt eller endast från aktuell konsekvens. Global borttagning uppdaterar båda vyerna.
 - P&ID-objektfilter visar inte längre rader enbart på grund av avvikelsens utrustningskoppling; förekomst måste finnas i orsak, konsekvens, safeguard eller länkad rekommendation. Recommendation-celler markerar kända katalogtaggar fetstilt.
+
+## Gemensam minimalistisk RRF-popup (2026-08-30)
+
+Den vanliga RRF-popupen för en barriär använder nu samma kompakta
+listpresentation som den utökade RRF-/konsekvenskategori-popupen: vit
+bakgrund, 1 px mörkgrå ram, 10 pt text, enkel valmarkerad RRF-lista och ett
+kompakt fält för eget värde. Den tidigare breda raden med blå snabbknappar
+är borttagen. Båda RRF-vägarna behåller typval och samma sparbeteende.
+
+Fixat samtidigt: OK använder nu det aktuella värdet i fältet, inte värdet
+som råkade vara ifyllt när popupen öppnades. Verifierat med ett nytt
+RRF-popup-regressionstest, Frekvens-popup-test, `tests.test_smoke` och
+`py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
