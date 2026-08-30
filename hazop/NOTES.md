@@ -4313,3 +4313,7 @@ Fixat samtidigt: OK använder nu det aktuella värdet i fältet, inte värdet
 som råkade vara ifyllt när popupen öppnades. Verifierat med ett nytt
 RRF-popup-regressionstest, Frekvens-popup-test, `tests.test_smoke` och
 `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
+
+Rubriken `Övriga enablers` inne i enabler-popupen är borttagen så att listan
+ligger direkt under popupens kant. Verifierat med ett särskilt regressionstest
+för frånvaron av rubriken, enabler-tester, `tests.test_smoke` och `py_compile`.

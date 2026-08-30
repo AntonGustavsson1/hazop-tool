@@ -4804,6 +4804,17 @@ class ReductionFactorsDialogTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
+    def test_compact_enabler_popup_has_no_redundant_heading(self):
+        from hazop import ReductionFactorsDialog
+        from PyQt6.QtWidgets import QLabel
+
+        dialog = ReductionFactorsDialog(self.db, self.cons_id)
+        try:
+            self.assertNotIn('Övriga enablers',
+                             [label.text() for label in dialog.findChildren(QLabel)])
+        finally:
+            dialog.deleteLater()
+
     def test_extra_rrf_100_gives_two_frequency_steps(self):
         from ui_helpers import total_freq_reduction
         final_f, total_rrf, steps = total_freq_reduction(
