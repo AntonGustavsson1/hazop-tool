@@ -1,5 +1,15 @@
 # NOTES.md — Beslut och kontext
 
+## Grupporsak uppdateras direkt efter avslutad inline-redigering (2026-08-30)
+
+När primär eller sekundär fritext sparas använder grupporsaken nu samma
+omedelbara celluppdatering som objektbyte och radflytt. Det gäller både Enter
+och klick utanför redigeraren: den statiska cellen visar den nya texten direkt,
+utan ett extra Enter på tabellcellen.
+
+Verifierat med 12 riktade objekt-/grupporsakstester, `tests.test_smoke`
+(12 tester) och `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Riskmatrispopup använder sparad konsekvens- och frekvensskala (2026-08-30)
 
 Spara riskmatris översätter nu rubriker från den synliga axelordningen tillbaka

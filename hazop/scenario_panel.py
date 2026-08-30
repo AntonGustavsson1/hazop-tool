@@ -9003,10 +9003,19 @@ class ScenarioTablePanel(QWidget):
                     # merge same-id rows visually, but each still has its own
                     # QTableWidgetItem) — no full rebuild needed, see
                     # _update_row_text_only()'s docstring for why.
-                    self._update_row_text_only('cause', id_, desc)
+                    if len(group_tags) >= 2:
+                        # A grouped inline editor writes one physical line
+                        # into a shared multi-line description. Refresh the
+                        # group immediately after either Enter or focus-out;
+                        # the ordinary text fast path leaves its visual row
+                        # metadata stale until another table action occurs.
+                        self._group_cause_changed(id_)
+                    else:
+                        self._update_row_text_only('cause', id_, desc)
                 if bound_from_inline_tag:
                     self._schedule_rebuild()
-            self.item_edited.emit(CAUSE_T, id_)
+            if len(group_tags) < 2:
+                self.item_edited.emit(CAUSE_T, id_)
 
         elif kind == 'consequence':
             desc = text.split('\n')[0].strip()

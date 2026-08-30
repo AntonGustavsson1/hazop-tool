@@ -4664,6 +4664,48 @@ class CellObjectReferenceEditTests(unittest.TestCase):
         item = self.panel._table.item(row, self.panel._C_ORS)
         self.assertIn('FV-1 does not open fully', item.text())
 
+    def test_click_away_from_group_editor_refreshes_the_cell_immediately(self):
+        """Focus-out must not require a second Enter on the table cell."""
+        from PyQt6.QtTest import QTest
+        from scenario_panel import _BoldTagTextEdit
+
+        fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
+                                           'Flow transmitter', '', 0)
+        fv_id = self.db.add_equipment_item('FV-1', 'FV-1', 'FV', 1,
+                                           'Control valve', '', 0)
+        self.db.update_cause(
+            self.cause_id, description='FI-1 fails low\nFV-1 opens fully',
+            comp_type='Flow transmitter', comp_tag='FI-1 OR FV-1',
+            equipment_id=fi_id, secondary_equipment_id=fv_id,
+            group_equipment_ids=[fi_id, fv_id])
+        self.panel.load_node(self.node_id)
+        self.panel.resize(1100, 500)
+        self.panel.show()
+        self.app.processEvents()
+        row = next(row for row, meta in enumerate(self.panel._row_meta)
+                   if meta[1] == self.cause_id)
+        index = self.panel._table.model().index(row, self.panel._C_ORS)
+        self.panel._group_edit_line = (row, 1)
+        try:
+            self.panel._table.edit(index)
+            self.app.processEvents()
+            editor = self.panel._table.findChild(_BoldTagTextEdit)
+            self.assertIsNotNone(editor)
+            editor.setText('sticks after click away')
+            other = self.panel._table.visualRect(
+                self.panel._table.model().index(row, self.panel._C_NOD))
+            QTest.mouseClick(self.panel._table.viewport(),
+                             Qt.MouseButton.LeftButton, pos=other.center())
+            QTest.qWait(20)
+        finally:
+            self.panel._group_edit_line = None
+
+        cause = self.db.get_cause(self.cause_id)
+        self.assertEqual(cause['description'].splitlines(), [
+            'FI-1 fails low', 'FV-1 sticks after click away'])
+        item = self.panel._table.item(row, self.panel._C_ORS)
+        self.assertIn('FV-1 sticks after click away', item.text())
+
     def test_compact_three_object_group_repairs_before_secondary_swap(self):
         """A legacy one-line group must not strand later member editors."""
         fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
