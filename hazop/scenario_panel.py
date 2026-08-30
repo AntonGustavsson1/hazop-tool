@@ -34,6 +34,7 @@ from ui_helpers import (
     _draw_text_with_bold_tags, standard_cause_options,
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
     find_bold_tag_at_position, _equipment_type_options,
+    add_mini_popup_close_button,
 )
 
 MAX_GROUP_OBJECTS = 20
@@ -155,6 +156,7 @@ class _ObjectTagActionPopup(QDialog):
         self._rename_save.clicked.connect(self._request_rename)
         self._rename_edit.returnPressed.connect(self._request_rename)
         self._type_save.clicked.connect(self._request_type_change)
+        add_mini_popup_close_button(self)
 
     def _show_object_picker(self):
         self._object_combo.setVisible(not self._object_combo.isVisible())
@@ -787,6 +789,7 @@ class RiskMatrixPopup(QDialog):
                 self._build_category_section(outer)
 
         self.adjustSize()
+        add_mini_popup_close_button(self)
 
     def _build_category_section(self, outer, inline=False):
         """Build the per-category picker on the same axis as the matrix.
@@ -1042,6 +1045,7 @@ class GroupCausePopup(QDialog):
             box_layout.addWidget(current_label)
             columns.addWidget(box)
         layout.addLayout(columns)
+        add_mini_popup_close_button(self)
 
     def set_current(self, column, value):
         """Keep the open popup's status in sync after an inline choice."""
@@ -1916,6 +1920,7 @@ class ReductionFactorsDialog(QDialog):
         self._category_section.hide()
         layout.addWidget(self._category_section)
         self._refresh()
+        add_mini_popup_close_button(self)
 
     def position_below(self, global_anchor: QPoint):
         """Place the compact picker under its Enablers cell.
@@ -3526,6 +3531,7 @@ class StandardCauseSuggestPopup(QWidget):
         self.setMinimumWidth(200)
         self.setMaximumWidth(320)
         self.adjustSize()
+        add_mini_popup_close_button(self)
 
         # Two redundant close triggers, since neither alone is reliable:
         # editor.destroyed fires on actual C++ object deletion, which Qt
@@ -3682,6 +3688,7 @@ class RecommendationAssistPopup(QWidget):
         self.setMaximumWidth(360)
         self._refresh_list()
         self.adjustSize()
+        add_mini_popup_close_button(self)
 
         # Same two redundant close triggers as StandardCauseSuggestPopup
         # (see its docstring for why neither alone is reliable).
@@ -3805,6 +3812,7 @@ class SgRRFCategoryPopup(QDialog):
             "QListWidget::item:hover{background:#F5F5F3;}"
             "QListWidget::item:selected{background:#E8E9E6;color:#17191C;}")
         self._build()
+        add_mini_popup_close_button(self)
 
     def _build(self):
         outer = QVBoxLayout(self)
@@ -3921,6 +3929,7 @@ class CatSGSelectionPopup(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._checks: dict[int, QCheckBox] = {}
         self._build()
+        add_mini_popup_close_button(self)
 
     def _build(self):
         excluded = self.db.get_severity_excluded_sgs(self._sev_id)
@@ -3985,6 +3994,7 @@ class ConsCategoryMatrixPopup(QDialog):
         self._sel: dict[int, int] = {}
         self._buttons: dict[tuple, QPushButton] = {}
         self._build()
+        add_mini_popup_close_button(self)
 
     def _build(self):
         cats  = [dict(r) for r in self.db.consequence_categories()]
@@ -7034,6 +7044,19 @@ class ScenarioTablePanel(QWidget):
         """Return group ids through the shared database normalizer."""
         return self.db.group_equipment_ids_for_cause(cause)
 
+    def _group_cause_changed(self, cause_id):
+        """Refresh every view after a grouped-cause mutation.
+
+        Group actions originally refreshed only this table.  That left the
+        tree/P&ID scope and, in the worksheet host, the matching cause cell
+        temporarily stale after moving a row, changing one incoming operator
+        or selecting a legacy quick choice.  Keep the one rebuild (needed for
+        row order and geometry) and publish the same cause-edited signal as
+        the normal inline editor.
+        """
+        self._schedule_rebuild()
+        self.item_edited.emit(CAUSE_T, cause_id)
+
     def _set_group_operator(self, cause_id, operator):
         cause = self.db.get_cause(cause_id)
         if not cause or len(self._group_equipment_ids(cause)) < 2:
@@ -7050,7 +7073,7 @@ class ScenarioTablePanel(QWidget):
         self.db.update_cause(cause_id,
                              comp_tag=f" {operator} ".join(tags),
                              group_equipment_ids=equipment_ids)
-        self._schedule_rebuild()
+        self._group_cause_changed(cause_id)
 
     def _set_group_row_operator(self, cause_id, row_index, operator):
         """Change only the separator immediately before one group row."""
@@ -7070,7 +7093,7 @@ class ScenarioTablePanel(QWidget):
         self.db.update_cause(cause_id,
                              comp_tag=self._group_comp_tag(tags, old_ops),
                              group_equipment_ids=ids)
-        self._schedule_rebuild()
+        self._group_cause_changed(cause_id)
 
     def _move_group_row(self, cause_id, row_index, delta):
         """Move a group row and its description one position up/down."""
@@ -7106,7 +7129,7 @@ class ScenarioTablePanel(QWidget):
             secondary_equipment_id=ids[1] if len(ids) > 1 else None,
             group_equipment_ids=ids,
             description='\n'.join(lines))
-        self._schedule_rebuild()
+        self._group_cause_changed(cause_id)
 
     def _show_group_tag_menu(self, row, cause_id, group_line, global_pos):
         menu = QMenu(self)
@@ -7576,8 +7599,7 @@ class ScenarioTablePanel(QWidget):
             secondary_equipment_id=(equipment_ids[1] if len(equipment_ids) > 1 else None),
             group_equipment_ids=equipment_ids,
             description='\n'.join(lines))
-        self.item_edited.emit(CAUSE_T, cause_id)
-        self._schedule_rebuild()
+        self._group_cause_changed(cause_id)
 
     def _rename_object_from_popup(self, equipment_id, new_tag):
         equipment = self.db.get_equipment_by_id(equipment_id)
@@ -7769,7 +7791,7 @@ class ScenarioTablePanel(QWidget):
         if renamed:
             self.equipment_renamed.emit()
             self.structure_changed.emit()
-        self._schedule_rebuild()
+        self._group_cause_changed(cause_id)
 
     def _show_group_cause_popup(self, row, cause_id, global_pos,
                                 only_column=None):
@@ -7869,7 +7891,7 @@ class ScenarioTablePanel(QWidget):
                 choices_set |= 2
             self.db.update_cause(cause_id, description='\n'.join(lines),
                                  group_choices_set=choices_set)
-            self._schedule_rebuild()
+            self._group_cause_changed(cause_id)
             return
         p = self.db.get_equipment_by_id(cause.get('equipment_id'))
         s = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
@@ -7949,7 +7971,7 @@ class ScenarioTablePanel(QWidget):
         desc = '\n'.join(lines)
         self.db.update_cause(cause_id, description=desc,
                              group_choices_set=choices_set)
-        self._schedule_rebuild()
+        self._group_cause_changed(cause_id)
 
     def _swap_group_objects(self, cause_id):
         """Compatibility entry point for the old two-object swap control."""

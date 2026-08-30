@@ -8,12 +8,78 @@ import json
 import math
 import re
 
-from PyQt6.QtWidgets import QCompleter, QMessageBox, QInputDialog, QLineEdit
-from PyQt6.QtCore import Qt, QPointF
+from PyQt6.QtWidgets import (
+    QCompleter, QMessageBox, QInputDialog, QLineEdit, QToolButton,
+)
+from PyQt6.QtCore import Qt, QPointF, QEvent, QObject
 from PyQt6.QtGui import QFont, QFontMetrics, QTextLayout, QTextOption, QTextCharFormat
 
 from database import get_matrix, freq_to_f_level
 from pid_viewer import COMPONENT_TYPES, _equip_prefix_from_tag, _obj_type_matches
+
+
+class _MiniPopupCloseButton(QObject):
+    """Keep a small close affordance pinned to a lightweight popup.
+
+    Popup windows in this application correctly close on Escape or an outside
+    click, but neither behaviour is obvious to a first-time user.  This
+    helper deliberately uses an overlay child rather than changing each
+    popup's layout: that keeps existing focus-sensitive child popups (notably
+    standard causes and recommendations) non-invasive.
+    """
+
+    def __init__(self, popup):
+        super().__init__(popup)
+        self._popup = popup
+        self._button = QToolButton(popup)
+        self._button.setObjectName('miniPopupCloseButton')
+        self._button.setText('×')
+        self._button.setToolTip('Stäng')
+        self._button.setAccessibleName('Stäng popup')
+        self._button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._button.setAutoRaise(True)
+        self._button.setFixedSize(16, 16)
+        self._button.setStyleSheet(
+            'QToolButton#miniPopupCloseButton{border:none;background:transparent;'
+            'color:#4B5563;font-size:15px;font-weight:normal;padding:0px;}'
+            'QToolButton#miniPopupCloseButton:hover{background:#E8E9E6;'
+            'border-radius:2px;color:#17191C;}')
+        self._button.clicked.connect(popup.close)
+        popup.installEventFilter(self)
+        self._position()
+
+    def _position(self):
+        if self._popup is None or self._button is None:
+            return
+        self._button.move(max(3, self._popup.width() - self._button.width() - 3), 3)
+        self._button.raise_()
+
+    def eventFilter(self, watched, event):
+        if watched is self._popup and event.type() in (
+                QEvent.Type.Show, QEvent.Type.Resize, QEvent.Type.LayoutRequest):
+            # Qt has updated the popup geometry at these event boundaries.
+            # Position directly rather than scheduling a global timer: callers
+            # may use QTimer for functional timeouts of their own.
+            self._position()
+        return super().eventFilter(watched, event)
+
+
+def add_mini_popup_close_button(popup):
+    """Add the shared small top-right × to a lightweight popup.
+
+    Safe to call from every popup constructor and idempotent for a popup that
+    rebuilds part of its contents.  ``close()`` intentionally lets each
+    existing widget keep its own accepted/rejected/delete-on-close semantics.
+    """
+    existing = popup.findChild(QToolButton, 'miniPopupCloseButton')
+    if existing is not None:
+        return existing
+    helper = _MiniPopupCloseButton(popup)
+    # Keep a Python reference too.  Qt owns the helper through ``popup``, but
+    # this makes lifetime explicit for PyQt wrappers during deferred close.
+    popup._mini_popup_close_button = helper
+    return helper._button
 
 
 def freq_axis_label(f_val: int) -> str:

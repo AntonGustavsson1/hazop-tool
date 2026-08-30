@@ -32,7 +32,9 @@ from pid_graphics_view import PIDGraphicsView
 from equipment_detection import (
     _pick_best_tag, _rotate_words, _spatial_combine, find_tag_near_point,
 )
-from ui_helpers import _equipment_type_options, _make_tag_completer
+from ui_helpers import (
+    _equipment_type_options, _make_tag_completer, add_mini_popup_close_button,
+)
 
 def _apply_tag_identifier_rules(tag, db=None):
     """Apply configured tag cleanup rules (``from:to``; semicolon-separated)."""
@@ -103,6 +105,7 @@ class _EquipmentSearchPopup(QWidget):
         self._list.setMinimumHeight(90)
         self._list.itemClicked.connect(self._choose)
         outer.addWidget(self._list)
+        add_mini_popup_close_button(self)
 
     def show_near(self, global_pos):
         self.adjustSize()
@@ -606,6 +609,7 @@ class EquipmentDeviationBar(QWidget):
         del_row.addStretch()
         del_row.addWidget(self._delete_btn)
         outer.addLayout(del_row)
+        add_mini_popup_close_button(self)
 
     @property
     def db(self):
@@ -980,6 +984,8 @@ class EquipmentPlacementPopup(QWidget):
                 self._type_cb.setCurrentIndex(idx)
             else:
                 self._suggest_type_for_tag(eq.get('tag') or '')
+
+        add_mini_popup_close_button(self)
 
     def _on_type_activated(self, _index):
         self._type_selected_by_user = True

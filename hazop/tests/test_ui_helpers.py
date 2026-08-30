@@ -66,7 +66,8 @@ from hazop import (  # noqa: E402
 )
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
-    QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
+    QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit, QDialog,
+    QToolButton,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
@@ -213,6 +214,37 @@ class NaturalSortKeyTests(unittest.TestCase):
         from ui_helpers import _natural_sort_key
         self.assertEqual(_natural_sort_key(""), [''])
         self.assertEqual(_natural_sort_key(None), [''])
+
+
+class MiniPopupCloseButtonTests(unittest.TestCase):
+    """Every lightweight popup has one discoverable, non-focus-stealing X."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_close_button_is_idempotent_pinned_to_top_right_and_closes(self):
+        from ui_helpers import add_mini_popup_close_button
+
+        popup = QDialog()
+        popup.resize(200, 100)
+        close = add_mini_popup_close_button(popup)
+        again = add_mini_popup_close_button(popup)
+        self.assertEqual(close.objectName(), 'miniPopupCloseButton')
+        self.assertEqual(again.objectName(), 'miniPopupCloseButton')
+        self.assertEqual(len(popup.findChildren(
+            QToolButton, 'miniPopupCloseButton')), 1)
+        self.assertEqual(close.focusPolicy(), Qt.FocusPolicy.NoFocus)
+
+        popup.show()
+        self.app.processEvents()
+        self.assertTrue(close.isVisible())
+        self.assertGreaterEqual(close.x(), popup.width() - close.width() - 4)
+
+        close.click()
+        self.app.processEvents()
+        self.assertFalse(popup.isVisible())
+        popup.deleteLater()
 
 
 class BoldTagClickHitTests(unittest.TestCase):

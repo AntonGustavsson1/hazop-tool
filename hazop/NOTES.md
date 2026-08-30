@@ -1,5 +1,25 @@
 # NOTES.md — Beslut och kontext
 
+## Stabilare grupporsaker och stängningskryss i mini-popupar (2026-08-30)
+
+Grupporsaker normaliseras nu radvis även om äldre data innehåller flera
+objekttaggar framför samma fritext. Endast de inledande strukturtaggarna tas
+bort; en taggreferens senare i användarens egen text bevaras. Taggar jämförs
+som hela identifierare, så exempelvis kan `V-1` inte längre fånga `V-10`.
+
+Flytt, ändrad radoperator, objektbyte och äldre gruppval använder samma
+orsaksuppdatering som inline-redigering. Därmed uppdateras Scenario, Worksheet,
+träd och P&ID direkt. I trädets gruppredigerare hålls objekttaggen dessutom
+kvar som fast identitet till vänster; endast respektive rads fritext redigeras.
+
+Alla aktiva mini-popupar har nu ett litet, fokusneutralt `×` i övre högra
+hörnet. Det är en överlagrad gemensam komponent, så den ändrar inte befintlig
+layout eller fokus för standardorsaks- och rekommendationsredigerarna.
+
+Verifierat med riktade grupporsaks-, popup- och P&ID-timeouttester,
+hela `test_tree_panel.py` (70 tester), `test_smoke.py` (12 tester) och
+`py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Enablers: kryssbar katalog och RRF/närvaro (2026-08-30)
 
 `Övriga` i Enablers öppnar nu en liten cell-popup i samma vita, 1 px mörkgrå

@@ -4330,11 +4330,18 @@ class Database:
                 # text between objects.
                 starts = []
                 search_from = 0
-                folded = compact.casefold()
                 for index, tag in enumerate(tags):
-                    position = folded.find(tag.casefold(), search_from)
-                    if position < 0:
+                    # A substring match lets e.g. ``V-1`` claim the start
+                    # of ``V-10``.  Group rows are keyed by exact catalogue
+                    # objects, so keep the same whole-token rule used by
+                    # every other tag/reference path in the application.
+                    match = re.search(
+                        r'(?<![A-Za-z0-9])' + re.escape(tag) +
+                        r'(?![A-Za-z0-9])', compact[search_from:],
+                        re.IGNORECASE)
+                    if match is None:
                         break
+                    position = search_from + match.start()
                     starts.append((position, index))
                     search_from = position + len(tag)
                 if len(starts) >= 2:
@@ -4365,11 +4372,47 @@ class Database:
         while len(lines) < len(tags):
             lines.append('')
 
+        # A former group-row reorder could persist the previous object's
+        # tag in front of the new owner's text, for example::
+        #
+        #     FV-1 FI-1 felar lÃ¥gt
+        #     FI-1 FV-1 Ã¶ppnar fullt
+        #
+        # The old normalizer only removed the *expected* tag when it was the
+        # first word. It consequently prepended it again and made the stale
+        # tag look like ordinary free text on every later repaint.  Consume a
+        # run of known group tags at the start of a line instead. If that run
+        # contains the line's actual owner, the text after the anchors is the
+        # one piece of free text that belongs to that owner. References later
+        # in a sentence are deliberately left intact.
+        tag_patterns = [
+            (tag, re.compile(r'^' + re.escape(tag) + r'(?![A-Za-z0-9])',
+                             re.IGNORECASE))
+            for tag in sorted(set(tags), key=len, reverse=True)
+            if tag
+        ]
+
+        def leading_group_tags(value):
+            remainder = str(value or '').strip()
+            found = []
+            # No valid group can have more leading anchors than its members;
+            # the cap also protects malformed old text from a needless loop.
+            for _ in range(len(tags)):
+                match_tag = next((known for known, pattern in tag_patterns
+                                  if pattern.match(remainder)), None)
+                if not match_tag:
+                    break
+                found.append(match_tag)
+                remainder = remainder[len(match_tag):].lstrip(' ,:;\u2192->=')
+            return found, remainder
+
         normalised = []
         for tag, value in zip(tags, lines):
             value = str(value or '').strip()
-            if value.casefold().startswith(tag.casefold()):
-                value = value[len(tag):].lstrip(' ,:;\u2192->=')
+            leading_tags, remainder = leading_group_tags(value)
+            if any(known.casefold() == tag.casefold()
+                   for known in leading_tags):
+                value = remainder
             normalised.append(f'{tag} {value}'.strip())
         return normalised
 

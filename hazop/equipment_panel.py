@@ -28,7 +28,10 @@ from pid_viewer import (
     HAS_PYMUPDF, KNOWN_PREFIXES, PageProgressDialog, ParallelEquipmentAnalysisWorker,
     ParallelTagScanWorker, resolve_ocr_scan_choice, upsert_identified_tags_from_scan,
 )
-from ui_helpers import _EQ_TYPE_ITEMS, _equipment_type_options, _make_tag_completer
+from ui_helpers import (
+    _EQ_TYPE_ITEMS, _equipment_type_options, _make_tag_completer,
+    add_mini_popup_close_button,
+)
 
 class ComponentEditorPanel(QWidget):
     """Settings panel for managing component types and failure modes."""
@@ -706,6 +709,7 @@ class ObjectPickerPopup(QDialog):
         self._populate(self._items)
 
         self._search.setFocus()
+        add_mini_popup_close_button(self)
 
     def _populate(self, items):
         self._list.clear()
@@ -842,6 +846,7 @@ class EquipmentTagPopup(QDialog):
         layout.addLayout(btns)
 
         self._tag_edit.returnPressed.connect(self._ok)
+        add_mini_popup_close_button(self)
 
     def _add_new_type(self):
         """"+" button next to the Typ dropdown (2026-08-13 follow-up) —

@@ -313,8 +313,8 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         editors = self.panel.tree.viewport().findChildren(QLineEdit)
         self.assertTrue(editors)
         editor = editors[-1]
-        self.assertEqual(editor.text(), 'XV-1 closes')
-        editor.setText('XV-1 does not close')
+        self.assertEqual(editor.text(), 'closes')
+        editor.setText('does not close')
         editor.editingFinished.emit()
         self.assertEqual(self.db.get_cause(cause_id)['description'].splitlines(), [
             'FI-1 fails low',
@@ -368,7 +368,7 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
         editors = self.panel.tree.viewport().findChildren(QLineEdit)
         self.assertTrue(editors, 'the moved row must still have an inline editor')
         editor = editors[-1]
-        self.assertEqual(editor.text(), 'FV-1 opens fully')
+        self.assertEqual(editor.text(), 'opens fully')
         editor.editingFinished.emit()
 
     def test_grouped_orsak_row_is_not_bold(self):

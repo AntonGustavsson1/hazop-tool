@@ -34,6 +34,7 @@ from ui_helpers import (
     _maybe_save_as_standard_cause,
     _create_cause_from_pick,
     standard_cause_options,
+    add_mini_popup_close_button,
 )
 
 class _PickDeviationDialog(QDialog):
@@ -1161,10 +1162,25 @@ class TreePanel(QWidget):
         prefix = item.data(0, self._PREFIX_ROLE) or ''
         icon_w = self._PREFIX_ICON_W if not item.icon(0).isNull() else 0
         fm = QFontMetrics(item.font(0))
+        line = str(lines[group_line] or '').strip()
+        equipment = self.db.get_equipment_by_id(group_ids[group_line])
+        tag = str((equipment or {}).get('tag') or '').strip()
+        if not tag and line:
+            # A deleted/legacy object still needs a stable anchor while its
+            # row remains editable.  The database normalizer puts that
+            # fallback anchor first.
+            tag = line.split(' ', 1)[0]
+        match = (re.match(r'^' + re.escape(tag) + r'(?![A-Za-z0-9])', line,
+                          re.IGNORECASE) if tag else None)
+        text = line[match.end():].lstrip(' ,:;->=') if match else line
         left = rect.x() + icon_w + fm.horizontalAdvance(prefix)
+        if tag:
+            # Match Scenario/Worksheet: the fixed object identity stays
+            # visible while only this member's free-text event is edited.
+            left += fm.horizontalAdvance(tag + ' ')
         line_h = max(1, fm.height())
         editor = _InlineTreeEdit(self.tree.viewport())
-        editor.setText(lines[group_line].strip())
+        editor.setText(text)
         editor.setGeometry(left, rect.y() + group_line * line_h,
                            max(rect.right() - left, 80), line_h + 2)
         state = {'done': False}
@@ -1177,7 +1193,7 @@ class TreePanel(QWidget):
             editor.deleteLater()
             if save:
                 updated = list(lines)
-                updated[group_line] = value
+                updated[group_line] = f'{tag} {value}'.strip() if tag else value
                 self.db.update_cause(cause_id, description='\n'.join(updated))
                 self.refresh(CAUSE_T, cause_id, emit_selection=False)
                 self.item_edited_inline.emit(CAUSE_T, cause_id)
@@ -2374,6 +2390,7 @@ class CauseObjectPopup(QDialog):
 
         # Build initial causes list (triggers icon update too)
         self._rebuild_causes(self._type_cb.currentText(), pre_select=current_description)
+        add_mini_popup_close_button(self)
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -2748,6 +2765,7 @@ class CauseTagPopup(QDialog):
         self._tag_edit.editingFinished.connect(self._commit)
         self._type_cb.activated.connect(lambda _index: self._commit())
         self._tag_edit.setFocus()
+        add_mini_popup_close_button(self)
 
     def _commit(self):
         tag = self._tag_edit.text().strip().upper()
@@ -2851,6 +2869,7 @@ class RRFPopup(QDialog):
         presets.itemClicked.connect(
             lambda item: self._spin.setValue(item.data(Qt.ItemDataRole.UserRole)))
         self.adjustSize()
+        add_mini_popup_close_button(self)
 
     def _pick(self, val: int):
         self.rrf_selected.emit(val, self._type_combo.currentText())
@@ -2946,6 +2965,7 @@ class FrequencyPickerPopup(QDialog):
             self._update_preview_label(self._spin.value())
 
         self.adjustSize()
+        add_mini_popup_close_button(self)
 
     def _update_preview_label(self, val):
         f_lvl = freq_to_f_level(val) if val else -1

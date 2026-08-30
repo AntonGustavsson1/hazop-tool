@@ -18,7 +18,7 @@ from PyQt6.QtGui import QColor, QFont, QPen, QPainter, QPixmap, QIcon, QCursor
 from constants import NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, MARKUP_COLORS, CONFIG
 from database import Database, freq_to_f_level
 from pid_viewer import _icon, _mk_icon, _mk_pm, _EMOJI_ICON, _RED_MARKUP_SYMBOLS
-from ui_helpers import freq_axis_label
+from ui_helpers import freq_axis_label, add_mini_popup_close_button
 from tree_panel import RRFPopup
 from scenario_panel import ConsCategoryMatrixPopup
 
@@ -133,6 +133,7 @@ class _StylePopup(QWidget):
         outer.addWidget(self._snap_row)
 
         self.setMinimumWidth(CONFIG['W_DIALOG_MD'])
+        add_mini_popup_close_button(self)
 
     def _configure_for(self, tool):
         self._title_lbl.setText(self._TOOL_NAMES.get(tool, tool))
@@ -1281,6 +1282,7 @@ class _SymbolSelectorPopup(QFrame):
             tabs.addTab(tab, cat)
 
         self.setFixedSize(220, 280)
+        add_mini_popup_close_button(self)
 
     def show_near(self, btn):
         # The picker is owned by the hidden RedMarkupPanel state object while

@@ -4571,6 +4571,34 @@ class CellObjectReferenceEditTests(unittest.TestCase):
         self.assertIn('FI-1 felar lågt', cause['description'])
         self.assertIn('FV-2 öppnar fullt', cause['description'])
 
+    def test_group_move_repairs_stale_anchors_and_notifies_other_views(self):
+        """Moving a legacy group must also refresh tree/P&ID/Worksheet."""
+        fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
+                                           'Flow transmitter', '', 0)
+        fv_id = self.db.add_equipment_item('FV-1', 'FV-1', 'FV', 1,
+                                           'Control valve', '', 0)
+        self.db.update_cause(
+            self.cause_id,
+            description=(
+                'FV-1 FI-1 fails low after FV-1 signal\n'
+                'FI-1 FV-1 opens fully'),
+            comp_type='Flow transmitter', comp_tag='FI-1 OR FV-1',
+            equipment_id=fi_id, secondary_equipment_id=fv_id,
+            group_equipment_ids=[fi_id, fv_id])
+        changed = []
+        self.panel.item_edited.connect(
+            lambda type_, id_: changed.append((type_, id_)))
+
+        self.panel._move_group_row(self.cause_id, 0, 1)
+
+        cause = self.db.get_cause(self.cause_id)
+        self.assertEqual(self.panel._group_equipment_ids(cause), [fv_id, fi_id])
+        self.assertEqual(cause['description'].splitlines(), [
+            'FV-1 opens fully',
+            'FI-1 fails low after FV-1 signal',
+        ])
+        self.assertEqual(changed, [(CAUSE_T, self.cause_id)])
+
     def test_compact_three_object_group_repairs_before_secondary_swap(self):
         """A legacy one-line group must not strand later member editors."""
         fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,

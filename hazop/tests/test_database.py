@@ -1613,6 +1613,43 @@ class EquipmentLinkTypesInScopeTests(unittest.TestCase):
             f"{large_count}) — the batched traversal may have regressed to N+1")
 
 
+class GroupCauseDescriptionNormalisationTests(unittest.TestCase):
+    """Repair old group rows without turning an object tag into free text."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='hazop_group_cause_text_')
+        self.db = Database(path=os.path.join(self.tmpdir, 'project.db'))
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+
+    def tearDown(self):
+        self.db.conn.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_stale_leading_group_tags_are_removed_but_later_references_remain(self):
+        """Only leading group anchors are structural, never later prose."""
+        fi_id = self.db.add_equipment_item(
+            'FI-1', 'FI-1', 'FI', 0, 'Instrument', '', 0)
+        fv_id = self.db.add_equipment_item(
+            'FV-1', 'FV-1', 'FV', 0, 'Control valve', '', 0)
+        cause_id = self.db.add_cause(self.dev_id)
+        self.db.update_cause(
+            cause_id,
+            description=(
+                'FV-1 FI-1 fails low after FV-1 output\n'
+                'FI-1 FV-1 opens fully'),
+            comp_type='Instrument', comp_tag='FI-1 OR FV-1',
+            equipment_id=fi_id, secondary_equipment_id=fv_id,
+            group_equipment_ids=[fi_id, fv_id])
+
+        lines = self.db.group_cause_description_lines(self.db.get_cause(cause_id))
+
+        self.assertEqual(lines, [
+            'FI-1 fails low after FV-1 output',
+            'FV-1 opens fully',
+        ])
+
+
 class EquipmentRenameReferenceTests(unittest.TestCase):
     """Global tag rename updates the active study, not just the catalog row."""
 
