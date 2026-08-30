@@ -1,5 +1,19 @@
 # NOTES.md — Beslut och kontext
 
+## Riskmatrispopup använder sparad konsekvens- och frekvensskala (2026-08-30)
+
+Spara riskmatris översätter nu rubriker från den synliga axelordningen tillbaka
+till rätt konsekvens- respektive frekvensnivå, även när X eller Y har vänts
+eller när frekvens och konsekvens har bytt axel. Riskmatrispopupen får därför
+samma redigerade texter som syns i inställningen, på rätt rad och kolumn.
+
+Riskmatriscachen binds också direkt till den databas som just har sparats.
+Det förhindrar att en popup efter projektbyte eller i ett parallellt fönster
+läser en tidigare projekts gamla skala.
+
+Verifierat med 23 riskmatris-/popup-tester, `tests.test_smoke` (12 tester)
+och `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Enter och platsbyte i grupporsaker (2026-08-30)
 
 Enter i en redigerad Orsak-, Konsekvens- eller Safeguard-cell skickas nu

@@ -816,6 +816,70 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_saved_axis_text_and_popup_cache_follow_current_matrix(self):
+        """Edited consequence/frequency labels must reach the risk popup.
+
+        Exercise both reversed display directions and deliberately prime the
+        global cache with another project first.  This is the exact route
+        that previously let the popup retain an older matrix after Save.
+        """
+        from hazop import HAZOPPreparationPanel
+        from database import get_matrix, load_matrix
+
+        other_db = Database(path=os.path.join(self._tmpdir, 'other_project.db'))
+        other_db.set_risk_matrix({
+            'rows': 2, 'cols': 2,
+            'x_labels': ['old F0', 'old F1'],
+            'y_labels': ['old C1', 'old C2'],
+        })
+        load_matrix(other_db)
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            # Frequency on X, with both axes reversed.  The visible left/top
+            # labels are respectively the semantic highest/lowest entries.
+            panel._x_rev_chk.setChecked(True)
+            panel._y_rev_chk.setChecked(True)
+            for i, edit in enumerate(panel._x_label_edits):
+                edit.setText(f'F-visible-{i}')
+            for i, edit in enumerate(panel._y_label_edits):
+                edit.setText(f'C-visible-{i}')
+
+            with unittest.mock.patch.object(QMessageBox, 'information'):
+                panel._save_matrix()
+
+            cfg = self.db.get_risk_matrix()
+            self.assertEqual(cfg['x_labels'], [
+                f'F-visible-{i}' for i in reversed(range(len(panel._x_label_edits)))])
+            self.assertEqual(cfg['y_labels'], [
+                f'C-visible-{i}' for i in range(len(panel._y_label_edits))])
+            self.assertEqual(get_matrix()['x_labels'], cfg['x_labels'])
+            self.assertEqual(get_matrix()['y_labels'], cfg['y_labels'])
+
+            # Swap axes too: consequence now uses the X mapping and
+            # frequency uses the Y mapping, so both label families remain
+            # correct through the same Save action.
+            panel._axis_combo.setCurrentIndex(
+                panel._axis_combo.findData('consequence'))
+            panel._x_rev_chk.setChecked(True)
+            panel._y_rev_chk.setChecked(False)
+            for i, edit in enumerate(panel._x_label_edits):
+                edit.setText(f'C2-visible-{i}')
+            for i, edit in enumerate(panel._y_label_edits):
+                edit.setText(f'F2-visible-{i}')
+            with unittest.mock.patch.object(QMessageBox, 'information'):
+                panel._save_matrix()
+
+            cfg = self.db.get_risk_matrix()
+            self.assertEqual(cfg['y_labels'], [
+                f'C2-visible-{i}' for i in reversed(range(len(panel._x_label_edits)))])
+            self.assertEqual(cfg['x_labels'], [
+                f'F2-visible-{i}' for i in reversed(range(len(panel._y_label_edits)))])
+            self.assertEqual(get_matrix()['x_labels'], cfg['x_labels'])
+            self.assertEqual(get_matrix()['y_labels'], cfg['y_labels'])
+        finally:
+            panel.deleteLater()
+            other_db.conn.close()
+
     def test_st1_matrix_preset_loads_without_saving_immediately(self):
         from hazop import HAZOPPreparationPanel
         panel = HAZOPPreparationPanel(self.db)

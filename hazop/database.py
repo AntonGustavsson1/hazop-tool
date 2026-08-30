@@ -2179,10 +2179,14 @@ class Database:
         return None
 
     def set_risk_matrix(self, cfg):
-        """Store risk matrix and invalidate the global cache."""
+        """Store risk matrix and immediately bind the cache to this project.
+
+        The risk popup reads the process-wide cache. Invalidating alone left
+        its database reference pointing to whichever project was loaded
+        earlier, so a save could redraw the popup with old labels/boundaries.
+        """
         self.set_config('risk_matrix', json.dumps(cfg))
-        # Invalidate the global cache so next get_matrix() reloads from DB
-        _risk_matrix_cache.invalidate()
+        _risk_matrix_cache.load(self)
 
     # ── Tag database ──────────────────────────────────────────────────────────
     def tag_database_entries(self, standard=None):

@@ -21,7 +21,7 @@ from PyQt6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics
 from constants import CONFIG, SEV_LABELS
 from database import (
     Database, DEFAULT_MATRIX, DEFAULT_FREQ_BOUNDARIES, _STD_OBJECTS,
-    _normalise_matrix, _risk_matrix_cache, get_matrix, freq_to_f_level,
+    _normalise_matrix, get_matrix, freq_to_f_level,
     risk_info,
 )
 from pid_viewer import _icon, FREQ_LABELS, ocr_status
@@ -1830,19 +1830,31 @@ class HAZOPPreparationPanel(QWidget):
                     labels[cons_i][freq_i]    = btn.label()
                     fg_colors[cons_i][freq_i] = btn.fg_color()
 
-        # Axis labels: _x_label_edits are the column headers (whatever axis),
-        # _y_label_edits are the row headers (reversed, highest at top)
+        # Axis labels are held in display order. Map them back to semantic
+        # data indices: either axis can carry frequency/consequence and both
+        # display directions can be reversed.
         raw_col = [e.text().strip() for e in self._x_label_edits]
-        raw_row = list(reversed([e.text().strip() for e in self._y_label_edits]))  # low→high
+        raw_row = [e.text().strip() for e in self._y_label_edits]
+
+        def _semantic_labels(display_labels, count, reversed_display):
+            labels = ['' for _ in range(count)]
+            for display_index, text in enumerate(display_labels):
+                data_index = (count - 1 - display_index
+                              if reversed_display else display_index)
+                if 0 <= data_index < count:
+                    labels[data_index] = text
+            return labels
 
         if freq_on_x:
             # X=freq columns, Y=cons rows
-            x_labels = raw_col or [f'F{i-1}' for i in range(n_freq)]
-            y_labels = raw_row or [f'C{i+1}' for i in range(n_cons)]
+            x_labels = _semantic_labels(raw_col, n_freq, self._x_rev_chk.isChecked())
+            y_labels = _semantic_labels(raw_row, n_cons,
+                                        not self._y_rev_chk.isChecked())
         else:
             # X=cons columns, Y=freq rows
-            y_labels = raw_col or [f'C{i+1}' for i in range(n_cons)]
-            x_labels = raw_row or [f'F{i-1}' for i in range(n_freq)]
+            y_labels = _semantic_labels(raw_col, n_cons, self._x_rev_chk.isChecked())
+            x_labels = _semantic_labels(raw_row, n_freq,
+                                        not self._y_rev_chk.isChecked())
 
         # Pad/trim to correct lengths
         while len(x_labels) < n_freq: x_labels.append(f'F{len(x_labels)-1}')
@@ -1884,8 +1896,6 @@ class HAZOPPreparationPanel(QWidget):
 
         cfg = _normalise_matrix(cfg)   # ensure consistent before saving
         self.db.set_risk_matrix(cfg)
-        # set_risk_matrix() automatically invalidates the cache; reload from DB
-        _risk_matrix_cache.reload_from_db()
         QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
         self.matrix_changed.emit()
 
