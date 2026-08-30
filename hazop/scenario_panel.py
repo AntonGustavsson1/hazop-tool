@@ -2344,7 +2344,6 @@ _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _ORS_FIRST_LINE_H = 17
 
 _RRF_W       = 32          # compact width shared by RRF and Orsak frequency badges
-_PLUS_BADGE_SIZE = 16      # pixel size of the in-cell "+" quick-add badge (bottom-right corner)
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
 
 
@@ -3019,7 +3018,6 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.drawEllipse(circ)
                     painter.setBrush(Qt.BrushStyle.NoBrush)
 
-                self._draw_plus_badge(painter, r, row, col)
                 painter.restore()
                 return
 
@@ -3188,7 +3186,6 @@ class _PidDelegate(_ScenarioDelegate):
                     painter.drawEllipse(self._panel._ors_comment_dot_geometry(r))
                     painter.setBrush(Qt.BrushStyle.NoBrush)
 
-                self._draw_plus_badge(painter, r, row, col)
                 painter.restore()
                 return
 
@@ -3225,35 +3222,11 @@ class _PidDelegate(_ScenarioDelegate):
                     painter, txt_rect.adjusted(2, 2, -2, -2), display,
                     tagged_refs, option.font, tc, word_wrap=True)
 
-                self._draw_plus_badge(painter, r, row, col)
                 painter.restore()
                 return
 
         # ── Default: delegate straight to the base description painting ────────
         super().paint(painter, option, index)
-
-    def _draw_plus_badge(self, painter, rect, row, col):
-        """Small "+" in a cell's bottom-right corner, offering to add
-        another cause/consequence/safeguard right where you're already
-        looking — reported feedback (2026-08-12, see NOTES.md): a
-        dedicated "+" ROW "tar upp alldeles för mycket plats då de tar
-        hela rader med blankt" (takes up way too much space with whole
-        blank rows); this only ever marks the LAST real row of a group,
-        drawn on top of that row's own real content instead of a
-        separate row. Hit-tested by eventFilter(), which now calls the
-        same _plus_badge_geometry() this does (2026-08-20 follow-up —
-        previously each side computed the corner rect independently;
-        still agreed by construction, but no longer just by luck)."""
-        if self._panel._row_plus_cols.get(row, {}).get(col) is None:
-            return
-        badge = self._panel._plus_badge_geometry(rect)
-        painter.setPen(QColor('#8D9299'))
-        f = QFont(painter.font())
-        f.setBold(True)
-        f.setPointSize(max(7, painter.font().pointSize()))
-        painter.setFont(f)
-        painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, '+')
-
 
 class StandardCauseSuggestPopup(QWidget):
     """Non-covering helper popup shown automatically whenever an ORS
@@ -4086,14 +4059,6 @@ class ScenarioTablePanel(QWidget):
         self._empty_consequence_chain_popup_enabled = False
         self._row_meta = []   # list of (dev_id, cause_id, cons_id, sg_id) per visible row
         self._row_recommendation_ids = []
-        # row index -> {col: ('cause', dev_id) | ('consequence', cause_id) |
-        # ('safeguard', cons_id)} — marks the LAST real row of a group that
-        # already has content with a small in-cell "+" quick-add badge in
-        # the given column's bottom-right corner (2026-08-12, see NOTES.md
-        # — a dedicated "+" ROW took up too much space with whole blank
-        # rows). A group with zero content still invites Enter-to-add on
-        # its existing placeholder row instead (unchanged) — no badge
-        # needed there since that row's own cell is already the target.
         self._row_plus_cols = {}
         self._cons_id  = None  # if set, show only this consequence (set by load_consequence)
         self._enter_row = -1
@@ -4612,8 +4577,6 @@ class ScenarioTablePanel(QWidget):
                 self._row_meta = []
                 self._row_recommendation_ids = []
                 self._row_cat_info = []
-                self._row_plus_cols = {}
-
                 # Build rows with signals blocked
                 self._build_rows()
                 logging.info('_rebuild: F — _build_rows() done (rowCount=%d)',
@@ -5087,40 +5050,11 @@ class ScenarioTablePanel(QWidget):
                                   excl_causes_by_sg=excl_causes_by_sg)
                     logging.info('_build_rows: H3 — _add_row cons_id=%s row_i=%d done',
                                  cons_d.get('id'), i)
-                # "+" badge on the SG cell — only when this consequence
-                # already has at least one real safeguard; an empty one
-                # already invites Enter-to-add on its own placeholder row.
-                if n_sgs > 0:
-                    self._mark_plus_target(self._table.rowCount() - 1, self._C_SG,
-                                            'safeguard', cons_d['id'])
             if self._table.rowCount() == first_row_for_cause:
                 logging.info('_build_rows: G3 — cause %s had no rows, adding empty row',
                              cause_d.get('id'))
                 self._add_empty_row(node_name, dev_d, cause_d, freq, freq_lbl,
                                     repeats_previous_tag=_repeats_previous_tag)
-            elif all_cons:
-                # "+" badge on the KON cell — only when this cause already
-                # has at least one real consequence (mirrors the safeguard
-                # rule above; the empty case is _add_empty_row, just above).
-                # Anchored at first_row_for_cons (the LAST consequence's
-                # own first row), not the last physical row — KON spans by
-                # cons_id (_apply_spans), and Qt's delegate paints a
-                # spanned cell using its ANCHOR (first) row, not any later
-                # row the span happens to cover; a badge keyed to the last
-                # row would silently never be found by paint().
-                self._mark_plus_target(first_row_for_cons, self._C_KON,
-                                        'consequence', cause_d['id'])
-            # "+" badge on the ORS cell — once per deviation, after its
-            # LAST real cause (sentinel/empty-deviation entries never
-            # reach this point, they `continue` above, so this only fires
-            # for deviations that had at least one real cause). Anchored
-            # at first_row_for_cause for the same span-anchor reason as
-            # the KON badge above — ORS spans by cause_id.
-            _next_dev_id = (causes_to_show[_cause_idx + 1][1].get('id')
-                            if _cause_idx + 1 < len(causes_to_show) else None)
-            if dev_d.get('id') != _next_dev_id:
-                self._mark_plus_target(first_row_for_cause, self._C_ORS,
-                                        'cause', dev_d.get('id'))
         logging.info('_build_rows: I0 — cause loop complete, rowCount=%d',
                      self._table.rowCount())
 
@@ -5622,30 +5556,6 @@ class ScenarioTablePanel(QWidget):
             self._table.setItem(r, col, _ro())
 
         pass  # row height set by resizeRowsToContents at end of _rebuild
-
-    _PLUS_TIPS = {
-        'cause':       "Klicka för att lägga till en ny orsak, valfritt kopplad till ett P&ID-objekt",
-        'consequence': "Klicka för att lägga till en ny konsekvens, valfritt kopplad till ett P&ID-objekt",
-        'safeguard':   "Klicka för att lägga till en ny barriär, valfritt kopplad till ett P&ID-objekt",
-    }
-
-    def _mark_plus_target(self, row, col, kind, group_id):
-        """Flags an ALREADY-BUILT real row's cell to show a small in-cell
-        "+" badge in its bottom-right corner (2026-08-12, see NOTES.md —
-        reported feedback: a dedicated "+" ROW "tar upp alldeles för
-        mycket plats då de tar hela rader med blankt", i.e. took up way
-        too much space with whole blank rows; "lägg hellre ett plus om
-        det redan finns en orsak/konsekvens/safeguard i den rutan"). Only
-        ever called on the LAST real row of a non-empty group — a group
-        with zero content still invites Enter-to-add on its existing
-        placeholder row instead (_add_placeholder_row/_add_empty_row,
-        unchanged). Painted by _PidDelegate._draw_plus_badge(), hit-
-        tested by eventFilter()."""
-        self._row_plus_cols.setdefault(row, {})[col] = (kind, group_id)
-        item = self._table.item(row, col)
-        if item is not None:
-            item.setToolTip((item.toolTip() + '\n' if item.toolTip() else '')
-                             + self._PLUS_TIPS[kind])
 
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
                  cat_info=None, final_severity=None, excl_cat_names=None, excl_for_cat=None,
@@ -7181,13 +7091,6 @@ class ScenarioTablePanel(QWidget):
         return QRect(cell_rect.right() - _RRF_W, cell_rect.top(),
                      _RRF_W, cell_rect.height())
 
-    def _plus_badge_geometry(self, cell_rect):
-        """The in-cell "+" quick-add badge, bottom-right corner — shared
-        by _draw_plus_badge() (paint side) and eventFilter()'s click
-        zone for it. `_PLUS_BADGE_SIZE` is the badge's own edge length."""
-        sz = _PLUS_BADGE_SIZE
-        return QRect(cell_rect.right() - sz - 2, cell_rect.bottom() - sz - 2, sz, sz)
-
     def _sg_row_height(self, base_font):
         """Single source of truth for a safeguard row's height — used by
         _ScenarioDelegate._size_hint_impl, _compute_row_height AND
@@ -8230,31 +8133,6 @@ class ScenarioTablePanel(QWidget):
             col = self._table.columnAt(pos.x())
             row = self._table.rowAt(pos.y())
 
-            # ➕ In-cell "+" quick-add badge — bottom-right corner of the last
-            # row of a group (2026-08-12 redesign, see NOTES.md: replaces the
-            # old separate blank "+" row, which "tar upp alldeles för mycket
-            # plats"). Checked here, ahead of the column's other right-edge
-            # zones (RRF badge, clone/comment icons, …), so a click landing
-            # specifically inside the small badge box wins; anywhere else in
-            # those wider zones falls through to them unaffected.
-            if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG):
-                plus = self._row_plus_cols.get(row, {}).get(col)
-                if plus is not None:
-                    idx = self._table.model().index(row, col)
-                    cr  = self._table.visualRect(idx)
-                    badge = self._plus_badge_geometry(cr)
-                    if badge.contains(pos):
-                        kind, group_id = plus
-                        if group_id is not None:
-                            if kind == 'cause':
-                                gp = self._table.viewport().mapToGlobal(pos)
-                                self._add_cause_via_plus_row(group_id, global_pos=gp)
-                            elif kind == 'consequence':
-                                self._add_consequence_via_plus_row(group_id)
-                            elif kind == 'safeguard':
-                                self._add_safeguard_via_plus_row(group_id)
-                        return True
-
             # Object-tag zone click — the bold "TAG, " prefix at the start
             # of the cause cell's first line, pixel-exact to what paint()
             # actually rendered bold (2026-08-25, see NOTES.md "Slå ihop
@@ -8577,9 +8455,9 @@ class ScenarioTablePanel(QWidget):
         new_id = self.db.add_safeguard(cons_id)
         self.new_item_created.emit(SG_T, new_id)
 
+    # Kept as private compatibility helpers for existing programmatic entry
+    # points. The in-cell plus badges and their mouse hit zones are removed.
     def _add_cause_via_plus_row(self, deviation_id, global_pos=None):
-        # ``global_pos`` is retained for mouse-event callers. There is no
-        # dialog to position now that creation goes straight to inline edit.
         self._quick_add_cause(deviation_id)
 
     def _add_consequence_via_plus_row(self, cause_id):

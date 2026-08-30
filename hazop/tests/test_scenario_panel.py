@@ -1283,16 +1283,7 @@ class ScenarioPanelLoadEquipmentFilterTests(unittest.TestCase):
 
 
 class PlusRowRenderingTests(unittest.TestCase):
-    """The "+" quick-add affordance (2026-08-12, see NOTES.md). Originally
-    a separate blank row per group; the user rejected that too ("tar upp
-    alldeles för mycket plats då de tar hela rader med blankt") and asked
-    for a small "+" badge painted in the bottom-right corner of the LAST
-    real content row of a group instead, with clicking that badge zone
-    inserting a new row only then. `_row_plus_cols` (row -> {col: (kind,
-    group_id)}) marks which cells carry a badge; `_PidDelegate._draw_plus_badge`
-    paints it; the eventFilter's badge-rect hit-test (ahead of the
-    column's other right-edge zones — RRF badge, clone/comment icons)
-    dispatches the click."""
+    """The in-cell quick-add badges were removed: normal entry paths remain."""
 
     @classmethod
     def setUpClass(cls):
@@ -1309,7 +1300,7 @@ class PlusRowRenderingTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_plus_badge_marked_on_ors_cell_of_last_cause_row(self):
+    def test_cause_cell_has_no_quick_add_badge(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -1317,15 +1308,7 @@ class PlusRowRenderingTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            marked = [(r, c) for r, cols in panel._row_plus_cols.items()
-                      for c, v in cols.items() if v[0] == 'cause']
-            self.assertEqual(len(marked), 1)
-            row, col = marked[0]
-            self.assertEqual(col, panel._C_ORS)
-            self.assertEqual(panel._row_plus_cols[row][col], ('cause', dev_id))
-            # The badge is drawn ON TOP of the real cause's own text, not on
-            # a separate blank cell — no new row, no cleared text.
-            self.assertTrue(panel._table.item(row, panel._C_ORS).text())
+            self.assertEqual(panel._row_plus_cols, {})
         finally:
             panel.deleteLater()
 
@@ -1341,7 +1324,7 @@ class PlusRowRenderingTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_plus_badge_marked_on_kon_cell_of_last_consequence_row(self):
+    def test_consequence_cell_has_no_quick_add_badge(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -1350,10 +1333,7 @@ class PlusRowRenderingTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            marked = [(r, c, v) for r, cols in panel._row_plus_cols.items()
-                      for c, v in cols.items() if v[0] == 'consequence']
-            self.assertEqual(len(marked), 1)
-            self.assertEqual(marked[0][2], ('consequence', cause_id))
+            self.assertEqual(panel._row_plus_cols, {})
         finally:
             panel.deleteLater()
 
@@ -1371,7 +1351,7 @@ class PlusRowRenderingTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_plus_badge_marked_on_sg_cell_of_last_safeguard_row(self):
+    def test_safeguard_cell_has_no_quick_add_badge(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -1381,10 +1361,7 @@ class PlusRowRenderingTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            marked = [(r, c, v) for r, cols in panel._row_plus_cols.items()
-                      for c, v in cols.items() if v[0] == 'safeguard']
-            self.assertEqual(len(marked), 1)
-            self.assertEqual(marked[0][2], ('safeguard', cons_id))
+            self.assertEqual(panel._row_plus_cols, {})
         finally:
             panel.deleteLater()
 
@@ -1403,45 +1380,20 @@ class PlusRowRenderingTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_clicking_the_badge_zone_invokes_the_add_flow(self):
-        """Simulates a real left-click at the badge's pixel position — the
-        same pattern used by test_tag_zone_click_hit_test_matches_the_expanded_paint_geometry
-        — rather than calling the dispatch directly, so this actually
-        exercises the eventFilter hit-test geometry, not just the callback
-        it eventually calls."""
-        from hazop import ScenarioTablePanel, _PLUS_BADGE_SIZE
-        from PyQt6.QtCore import QPoint, QEvent
-        from PyQt6.QtGui import QMouseEvent
-        from PyQt6.QtCore import Qt as _Qt
+    def test_no_quick_add_badge_handler_remains(self):
+        from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         self.db.add_cause(dev_id)
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_node(node_id)
-            panel.resize(900, 400)
-            panel.show()
-            self.app.processEvents()
-            row, col = next((r, c) for r, cols in panel._row_plus_cols.items()
-                             for c, v in cols.items() if v[0] == 'cause')
-
-            with unittest.mock.patch.object(panel, '_add_cause_via_plus_row') as mock_add:
-                idx = panel._table.model().index(row, col)
-                cr = panel._table.visualRect(idx)
-                sz = _PLUS_BADGE_SIZE
-                pos = QPoint(cr.right() - sz // 2 - 2, cr.bottom() - sz // 2 - 2)
-                ev = QMouseEvent(QEvent.Type.MouseButtonPress, pos.toPointF(),
-                                  _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
-                                  _Qt.KeyboardModifier.NoModifier)
-                handled = panel.eventFilter(panel._table.viewport(), ev)
-
-            self.assertTrue(handled)
-            mock_add.assert_called_once()
-            self.assertEqual(mock_add.call_args.args[0], dev_id)
+            self.assertFalse(hasattr(panel, '_mark_plus_target'))
+            self.assertFalse(hasattr(panel, '_plus_badge_geometry'))
         finally:
             panel.deleteLater()
 
-    def test_all_nodes_view_still_builds_without_error_with_plus_badges(self):
+    def test_all_nodes_view_builds_without_quick_add_badges(self):
         from hazop import ScenarioTablePanel
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -1453,7 +1405,7 @@ class PlusRowRenderingTests(unittest.TestCase):
             panel._all_nodes = True
             panel.load_all()
             self.assertGreater(panel._table.rowCount(), 0)
-            self.assertTrue(panel._row_plus_cols)
+            self.assertEqual(panel._row_plus_cols, {})
         finally:
             panel.deleteLater()
 

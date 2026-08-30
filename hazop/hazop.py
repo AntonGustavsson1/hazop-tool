@@ -52,7 +52,7 @@ from scenario_panel import (
     ScenarioTablePanel, RiskMatrixPopup, ConsequenceStepPickerDialog,
     ReductionFactorsDialog, _ScenarioDelegate, _PidDelegate, _LopaWidget,
     _CONSEQ_ENTRY, _CONSEQ_GENERIC_NEXT, _CONSEQ_NODES, _N_STEPS,
-    _ORS_FIRST_LINE_H, _PID_ICON_W, _PLUS_BADGE_SIZE,
+    _ORS_FIRST_LINE_H, _PID_ICON_W,
 )
 from equipment_panel import (
     EquipmentPanel, EquipmentTagPopup, ObjectPickerPopup, PIDAnalysisPanel,

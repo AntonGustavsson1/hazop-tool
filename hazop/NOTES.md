@@ -1,5 +1,17 @@
 # NOTES.md — Beslut och kontext
 
+## Plusknappar i Orsak, Konsekvens och Safeguard borttagna (2026-08-30)
+
+De små plusknapparna nere till höger i Orsak-, Konsekvens- och
+Safeguard-cellerna visas inte längre och har ingen mus-klickzon kvar.
+Enter, dubbelklick, drag-and-drop och övriga vanliga sätt att skapa rader
+är oförändrade. De interna hjälpanropen för programmatisk radskapning finns
+kvar för befintliga integrationsflöden men kan inte längre nås via cellerna.
+
+Verifierat med riktade `PlusRowRenderingTests`, berörda
+`PlusRowQuickAddTaggingTests`, `tests.test_smoke` och `py_compile`. Ingen
+manuell visuell GUI-verifiering är gjord.
+
 ## Justerbar textstorlek i rekommendationslistan (2026-08-30)
 
 Rekommendationsfliken har nu kontrollen `Textstorlek` i filterraden. Den
