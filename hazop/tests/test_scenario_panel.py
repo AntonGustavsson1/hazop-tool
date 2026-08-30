@@ -2071,6 +2071,8 @@ class RiskCellColorTests(unittest.TestCase):
             slut_item = panel._table.item(row, panel._C_SLUT)
             self.assertEqual(slut_item.background().color(), QColor(expected_bg))
             self.assertEqual(slut_item.foreground().color(), QColor(expected_fg))
+            self.assertEqual(
+                slut_item.data(Qt.ItemDataRole.UserRole)[-2:], (final_f, 3))
         finally:
             panel.deleteLater()
 
@@ -2995,6 +2997,44 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
                 panel._on_cell_clicked(row, panel._C_RFORE)
             self.assertIs(captured.get('db'), self.db)
             self.assertEqual(captured.get('cons_id'), cons_id)
+        finally:
+            panel.deleteLater()
+
+    def test_clicking_slutkonsekvens_opens_category_popup_at_final_frequency(self):
+        """Slutkonsekvens reuses the category popup without creating an
+        override merely by opening it, and shows the post-barrier frequency."""
+        from hazop import ScenarioTablePanel, RiskMatrixPopup, total_freq_reduction
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, likelihood=4)
+        cons_id = self.db.add_consequence(cause_id)
+        cat = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(cons_id, cat['id'], 4)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.db.update_safeguard(sg_id, rrf=100)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            saved_before = self.db.get_consequence_severities(cons_id)
+            captured = {}
+            orig_init = RiskMatrixPopup.__init__
+
+            def spy_init(self, *a, **kw):
+                captured['args'] = a
+                captured.update(kw)
+                orig_init(self, *a, **kw)
+
+            with unittest.mock.patch.object(RiskMatrixPopup, '__init__', spy_init):
+                panel._on_cell_clicked(row, panel._C_SLUT)
+
+            final_f, _rrf, _steps = total_freq_reduction(
+                4, 100, False, 10, False, 10, [])
+            self.assertEqual(captured.get('args', ())[:2], (final_f, 4))
+            self.assertIs(captured.get('db'), self.db)
+            self.assertEqual(captured.get('cons_id'), cons_id)
+            self.assertEqual(self.db.get_consequence_severities(cons_id), saved_before)
         finally:
             panel.deleteLater()
 

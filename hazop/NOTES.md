@@ -1,5 +1,13 @@
 # NOTES.md — Beslut och kontext
 
+## Slutkonsekvens öppnar kategori-risken (2026-08-30)
+
+Klick i `Slutkonsekvens` öppnar nu samma kategori-medvetna riskmatrispopup
+som `Risk före barriär`. Popupen visar dock slutläget med frekvensen efter
+barriärer. Kategorinivåer sparas endast om användaren aktivt väljer en
+nivå; att öppna eller stänga popupen skapar ingen egen kategoriavvikelse,
+utan den befintliga konsekvensnivån fortsätter vara standard.
+
 ## Gemensam redigering av fetmarkerade objekttaggar (2026-08-29)
 
 En fetmarkerad objekttagg i Orsak, Konsekvens, Barriär eller Rekommendation

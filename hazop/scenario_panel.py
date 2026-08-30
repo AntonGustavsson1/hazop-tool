@@ -5874,10 +5874,24 @@ class ScenarioTablePanel(QWidget):
         rs = QTableWidgetItem(slut_text)
         rs.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        rs.setToolTip(f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(sev)}  (−{total_steps} steg totalt)")
+        rs.setToolTip(
+            "Klicka för att ändra konsekvensnivå per kategori\n"
+            f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(sev)}  "
+            f"(−{total_steps} steg totalt)")
         rs.setBackground(QBrush(QColor(bg_s)))
         rs.setForeground(QBrush(QColor(fg_s)))
         rs.setFont(QFont("Consolas", 9))
+        # Slutkonsekvens uses the same category-aware popup as Risk före,
+        # but its displayed matrix position must use the post-barrier
+        # frequency. The popup does not save anything on opening; category
+        # levels change only when the user explicitly clicks a choice there.
+        if cat_info:
+            rs.setData(Qt.ItemDataRole.UserRole,
+                       ('risk_click_cat', cause_d['id'], cid, cat_id, sev_id,
+                        final_f, sev))
+        else:
+            rs.setData(Qt.ItemDataRole.UserRole,
+                       ('risk_click', cause_d['id'], cid, final_f, sev))
         self._table.setItem(r, self._C_SLUT, rs)
 
         # ── Col REK: Rekommendation (2026-08-13, see NOTES.md) ───────────────
@@ -6170,7 +6184,7 @@ class ScenarioTablePanel(QWidget):
 
                 final_f, total_rrf, total_steps = total_freq_reduction(
                     freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
-                _, bg_s, fg_s       = risk_info(final_f, sev)
+                level_s, bg_s, fg_s = risk_info(final_f, sev)
 
                 # Patched for every row now (2026-08-09, see NOTES.md) — same
                 # fallback rationale as _add_row: bg_s/fg_s are already
@@ -6186,8 +6200,20 @@ class ScenarioTablePanel(QWidget):
                 rs = self._table.item(row, self._C_SLUT)
                 if rs:
                     rs.setText(slut_text)
+                    rs.setToolTip(
+                        "Klicka för att ändra konsekvensnivå per kategori\n"
+                        f"{level_s} — {freq_axis_label(final_f)}  "
+                        f"{cons_axis_label(sev)}  (−{total_steps} steg totalt)")
                     rs.setBackground(QBrush(QColor(bg_s)))
                     rs.setForeground(QBrush(QColor(fg_s)))
+                    if cat_info:
+                        rs.setData(Qt.ItemDataRole.UserRole,
+                                   ('risk_click_cat', cause_id, cons_id,
+                                    cat_id, sev_id, final_f, sev))
+                    else:
+                        rs.setData(Qt.ItemDataRole.UserRole,
+                                   ('risk_click', cause_id, cons_id,
+                                    final_f, sev))
         finally:
             self._table.blockSignals(False)
 
@@ -6425,7 +6451,7 @@ class ScenarioTablePanel(QWidget):
                 else:
                     self._last_recommendation_click = click_target
             return
-        if col != self._C_RFORE:
+        if col not in (self._C_RFORE, self._C_SLUT):
             return
         item = self._table.item(row, col)
         if not item:
