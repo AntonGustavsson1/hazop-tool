@@ -3,10 +3,18 @@
 ## Slutkonsekvens öppnar kategori-risken (2026-08-30)
 
 Klick i `Slutkonsekvens` öppnar nu samma kategori-medvetna riskmatrispopup
-som `Risk före barriär`. Popupen visar dock slutläget med frekvensen efter
-barriärer. Kategorinivåer sparas endast om användaren aktivt väljer en
-nivå; att öppna eller stänga popupen skapar ingen egen kategoriavvikelse,
-utan den befintliga konsekvensnivån fortsätter vara standard.
+som `Risk före barriär`. Popupen visar slutläget med frekvensen efter
+barriärer men lagrar en eventuell vald nivå separat från nivån i `Risk före`.
+Utan en explicit slutnivå används alltid den befintliga kategorinivån som
+standard. Att öppna eller stänga popupen skapar alltså ingen egen avvikelse,
+och en ändring av Slutkonsekvens kan inte ändra Risk före barriär.
+
+## Objektpopup: ändra namn och objekttyp (2026-08-30)
+
+I popupen för en fetmarkerad objekttagg heter namnvalet nu `Ändra namn`.
+Det finns också `Ändra objekttyp`, som visar samma typval som övrig
+objektredigering. Typändringen behåller objektets id och tagg, så befintliga
+HAZOP-referenser och P&ID-markören fortsätter peka på samma objekt.
 
 ## Gemensam redigering av fetmarkerade objekttaggar (2026-08-29)
 

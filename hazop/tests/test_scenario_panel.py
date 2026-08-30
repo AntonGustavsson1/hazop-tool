@@ -2929,6 +2929,40 @@ class RiskMatrixCategorySectionTests(unittest.TestCase):
         finally:
             popup.deleteLater()
 
+    def test_final_popup_override_leaves_before_barrier_severity_unchanged(self):
+        """A selected Slutkonsekvens level is an optional override, never
+        a write to the category severity used by Risk före barriär."""
+        from hazop import RiskMatrixPopup
+        cat = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(self.cons_id, cat['id'], 3)
+        popup = RiskMatrixPopup(
+            current_freq=2, current_cons=3, db=self.db,
+            cons_id=self.cons_id, final_consequence=True)
+        try:
+            # No final override is selected initially: C3 remains the
+            # effective default from Risk före barriär.
+            self.assertFalse(popup._cat_buttons[(cat['id'], 3)].isChecked())
+            popup._cat_buttons[(cat['id'], 5)].click()
+
+            before = {r['category_id']: r['severity']
+                      for r in self.db.get_consequence_severities(self.cons_id)}
+            final = {r['category_id']: r['severity']
+                     for r in self.db.get_final_consequence_severities(self.cons_id)}
+            self.assertEqual(before.get(cat['id']), 3)
+            self.assertEqual(final.get(cat['id']), 5)
+            self.assertIn(cat['name'][:3], popup._grid_buttons[(2, 5)][0].text())
+
+            # Clicking the selected final level again removes only the
+            # override and restores the inherited C3 marker.
+            popup._cat_buttons[(cat['id'], 5)].click()
+            self.assertEqual(self.db.get_final_consequence_severities(self.cons_id), [])
+            self.assertEqual(
+                {r['category_id']: r['severity']
+                 for r in self.db.get_consequence_severities(self.cons_id)}.get(cat['id']), 3)
+            self.assertIn(cat['name'][:3], popup._grid_buttons[(2, 3)][0].text())
+        finally:
+            popup.deleteLater()
+
 
 class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
     """The old "📊" category badge at the left of the KON cell (and its
@@ -3034,7 +3068,33 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
             self.assertEqual(captured.get('args', ())[:2], (final_f, 4))
             self.assertIs(captured.get('db'), self.db)
             self.assertEqual(captured.get('cons_id'), cons_id)
+            self.assertTrue(captured.get('final_consequence'))
             self.assertEqual(self.db.get_consequence_severities(cons_id), saved_before)
+        finally:
+            panel.deleteLater()
+
+    def test_final_severity_override_changes_only_slutkonsekvens_cell(self):
+        """The before-barrier cell keeps its own severity when a separate
+        post-barrier severity has been selected for the same category."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, likelihood=4)
+        cons_id = self.db.add_consequence(cause_id)
+        cat = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(cons_id, cat['id'], 3)
+        self.db.set_final_consequence_severity(cons_id, cat['id'], 5)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            before = panel._table.item(row, panel._C_RFORE)
+            final = panel._table.item(row, panel._C_SLUT)
+            self.assertIn('C3', before.text())
+            self.assertIn('C5', final.text())
+            self.assertEqual(before.data(Qt.ItemDataRole.UserRole)[-1], 3)
+            self.assertEqual(final.data(Qt.ItemDataRole.UserRole)[-1], 5)
         finally:
             panel.deleteLater()
 
@@ -4566,9 +4626,19 @@ class CellObjectReferenceEditTests(unittest.TestCase):
         try:
             labels = [button.text() for button in popup.findChildren(QPushButton)]
             self.assertIn('Byt objekt', labels)
-            self.assertIn('Byt namn', labels)
+            self.assertIn('Ändra namn', labels)
+            self.assertIn('Ändra objekttyp', labels)
         finally:
             popup.deleteLater()
+
+    def test_change_object_type_keeps_the_same_object_and_tag(self):
+        emitted = []
+        self.panel.equipment_renamed.connect(lambda: emitted.append(True))
+        self.panel._change_object_type_from_popup(self.old_id, 'Pump')
+        equipment = self.db.get_equipment_by_id(self.old_id)
+        self.assertEqual(equipment['tag'], 'PV-101')
+        self.assertEqual(equipment['equipment_type'], 'Pump')
+        self.assertEqual(emitted, [True])
 
     def test_same_hit_testing_resolves_bold_tags_in_kon_sg_and_rek(self):
         from PyQt6.QtCore import QPointF

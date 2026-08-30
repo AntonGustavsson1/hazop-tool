@@ -3413,7 +3413,8 @@ class MainWindow(QMainWindow):
         # Konsekvenskategorier + severity-nivåer per kategori — per-
         # projekt, inte en delad mall (till skillnad från standard_*).
         'consequence_categories', 'severity_definitions',
-        'consequence_severities', 'consequence_severity_exclusions',
+        'consequence_severities', 'consequence_final_severities',
+        'consequence_severity_exclusions',
         'safeguard_cause_exclusions', 'reduction_factors',
         # Rekommendationskatalog (2026-08-25/26), se NOTES.md.
         'recommendations', 'consequence_recommendations',

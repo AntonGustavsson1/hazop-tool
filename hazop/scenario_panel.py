@@ -33,7 +33,7 @@ from ui_helpers import (
     freq_axis_label, cons_axis_label, _lookup_comp_type_for_tag,
     _draw_text_with_bold_tags, standard_cause_options,
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
-    find_bold_tag_at_position,
+    find_bold_tag_at_position, _equipment_type_options,
 )
 
 MAX_GROUP_OBJECTS = 20
@@ -50,6 +50,7 @@ class _ObjectTagActionPopup(QDialog):
     """
     object_selected = pyqtSignal(object)  # equipment_catalog row as dict
     rename_requested = pyqtSignal(str)
+    type_change_requested = pyqtSignal(str)
 
     def __init__(self, db, equipment, parent=None):
         super().__init__(parent)
@@ -90,10 +91,13 @@ class _ObjectTagActionPopup(QDialog):
         actions = QHBoxLayout()
         actions.setSpacing(4)
         self._choose_btn = QPushButton('Byt objekt')
-        self._rename_btn = QPushButton('Byt namn')
+        self._rename_btn = QPushButton('Ändra namn')
         actions.addWidget(self._choose_btn)
         actions.addWidget(self._rename_btn)
         layout.addLayout(actions)
+
+        self._type_btn = QPushButton('Ändra objekttyp')
+        layout.addWidget(self._type_btn)
 
         self._object_combo = QComboBox()
         self._object_combo.addItem('Välj objekt från objektdatabas …', None)
@@ -124,6 +128,19 @@ class _ObjectTagActionPopup(QDialog):
         self._rename_row.hide()
         layout.addWidget(self._rename_row)
 
+        self._type_row = QWidget()
+        type_layout = QHBoxLayout(self._type_row)
+        type_layout.setContentsMargins(0, 0, 0, 0)
+        type_layout.setSpacing(4)
+        self._type_combo = QComboBox()
+        self._type_combo.addItems(_equipment_type_options(db))
+        self._type_combo.setCurrentText(type_ if type_ != 'Okänd typ' else '')
+        self._type_save = QPushButton('Spara typ')
+        type_layout.addWidget(self._type_combo, 1)
+        type_layout.addWidget(self._type_save)
+        self._type_row.hide()
+        layout.addWidget(self._type_row)
+
         hint = QLabel('Namnbyte uppdaterar objektet på P&ID och i HAZOP.')
         hint.setWordWrap(True)
         hint.setStyleSheet('font-size:9px;color:#6B7280;')
@@ -133,15 +150,18 @@ class _ObjectTagActionPopup(QDialog):
 
         self._choose_btn.clicked.connect(self._show_object_picker)
         self._rename_btn.clicked.connect(self._show_rename_editor)
+        self._type_btn.clicked.connect(self._show_type_picker)
         self._object_combo.activated.connect(self._select_object)
         self._rename_save.clicked.connect(self._request_rename)
         self._rename_edit.returnPressed.connect(self._request_rename)
+        self._type_save.clicked.connect(self._request_type_change)
 
     def _show_object_picker(self):
         self._object_combo.setVisible(not self._object_combo.isVisible())
         if self._object_combo.isVisible():
             self._rename_row.hide()
             self._rename_hint.hide()
+            self._type_row.hide()
             self._object_combo.setFocus()
         self.adjustSize()
 
@@ -149,11 +169,21 @@ class _ObjectTagActionPopup(QDialog):
         self._rename_row.setVisible(not self._rename_row.isVisible())
         if self._rename_row.isVisible():
             self._object_combo.hide()
+            self._type_row.hide()
             self._rename_hint.show()
             self._rename_edit.setFocus()
             self._rename_edit.selectAll()
         else:
             self._rename_hint.hide()
+        self.adjustSize()
+
+    def _show_type_picker(self):
+        self._type_row.setVisible(not self._type_row.isVisible())
+        if self._type_row.isVisible():
+            self._object_combo.hide()
+            self._rename_row.hide()
+            self._rename_hint.hide()
+            self._type_combo.setFocus()
         self.adjustSize()
 
     def _select_object(self, index):
@@ -168,6 +198,13 @@ class _ObjectTagActionPopup(QDialog):
         if not tag:
             return
         self.rename_requested.emit(tag)
+        self.close()
+
+    def _request_type_change(self):
+        equipment_type = self._type_combo.currentText().strip()
+        if not equipment_type:
+            return
+        self.type_change_requested.emit(equipment_type)
         self.close()
 
 
@@ -569,7 +606,7 @@ class RiskMatrixPopup(QDialog):
     category_changed = pyqtSignal()         # a per-category severity was set/cleared
 
     def __init__(self, current_freq: int, current_cons: int, parent=None,
-                 db=None, cons_id=None):
+                 db=None, cons_id=None, final_consequence=False):
         super().__init__(parent)
         self.setWindowTitle("Välj risknivå")
         # Qt.WindowType.Popup (2026-08-26, see NOTES.md): same window type
@@ -603,6 +640,7 @@ class RiskMatrixPopup(QDialog):
         self._db          = db
         self._cons_id     = cons_id
         self._category_mode = db is not None and cons_id is not None
+        self._final_consequence_mode = bool(final_consequence and self._category_mode)
         self._current_freq = current_freq
         self._n_cons      = n_cons
         self._freq_on_x   = freq_on_x
@@ -614,7 +652,11 @@ class RiskMatrixPopup(QDialog):
         outer.setContentsMargins(6, 6, 6, 6)
         outer.setSpacing(4)
 
-        hdr = QLabel("Klicka på en cell för att sätta risknivå")
+        hdr_text = ("Slutkonsekvens: välj egen nivå per kategori "
+                    "(standard = Risk före barriär)"
+                    if self._final_consequence_mode else
+                    "Klicka på en cell för att sätta risknivå")
+        hdr = QLabel(hdr_text)
         hdr.setStyleSheet("font-weight:bold; font-size:11px; padding:2px;")
         outer.addWidget(hdr)
 
@@ -761,8 +803,13 @@ class RiskMatrixPopup(QDialog):
             return
         saved = {r['category_id']: r['severity']
                  for r in self._db.get_consequence_severities(self._cons_id)}
+        final_saved = ({r['category_id']: r['severity']
+                        for r in self._db.get_final_consequence_severities(self._cons_id)}
+                       if self._final_consequence_mode else {})
         self._cats = cats
-        self._cat_sel = {c['id']: saved.get(c['id'], 0) for c in cats}
+        self._cat_base = {c['id']: saved.get(c['id'], 0) for c in cats}
+        self._cat_sel = ({c['id']: final_saved.get(c['id'], 0) for c in cats}
+                         if self._final_consequence_mode else dict(self._cat_base))
         self._cat_buttons = {}
         severity_defs = self._db.get_severity_definitions()
 
@@ -788,6 +835,14 @@ class RiskMatrixPopup(QDialog):
             tip = f"{cons_axis_label(s)}"
             if cat_desc:
                 tip += f": {cat_desc}"
+            if self._final_consequence_mode:
+                base_sev = self._cat_base.get(cid, 0)
+                if base_sev:
+                    tip += (f"\nStandard: {cons_axis_label(base_sev)} "
+                            "från Risk före barriär")
+                else:
+                    tip += "\nSätt först konsekvensnivån i Risk före barriär"
+                    cbtn.setEnabled(False)
             cbtn.setToolTip(tip)
             cbtn.clicked.connect(lambda _, ci=cid, sv=s: self._toggle_category(ci, sv))
             self._cat_buttons[(cid, s)] = cbtn
@@ -858,7 +913,14 @@ class RiskMatrixPopup(QDialog):
 
     def _toggle_category(self, cat_id, sev):
         cur = self._cat_sel.get(cat_id, 0)
-        new_sev = 0 if cur == sev else sev
+        if self._final_consequence_mode:
+            # No saved final level means the regular before-barrier severity
+            # remains effective. Clicking that same default is therefore a
+            # no-op; clicking an alternative creates an explicit override.
+            base_sev = self._cat_base.get(cat_id, 0)
+            new_sev = 0 if cur == sev or (not cur and base_sev == sev) else sev
+        else:
+            new_sev = 0 if cur == sev else sev
         self._cat_sel[cat_id] = new_sev
         for s in range(1, self._n_cons + 1):
             btn = self._cat_buttons.get((cat_id, s))
@@ -866,7 +928,10 @@ class RiskMatrixPopup(QDialog):
                 checked = (s == new_sev)
                 btn.setChecked(checked)
                 btn.setStyleSheet(self._cat_bstyle(checked))
-        self._db.set_consequence_severity(self._cons_id, cat_id, new_sev)
+        if self._final_consequence_mode:
+            self._db.set_final_consequence_severity(self._cons_id, cat_id, new_sev)
+        else:
+            self._db.set_consequence_severity(self._cons_id, cat_id, new_sev)
         self._refresh_category_markers()
         self.category_changed.emit()
 
@@ -877,6 +942,8 @@ class RiskMatrixPopup(QDialog):
         marks_by_cons_val = {}
         for cat in getattr(self, '_cats', []):
             sev = self._cat_sel.get(cat['id'], 0)
+            if self._final_consequence_mode and not sev:
+                sev = self._cat_base.get(cat['id'], 0)
             if sev > 0:
                 marks_by_cons_val.setdefault(sev, []).append(cat['name'][:3])
         for (fv, cv), (btn, base) in self._grid_buttons.items():
@@ -4842,6 +4909,8 @@ class ScenarioTablePanel(QWidget):
         _all_cons_ids = [dict(c)['id'] for conss in cons_by_cause.values() for c in conss]
         sgs_by_cons = self.db.safeguards_for_consequences(_all_cons_ids)
         cat_rows_by_cons = self.db.get_consequence_severities_for_consequences(_all_cons_ids)
+        final_severities_by_cons = \
+            self.db.get_final_consequence_severities_for_consequences(_all_cons_ids)
         _all_severity_ids = [dict(r)['id'] for rows in cat_rows_by_cons.values() for r in rows]
         excl_sgs_by_severity = self.db.get_severity_excluded_sgs_for_severities(_all_severity_ids)
         _all_sg_ids = [dict(s)['id'] for sgs in sgs_by_cons.values() for s in sgs]
@@ -5005,6 +5074,13 @@ class ScenarioTablePanel(QWidget):
                     cat_info_i = ((cr_i['category_id'], cr_i['id'],
                                    cr_i['name'], cr_i['severity'])
                                   if cr_i else None)
+                    # A Slutkonsekvens override is optional. Without one,
+                    # the exact same category severity as Risk före remains
+                    # effective; it must never mutate that original value.
+                    final_severity_i = (
+                        final_severities_by_cons.get(cons_d['id'], {}).get(
+                            cr_i['category_id'], cr_i['severity'])
+                        if cr_i else cons_d.get('severity') or 1)
                     excl_for_cat  = cat_excl_map.get(cr_i['id'], set()) if cr_i else set()
                     excl_cat_names = any_excl_map.get(sg_i['id'], []) if sg_i else []
                     logging.info('_build_rows: H2 — _add_row cons_id=%s row_i=%d/%d '
@@ -5013,6 +5089,7 @@ class ScenarioTablePanel(QWidget):
                     self._add_row(node_name, dev_d, cause_d, freq, freq_lbl,
                                   cons_d, sgs, sg_i,
                                   cat_info=cat_info_i,
+                                  final_severity=final_severity_i,
                                   excl_cat_names=excl_cat_names,
                                   excl_for_cat=excl_for_cat,
                                   cause_excl_sgs=cause_excl_sgs,
@@ -5585,7 +5662,7 @@ class ScenarioTablePanel(QWidget):
                              + self._PLUS_TIPS[kind])
 
     def _add_row(self, node_name, dev_d, cause_d, freq, freq_lbl, cons_d, all_sgs, sg,
-                 cat_info=None, excl_cat_names=None, excl_for_cat=None,
+                 cat_info=None, final_severity=None, excl_cat_names=None, excl_for_cat=None,
                  cause_excl_sgs=None, sev_cat_list=None, all_cat_infos=None,
                  cause_popup_list=None, n_cats=0, repeats_previous_tag=False,
                  cause_status=None, rfs=None, acts=None, recommendation=None,
@@ -5665,8 +5742,9 @@ class ScenarioTablePanel(QWidget):
         final_f, total_rrf, total_steps = total_freq_reduction(
             freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
 
+        final_sev = final_severity if final_severity is not None else sev
         level_b, bg_b, fg_b = risk_info(freq, sev)
-        level_s, bg_s, fg_s = risk_info(final_f, sev)
+        level_s, bg_s, fg_s = risk_info(final_f, final_sev)
 
         # ── Col 0: Nod ────────────────────────────────────────────────────────
         nod = QTableWidgetItem(self._numbered_node(cause_d.get('node_id'), node_name))
@@ -5867,7 +5945,7 @@ class ScenarioTablePanel(QWidget):
         # computed unconditionally regardless of cat_info.
         if cat_info:
             cat_short = (cat_name or '')[:3]
-            slut_text = f"{cat_short}  {freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+            slut_text = f"{cat_short}  {freq_axis_label(final_f)}  {cons_axis_label(final_sev)}"
         else:
             slut_text = ""
             bg_s, fg_s = '#FFFFFF', '#8D9299'
@@ -5876,7 +5954,7 @@ class ScenarioTablePanel(QWidget):
         rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
         rs.setToolTip(
             "Klicka för att ändra konsekvensnivå per kategori\n"
-            f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(sev)}  "
+            f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(final_sev)}  "
             f"(−{total_steps} steg totalt)")
         rs.setBackground(QBrush(QColor(bg_s)))
         rs.setForeground(QBrush(QColor(fg_s)))
@@ -5888,7 +5966,7 @@ class ScenarioTablePanel(QWidget):
         if cat_info:
             rs.setData(Qt.ItemDataRole.UserRole,
                        ('risk_click_cat', cause_d['id'], cid, cat_id, sev_id,
-                        final_f, sev))
+                        final_f, final_sev))
         else:
             rs.setData(Qt.ItemDataRole.UserRole,
                        ('risk_click', cause_d['id'], cid, final_f, sev))
@@ -6151,6 +6229,9 @@ class ScenarioTablePanel(QWidget):
         ign_active = bool(cons_d.get('ignition_active', 0))
         ign_rrf    = cons_d.get('ignition_rrf', 10) or 10
         all_sgs = [dict(s) for s in self.db.safeguards(cons_id)]
+        final_severities = {
+            r['category_id']: r['severity']
+            for r in self.db.get_final_consequence_severities(cons_id)}
 
         cause_excl = set()
         for sg in all_sgs:
@@ -6184,7 +6265,9 @@ class ScenarioTablePanel(QWidget):
 
                 final_f, total_rrf, total_steps = total_freq_reduction(
                     freq, sg_rrf, fa_active, fa_rrf, ign_active, ign_rrf, rfs)
-                level_s, bg_s, fg_s = risk_info(final_f, sev)
+                final_sev = (final_severities.get(cat_id, sev)
+                             if cat_info else sev)
+                level_s, bg_s, fg_s = risk_info(final_f, final_sev)
 
                 # Patched for every row now (2026-08-09, see NOTES.md) — same
                 # fallback rationale as _add_row: bg_s/fg_s are already
@@ -6193,7 +6276,7 @@ class ScenarioTablePanel(QWidget):
                 # stale/blank forever after an RRF change.
                 if cat_info:
                     cat_short = (cat_name or '')[:3]
-                    slut_text = f"{cat_short}  {freq_axis_label(final_f)}  {cons_axis_label(sev)}"
+                    slut_text = f"{cat_short}  {freq_axis_label(final_f)}  {cons_axis_label(final_sev)}"
                 else:
                     slut_text = ""
                     bg_s, fg_s = '#FFFFFF', '#8D9299'
@@ -6203,13 +6286,13 @@ class ScenarioTablePanel(QWidget):
                     rs.setToolTip(
                         "Klicka för att ändra konsekvensnivå per kategori\n"
                         f"{level_s} — {freq_axis_label(final_f)}  "
-                        f"{cons_axis_label(sev)}  (−{total_steps} steg totalt)")
+                        f"{cons_axis_label(final_sev)}  (−{total_steps} steg totalt)")
                     rs.setBackground(QBrush(QColor(bg_s)))
                     rs.setForeground(QBrush(QColor(fg_s)))
                     if cat_info:
                         rs.setData(Qt.ItemDataRole.UserRole,
                                    ('risk_click_cat', cause_id, cons_id,
-                                    cat_id, sev_id, final_f, sev))
+                                    cat_id, sev_id, final_f, final_sev))
                     else:
                         rs.setData(Qt.ItemDataRole.UserRole,
                                    ('risk_click', cause_id, cons_id,
@@ -6462,15 +6545,17 @@ class ScenarioTablePanel(QWidget):
 
         if meta[0] == 'risk_click_cat':
             _, cause_id, cons_id, cat_id, sev_id, cur_freq, cur_cons = meta
-            popup = RiskMatrixPopup(cur_freq, cur_cons, self,
-                                     db=self.db, cons_id=cons_id)
+            popup = RiskMatrixPopup(
+                cur_freq, cur_cons, self, db=self.db, cons_id=cons_id,
+                final_consequence=(col == self._C_SLUT))
             popup.selection_made.connect(
                 lambda f, c, caid=cause_id, coid=cons_id, catid=cat_id:
                     self._apply_risk_from_matrix_cat(caid, coid, catid, f, c))
         else:
             _, cause_id, cons_id, cur_freq, cur_cons = meta
-            popup = RiskMatrixPopup(cur_freq, cur_cons, self,
-                                     db=self.db, cons_id=cons_id)
+            popup = RiskMatrixPopup(
+                cur_freq, cur_cons, self, db=self.db, cons_id=cons_id,
+                final_consequence=(col == self._C_SLUT))
             popup.selection_made.connect(
                 lambda f, c, caid=cause_id, coid=cons_id:
                     self._apply_risk_from_matrix(caid, coid, f, c))
@@ -7344,6 +7429,9 @@ class ScenarioTablePanel(QWidget):
         popup.rename_requested.connect(
             lambda new_tag, eid=equipment.get('id'):
                 self._rename_object_from_popup(eid, new_tag))
+        popup.type_change_requested.connect(
+            lambda equipment_type, eid=equipment.get('id'):
+                self._change_object_type_from_popup(eid, equipment_type))
         popup.adjustSize()
         screen = (QApplication.screenAt(global_pos) or
                   QApplication.primaryScreen()).availableGeometry()
@@ -7500,6 +7588,28 @@ class ScenarioTablePanel(QWidget):
         except ValueError as error:
             QMessageBox.warning(self, 'Kan inte byta namn', str(error))
             return
+        self.equipment_renamed.emit()
+        self.structure_changed.emit()
+        self._schedule_rebuild()
+
+    def _change_object_type_from_popup(self, equipment_id, equipment_type):
+        """Change the catalogue type of one object without rebinding it.
+
+        The tag and object id stay untouched, so every existing bold-tag
+        reference continues to point to the same catalogue object. P&ID
+        overlays resolve their type live from the catalogue on refresh.
+        """
+        equipment = self.db.get_equipment_by_id(equipment_id)
+        if not equipment:
+            return
+        equipment = dict(equipment)
+        new_type = str(equipment_type or '').strip()
+        if not new_type or new_type == (equipment.get('equipment_type') or ''):
+            return
+        self.db.update_equipment_item(
+            equipment_id, equipment.get('tag') or '',
+            equipment.get('prefix') or '', new_type,
+            equipment.get('description') or '')
         self.equipment_renamed.emit()
         self.structure_changed.emit()
         self._schedule_rebuild()

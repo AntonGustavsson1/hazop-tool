@@ -1632,6 +1632,15 @@ class Database:
                 severity       INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(consequence_id, category_id)
             );
+            -- An optional post-barrier consequence level.  No row means
+            -- "same as consequence_severities", which keeps the original
+            -- severity as the default for Slutkonsekvens.
+            CREATE TABLE IF NOT EXISTS consequence_final_severities (
+                consequence_id INTEGER NOT NULL,
+                category_id    INTEGER NOT NULL,
+                severity       INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(consequence_id, category_id)
+            );
             CREATE TABLE IF NOT EXISTS consequence_severity_exclusions (
                 severity_id  INTEGER NOT NULL,
                 safeguard_id INTEGER NOT NULL,
@@ -2795,6 +2804,53 @@ class Database:
         else:
             self.conn.execute(
                 "INSERT OR REPLACE INTO consequence_severities "
+                "(consequence_id, category_id, severity) VALUES (?,?,?)",
+                (consequence_id, category_id, severity))
+        self.commit()
+
+    def get_final_consequence_severities(self, consequence_id):
+        """Return explicitly selected post-barrier category severities.
+
+        Missing categories deliberately have no row: the caller must fall
+        back to the corresponding regular consequence severity.
+        """
+        return self.conn.execute(
+            "SELECT category_id, severity FROM consequence_final_severities "
+            "WHERE consequence_id=?", (consequence_id,)).fetchall()
+
+    def get_final_consequence_severities_for_consequences(self, consequence_ids):
+        """Bulk map ``{consequence_id: {category_id: severity}}`` for
+        optional post-barrier severity overrides."""
+        consequence_ids = list(consequence_ids)
+        result = {cid: {} for cid in consequence_ids}
+        if not consequence_ids:
+            return result
+        CHUNK = 500
+        for start in range(0, len(consequence_ids), CHUNK):
+            chunk = consequence_ids[start:start + CHUNK]
+            placeholders = ','.join('?' * len(chunk))
+            rows = self.conn.execute(
+                "SELECT consequence_id, category_id, severity "
+                "FROM consequence_final_severities "
+                f"WHERE consequence_id IN ({placeholders})", chunk).fetchall()
+            for row in rows:
+                result[row['consequence_id']][row['category_id']] = row['severity']
+        return result
+
+    def set_final_consequence_severity(self, consequence_id, category_id, severity):
+        """Set or clear an optional post-barrier category severity.
+
+        A zero/false value removes the override and restores the regular
+        category severity as the effective final-consequence level.
+        """
+        if not severity:
+            self.conn.execute(
+                "DELETE FROM consequence_final_severities "
+                "WHERE consequence_id=? AND category_id=?",
+                (consequence_id, category_id))
+        else:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO consequence_final_severities "
                 "(consequence_id, category_id, severity) VALUES (?,?,?)",
                 (consequence_id, category_id, severity))
         self.commit()
@@ -5263,6 +5319,10 @@ class Database:
             "WHERE consequence_id IN (SELECT id FROM consequences WHERE cause_id=?)",
             (id_,))
         self.conn.execute(
+            "DELETE FROM consequence_final_severities "
+            "WHERE consequence_id IN (SELECT id FROM consequences WHERE cause_id=?)",
+            (id_,))
+        self.conn.execute(
             "UPDATE causes SET linked_consequence_id=NULL "
             "WHERE linked_consequence_id IN (SELECT id FROM consequences WHERE cause_id=?)",
             (id_,))
@@ -5280,6 +5340,7 @@ class Database:
             "WHERE severity_id IN (SELECT id FROM consequence_severities WHERE consequence_id=?)",
             (id_,))
         self.conn.execute("DELETE FROM consequence_severities WHERE consequence_id=?", (id_,))
+        self.conn.execute("DELETE FROM consequence_final_severities WHERE consequence_id=?", (id_,))
         # Null out any causes that chain-link to this consequence (cross-branch reference, no FK)
         self.conn.execute("UPDATE causes SET linked_consequence_id=NULL WHERE linked_consequence_id=?", (id_,))
         self.conn.execute(
