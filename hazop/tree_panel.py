@@ -1419,9 +1419,15 @@ class TreePanel(QWidget):
         if source_line == target_line:
             return
         cause = self.db.get_cause(cause_id)
-        ids = self._group_equipment_ids(cause)
-        if not cause or not (0 <= source_line < len(ids)) or not (0 <= target_line < len(ids)):
+        # The description lines must be resolved using their source row
+        # order.  Resolving them after changing ``ids`` attaches a tag to the
+        # wrong line and leaves that tag behind as apparent free text.
+        source_ids = self._group_equipment_ids(cause)
+        if (not cause or not (0 <= source_line < len(source_ids))
+                or not (0 <= target_line < len(source_ids))):
             return
+        lines = self.db.group_cause_description_lines(cause, source_ids)
+        ids = list(source_ids)
         ids.insert(target_line, ids.pop(source_line))
         tags = []
         for equipment_id in ids:
@@ -1436,7 +1442,6 @@ class TreePanel(QWidget):
         operators = operators[:len(ids) - 1] + ['OR'] * len(ids)
         normal = {'+': '&', '<>': 'OR', 'or': 'OR'}
         operators = [normal.get(str(value).casefold(), value) for value in operators[:len(ids) - 1]]
-        lines = self.db.group_cause_description_lines(cause, ids)
         lines.insert(target_line, lines.pop(source_line))
         self.db.update_cause(
             cause_id,

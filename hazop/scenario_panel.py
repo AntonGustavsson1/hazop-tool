@@ -7041,10 +7041,18 @@ class ScenarioTablePanel(QWidget):
     def _move_group_row(self, cause_id, row_index, delta):
         """Move a group row and its description one position up/down."""
         cause = self.db.get_cause(cause_id)
-        ids = self._group_equipment_ids(cause)
+        # Normalise the persisted text against the *current* row order
+        # before moving either list.  ``group_cause_description_lines`` uses
+        # the supplied ids to decide which tag belongs to each stored line;
+        # passing already-swapped ids made the old tag look like free text on
+        # its new owner's row (for example ``FV-1 FI-1 fails low``).
+        source_ids = self._group_equipment_ids(cause)
         target = row_index + delta
-        if not cause or not (0 <= row_index < len(ids)) or not (0 <= target < len(ids)):
+        if (not cause or not (0 <= row_index < len(source_ids))
+                or not (0 <= target < len(source_ids))):
             return
+        lines = self.db.group_cause_description_lines(cause, source_ids)
+        ids = list(source_ids)
         ids[row_index], ids[target] = ids[target], ids[row_index]
         tags = []
         for equipment_id in ids:
@@ -7055,7 +7063,6 @@ class ScenarioTablePanel(QWidget):
         # can change each affected row's incoming operator independently from
         # its own context menu, without silently changing other connections.
         # Keep group descriptions aligned with their object rows.
-        lines = self.db.group_cause_description_lines(cause, ids)
         lines[row_index], lines[target] = lines[target], lines[row_index]
         self.db.update_cause(
             cause_id,

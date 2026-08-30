@@ -4343,3 +4343,22 @@ Närvaro-kolumnen heter nu endast `%`. Knappen `− Ta bort vald` tar bort en
 egen enabler från aktuell konsekvens och döljer den från framtida enablerlistor.
 Redan använda kopior i andra konsekvenser lämnas intakta. Antändning och
 Eskalering är standardenablers och kan därför inte tas bort från listan.
+
+## Grupporsak: säkert platsbyte utan taggar i fritext (2026-08-30)
+
+Ett byte av ordning i en grupporsak läser nu först varje beskrivningsrad i
+dess befintliga objektordning och flyttar därefter objekt och rad tillsammans.
+Tidigare användes den redan ändrade objektordningen vid normaliseringen. Då
+kunde den gamla taggen hamna i den nya radens fritext, exempelvis
+`FV-1 FI-1 felar lågt`, och i nästa steg ge oåtkomliga eller visuellt trasiga
+redigeringsrader.
+
+Samma säkra flöde används både för `Flytta uppåt/nedåt` i HAZOP Scenario och
+för intern dragsortering i trädet. Operatorernas positioner är oförändrade;
+endast objektet och dess egen fritext flyttas. Två regressionstester täcker
+tre-objektsgrupper, korrekt lagrad/renderead text och att den flyttade raden
+fortfarande öppnar rätt inline-redigerare.
+
+Verifierat med 17 trädgrupperingstester, 24 integrationsfall för
+objektfall/grupper, 12 smoke-tester och `py_compile`. Ingen manuell visuell
+GUI-verifiering är gjord.

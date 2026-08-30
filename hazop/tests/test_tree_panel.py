@@ -322,6 +322,55 @@ class TreePanelEquipmentGroupingTests(unittest.TestCase):
             'XV-1 does not close',
         ])
 
+    def test_drag_reordering_group_rows_keeps_text_on_its_own_object(self):
+        """A tree row drag must move an object and its own event together.
+
+        In particular, text is normalised in its old order before the object
+        ids are moved.  Otherwise the former row tag becomes visible as
+        unwanted free text and later makes the row hard to hit/edit.
+        """
+        node_id = self.db.add_node()
+        dev_id = self.db.get_or_create_deviation(node_id, 'Low flow')
+        fi_id = self.db.add_equipment_item(
+            'FI-1', 'FI-1', 'FI', 0, 'Flow transmitter', '', 0)
+        fv_id = self.db.add_equipment_item(
+            'FV-1', 'FV-1', 'FV', 0, 'Control valve', '', 0)
+        xv_id = self.db.add_equipment_item(
+            'XV-1', 'XV-1', 'XV', 0, 'Shutdown valve', '', 0)
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(
+            cause_id,
+            description='FI-1 fails low\nFV-1 opens fully\nXV-1 closes',
+            comp_type='Flow transmitter', comp_tag='FI-1 OR FV-1 -> XV-1',
+            equipment_id=fi_id, secondary_equipment_id=fv_id,
+            group_equipment_ids=[fi_id, fv_id, xv_id])
+        self.panel.refresh()
+
+        self.panel._move_group_row_by_drag(cause_id, 0, 2)
+        cause = dict(self.db.get_cause(cause_id))
+        self.assertEqual(self.db.group_equipment_ids_for_cause(cause),
+                         [fv_id, xv_id, fi_id])
+        self.assertEqual(cause['description'].splitlines(), [
+            'FV-1 opens fully',
+            'XV-1 closes',
+            'FI-1 fails low',
+        ])
+
+        cause_item = self._find_item(CAUSE_T, cause_id)
+        self.assertIsNotNone(cause_item)
+        # The tree decorates the first display line with its normal number
+        # and icon; every rendered group line must nevertheless retain its
+        # own object's text.
+        display_lines = [line.strip() for line in cause_item.text(0).splitlines()]
+        self.assertTrue(display_lines[0].endswith('FV-1 opens fully'))
+        self.assertEqual(display_lines[1:], ['XV-1 closes', 'FI-1 fails low'])
+        self.panel._begin_group_line_edit(cause_item, cause_id, 0)
+        editors = self.panel.tree.viewport().findChildren(QLineEdit)
+        self.assertTrue(editors, 'the moved row must still have an inline editor')
+        editor = editors[-1]
+        self.assertEqual(editor.text(), 'FV-1 opens fully')
+        editor.editingFinished.emit()
+
     def test_grouped_orsak_row_is_not_bold(self):
         node_id = self.db.add_node()
         dev_id = self.db.get_or_create_deviation(node_id, "LÃ¥gt flÃ¶de")

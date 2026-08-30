@@ -5173,6 +5173,76 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             for editor in editors:
                 editor.deleteLater()
 
+    def test_group_row_move_keeps_freetext_with_its_object_and_editor_available(self):
+        """Moving a scenario group row must not turn an old tag into text.
+
+        The resulting middle row also has to remain reachable by the same
+        inline editor, guarding the user-visible failure where a reordered
+        group appeared to have no usable fields.
+        """
+        from scenario_panel import _BoldTagTextEdit, StandardCauseSuggestPopup
+        from PyQt6.QtWidgets import QStyledItemDelegate
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, 'High flow')
+            fi_id = win.db.add_equipment_item(
+                'FI-1', 'FI-1', 'FI', 0, 'Instrument', '', 0)
+            fv_id = win.db.add_equipment_item(
+                'FV-1', 'FV-1', 'FV', 0, 'Reglerventil', '', 0)
+            xv_id = win.db.add_equipment_item(
+                'XV-1', 'XV-1', 'XV', 0, 'AvstÃ¤ngningsventil', '', 0)
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(
+                cause_id,
+                description='FI-1 fails low\nFV-1 opens fully\nXV-1 closes',
+                comp_type='Instrument', comp_tag='FI-1 OR FV-1 -> XV-1',
+                equipment_id=fi_id, secondary_equipment_id=fv_id,
+                group_equipment_ids=[fi_id, fv_id, xv_id])
+            panel = win.scenario_panel
+            panel.load_node(node_id)
+
+            panel._move_group_row(cause_id, 1, 1)
+            QApplication.processEvents()
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(win.db.group_equipment_ids_for_cause(cause),
+                             [fi_id, xv_id, fv_id])
+            self.assertEqual(cause['description'].splitlines(), [
+                'FI-1 fails low',
+                'XV-1 closes',
+                'FV-1 opens fully',
+            ])
+
+            panel.load_node(node_id)
+            row = next(r for r, meta in enumerate(panel._row_meta)
+                       if meta[1] == cause_id)
+            item = panel._table.item(row, panel._C_ORS)
+            self.assertEqual(item.data(Qt.ItemDataRole.UserRole + 9),
+                             ['FI-1', 'XV-1', 'FV-1'])
+            combined_lines = panel._ors_combined_text(item, item.text()).splitlines()
+            # The scenario renderer prefixes only the first display row with
+            # the cause number.  The remaining visual rows must remain in
+            # the same object/text order as the stored group.
+            self.assertTrue(combined_lines[0].endswith('FI-1 fails low'))
+            self.assertEqual(combined_lines[1:], ['XV-1 closes', 'FV-1 opens fully'])
+
+            index = panel._table.model().index(row, panel._C_ORS)
+            panel._group_edit_line = (row, 1)
+            panel._table.setCurrentIndex(index)
+            panel._table.edit(index)
+            QApplication.processEvents()
+            editors = panel._table.viewport().findChildren(_BoldTagTextEdit)
+            editor = next((candidate for candidate in editors
+                           if candidate.property('group_line') == 1), None)
+            self.assertIsNotNone(editor,
+                                 'the moved group row must still open an inline editor')
+            self.assertEqual(editor.toPlainText(), 'closes')
+            panel._pid_delegate.closeEditor.emit(
+                editor, QStyledItemDelegate.EndEditHint.NoHint)
+            for popup in panel.window().findChildren(StandardCauseSuggestPopup):
+                popup.close()
+            QApplication.processEvents()
+            panel._group_edit_line = None
+
     def test_group_row_real_double_click_right_of_tag_opens_inline_editor(self):
         """Regression test for a bug where EVERY double-click on a
         grouped cause's ORS cell -- even one clearly to the right of the
