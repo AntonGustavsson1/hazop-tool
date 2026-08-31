@@ -3815,6 +3815,11 @@ def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
     annot.set_info(title='Objekt', content=label_text)
     annot.set_flags(annot.flags | fitz.PDF_ANNOT_IS_LOCKED_CONTENTS)
     annot.update(opacity=0.90, rotate=int(page.rotation) % 360)
+    # stamp=0 is only used as a movable annotation shell.  Its default
+    # ``/Name /Approved`` is a built-in sample-stamp label that Bluebeam
+    # displays when the annotation is selected; it is not part of this
+    # application's object marker and must not leak into the export.
+    doc.xref_set_key(annot.xref, 'Name', 'null')
 
     ap_kind, ap_value = doc.xref_get_key(annot.xref, 'AP')
     match = re.search(r'/N\s+(\d+)\s+0\s+R', ap_value or '')

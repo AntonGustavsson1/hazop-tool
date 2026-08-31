@@ -1983,6 +1983,8 @@ class ExportPdfMarkupTests(unittest.TestCase):
             self.assertNotIn('\nO\n', text)
             stamps = [a for a in annots if a.type[1] == 'Stamp']
             self.assertTrue(stamps[0].flags & fitz.PDF_ANNOT_IS_LOCKED_CONTENTS)
+            marker_object = out.xref_object(stamps[0].xref)
+            self.assertNotIn('/Name /Approved', marker_object)
             out.close()
         finally:
             panel.deleteLater()
