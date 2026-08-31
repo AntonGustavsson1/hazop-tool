@@ -1975,6 +1975,8 @@ class ExportPdfMarkupTests(unittest.TestCase):
             self.assertIn(tag, text)
             self.assertNotIn('\nO\n', text)
             self.assertTrue(any(a.type[1] == 'Circle' for a in annots))
+            labels = [a for a in annots if a.type[1] == 'FreeText']
+            self.assertTrue(labels[0].flags & fitz.PDF_ANNOT_IS_LOCKED_CONTENTS)
             out.close()
         finally:
             panel.deleteLater()

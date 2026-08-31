@@ -3831,6 +3831,11 @@ def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
         label_annot.set_border({'width': 0})
         label_annot.set_info(title='Objektetikett', content=label_text)
         label_annot.update()
+        # Bluebeam (and similar PDF editors) may substitute its own editing
+        # font when a FreeText annotation is entered.  Lock only the text
+        # contents, not the annotation geometry, so the label keeps its PDF
+        # appearance while its position remains movable.
+        label_annot.set_flags(label_annot.flags | fitz.PDF_ANNOT_IS_LOCKED_CONTENTS)
     return circle, label_annot, combined
 
 

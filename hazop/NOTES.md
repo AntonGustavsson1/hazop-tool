@@ -4506,6 +4506,8 @@ exportens layoutjustering.
 färgmarkör är återställd. Cirkeln och den kompletta objekttaggen exporteras
 som flyttbara PDF-annoteringar och grupperas visuellt vid placeringen.
 Långa taggar radbryts i etikettens annoteringsyta i stället för att kapas.
+Etikettens textinnehåll är låst medan dess position är flyttbar, vilket
+förhindrar att Bluebeam byter typsnitt när annoteringen aktiveras.
 
 Avbockning i P&ID-checklistan tar bara bort utrustningens koppling till
 avvikelsen. Nodavvikelsen och dess HAZOP-data ligger kvar.
