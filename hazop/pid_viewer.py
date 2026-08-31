@@ -3754,7 +3754,7 @@ def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
     """
     pt = fitz.Point(float(x), float(y)) * page.derotation_matrix
     label_text = str(label or '').strip()
-    fontsize = 8.0
+    fontsize = 7.0
     occupied = occupied if occupied is not None else []
 
     def _measure(value):
@@ -3785,9 +3785,9 @@ def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
         wrapped.append(current)
     lines = wrapped or ['']
     label_w = max((_measure(line) for line in lines), default=0.0)
-    line_h = fontsize * 1.35
-    box_w = max(42.0, min(max_line_width + 10.0, label_w + 16.0))
-    box_h = max(22.0, len(lines) * line_h + 8.0)
+    line_h = fontsize * 1.25
+    box_w = max(34.0, min(max_line_width + 8.0, label_w + 12.0))
+    box_h = max(18.0, len(lines) * line_h + 6.0)
     base = fitz.Rect(pt.x - box_w / 2, pt.y - box_h / 2,
                      pt.x + box_w / 2, pt.y + box_h / 2)
 
@@ -3815,7 +3815,7 @@ def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
     annot = page.add_stamp_annot(rect, stamp=0)
     annot.set_info(title='Objekt', content=label_text)
     annot.set_flags(annot.flags | fitz.PDF_ANNOT_IS_LOCKED_CONTENTS)
-    annot.update(opacity=0.90, rotate=int(page.rotation) % 360)
+    annot.update(opacity=0.75, rotate=int(page.rotation) % 360)
     # stamp=0 is only used as a movable annotation shell.  Its default
     # ``/Name /Approved`` is a built-in sample-stamp label that Bluebeam
     # displays when the annotation is selected; it is not part of this

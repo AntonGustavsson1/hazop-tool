@@ -4511,6 +4511,9 @@ Etikettens textinnehåll är låst medan dess position är flyttbar, vilket
 förhindrar att Bluebeam byter typsnitt när annoteringen aktiveras.
 Annoteringens rektangel återställs efter rotationsuppdateringen så att
 inbäddad text inte kläms ihop eller hamnar felvänt på roterade sidor.
+Markeringarna är nu något mindre: texten använder 7 pt, rektangelns
+minimimarginaler är reducerade och opaciteten är sänkt till 75 % för att
+P&ID-underlaget ska synas tydligare igenom.
 Alla objekt i PDF-exporten använder nu den tydliga gröna objektfärgen,
 oberoende av om objektet har en kopplad avvikelse.
 Stamp-skalets standardnamn `Approved` tas bort från exporterade
