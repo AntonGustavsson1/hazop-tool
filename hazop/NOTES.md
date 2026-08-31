@@ -4535,3 +4535,26 @@ referensfilen i `ej_programfiler`, medan den separata rekommendationsexporten
 Verifierat med `tests.test_worksheet_export`, `py_compile` samt export mot
 aktuell projekt-databas i både läget med och utan sammanslagna hierarkiceller.
 Ingen manuell visuell Excel-verifiering är gjord.
+
+## Kopiera med drag/släpp och Ctrl+C/Ctrl+V i Scenario och Worksheet (2026-08-31)
+
+HAZOP Scenario och HAZOP Worksheet delar `ScenarioTablePanel` och har nu samma
+kopieringsflöde. Drag/släpp kopierar alltid (aldrig flyttar) orsak,
+konsekvens, barriär eller rekommendation. Ctrl+C/Ctrl+V använder samma interna
+HAZOP-urklipp och samma målregler. Flera markerade rader av samma slag kan
+kopieras samtidigt.
+
+För orsak och konsekvens visas en fråga en gång per kopiering: `Endast
+cellinnehåll` eller `Inkludera underkategorier`. Det senare kopierar den fulla
+grenen med konsekvenskategorier/riskbedömningar, slutkonsekvens, barriärer,
+enablers, tillämplighetsundantag och rekommendationslänkar. Rekommendationer
+återanvänder sitt globala nummer och länkas i stället för att dupliceras.
+Kopieringen sker per post i en SQLite-savepoint så ett fel inte lämnar en
+halvkopierad gren. De befintliga uttryckliga `Flytta ...`-kommandona i
+snabbmenyerna är oförändrade.
+
+Verifierat med nya databasregressionstester för full respektive cellbegränsad
+kopiering, dragens kopieringsåtgärd, Ctrl+C/Ctrl+V-rundan, `py_compile` och
+12 smoke-tester. Den breda testsamlingen har sedan tidigare orelaterade fel i
+utrustningsrensning/utrustningsscope och ett häng i den fulla Qt-integrationskön;
+ingen manuell visuell GUI-verifiering är gjord.

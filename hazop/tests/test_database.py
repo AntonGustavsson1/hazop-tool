@@ -1703,5 +1703,86 @@ class EquipmentRenameReferenceTests(unittest.TestCase):
         self.assertEqual(self.db.get_equipment_by_id(self.eq_id)['tag'], 'PV-101')
 
 
+class ScopedHazopCopyTests(unittest.TestCase):
+    """Full branch copies must keep every local risk relation independent."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='hazop_scoped_copy_')
+        self.db = Database(path=os.path.join(self.tmpdir, 'project.db'))
+        self.node_id = self.db.add_node()
+        self.source_dev = self.db.deviations(self.node_id)[0]['id']
+        self.target_dev = self.db.add_deviation(self.node_id, 'Kopieringsmål')
+        self.source_cause = self.db.add_cause(self.source_dev)
+        self.source_cons = self.db.add_consequence(self.source_cause)
+        self.source_sg = self.db.add_safeguard(self.source_cons)
+        self.db.update_cause(self.source_cause, description='PV-101 felar',
+                             comp_type='Ventil', comp_tag='PV-101')
+        self.db.update_consequence(
+            self.source_cons, 'PV-101 stänger flödet', 3,
+            comp_type='Ventil', comp_tag='PV-101', tagged_refs='PV-101')
+        self.db.update_safeguard(self.source_sg, description='LSHH stoppar', rrf=100,
+                                 sg_type='SIS', tagged_refs='LSHH-101')
+        self.category_id = self.db.consequence_categories()[0]['id']
+        self.db.set_consequence_severity(self.source_cons, self.category_id, 4)
+        self.db.set_final_consequence_severity(self.source_cons, self.category_id, 2)
+        self.severity_id = self.db.get_consequence_severities(self.source_cons)[0]['id']
+        self.factor_id = self.db.add_reduction_factor(self.source_cons, 'Antändning', 10)
+        self.db.set_severity_excluded_sgs(self.severity_id, {self.source_sg})
+        self.db.set_severity_excluded_reduction_factors(self.severity_id, {self.factor_id})
+        self.db.set_safeguard_excluded_causes(self.source_sg, {self.source_cause})
+        self.rec_id = self.db.add_recommendation_to_consequence(
+            self.source_cons, description='Verifiera PV-101 före start')
+
+    def tearDown(self):
+        self.db.conn.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_full_cause_copy_keeps_descendants_and_translates_local_ids(self):
+        copied_cause = self.db.copy_cause_scoped(
+            self.source_cause, self.target_dev, include_descendants=True)
+        self.assertIsNotNone(copied_cause)
+        copied_cause_row = self.db.get_cause(copied_cause)
+        self.assertEqual(copied_cause_row['description'], 'PV-101 felar')
+        copied_cons = self.db.consequences(copied_cause)
+        self.assertEqual(len(copied_cons), 1)
+        copied_cons_id = copied_cons[0]['id']
+        self.assertEqual(copied_cons[0]['description'], 'PV-101 stänger flödet')
+        self.assertNotEqual(copied_cons_id, self.source_cons)
+
+        copied_sgs = self.db.safeguards(copied_cons_id)
+        self.assertEqual(len(copied_sgs), 1)
+        copied_sg_id = copied_sgs[0]['id']
+        self.assertEqual(copied_sgs[0]['description'], 'LSHH stoppar')
+        copied_severity = self.db.get_consequence_severities(copied_cons_id)[0]
+        self.assertEqual(copied_severity['severity'], 4)
+        self.assertEqual(
+            self.db.get_final_consequence_severities(copied_cons_id)[0]['severity'], 2)
+        self.assertEqual(self.db.get_severity_excluded_sgs(copied_severity['id']),
+                         {copied_sg_id})
+        copied_factor = self.db.reduction_factors(copied_cons_id)[0]
+        self.assertEqual(self.db.get_severity_excluded_reduction_factors(
+            copied_severity['id']), {copied_factor['id']})
+        self.assertEqual(self.db.get_safeguard_excluded_causes(copied_sg_id),
+                         {copied_cause})
+        self.assertEqual([r['id'] for r in self.db.recommendations_for_consequence(copied_cons_id)],
+                         [self.rec_id])
+
+    def test_cell_only_copies_leave_child_and_risk_setup_behind(self):
+        copied_cause = self.db.copy_cause_scoped(
+            self.source_cause, self.target_dev, include_descendants=False)
+        self.assertEqual(self.db.consequences(copied_cause), [])
+
+        target_cause = self.db.add_cause(self.target_dev)
+        copied_cons = self.db.copy_consequence_scoped(
+            self.source_cons, target_cause, include_descendants=False)
+        copied = self.db.get_consequence(copied_cons)
+        self.assertEqual(copied['description'], 'PV-101 stänger flödet')
+        self.assertEqual(copied['severity'], 1)
+        self.assertEqual(self.db.get_consequence_severities(copied_cons), [])
+        self.assertEqual(self.db.safeguards(copied_cons), [])
+        self.assertEqual(self.db.reduction_factors(copied_cons), [])
+        self.assertEqual(self.db.recommendations_for_consequence(copied_cons), [])
+
+
 if __name__ == "__main__":
     unittest.main()

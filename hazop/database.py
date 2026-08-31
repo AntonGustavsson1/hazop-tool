@@ -5802,6 +5802,241 @@ class Database:
         self.commit()
         return cur.lastrowid
 
+    # ── Scoped HAZOP copying ─────────────────────────────────────────────────
+    # The original copy_* helpers above predate per-category risk assessments,
+    # enablers and globally shared recommendations.  Keep them for older call
+    # sites, but let the worksheet/scenario use these transactional helpers so
+    # a user can explicitly choose between a cell-only copy and a full branch.
+
+    def _copy_sort_order(self, table, parent_column, parent_id):
+        row = self.conn.execute(
+            f"SELECT COALESCE(MAX(sort_order), -1) + 1 FROM {table} "
+            f"WHERE {parent_column}=?", (parent_id,)).fetchone()
+        return int(row[0] if row else 0)
+
+    def _insert_copied_cause(self, original, target_deviation_id):
+        target = self.get_deviation(target_deviation_id)
+        if not target:
+            return None
+        original = dict(original)
+        cur = self.conn.execute(
+            "INSERT INTO causes "
+            "(node_id,deviation_id,description,likelihood,sort_order,source_id,"
+            "base_frequency,standard_cause_id,comp_type,comp_tag,comment,"
+            "equipment_id,secondary_equipment_id,group_equipment_ids,group_choices_set) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (target['node_id'], target_deviation_id,
+             original.get('description') or '', original.get('likelihood') or 0,
+             self._copy_sort_order('causes', 'deviation_id', target_deviation_id),
+             original.get('id'), original.get('base_frequency'),
+             original.get('standard_cause_id'), original.get('comp_type') or '',
+             original.get('comp_tag') or '', '', original.get('equipment_id'),
+             original.get('secondary_equipment_id'),
+             original.get('group_equipment_ids') or '',
+             original.get('group_choices_set') or 0))
+        return cur.lastrowid
+
+    def _insert_copied_consequence(self, original, target_cause_id, cell_only=False):
+        original = dict(original)
+        if cell_only:
+            severity, category = 1, ''
+            fa_active, fa_rrf = 0, 10
+            ignition_active, ignition_rrf = 0, 10
+        else:
+            severity = original.get('severity') or 1
+            category = original.get('category') or ''
+            fa_active, fa_rrf = original.get('fa_active') or 0, original.get('fa_rrf') or 10
+            ignition_active = original.get('ignition_active') or 0
+            ignition_rrf = original.get('ignition_rrf') or 10
+        cur = self.conn.execute(
+            "INSERT INTO consequences "
+            "(cause_id,description,severity,category,consequence_chain,sort_order,source_id,"
+            "fa_active,fa_rrf,ignition_active,ignition_rrf,comp_type,comp_tag,tagged_refs) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (target_cause_id, original.get('description') or '', severity, category,
+             original.get('consequence_chain') or '',
+             self._copy_sort_order('consequences', 'cause_id', target_cause_id),
+             original.get('id'), fa_active, fa_rrf, ignition_active, ignition_rrf,
+             original.get('comp_type') or '', original.get('comp_tag') or '',
+             original.get('tagged_refs') or ''))
+        return cur.lastrowid
+
+    def _insert_copied_safeguard(self, original, target_consequence_id):
+        original = dict(original)
+        cur = self.conn.execute(
+            "INSERT INTO safeguards "
+            "(consequence_id,description,rrf,source_id,sort_order,sg_type,comp_type,comp_tag,tagged_refs) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (target_consequence_id, original.get('description') or '',
+             original.get('rrf') or 1, original.get('id'),
+             self._copy_sort_order('safeguards', 'consequence_id', target_consequence_id),
+             original.get('sg_type') or 'Övrigt', original.get('comp_type') or '',
+             original.get('comp_tag') or '', original.get('tagged_refs') or ''))
+        return cur.lastrowid
+
+    def _copy_consequence_children(self, source_consequence_id, target_consequence_id,
+                                   source_cause_id, target_cause_id):
+        """Copy risk setup and descendants, translating all local IDs."""
+        severity_map = {}
+        for source in self.get_consequence_severities(source_consequence_id):
+            source = dict(source)
+            cur = self.conn.execute(
+                "INSERT INTO consequence_severities(consequence_id,category_id,severity) "
+                "VALUES (?,?,?)",
+                (target_consequence_id, source['category_id'], source['severity']))
+            severity_map[source['id']] = cur.lastrowid
+
+        for source in self.get_final_consequence_severities(source_consequence_id):
+            source = dict(source)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO consequence_final_severities "
+                "(consequence_id,category_id,severity) VALUES (?,?,?)",
+                (target_consequence_id, source['category_id'], source['severity']))
+
+        safeguard_map = {}
+        for source in self.safeguards(source_consequence_id):
+            source = dict(source)
+            safeguard_map[source['id']] = self._insert_copied_safeguard(
+                source, target_consequence_id)
+
+        # Safeguard exclusions point to per-consequence severity records and
+        # must therefore be translated only after both sets exist.
+        for source_severity_id, target_severity_id in severity_map.items():
+            for source_safeguard_id in self.get_severity_excluded_sgs(source_severity_id):
+                target_safeguard_id = safeguard_map.get(source_safeguard_id)
+                if target_safeguard_id:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO consequence_severity_exclusions "
+                        "(severity_id,safeguard_id) VALUES (?,?)",
+                        (target_severity_id, target_safeguard_id))
+
+        for source_safeguard_id, target_safeguard_id in safeguard_map.items():
+            if source_cause_id in self.get_safeguard_excluded_causes(source_safeguard_id):
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO safeguard_cause_exclusions "
+                    "(safeguard_id,cause_id) VALUES (?,?)",
+                    (target_safeguard_id, target_cause_id))
+
+        factor_map = {}
+        for source in self.reduction_factors(source_consequence_id):
+            source = dict(source)
+            cur = self.conn.execute(
+                "INSERT INTO reduction_factors(consequence_id,description,rrf,active) "
+                "VALUES (?,?,?,?)",
+                (target_consequence_id, source.get('description') or '',
+                 source.get('rrf') or 10, source.get('active') or 0))
+            factor_map[source['id']] = cur.lastrowid
+
+        for source_severity_id, target_severity_id in severity_map.items():
+            for source_factor_id in self.get_severity_excluded_reduction_factors(
+                    source_severity_id):
+                target_factor_id = factor_map.get(source_factor_id)
+                if target_factor_id:
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO reduction_factor_severity_exclusions "
+                        "(severity_id,reduction_factor_id) VALUES (?,?)",
+                        (target_severity_id, target_factor_id))
+
+        # Recommendations are global numbered records. A branch copy creates
+        # new links, never duplicate global recommendation numbers.
+        for recommendation in self.recommendations_for_consequence(source_consequence_id):
+            self.conn.execute(
+                "INSERT OR IGNORE INTO consequence_recommendations "
+                "(consequence_id,recommendation_id) VALUES (?,?)",
+                (target_consequence_id, recommendation['id']))
+
+    def copy_cause_scoped(self, cause_id, target_deviation_id, include_descendants=False):
+        """Copy a cause to a deviation, optionally with its complete branch."""
+        source = self.get_cause(cause_id)
+        if not source or not self.get_deviation(target_deviation_id):
+            return None
+        source = dict(source)
+        self.conn.execute('SAVEPOINT copy_cause_scoped')
+        try:
+            new_cause_id = self._insert_copied_cause(source, target_deviation_id)
+            if include_descendants:
+                for consequence in self.consequences(cause_id):
+                    consequence = dict(consequence)
+                    new_consequence_id = self._insert_copied_consequence(
+                        consequence, new_cause_id)
+                    self._copy_consequence_children(
+                        consequence['id'], new_consequence_id,
+                        cause_id, new_cause_id)
+            self.conn.execute('RELEASE SAVEPOINT copy_cause_scoped')
+            self.commit()
+            return new_cause_id
+        except Exception:
+            self.conn.execute('ROLLBACK TO SAVEPOINT copy_cause_scoped')
+            self.conn.execute('RELEASE SAVEPOINT copy_cause_scoped')
+            raise
+
+    def copy_consequence_scoped(self, consequence_id, target_cause_id,
+                                include_descendants=False):
+        """Copy a consequence to an existing cause with an explicit scope."""
+        source = self.get_consequence(consequence_id)
+        target_cause = self.get_cause(target_cause_id)
+        if not source or not target_cause:
+            return None
+        source = dict(source)
+        self.conn.execute('SAVEPOINT copy_consequence_scoped')
+        try:
+            new_consequence_id = self._insert_copied_consequence(
+                source, target_cause_id, cell_only=not include_descendants)
+            if include_descendants:
+                self._copy_consequence_children(
+                    consequence_id, new_consequence_id,
+                    source['cause_id'], target_cause_id)
+            self.conn.execute('RELEASE SAVEPOINT copy_consequence_scoped')
+            self.commit()
+            return new_consequence_id
+        except Exception:
+            self.conn.execute('ROLLBACK TO SAVEPOINT copy_consequence_scoped')
+            self.conn.execute('RELEASE SAVEPOINT copy_consequence_scoped')
+            raise
+
+    def copy_safeguard_scoped(self, safeguard_id, target_consequence_id):
+        """Copy a barrier and preserve applicable category/cause exclusions."""
+        source = self.get_safeguard(safeguard_id)
+        target_consequence = self.get_consequence(target_consequence_id)
+        if not source or not target_consequence:
+            return None
+        source = dict(source)
+        source_consequence_id = source['consequence_id']
+        source_consequence = self.get_consequence(source_consequence_id)
+        target_cause_id = target_consequence['cause_id']
+        self.conn.execute('SAVEPOINT copy_safeguard_scoped')
+        try:
+            new_safeguard_id = self._insert_copied_safeguard(
+                source, target_consequence_id)
+            source_by_category = {
+                row['category_id']: row['id']
+                for row in self.get_consequence_severities(source_consequence_id)}
+            target_by_category = {
+                row['category_id']: row['id']
+                for row in self.get_consequence_severities(target_consequence_id)}
+            for category_id, source_severity_id in source_by_category.items():
+                target_severity_id = target_by_category.get(category_id)
+                if (target_severity_id and safeguard_id in
+                        self.get_severity_excluded_sgs(source_severity_id)):
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO consequence_severity_exclusions "
+                        "(severity_id,safeguard_id) VALUES (?,?)",
+                        (target_severity_id, new_safeguard_id))
+            source_cause_id = source_consequence['cause_id'] if source_consequence else None
+            if (source_cause_id is not None and source_cause_id in
+                    self.get_safeguard_excluded_causes(safeguard_id)):
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO safeguard_cause_exclusions "
+                    "(safeguard_id,cause_id) VALUES (?,?)",
+                    (new_safeguard_id, target_cause_id))
+            self.conn.execute('RELEASE SAVEPOINT copy_safeguard_scoped')
+            self.commit()
+            return new_safeguard_id
+        except Exception:
+            self.conn.execute('ROLLBACK TO SAVEPOINT copy_safeguard_scoped')
+            self.conn.execute('RELEASE SAVEPOINT copy_safeguard_scoped')
+            raise
+
     # ── Move support ──────────────────────────────────────────────────────────
     def move_cause(self, cause_id, target_node_id):
         self.conn.execute("UPDATE causes SET node_id=? WHERE id=?",

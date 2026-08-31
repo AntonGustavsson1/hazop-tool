@@ -8241,17 +8241,11 @@ class ScenarioTablePanel(QWidget):
             'Välj avvikelse att kopiera scenario till:', items, 0, False)
         if not ok: return
         target_dev = next(d for d in devs if d['description'] == choice)
-        # Copy cause
-        new_cid = self.db.add_cause(target_dev['id'])
-        self.db.update_cause(new_cid,
-            description=cause['description'],
-            comp_type=cause.get('comp_type', ''),
-            comp_tag=cause.get('comp_tag', ''))
-        # Copy consequences + safeguards
-        for cons in self.db.consequences(cause_id):
-            new_oid = self.db.copy_consequence(cons['id'], new_cid)
-        self.new_item_created.emit(CAUSE_T, new_cid)
-        self._schedule_rebuild()
+        new_cid = self.db.copy_cause_scoped(
+            cause_id, target_dev['id'], include_descendants=True)
+        if new_cid is not None:
+            self.new_item_created.emit(CAUSE_T, new_cid)
+            self._schedule_rebuild()
 
     # ── Enter-tangent: snabblägg-till ─────────────────────────────────────────
 
@@ -8338,7 +8332,12 @@ class ScenarioTablePanel(QWidget):
             pos = event.pos()
             row = self._table.rowAt(pos.y())
             col = self._table.columnAt(pos.x())
-            if row >= 0 and col in (self._C_ORS, self._C_KON, self._C_SG):
+            # A drag in the scenario is always a copy.  Support the same
+            # hierarchy levels that Ctrl+C/Ctrl+V supports; the receiver
+            # decides the target parent from the row below the cursor.
+            if row >= 0 and col in (self._C_NOD, self._C_DEV, self._C_ORS,
+                                    self._C_KON, self._C_RFORE, self._C_SG,
+                                    self._C_LOPA, self._C_SLUT, self._C_REK):
                 self._drag_press_pos = pos
                 self._drag_press_row = row
                 self._drag_press_col = col
@@ -8619,7 +8618,13 @@ class ScenarioTablePanel(QWidget):
                 return True
             if (event.key() == Qt.Key.Key_C and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-                self._copy_row_to_clipboard(self._table.currentRow())
+                self._copy_row_to_clipboard(self._table.currentRow(),
+                                            self._table.currentColumn())
+                return True
+            if (event.key() == Qt.Key.Key_V and
+                    event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                self._paste_from_clipboard(self._table.currentRow(),
+                                           self._table.currentColumn())
                 return True
             if event.key() == Qt.Key.Key_Delete:
                 self._delete_current_item()
@@ -9196,10 +9201,15 @@ class ScenarioTablePanel(QWidget):
             self._table.setFocus()
             self._table.edit(self._table.model().index(row, col))
 
-    # ── Feature 2: Ctrl+C clipboard copy ─────────────────────────────────────
-    def _copy_row_to_clipboard(self, row):
+    # ── Copy and paste ───────────────────────────────────────────────────────
+    # Kept as an application MIME rather than serialising database objects into
+    # text.  This keeps Ctrl+C/Ctrl+V inside HAZOP precise while text/plain
+    # remains useful when pasting a table row into Excel or an e-mail.
+    _COPY_MIME = 'application/x-hazop-copy-items'
+
+    def _copy_row_text(self, row):
         if row < 0 or row >= len(self._row_meta):
-            return
+            return ''
         dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
         parts = []
         def _txt(col):
@@ -9215,7 +9225,180 @@ class ScenarioTablePanel(QWidget):
         sg = self.db.get_safeguard(sg_id) if sg_id else None
         parts.append(dict(sg).get('description', '') if sg else '')
         parts.append(_txt(self._C_SLUT))
-        QApplication.clipboard().setText('\t'.join(parts))
+        return '\t'.join(parts)
+
+    def _copy_kind_for_cell(self, row, col):
+        """Return the persisted HAZOP entity represented by one table cell."""
+        if row < 0 or row >= len(self._row_meta):
+            return None, None
+        _dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
+        if col in (self._C_NOD, self._C_UTR, self._C_DEV, self._C_ORS):
+            return ('cause', cause_id) if cause_id is not None else (None, None)
+        if col in (self._C_KON, self._C_RFORE, self._C_LOPA, self._C_SLUT):
+            return ('cons', cons_id) if cons_id is not None else (None, None)
+        if col == self._C_SG:
+            return ('sg', sg_id) if sg_id is not None else (None, None)
+        if col == self._C_REK:
+            rec_id = (self._row_recommendation_ids[row]
+                      if row < len(self._row_recommendation_ids) else None)
+            return ('rec', rec_id) if rec_id is not None else (None, None)
+        return None, None
+
+    def _selected_copy_ids(self, row, col, kind, item_id):
+        """Selected same-kind entities, in visible row order, without duplicates."""
+        entries = []
+        seen = set()
+        for index in self._table.selectedIndexes():
+            if index.column() != col:
+                continue
+            selected_kind, selected_id = self._copy_kind_for_cell(
+                index.row(), index.column())
+            if selected_kind != kind or selected_id is None or selected_id in seen:
+                continue
+            seen.add(selected_id)
+            entries.append((int(selected_id), index.row()))
+        if item_id not in seen:
+            entries.append((int(item_id), row))
+        entries.sort(key=lambda entry: entry[1])
+        return [entry_id for entry_id, _ in entries]
+
+    def _copy_row_to_clipboard(self, row, col=None):
+        """Copy the active entity plus a human-readable tab-separated row."""
+        if col is None:
+            col = self._table.currentColumn()
+        kind, item_id = self._copy_kind_for_cell(row, col)
+        if not kind or item_id is None:
+            return
+        mime = QMimeData()
+        payload = {
+            'version': 1,
+            'kind': kind,
+            'ids': self._selected_copy_ids(row, col, kind, item_id),
+        }
+        mime.setData(self._COPY_MIME, json.dumps(payload).encode('utf-8'))
+        mime.setText(self._copy_row_text(row))
+        QApplication.clipboard().setMimeData(mime)
+
+    def _ask_copy_scope(self, kind, count):
+        """Ask once per operation whether copied hierarchy children follow."""
+        if kind not in ('cause', 'cons'):
+            return 'cell'
+        label = 'orsak' if kind == 'cause' else 'konsekvens'
+        plural = 'er' if count != 1 else ''
+        box = QMessageBox(self)
+        box.setWindowTitle('Kopiera i HAZOP')
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(f'Kopiera {count} {label}{plural}')
+        if kind == 'cause':
+            box.setInformativeText(
+                'Ska endast orsaksinnehållet kopieras, eller även hela '
+                'understrukturen med konsekvenser, riskbedömningar, '
+                'barriärer, enablers och rekommendationer?')
+        else:
+            box.setInformativeText(
+                'Ska endast konsekvenscellens innehåll kopieras, eller även '
+                'riskbedömningar, barriärer, enablers och rekommendationer?')
+        cell_btn = box.addButton('Endast cellinnehåll',
+                                 QMessageBox.ButtonRole.AcceptRole)
+        branch_btn = box.addButton('Inkludera underkategorier',
+                                   QMessageBox.ButtonRole.ActionRole)
+        cancel_btn = box.addButton('Avbryt', QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cell_btn)
+        box.exec()
+        if box.clickedButton() is branch_btn:
+            return 'branch'
+        if box.clickedButton() is cell_btn:
+            return 'cell'
+        return None
+
+    def _copy_entities_to_target(self, kind, item_ids, target_row, target_col,
+                                 ask_scope=True):
+        """Copy entities to the hierarchy implied by a table target.
+
+        Used by both drop and paste so their rules cannot drift.  Returns the
+        list of created IDs; an empty list means no mutation was made.
+        """
+        if (target_row < 0 or target_row >= len(self._row_meta) or
+                not item_ids):
+            return []
+        tgt_dev, tgt_cause, tgt_cons, _tgt_sg = self._row_meta[target_row]
+        valid_ids = []
+        seen = set()
+        for item_id in item_ids:
+            try:
+                item_id = int(item_id)
+            except (TypeError, ValueError):
+                continue
+            if item_id not in seen:
+                seen.add(item_id)
+                valid_ids.append(item_id)
+        if not valid_ids:
+            return []
+
+        if kind == 'cause' and tgt_dev is None:
+            return []
+        if kind == 'cons' and tgt_cause is None:
+            return []
+        if kind in ('sg', 'rec') and tgt_cons is None:
+            return []
+
+        scope = self._ask_copy_scope(kind, len(valid_ids)) if ask_scope else 'branch'
+        if scope is None:
+            return []
+
+        created = []
+        try:
+            if kind == 'cause':
+                for item_id in valid_ids:
+                    new_id = self.db.copy_cause_scoped(
+                        item_id, tgt_dev, include_descendants=(scope == 'branch'))
+                    if new_id is not None:
+                        created.append(('cause', new_id))
+            elif kind == 'cons':
+                for item_id in valid_ids:
+                    new_id = self.db.copy_consequence_scoped(
+                        item_id, tgt_cause, include_descendants=(scope == 'branch'))
+                    if new_id is not None:
+                        created.append(('cons', new_id))
+            elif kind == 'sg':
+                for item_id in valid_ids:
+                    new_id = self.db.copy_safeguard_scoped(item_id, tgt_cons)
+                    if new_id is not None:
+                        created.append(('sg', new_id))
+            elif kind == 'rec':
+                existing = {row['id'] for row in
+                            self.db.recommendations_for_consequence(tgt_cons)}
+                for item_id in valid_ids:
+                    if item_id in existing or not self.db.get_recommendation(item_id):
+                        continue
+                    self.db.link_recommendation_to_consequence(item_id, tgt_cons)
+                    created.append(('rec', item_id))
+                    existing.add(item_id)
+        except Exception:
+            logging.exception('HAZOP copy failed: kind=%s target row=%s', kind, target_row)
+            QMessageBox.critical(self, 'Kopieringen misslyckades',
+                                 'Kopieringen kunde inte slutföras. Inga delvisa '
+                                 'ändringar ska ha sparats för den berörda posten.')
+            return []
+
+        if created:
+            self._schedule_rebuild()
+            QTimer.singleShot(0, self.structure_changed.emit)
+        return created
+
+    def _paste_from_clipboard(self, target_row, target_col):
+        mime = QApplication.clipboard().mimeData()
+        if not mime or not mime.hasFormat(self._COPY_MIME):
+            return
+        try:
+            payload = json.loads(bytes(mime.data(self._COPY_MIME)).decode('utf-8'))
+            kind = payload.get('kind')
+            item_ids = payload.get('ids') or []
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            return
+        if kind not in ('cause', 'cons', 'sg', 'rec'):
+            return
+        self._copy_entities_to_target(kind, item_ids, target_row, target_col)
 
     # ── Feature: Delete key ───────────────────────────────────────────────────
     def _delete_current_item(self):
@@ -9293,8 +9476,12 @@ class ScenarioTablePanel(QWidget):
     def _make_compact_drag_pixmap(self, row, col, kind, item_id,
                                   is_copy_modifier, item_count=1):
         """Create a small drag ghost instead of copying the whole cell."""
-        labels = {'cause': 'Orsak', 'cons': 'Konsekvens', 'sg': 'Barriär'}
-        action = 'Kopiera' if is_copy_modifier else 'Flytta'
+        labels = {'cause': 'Orsak', 'cons': 'Konsekvens', 'sg': 'Barriär',
+                  'rec': 'Rekommendation'}
+        # Drag-and-drop is intentionally copy-only.  Explicit move commands
+        # remain available in the context menu for the few cases where a
+        # hierarchy item genuinely needs to be relocated.
+        action = 'Kopiera'
         item = self._table.item(row, col)
         text = ' '.join((item.text() if item else '').split())
         if item_count > 1:
@@ -9329,33 +9516,21 @@ class ScenarioTablePanel(QWidget):
 
     def _selected_drag_entries(self, row, col, kind, item_id):
         """Return unique same-kind fields selected for a multi-drag."""
-        entries = []
-        seen = set()
+        ids = self._selected_copy_ids(row, col, kind, item_id)
+        rows_by_id = {}
         for index in self._table.selectedIndexes():
-            if index.column() != col or not (0 <= index.row() < len(self._row_meta)):
-                continue
-            meta = self._row_meta[index.row()]
-            candidate = (meta[3] if kind == 'sg' else
-                         meta[1] if kind == 'cause' else meta[2])
-            if candidate is None or candidate in seen:
-                continue
-            seen.add(candidate)
-            entries.append((int(candidate), index.row()))
-        if item_id not in seen:
-            entries.insert(0, (int(item_id), row))
-        return entries
+            selected_kind, selected_id = self._copy_kind_for_cell(
+                index.row(), index.column())
+            if selected_kind == kind and selected_id is not None:
+                rows_by_id.setdefault(int(selected_id), index.row())
+        rows_by_id.setdefault(int(item_id), row)
+        return [(entry_id, rows_by_id.get(entry_id, row)) for entry_id in ids]
 
     def _start_drag(self, row, col, is_copy_modifier):
         if row < 0 or row >= len(self._row_meta):
             return
-        dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
-        if col == self._C_SG and sg_id:
-            kind = 'sg'; item_id = sg_id
-        elif col == self._C_ORS and cause_id:
-            kind = 'cause'; item_id = cause_id
-        elif col == self._C_KON and cons_id:
-            kind = 'cons'; item_id = cons_id
-        else:
+        kind, item_id = self._copy_kind_for_cell(row, col)
+        if not kind or item_id is None:
             return
 
         entries = self._selected_drag_entries(row, col, kind, item_id)
@@ -9375,9 +9550,7 @@ class ScenarioTablePanel(QWidget):
         drag.setMimeData(mime)
         drag.setPixmap(pm)
         drag.setHotSpot(pm.rect().center())
-        action = (Qt.DropAction.CopyAction if is_copy_modifier
-                  else Qt.DropAction.MoveAction | Qt.DropAction.CopyAction)
-        drag.exec(action)
+        drag.exec(Qt.DropAction.CopyAction)
 
     def _handle_drop(self, event, source_obj=None):
         text = event.mimeData().text()
@@ -9412,8 +9585,6 @@ class ScenarioTablePanel(QWidget):
             except ValueError:
                 return
             source_rows = [src_row]
-        is_copy = bool(event.dropAction() == Qt.DropAction.CopyAction)
-
         # Find target row/col from drop position. The event's position is
         # relative to whichever widget it was actually delivered to
         # (source_obj) — only remap it into viewport coordinates when it
@@ -9542,70 +9713,15 @@ class ScenarioTablePanel(QWidget):
             event.acceptProposedAction()
             return
 
-        try:
-            item_id = int(item_id_s)
-        except ValueError:
+        if kind not in ('cause', 'cons', 'sg', 'rec'):
+            event.ignore()
             return
-
-        if kind == 'sg':
-            if tgt_cons is None:
-                event.ignore(); return
-            changed = False
-            for item_id, source_row in zip(item_ids, source_rows):
-                if not (0 <= source_row < len(self._row_meta)):
-                    continue
-                if tgt_cons == self._row_meta[source_row][2]:
-                    continue
-                if is_copy:
-                    self.db.copy_safeguard(item_id, tgt_cons)
-                else:
-                    self.db.move_safeguard(item_id, tgt_cons)
-                changed = True
-            if not changed:
-                event.ignore(); return
-            self._schedule_rebuild()
-            QTimer.singleShot(0, self.structure_changed.emit)
-            event.acceptProposedAction()
-
-        elif kind == 'cons':
-            if tgt_cause is None:
-                event.ignore(); return
-            changed = False
-            for item_id, source_row in zip(item_ids, source_rows):
-                if not (0 <= source_row < len(self._row_meta)):
-                    continue
-                if tgt_cause == self._row_meta[source_row][1]:
-                    continue
-                if is_copy:
-                    self.db.copy_consequence(item_id, tgt_cause)
-                else:
-                    self.db.move_consequence(item_id, tgt_cause)
-                changed = True
-            if not changed:
-                event.ignore(); return
-            self._schedule_rebuild()
-            QTimer.singleShot(0, self.structure_changed.emit)
-            event.acceptProposedAction()
-
-        elif kind == 'cause':
-            if tgt_dev is None:
-                event.ignore(); return
-            changed = False
-            for item_id, source_row in zip(item_ids, source_rows):
-                if not (0 <= source_row < len(self._row_meta)):
-                    continue
-                if tgt_dev == self._row_meta[source_row][0]:
-                    continue
-                if is_copy:
-                    self.db.copy_cause(item_id, tgt_dev)
-                else:
-                    self.db.move_cause_to_deviation(item_id, tgt_dev)
-                changed = True
-            if not changed:
-                event.ignore(); return
-            self._schedule_rebuild()
-            QTimer.singleShot(0, self.structure_changed.emit)
-            event.acceptProposedAction()
+        created = self._copy_entities_to_target(
+            kind, item_ids, tgt_row, tgt_col, ask_scope=True)
+        if not created:
+            event.ignore()
+            return
+        event.acceptProposedAction()
 
     # ── Feature 4 & 5: Context menu ───────────────────────────────────────────
     def _on_context_menu(self, pos):
@@ -9651,8 +9767,9 @@ class ScenarioTablePanel(QWidget):
         menu = QMenu(self)
 
         # ── Ctrl+C shortcut hint ────────────────────────────────────────
-        copy_row = menu.addAction(_icon('clipboard'), "Kopiera rad  (Ctrl+C)")
-        copy_row.triggered.connect(lambda: self._copy_row_to_clipboard(row))
+        copy_row = menu.addAction(_icon('clipboard'), "Kopiera  (Ctrl+C)")
+        copy_row.triggered.connect(
+            lambda: self._copy_row_to_clipboard(row, col))
         menu.addSeparator()
 
         # ── Orsak-åtgärder ──────────────────────────────────────────────
@@ -9825,7 +9942,8 @@ class ScenarioTablePanel(QWidget):
 
     # ── Feature 5: Duplicate ──────────────────────────────────────────────────
     def _duplicate_consequence(self, cons_id, cause_id):
-        new_id = self.db.copy_consequence(cons_id, cause_id)
+        new_id = self.db.copy_consequence_scoped(
+            cons_id, cause_id, include_descendants=True)
         if new_id:
             self.structure_changed.emit()
             self._schedule_rebuild()
@@ -9837,7 +9955,8 @@ class ScenarioTablePanel(QWidget):
         dev_id = dict(cause).get('deviation_id')
         if dev_id is None:
             return
-        new_id = self.db.copy_cause(cause_id, dev_id)
+        new_id = self.db.copy_cause_scoped(
+            cause_id, dev_id, include_descendants=True)
         if new_id:
             self.structure_changed.emit()
             self._schedule_rebuild()
@@ -9927,6 +10046,6 @@ class ScenarioTablePanel(QWidget):
             if move:
                 self.db.move_safeguard(sg_id, tgt_cons_id)
             else:
-                self.db.copy_safeguard(sg_id, tgt_cons_id)
+                self.db.copy_safeguard_scoped(sg_id, tgt_cons_id)
             self.structure_changed.emit()
             self._schedule_rebuild()

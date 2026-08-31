@@ -1605,6 +1605,52 @@ class CompactScenarioDragGhostTests(unittest.TestCase):
             payload = drag_cls.return_value.setMimeData.call_args.args[0].text()
             self.assertEqual(payload, 'hzp:scenario-multi:cons:101,0;102,1')
 
+    def test_drag_is_copy_only_without_a_modifier_key(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            panel._table.insertRow(0)
+            panel._table.setItem(0, panel._C_KON, QTableWidgetItem('KON'))
+            panel._row_meta = [(1, 11, 101, None)]
+            with unittest.mock.patch('scenario_panel.QDrag') as drag_cls:
+                panel._start_drag(0, panel._C_KON, False)
+            self.assertEqual(
+                drag_cls.return_value.exec.call_args.args[0], Qt.DropAction.CopyAction)
+
+    def test_ctrl_c_ctrl_v_uses_the_same_scoped_copy_path(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            db = win.db
+            node_id = db.add_node()
+            source_dev = db.deviations(node_id)[0]['id']
+            target_dev = db.add_deviation(node_id, 'Mål')
+            source_cause = db.add_cause(source_dev)
+            source_cons = db.add_consequence(source_cause)
+            db.update_consequence(source_cons, 'Kopierbar konsekvens', 4)
+            target_cause = db.add_cause(target_dev)
+            target_cons = db.add_consequence(target_cause)
+
+            panel._table.setRowCount(2)
+            panel._table.setItem(0, panel._C_KON, QTableWidgetItem('Källa'))
+            panel._table.setItem(1, panel._C_KON, QTableWidgetItem('Mål'))
+            panel._row_meta = [
+                (source_dev, source_cause, source_cons, None),
+                (target_dev, target_cause, target_cons, None),
+            ]
+            panel._row_recommendation_ids = [None, None]
+            panel._copy_row_to_clipboard(0, panel._C_KON)
+            with unittest.mock.patch.object(panel, '_ask_copy_scope',
+                                            return_value='cell'), \
+                    unittest.mock.patch.object(panel, '_schedule_rebuild'), \
+                    unittest.mock.patch('scenario_panel.QTimer.singleShot'):
+                panel._paste_from_clipboard(1, panel._C_KON)
+
+            copied = [row for row in db.consequences(target_cause)
+                      if row['id'] != target_cons]
+            self.assertEqual(len(copied), 1)
+            self.assertEqual(copied[0]['description'], 'Kopierbar konsekvens')
+            self.assertEqual(copied[0]['severity'], 1,
+                             'cell-only scope must not bring risk setup')
+
 
 class BoldTagPaintSmokeTests(unittest.TestCase):
     """Actually invokes _ScenarioDelegate.paint() for KON/SG cells whose
