@@ -786,6 +786,9 @@ class _RecommendationDetailDialog(QDialog):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def export_excel(db: Database, filepath: str, merge_identical=False):
+    from worksheet_export import export_worksheet_excel
+    return export_worksheet_excel(db, filepath, merge_identical)
+
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side

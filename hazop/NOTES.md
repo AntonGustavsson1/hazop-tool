@@ -4522,3 +4522,16 @@ objektannoteringar, så Bluebeam visar inte längre detta på objekten.
 
 Avbockning i P&ID-checklistan tar bara bort utrustningens koppling till
 avvikelsen. Nodavvikelsen och dess HAZOP-data ligger kvar.
+
+## Excel-export följer worksheetets radordning (2026-08-31)
+
+Export av hela HAZOP worksheetet använder nu samma ordning som worksheetet:
+nod, avvikelse, orsak, konsekvens och därefter den gemensamma fysiska radgriden
+för konsekvenskategorier, barriärer och rekommendationer. Tomma avvikelser och
+orsaker utan konsekvens behålls i exporten. Layouten följer den redigerbara
+referensfilen i `ej_programfiler`, medan den separata rekommendationsexporten
+är oförändrad.
+
+Verifierat med `tests.test_worksheet_export`, `py_compile` samt export mot
+aktuell projekt-databas i både läget med och utan sammanslagna hierarkiceller.
+Ingen manuell visuell Excel-verifiering är gjord.
