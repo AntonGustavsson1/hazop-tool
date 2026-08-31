@@ -1957,9 +1957,9 @@ class ExportPdfMarkupTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_export_equipment_marker_has_no_o_prefix_and_is_movable(self):
-        """Equipment labels are FreeText annotations, not baked-in drawing
-        text.  That keeps them movable in a PDF editor and removes the old
-        artificial ``O`` prefix from the exported marker."""
+        """Equipment labels are movable Stamp annotations with a custom
+        rounded appearance, not editable FreeText.  This removes the old
+        artificial ``O`` prefix and keeps the PDF font stable."""
         panel = self._make_panel()
         try:
             tag = 'V-102-LONG-TAG-EXTENDED'
@@ -1971,12 +1971,11 @@ class ExportPdfMarkupTests(unittest.TestCase):
             page = out.load_page(0)
             annots = list(page.annots() or [])
             text = page.get_text()
-            self.assertTrue(any(a.type[1] == 'FreeText' for a in annots))
+            self.assertTrue(any(a.type[1] == 'Stamp' for a in annots))
             self.assertIn(tag, text)
             self.assertNotIn('\nO\n', text)
-            self.assertTrue(any(a.type[1] == 'Circle' for a in annots))
-            labels = [a for a in annots if a.type[1] == 'FreeText']
-            self.assertTrue(labels[0].flags & fitz.PDF_ANNOT_IS_LOCKED_CONTENTS)
+            stamps = [a for a in annots if a.type[1] == 'Stamp']
+            self.assertTrue(stamps[0].flags & fitz.PDF_ANNOT_IS_LOCKED_CONTENTS)
             out.close()
         finally:
             panel.deleteLater()
@@ -1993,7 +1992,7 @@ class ExportPdfMarkupTests(unittest.TestCase):
             import fitz
             out = fitz.open(self.out_path)
             rects = [a.rect for a in (out.load_page(0).annots() or [])
-                     if a.type[1] == 'FreeText']
+                     if a.type[1] == 'Stamp']
             out.close()
             self.assertEqual(len(rects), 3)
             for i, left in enumerate(rects):
@@ -2004,8 +2003,8 @@ class ExportPdfMarkupTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_export_equipment_text_compensates_page_rotation(self):
-        """The annotation text receives the page rotation value so it is
-        upright to the reader even when the P&ID sheet is rotated."""
+        """The annotation receives the page rotation value so its embedded
+        text is upright to the reader even when the P&ID sheet is rotated."""
         panel = self._make_panel()
         try:
             self.db.set_page_rotation(0, 90)
@@ -2015,7 +2014,7 @@ class ExportPdfMarkupTests(unittest.TestCase):
             import fitz
             out = fitz.open(self.out_path)
             annots = [a for a in (out.load_page(0).annots() or [])
-                      if a.type[1] == 'FreeText']
+                      if a.type[1] == 'Stamp']
             rotation = annots[0].rotation if annots else None
             out.close()
             self.assertEqual(len(annots), 1)

@@ -4496,15 +4496,16 @@ Verifierat med 8 enabler-tester, 2 säkra dialog-/rebuild-tester, 12
 smoke-tester och `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
 # Senaste fix 2026-08-30
 
-2026-08-31: PDF-exporterade objektetiketter skapas som flyttbara FreeText-
-annoteringar. De exporteras utan det tidigare O-prefixet, hålls rättvända
+2026-08-31: PDF-exporterade objektetiketter skapas som flyttbara Stamp-
+annoteringar med inbäddad Helvetica-rendering. De exporteras utan det tidigare O-prefixet, hålls rättvända
 vid sidrotation och placeras med kollisionskontroll så objektetiketter inte
 läggs ovanpå varandra. P&ID-data och sparade objektpositioner ändras inte av
 exportens layoutjustering.
 
-2026-08-31 uppföljning: Objektmarkeringens tidigare runda, tydliga
-färgmarkör är återställd. Cirkeln och den kompletta objekttaggen exporteras
-som flyttbara PDF-annoteringar och grupperas visuellt vid placeringen.
+2026-08-31 uppföljning: Objektmarkeringens tidigare tydliga
+färgmarkör är återställd som en rektangel med rundade hörn. Den kompletta
+objekttaggen exporteras som en flyttbar PDF-annotering och placeras med
+kollisionskontroll.
 Långa taggar radbryts i etikettens annoteringsyta i stället för att kapas.
 Etikettens textinnehåll är låst medan dess position är flyttbar, vilket
 förhindrar att Bluebeam byter typsnitt när annoteringen aktiveras.

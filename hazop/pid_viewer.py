@@ -3742,25 +3742,24 @@ def _draw_pid_marker(page, x, y, rgb, letter, label):
 
 
 def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
-    """Export one equipment marker as a clear, movable circle + label.
+    """Export one equipment marker as one movable rounded rectangle.
 
-    The circle restores the earlier high-contrast PDF appearance.  The
-    circle and its label are separate annotations because PDF has no native
-    movable ``circle-with-text`` primitive; both are placed together and can
-    be moved in a PDF editor.  The label is never truncated: long values are
-    wrapped to fit its annotation rectangle.
+    A custom Stamp appearance is used instead of FreeText: PDF viewers such
+    as Bluebeam may replace a FreeText editor's font when it is activated,
+    while a stamp keeps its embedded appearance and remains movable.  The
+    whole object label is rendered inside the rounded rectangle and wrapped
+    rather than truncated.
     """
     pt = fitz.Point(float(x), float(y)) * page.derotation_matrix
     label_text = str(label or '').strip()
-    fontsize = 7.0
-    radius = 7.0
-    gap = 3.0
+    fontsize = 8.0
+    radius = 4.0
     occupied = occupied if occupied is not None else []
 
     def _measure(value):
         return fitz.get_text_length(value, fontname='helv', fontsize=fontsize)
 
-    max_line_width = min(220.0, max(60.0, float(page.cropbox.width) - 20.0))
+    max_line_width = min(240.0, max(70.0, float(page.cropbox.width) - 20.0))
     lines = []
     for word in label_text.split() or ['']:
         if not lines:
@@ -3786,57 +3785,78 @@ def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
     lines = wrapped or ['']
     label_w = max((_measure(line) for line in lines), default=0.0)
     line_h = fontsize * 1.35
-    label_h = max(line_h, len(lines) * line_h)
-    label_x = pt.x + radius + gap
-    label_rect = fitz.Rect(label_x, pt.y - label_h / 2,
-                           label_x + label_w + 4.0, pt.y + label_h / 2)
-    circle_rect = fitz.Rect(pt.x - radius, pt.y - radius,
-                            pt.x + radius, pt.y + radius)
-    base = circle_rect | label_rect
+    box_w = max(42.0, min(max_line_width + 10.0, label_w + 16.0))
+    box_h = max(22.0, len(lines) * line_h + 8.0)
+    base = fitz.Rect(pt.x - box_w / 2, pt.y - box_h / 2,
+                     pt.x + box_w / 2, pt.y + box_h / 2)
 
-    def _parts_at(dx, dy):
-        circle = fitz.Rect(circle_rect.x0 + dx, circle_rect.y0 + dy,
-                           circle_rect.x1 + dx, circle_rect.y1 + dy)
-        label_box = fitz.Rect(label_rect.x0 + dx, label_rect.y0 + dy,
-                              label_rect.x1 + dx, label_rect.y1 + dy)
-        return circle, label_box, circle | label_box
+    def _rect_at(dx, dy):
+        return fitz.Rect(base.x0 + dx, base.y0 + dy,
+                         base.x1 + dx, base.y1 + dy)
 
-    candidates = [_parts_at(0, 0)]
+    candidates = [_rect_at(0, 0)]
     for ring in range(1, 8):
-        step_x = ring * (base.width + 4.0)
-        step_y = ring * (base.height + 4.0)
-        candidates.extend((_parts_at(step_x, 0), _parts_at(-step_x, 0),
-                           _parts_at(0, step_y), _parts_at(0, -step_y),
-                           _parts_at(step_x, step_y), _parts_at(-step_x, step_y),
-                           _parts_at(step_x, -step_y), _parts_at(-step_x, -step_y)))
+        step_x = ring * (box_w + 4.0)
+        step_y = ring * (box_h + 4.0)
+        candidates.extend((_rect_at(step_x, 0), _rect_at(-step_x, 0),
+                           _rect_at(0, step_y), _rect_at(0, -step_y),
+                           _rect_at(step_x, step_y), _rect_at(-step_x, step_y),
+                           _rect_at(step_x, -step_y), _rect_at(-step_x, -step_y)))
 
-    circle_rect, label_rect, combined = next(
-        (parts for parts in candidates
-         if not any(parts[2].intersects(old) for old in occupied)),
-        candidates[-1])
-    occupied.append(combined)
+    rect = next((candidate for candidate in candidates
+                 if not any(candidate.intersects(old) for old in occupied)),
+                candidates[-1])
+    occupied.append(rect)
 
-    circle = page.add_circle_annot(circle_rect)
-    circle.set_colors({'stroke': list(rgb), 'fill': list(rgb)})
-    circle.set_border({'width': 0.5})
-    circle.set_info(title='Objektmarkering', content=label_text)
-    circle.update(opacity=0.85)
+    # Create a movable annotation, then replace its standard stamp artwork
+    # with a small custom appearance stream using Base14 Helvetica.
+    doc = page.parent
+    annot = page.add_stamp_annot(rect, stamp=0)
+    annot.set_info(title='Objekt', content=label_text)
+    annot.set_flags(annot.flags | fitz.PDF_ANNOT_IS_LOCKED_CONTENTS)
+    annot.update(opacity=0.90, rotate=int(page.rotation) % 360)
 
-    label_annot = None
-    if label_text:
-        label_annot = page.add_freetext_annot(
-            label_rect, '\n'.join(lines), fontsize=fontsize, fontname='helv',
-            text_color=rgb, fill_color=None,
-            opacity=1.0, rotate=int(page.rotation) % 360)
-        label_annot.set_border({'width': 0})
-        label_annot.set_info(title='Objektetikett', content=label_text)
-        label_annot.update()
-        # Bluebeam (and similar PDF editors) may substitute its own editing
-        # font when a FreeText annotation is entered.  Lock only the text
-        # contents, not the annotation geometry, so the label keeps its PDF
-        # appearance while its position remains movable.
-        label_annot.set_flags(label_annot.flags | fitz.PDF_ANNOT_IS_LOCKED_CONTENTS)
-    return circle, label_annot, combined
+    ap_kind, ap_value = doc.xref_get_key(annot.xref, 'AP')
+    match = re.search(r'/N\s+(\d+)\s+0\s+R', ap_value or '')
+    if not match:
+        return annot, rect
+    ap_xref = int(match.group(1))
+    font_xref = doc.get_new_xref()
+    doc.update_object(
+        font_xref,
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica '
+        '/Encoding /WinAnsiEncoding >>')
+    doc.xref_set_key(ap_xref, 'BBox', f'[0 0 {box_w:.3f} {box_h:.3f}]')
+    doc.xref_set_key(ap_xref, 'Matrix', '[1 0 0 1 0 0]')
+    doc.xref_set_key(ap_xref, 'Resources',
+                     f'<< /Font << /Helv {font_xref} 0 R >> >>')
+
+    r = min(radius, box_w / 4.0, box_h / 4.0)
+    k = r * 0.5522848
+    path = (
+        f'{rgb[0]:.5f} {rgb[1]:.5f} {rgb[2]:.5f} rg\n'
+        f'{rgb[0]:.5f} {rgb[1]:.5f} {rgb[2]:.5f} RG\n'
+        '0.8 w\n'
+        f'{r:.3f} 0 m {box_w-r:.3f} 0 l '
+        f'{box_w-r+k:.3f} 0 {box_w:.3f} {r-k:.3f} {box_w:.3f} {r:.3f} c '
+        f'{box_w:.3f} {box_h-r:.3f} l '
+        f'{box_w:.3f} {box_h-r+k:.3f} {box_w-r+k:.3f} {box_h:.3f} '
+        f'{box_w-r:.3f} {box_h:.3f} c {r:.3f} {box_h:.3f} l '
+        f'{r-k:.3f} {box_h:.3f} 0 {box_h-r+k:.3f} 0 {box_h-r:.3f} c '
+        f'0 {r:.3f} l 0 {r-k:.3f} {r-k:.3f} 0 {r:.3f} 0 c h B\n')
+    stream = [path.encode('ascii')]
+    for index, line in enumerate(lines):
+        encoded = line.encode('cp1252', errors='replace')
+        encoded = (encoded.replace(b'\\', b'\\\\')
+                          .replace(b'(', b'\\(').replace(b')', b'\\)'))
+        text_w = _measure(line)
+        tx = max(3.0, (box_w - text_w) / 2.0)
+        ty = box_h - 5.0 - fontsize - index * line_h
+        stream.append(
+            f'BT /Helv {fontsize:.2f} Tf 1 1 1 rg {tx:.3f} {ty:.3f} Td ('
+            .encode('ascii') + encoded + b') Tj ET\n')
+    doc.update_stream(ap_xref, b''.join(stream), compress=1)
+    return annot, rect
 
 
 _INSTR_SECONDARY_EFFECTS = [
