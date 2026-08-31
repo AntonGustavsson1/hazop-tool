@@ -1965,7 +1965,7 @@ class ExportPdfMarkupTests(unittest.TestCase):
 
     def test_export_equipment_marker_has_no_o_prefix_and_is_movable(self):
         """Equipment labels are movable Stamp annotations with a custom
-        rounded appearance, not editable FreeText.  This removes the old
+        rectangular appearance, not editable FreeText.  This removes the old
         artificial ``O`` prefix and keeps the PDF font stable."""
         panel = self._make_panel()
         try:
@@ -1985,6 +1985,11 @@ class ExportPdfMarkupTests(unittest.TestCase):
             self.assertTrue(stamps[0].flags & fitz.PDF_ANNOT_IS_LOCKED_CONTENTS)
             marker_object = out.xref_object(stamps[0].xref)
             self.assertNotIn('/Name /Approved', marker_object)
+            ap_value = out.xref_get_key(stamps[0].xref, 'AP')[1]
+            ap_xref = int(ap_value.split('/N ')[1].split()[0])
+            appearance = out.xref_stream(ap_xref).decode('ascii')
+            self.assertNotIn(' c ', appearance,
+                             'equipment marker must use straight rectangle edges')
             out.close()
         finally:
             panel.deleteLater()
@@ -2075,7 +2080,7 @@ class ExportPdfMarkupTests(unittest.TestCase):
             out = fitz.open(self.out_path)
             out_page = out.load_page(0)
             self.assertEqual(out_page.rotation, 90)
-            # _draw_pid_marker fills a small rounded rect anchored near
+            # _draw_pid_marker fills a small rectangle anchored near
             # (x, y) in content space — find the drawn fill rect and
             # confirm its corner sits near the ORIGINAL content_pt, not
             # near the raw (unrotated) stored_pt (which would be the

@@ -4502,13 +4502,15 @@ vid sidrotation och placeras med kollisionskontroll så objektetiketter inte
 läggs ovanpå varandra. P&ID-data och sparade objektpositioner ändras inte av
 exportens layoutjustering.
 
-2026-08-31 uppföljning: Objektmarkeringens tidigare tydliga
-färgmarkör är återställd som en rektangel med rundade hörn. Den kompletta
+2026-08-31 uppföljning: Objektmarkeringen exporteras som en enkel
+rektangel med raka hörn. Den kompletta
 objekttaggen exporteras som en flyttbar PDF-annotering och placeras med
 kollisionskontroll.
 Långa taggar radbryts i etikettens annoteringsyta i stället för att kapas.
 Etikettens textinnehåll är låst medan dess position är flyttbar, vilket
 förhindrar att Bluebeam byter typsnitt när annoteringen aktiveras.
+Annoteringens rektangel återställs efter rotationsuppdateringen så att
+inbäddad text inte kläms ihop eller hamnar felvänt på roterade sidor.
 Alla objekt i PDF-exporten använder nu den tydliga gröna objektfärgen,
 oberoende av om objektet har en kopplad avvikelse.
 Stamp-skalets standardnamn `Approved` tas bort från exporterade

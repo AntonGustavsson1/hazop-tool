@@ -3742,18 +3742,19 @@ def _draw_pid_marker(page, x, y, rgb, letter, label):
 
 
 def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
-    """Export one equipment marker as one movable rounded rectangle.
+    """Export one equipment marker as one movable rectangular annotation.
 
     A custom Stamp appearance is used instead of FreeText: PDF viewers such
     as Bluebeam may replace a FreeText editor's font when it is activated,
     while a stamp keeps its embedded appearance and remains movable.  The
-    whole object label is rendered inside the rounded rectangle and wrapped
-    rather than truncated.
+    whole object label is rendered inside the rectangle and wrapped rather
+    than truncated.  The annotation rectangle is restored after PyMuPDF's
+    rotation update: otherwise a 90-degree page can make the appearance
+    stream narrower than its BBox, which squeezes the text in Bluebeam.
     """
     pt = fitz.Point(float(x), float(y)) * page.derotation_matrix
     label_text = str(label or '').strip()
     fontsize = 8.0
-    radius = 4.0
     occupied = occupied if occupied is not None else []
 
     def _measure(value):
@@ -3836,19 +3837,12 @@ def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
     doc.xref_set_key(ap_xref, 'Resources',
                      f'<< /Font << /Helv {font_xref} 0 R >> >>')
 
-    r = min(radius, box_w / 4.0, box_h / 4.0)
-    k = r * 0.5522848
     path = (
         f'{rgb[0]:.5f} {rgb[1]:.5f} {rgb[2]:.5f} rg\n'
         f'{rgb[0]:.5f} {rgb[1]:.5f} {rgb[2]:.5f} RG\n'
         '0.8 w\n'
-        f'{r:.3f} 0 m {box_w-r:.3f} 0 l '
-        f'{box_w-r+k:.3f} 0 {box_w:.3f} {r-k:.3f} {box_w:.3f} {r:.3f} c '
-        f'{box_w:.3f} {box_h-r:.3f} l '
-        f'{box_w:.3f} {box_h-r+k:.3f} {box_w-r+k:.3f} {box_h:.3f} '
-        f'{box_w-r:.3f} {box_h:.3f} c {r:.3f} {box_h:.3f} l '
-        f'{r-k:.3f} {box_h:.3f} 0 {box_h-r+k:.3f} 0 {box_h-r:.3f} c '
-        f'0 {r:.3f} l 0 {r-k:.3f} {r-k:.3f} 0 {r:.3f} 0 c h B\n')
+        f'0 0 m {box_w:.3f} 0 l {box_w:.3f} {box_h:.3f} l '
+        f'0 {box_h:.3f} l h B\n')
     stream = [path.encode('ascii')]
     for index, line in enumerate(lines):
         encoded = line.encode('cp1252', errors='replace')
@@ -3861,6 +3855,13 @@ def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
             f'BT /Helv {fontsize:.2f} Tf 1 1 1 rg {tx:.3f} {ty:.3f} Td ('
             .encode('ascii') + encoded + b') Tj ET\n')
     doc.update_stream(ap_xref, b''.join(stream), compress=1)
+    # PyMuPDF may swap/resize the annotation rectangle while applying the
+    # page rotation.  Do this after installing the custom appearance: the
+    # final update keeps the AP's coordinate system and the movable
+    # annotation bounds in agreement, so the embedded text remains upright
+    # and undistorted on rotated pages.
+    annot.set_rect(rect)
+    annot.update(rotate=int(page.rotation) % 360)
     return annot, rect
 
 
