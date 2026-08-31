@@ -3741,6 +3741,62 @@ def _draw_pid_marker(page, x, y, rgb, letter, label):
             pass
 
 
+def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
+    """Export one equipment label as a movable, upright PDF annotation.
+
+    Equipment coordinates are stored in the viewer's rotated display space,
+    while PyMuPDF writes in the page's unrotated content space.  The anchor
+    is therefore derotated once here.  PyMuPDF's annotation rotation is
+    applied in the opposite direction from the page display rotation, so
+    using the page rotation value keeps the text horizontal to the reader.
+
+    ``occupied`` is a per-page list of already placed marker rectangles.  A
+    small deterministic candidate search moves labels apart when several
+    objects are close together.  This is export-only layout: the saved P&ID
+    coordinates are not changed, and the resulting FreeText annotations can
+    still be dragged in a PDF editor/viewer.
+    """
+    pt = fitz.Point(float(x), float(y)) * page.derotation_matrix
+    label_text = str(label or '').strip()[:40]
+    fontsize = 7.0
+    text_w = fitz.get_text_length(label_text, fontname='helv', fontsize=fontsize) if label_text else 0.0
+    card_w = max(14.0, text_w + 10.0)
+    card_h = 14.0
+    base = fitz.Rect(pt.x, pt.y - card_h / 2, pt.x + card_w, pt.y + card_h / 2)
+    occupied = occupied if occupied is not None else []
+
+    def _rect_at(dx, dy):
+        return fitz.Rect(base.x0 + dx, base.y0 + dy,
+                         base.x1 + dx, base.y1 + dy)
+
+    # Prefer the original anchor, then place around it in expanding rows.
+    candidates = [_rect_at(0, 0)]
+    for ring in range(1, 8):
+        gap = 4.0
+        dx = ring * (card_w + gap)
+        dy = ring * (card_h + gap)
+        candidates.extend((_rect_at(dx, 0), _rect_at(-dx, 0),
+                           _rect_at(0, dy), _rect_at(0, -dy),
+                           _rect_at(dx, dy), _rect_at(-dx, dy),
+                           _rect_at(dx, -dy), _rect_at(-dx, -dy)))
+
+    rect = next((candidate for candidate in candidates
+                 if not any(candidate.intersects(old) for old in occupied)),
+                candidates[-1])
+    occupied.append(rect)
+
+    fill = tuple(min(1.0, 0.70 + 0.30 * c) for c in rgb)
+    text = label_text or ' '
+    annot = page.add_freetext_annot(
+        rect, text, fontsize=fontsize, fontname='helv',
+        text_color=(1.0, 1.0, 1.0), fill_color=fill,
+        opacity=0.85, rotate=int(page.rotation) % 360)
+    annot.set_border({'width': 0.5})
+    annot.set_info(title='Objekt', content=label_text)
+    annot.update()
+    return annot, rect
+
+
 _INSTR_SECONDARY_EFFECTS = [
     "Pump stoppar",
     "Kompressor stoppar",

@@ -1956,6 +1956,69 @@ class ExportPdfMarkupTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_export_equipment_marker_has_no_o_prefix_and_is_movable(self):
+        """Equipment labels are FreeText annotations, not baked-in drawing
+        text.  That keeps them movable in a PDF editor and removes the old
+        artificial ``O`` prefix from the exported marker."""
+        panel = self._make_panel()
+        try:
+            eq_id = self.db.add_equipment_item('V-102', 'V-102', 'V', 0, 'Ventil', '', 0)
+            self.db.add_equipment_marker(eq_id, 'V-102', 0, 90.0, 70.0, 'Ventil')
+            self._export(panel)
+            import fitz
+            out = fitz.open(self.out_path)
+            page = out.load_page(0)
+            annots = list(page.annots() or [])
+            text = page.get_text()
+            self.assertTrue(any(a.type[1] == 'FreeText' for a in annots))
+            self.assertIn('V-102', text)
+            self.assertNotIn('\nO\n', text)
+            out.close()
+        finally:
+            panel.deleteLater()
+
+    def test_export_separates_overlapping_equipment_labels(self):
+        """Several objects at one/nearby P&ID positions must get distinct
+        annotation rectangles in the exported PDF."""
+        panel = self._make_panel()
+        try:
+            for i, tag in enumerate(('V-201', 'V-202', 'V-203')):
+                eq_id = self.db.add_equipment_item(tag, tag, 'V', 0, 'Ventil', '', 0)
+                self.db.add_equipment_marker(eq_id, tag, 0, 120.0 + i, 90.0, 'Ventil')
+            self._export(panel)
+            import fitz
+            out = fitz.open(self.out_path)
+            rects = [a.rect for a in (out.load_page(0).annots() or [])
+                     if a.type[1] == 'FreeText']
+            out.close()
+            self.assertEqual(len(rects), 3)
+            for i, left in enumerate(rects):
+                for right in rects[i + 1:]:
+                    self.assertFalse(left.intersects(right),
+                                     f'exported object labels overlap: {left} / {right}')
+        finally:
+            panel.deleteLater()
+
+    def test_export_equipment_text_compensates_page_rotation(self):
+        """The annotation text receives the page rotation value so it is
+        upright to the reader even when the P&ID sheet is rotated."""
+        panel = self._make_panel()
+        try:
+            self.db.set_page_rotation(0, 90)
+            eq_id = self.db.add_equipment_item('V-301', 'V-301', 'V', 0, 'Ventil', '', 0)
+            self.db.add_equipment_marker(eq_id, 'V-301', 0, 100.0, 70.0, 'Ventil')
+            self._export(panel)
+            import fitz
+            out = fitz.open(self.out_path)
+            annots = [a for a in (out.load_page(0).annots() or [])
+                      if a.type[1] == 'FreeText']
+            rotation = annots[0].rotation if annots else None
+            out.close()
+            self.assertEqual(len(annots), 1)
+            self.assertEqual(rotation, 90)
+        finally:
+            panel.deleteLater()
+
     def _insert_cause_marker(self, cause_id, page, x, y, comp_type=''):
         """Database.add_cause_marker was removed 2026-08-13 (see NOTES.md) —
         insert directly, same as ExportPdfRotationRemapTests' identical helper."""

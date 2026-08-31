@@ -4496,5 +4496,11 @@ Verifierat med 8 enabler-tester, 2 säkra dialog-/rebuild-tester, 12
 smoke-tester och `py_compile`. Ingen manuell visuell GUI-verifiering är gjord.
 # Senaste fix 2026-08-30
 
+2026-08-31: PDF-exporterade objektetiketter skapas som flyttbara FreeText-
+annoteringar. De exporteras utan det tidigare O-prefixet, hålls rättvända
+vid sidrotation och placeras med kollisionskontroll så objektetiketter inte
+läggs ovanpå varandra. P&ID-data och sparade objektpositioner ändras inte av
+exportens layoutjustering.
+
 Avbockning i P&ID-checklistan tar bara bort utrustningens koppling till
 avvikelsen. Nodavvikelsen och dess HAZOP-data ligger kvar.

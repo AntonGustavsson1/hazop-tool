@@ -64,7 +64,8 @@ from pid_viewer import (
     MODE_RED_MARKUP_SYMBOL, MODE_BOARD_LAYOUT,
     MODE_PICK_REF_TAG, MODE_ANNOTATION, MODE_PLACE_EQUIPMENT,
     MODE_EDIT_EQUIPMENT,
-    _icon, _vline, _draw_pid_marker, _hex_to_fitz_rgb, _sheet_ref_variants,
+    _icon, _vline, _draw_pid_marker, _draw_pdf_equipment_marker,
+    _hex_to_fitz_rgb, _sheet_ref_variants,
     _equip_prefix_from_tag, _obj_type_matches, ensure_ocr_available,
     _MEDIA_COLORS,
     ConnectorDotItem, PIDImportDialog,
@@ -2010,6 +2011,7 @@ class PIDPanel(QWidget):
             # (0,130,60 green / 160,0,0 red, scaled to PyMuPDF's 0-1
             # range), keyed on the same deviation_count PIDPanel.
             # _load_overlays() already computes for the live marker.
+            equipment_label_rects = []
             for m in self.db.equipment_markers_for_page(phys_page):
                 md = dict(m)
                 x, y = float(md['x']), float(md['y'])
@@ -2022,7 +2024,8 @@ class PIDPanel(QWidget):
                 # tag even though the live viewer shows the new one.
                 eq = self.db.get_equipment_by_id(eq_id) if eq_id else None
                 tag_val = (eq.get('tag') or '') if eq else md.get('tag', '')
-                _draw_pid_marker(page, x, y, rgb, 'O', tag_val)
+                _draw_pdf_equipment_marker(
+                    page, x, y, rgb, tag_val, occupied=equipment_label_rects)
 
             # ── Connection lines ──────────────────────────────────────────
             shape = page.new_shape()
