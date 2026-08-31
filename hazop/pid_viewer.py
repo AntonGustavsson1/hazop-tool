@@ -3815,7 +3815,10 @@ def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
     annot = page.add_stamp_annot(rect, stamp=0)
     annot.set_info(title='Objekt', content=label_text)
     annot.set_flags(annot.flags | fitz.PDF_ANNOT_IS_LOCKED_CONTENTS)
-    annot.update(opacity=0.60, rotate=int(page.rotation) % 360)
+    # The rectangle's 60% opacity is implemented inside the appearance
+    # stream, so the text can remain fully opaque.  Keeping the annotation
+    # itself at 100% avoids Bluebeam multiplying the text's alpha as well.
+    annot.update(opacity=1.0, rotate=int(page.rotation) % 360)
     # stamp=0 is only used as a movable annotation shell.  Its default
     # ``/Name /Approved`` is a built-in sample-stamp label that Bluebeam
     # displays when the annotation is selected; it is not part of this
@@ -3832,14 +3835,25 @@ def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
         font_xref,
         '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica '
         '/Encoding /WinAnsiEncoding >>')
+    fill_state_xref = doc.get_new_xref()
+    doc.update_object(
+        fill_state_xref,
+        '<< /Type /ExtGState /ca 0.60 /CA 0.60 >>')
+    text_state_xref = doc.get_new_xref()
+    doc.update_object(
+        text_state_xref,
+        '<< /Type /ExtGState /ca 1.0 /CA 1.0 >>')
     doc.xref_set_key(ap_xref, 'BBox', f'[0 0 {box_w:.3f} {box_h:.3f}]')
     doc.xref_set_key(ap_xref, 'Matrix', '[1 0 0 1 0 0]')
     doc.xref_set_key(ap_xref, 'Resources',
-                     f'<< /Font << /Helv {font_xref} 0 R >> >>')
+                     f'<< /Font << /Helv {font_xref} 0 R >> '
+                     f'/ExtGState << /GSfill {fill_state_xref} 0 R '
+                     f'/GStext {text_state_xref} 0 R >> >>')
 
     path = (
         f'{rgb[0]:.5f} {rgb[1]:.5f} {rgb[2]:.5f} rg\n'
         f'{rgb[0]:.5f} {rgb[1]:.5f} {rgb[2]:.5f} RG\n'
+        '/GSfill gs\n'
         '0.8 w\n'
         f'0 0 m {box_w:.3f} 0 l {box_w:.3f} {box_h:.3f} l '
         f'0 {box_h:.3f} l h B\n')
@@ -3852,7 +3866,8 @@ def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
         tx = max(3.0, (box_w - text_w) / 2.0)
         ty = box_h - 5.0 - fontsize - index * line_h
         stream.append(
-            f'BT /Helv {fontsize:.2f} Tf 1 1 1 rg {tx:.3f} {ty:.3f} Td ('
+            f'/GStext gs BT /Helv {fontsize:.2f} Tf 1 1 1 rg '
+            f'{tx:.3f} {ty:.3f} Td ('
             .encode('ascii') + encoded + b') Tj ET\n')
     doc.update_stream(ap_xref, b''.join(stream), compress=1)
     # PyMuPDF may swap/resize the annotation rectangle while applying the

@@ -1990,6 +1990,10 @@ class ExportPdfMarkupTests(unittest.TestCase):
             appearance = out.xref_stream(ap_xref).decode('ascii')
             self.assertNotIn(' c ', appearance,
                              'equipment marker must use straight rectangle edges')
+            self.assertIn('/GSfill gs', appearance)
+            self.assertIn('/GStext gs', appearance,
+                          'text must be rendered with its own opaque graphics state')
+            self.assertIn('/ExtGState', out.xref_object(ap_xref))
             out.close()
         finally:
             panel.deleteLater()
