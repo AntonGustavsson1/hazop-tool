@@ -4509,6 +4509,8 @@ kollisionskontroll.
 Långa taggar radbryts i etikettens annoteringsyta i stället för att kapas.
 Etikettens textinnehåll är låst medan dess position är flyttbar, vilket
 förhindrar att Bluebeam byter typsnitt när annoteringen aktiveras.
+Alla objekt i PDF-exporten använder nu den tydliga gröna objektfärgen,
+oberoende av om objektet har en kopplad avvikelse.
 
 Avbockning i P&ID-checklistan tar bara bort utrustningens koppling till
 avvikelsen. Nodavvikelsen och dess HAZOP-data ligger kvar.

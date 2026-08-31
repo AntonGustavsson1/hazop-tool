@@ -2006,18 +2006,15 @@ class PIDPanel(QWidget):
             # "övriga objekt jag satt ut på P&ID... kommer inte med,
             # varken dom röda eller gröna") — the loop below simply
             # didn't exist; only cause/consequence/safeguard markers were
-            # ever drawn. Same red/green split as PIDGraphicsView.
-            # add_equipment_marker's on-screen pen/brush colours
-            # (0,130,60 green / 160,0,0 red, scaled to PyMuPDF's 0-1
-            # range), keyed on the same deviation_count PIDPanel.
-            # _load_overlays() already computes for the live marker.
+            # ever drawn.  Exported objects deliberately use one consistent
+            # green colour, independent of whether they have a linked
+            # deviation; the PDF is an object overview, not a status filter.
             equipment_label_rects = []
             for m in self.db.equipment_markers_for_page(phys_page):
                 md = dict(m)
                 x, y = float(md['x']), float(md['y'])
                 eq_id = md.get('equipment_id')
-                dev_count = self.db.equipment_deviation_count(eq_id) if eq_id else 0
-                rgb = (0.0, 0.51, 0.24) if dev_count > 0 else (0.63, 0.0, 0.0)
+                rgb = (0.0, 0.51, 0.24)
                 # Live-resolved tag, same reasoning as _load_overlays()
                 # (2026-08-18, see NOTES.md "Objektets identitet ...") —
                 # otherwise a PDF export could show a renamed object's OLD

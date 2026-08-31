@@ -1950,9 +1950,16 @@ class ExportPdfMarkupTests(unittest.TestCase):
             self._export(panel)
             import fitz
             out = fitz.open(self.out_path)
-            text = out.load_page(0).get_text()
+            page = out.load_page(0)
+            text = page.get_text()
+            stamps = [a for a in (page.annots() or []) if a.type[1] == 'Stamp']
+            ap_value = out.xref_get_key(stamps[0].xref, 'AP')[1]
+            ap_xref = int(ap_value.split('/N ')[1].split()[0])
+            appearance = out.xref_stream(ap_xref).decode('ascii')
             out.close()
             self.assertIn('V-101', text)
+            self.assertEqual(len(stamps), 1)
+            self.assertIn('0.00000 0.51000 0.24000 rg', appearance)
         finally:
             panel.deleteLater()
 
