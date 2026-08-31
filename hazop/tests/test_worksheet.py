@@ -69,7 +69,10 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
-from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
+from PyQt6.QtCore import (  # noqa: E402
+    Qt, QPoint, QDate, QEvent, QThread, pyqtSignal,
+    QItemSelection, QItemSelectionModel,
+)
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
 
@@ -245,8 +248,53 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertIn('HAZOP Worksheet', mime.html())
             with unittest.mock.patch('worksheet.QTimer.singleShot') as delayed:
                 ws._office_copy_btn.click()
-            self.assertEqual(ws._office_copy_btn.text(), 'Kopierat')
+            self.assertEqual(ws._office_copy_btn.text(), 'Markering kopierad')
             delayed.assert_called_once()
+        finally:
+            ws.deleteLater()
+
+    def test_office_copy_uses_selected_multirow_multicolumn_rectangle(self):
+        """A Worksheet selection must export only its rectangular data block."""
+        from hazop import HAZOPWorksheet
+
+        ids = self._make_full_chain(node_name='Nod A')
+        self.db.update_cause(ids['cause_id'], description='Orsak A')
+        self.db.update_consequence(ids['cons_id'], 'Konsekvens A', 3)
+        self.db.update_safeguard(ids['sg_id'], description='Barriär A', rrf=100)
+        self.db.add_safeguard(ids['cons_id'])
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()
+            panel = ws._table_panel
+            table = panel._table
+            cause_row = next(row for row, meta in enumerate(panel._row_meta)
+                             if meta[1] == ids['cause_id'])
+            last_row = cause_row + 1
+            selection = QItemSelection(
+                table.model().index(cause_row, panel._C_ORS),
+                table.model().index(last_row, panel._C_SG))
+            table.selectionModel().select(
+                selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+
+            html, plain_text = panel._office_clipboard_payload('Vald del')
+
+            self.assertIn('Orsak', html)
+            self.assertIn('Konsekvens', html)
+            self.assertIn('Barriär', html)
+            self.assertIn('Orsak A', html)
+            self.assertIn('Konsekvens A', html)
+            self.assertIn('Barriär A', html)
+            self.assertNotIn('Nod A', html)
+            self.assertIn('rowspan="2"', html)
+            self.assertTrue(plain_text.startswith('Orsak (frekvens)\tKonsekvens'))
+            self.assertEqual(len(plain_text.splitlines()), 3)
+
+            self.assertTrue(panel.copy_visible_table_to_office_clipboard('Vald del'))
+            mime = QApplication.clipboard().mimeData()
+            self.assertTrue(mime.hasHtml())
+            self.assertIn('Vald del', mime.html())
+            self.assertNotIn('Nod A', mime.html())
         finally:
             ws.deleteLater()
 

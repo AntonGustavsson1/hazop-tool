@@ -4277,6 +4277,21 @@ Worksheet-tester, konsekvensdubbelklicktestet, `py_compile` och 12
 smoke-tester. Ingen manuell inklistring i Word/Excel är ännu visuellt
 verifierad.
 
+### Markera flera rader och kolumner vid Office-kopiering (2026-08-31)
+
+`Kopiera markering till Word/Excel` och `Ctrl+Shift+C` utgår nu från den
+aktuella markeringen i Worksheet. En vanlig sammanhängande markering med mus
+eller Shift exporteras som just den rektangeln, med rubriker, formatering och
+beskurna sammanslagna hierarkiceller. Om inget är markerat exporteras hela
+den synliga Worksheeten som tidigare. Flera separata Ctrl-markeringar får en
+gemensam begränsningsyta där endast faktiskt markerade celler får innehåll;
+mellanliggande celler lämnas tomma så att oavsiktliga data aldrig följer med.
+Vanliga Ctrl+C/Ctrl+V i HAZOP påverkas inte.
+
+Verifierat med en ny headless-regression som markerar två rader och flera
+kolumner över en sammanslagen barriärcell och kontrollerar HTML, TSV och
+Urklipp. `py_compile` och de riktade Office-kopieringstesterna passerar.
+
 ## Högerklicksplacering på P&ID borttagen (2026-08-28)
 
 Den manuella “Objekt”-åtgärden i P&ID-vyns högerklicksmeny är borttagen.

@@ -47,10 +47,11 @@ class HAZOPWorksheet(QWidget):
         top_bar.addWidget(self._all_nodes_cb)
         self._show_empty_dev_cb = QCheckBox("Visa avvikelser utan orsaker")
         top_bar.addWidget(self._show_empty_dev_cb)
-        self._office_copy_btn = QPushButton("Kopiera till Word/Excel")
+        self._office_copy_btn = QPushButton("Kopiera markering till Word/Excel")
         self._office_copy_btn.setToolTip(
-            "Kopierar den synliga worksheeten med hierarki, färger och "
-            "sammanslagna celler. Kortkommando: Ctrl+Shift+C")
+            "Kopierar markerade rader och kolumner med hierarki, färger och "
+            "sammanslagna celler. Om inget är markerat kopieras hela den "
+            "synliga worksheeten. Kortkommando: Ctrl+Shift+C")
         top_bar.addWidget(self._office_copy_btn)
         top_bar.addStretch()
         layout.addLayout(top_bar)
@@ -121,8 +122,8 @@ class HAZOPWorksheet(QWidget):
             'HAZOP Worksheet')
         if not copied:
             return
-        original = 'Kopiera till Word/Excel'
-        self._office_copy_btn.setText('Kopierat')
+        original = 'Kopiera markering till Word/Excel'
+        self._office_copy_btn.setText('Markering kopierad')
         QTimer.singleShot(1800, lambda: self._office_copy_btn.setText(original))
 
     def _populate_node_combo(self):

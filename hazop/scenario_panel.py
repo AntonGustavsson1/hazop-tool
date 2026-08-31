@@ -9316,18 +9316,62 @@ class ScenarioTablePanel(QWidget):
                 text = '\n'.join(labels)
         return str(text or ''), tags
 
+    def _office_copy_selection(self):
+        """Return the visible selection bounds, or the whole visible table.
+
+        A normal Shift/drag selection is rectangular and keeps merged cells
+        intact. Ctrl-selected disjoint cells cannot be one native Excel
+        clipboard range, so they are represented faithfully in their bounding
+        grid with unselected positions left blank (never filled with data the
+        user did not select).
+        """
+        table = self._table
+        selected_ranges = table.selectedRanges()
+        if not selected_ranges:
+            return (list(range(table.rowCount())),
+                    [col for col in range(table.columnCount())
+                     if not table.isColumnHidden(col)], None)
+        # A single QTableWidget selection range is the ordinary Shift/drag
+        # workflow. selectedIndexes() is unreliable for cells covered by a
+        # visual rowspan, so deliberately rebuild the complete rectangle.
+        if len(selected_ranges) == 1:
+            selection = selected_ranges[0]
+            rows = list(range(selection.topRow(), selection.bottomRow() + 1))
+            columns = [col for col in range(selection.leftColumn(),
+                                             selection.rightColumn() + 1)
+                       if not table.isColumnHidden(col)]
+            selected = {(row, col) for row in rows for col in columns}
+            return rows, columns, selected
+
+        # Several Ctrl selections do not map to one native Office range.
+        # Keep the occupied cells as a sparse bounding grid instead.
+        selected = {(index.row(), index.column()) for index in table.selectedIndexes()
+                    if not table.isColumnHidden(index.column())}
+        if not selected:
+            return [], [], set()
+        row_min = min(row for row, _col in selected)
+        row_max = max(row for row, _col in selected)
+        col_min = min(col for _row, col in selected)
+        col_max = max(col for _row, col in selected)
+        rows = list(range(row_min, row_max + 1))
+        columns = [col for col in range(col_min, col_max + 1)
+                   if not table.isColumnHidden(col)]
+        return rows, columns, selected
+
     def _office_clipboard_payload(self, title='HAZOP Worksheet'):
-        """Build HTML + TSV of the exact visible, merged worksheet grid.
+        """Build HTML + TSV of a selected or complete visible worksheet grid.
 
         HTML table clipboard data is understood by both Word and desktop
         Excel. TSV is included as a safe fallback for applications that only
         accept plain text. Internal HAZOP copy data is deliberately separate.
         """
         table = self._table
-        columns = [col for col in range(table.columnCount())
-                   if not table.isColumnHidden(col)]
-        if not columns or table.rowCount() == 0:
+        rows, columns, selected_cells = self._office_copy_selection()
+        if not columns or not rows:
             return '', ''
+
+        full_rectangle = (selected_cells is None or all(
+            (row, col) in selected_cells for row in rows for col in columns))
 
         def _anchor_for(row, col):
             for candidate in range(row, -1, -1):
@@ -9348,14 +9392,35 @@ class ScenarioTablePanel(QWidget):
 
         html_rows = []
         tsv_rows = []
-        for row in range(table.rowCount()):
+        row_min, row_max = rows[0], rows[-1]
+        for row in rows:
             html_cells = []
             tsv_cells = []
             for col in columns:
                 anchor, row_span = _anchor_for(row, col)
-                if anchor != row:
-                    # The rowspan cell is already emitted by its anchor.
+                is_selected = selected_cells is None or (row, col) in selected_cells
+                if not is_selected:
+                    # For Ctrl-selected, disjoint cells retain their relative
+                    # positions in one Excel/Word grid. Empty positions must
+                    # remain empty rather than silently importing neighbours.
+                    tsv_cells.append('')
+                    html_cells.append(
+                        '<td style="background:#FFFFFF;border:1px solid #D1D5DB;'
+                        'padding:3px 5px;"></td>')
                     continue
+                if full_rectangle:
+                    span_start = max(anchor, row_min)
+                    span_end = min(anchor + row_span, row_max + 1)
+                    if row != span_start:
+                        # The clipped rowspan cell is already emitted by its
+                        # first selected row.
+                        continue
+                    export_row_span = max(1, span_end - span_start)
+                else:
+                    # Sparse Ctrl-selections cannot safely retain a rowspan:
+                    # it could cover an unselected gap. Repeat only the
+                    # explicitly selected cell's displayed value instead.
+                    export_row_span = 1
                 item = table.item(anchor, col)
                 text, tags = self._clipboard_cell_content(anchor, col)
                 tsv_cells.append(text.replace('\t', ' ').replace('\n', ' / '))
@@ -9370,13 +9435,14 @@ class ScenarioTablePanel(QWidget):
                     f'font-family:{_html_escape(font.family() or table.font().family())};'
                     f'font-size:{max(7.0, point_size):.1f}pt;font-weight:{weight};'
                     f'white-space:normal;')
-                rowspan = f' rowspan="{row_span}"' if row_span > 1 else ''
+                rowspan = (f' rowspan="{export_row_span}"'
+                           if export_row_span > 1 else '')
                 html_cells.append(
                     f'<td{rowspan} style="{style}">{self._clipboard_rich_text(text, tags)}</td>')
             # TSV cannot express rowspans, so repeat the displayed hierarchy
             # values on every physical row. This is the most useful Excel
             # fallback for filtering and sorting if rich HTML is unavailable.
-            if len(tsv_cells) < len(columns):
+            if full_rectangle and len(tsv_cells) < len(columns):
                 # Covered cells were skipped above. Fill the plain-text row
                 # separately so it always has one value per visible column.
                 tsv_cells = [self._clipboard_cell_content(row, col)[0]
@@ -9400,7 +9466,7 @@ class ScenarioTablePanel(QWidget):
         return html, '\t'.join(headers) + '\n' + '\n'.join(tsv_rows)
 
     def copy_visible_table_to_office_clipboard(self, title='HAZOP Worksheet'):
-        """Copy visible worksheet hierarchy as formatted HTML for Word/Excel."""
+        """Copy selected cells, or the complete visible worksheet, for Office."""
         html, plain_text = self._office_clipboard_payload(title)
         if not html:
             return False
