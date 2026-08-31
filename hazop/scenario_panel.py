@@ -6715,6 +6715,17 @@ class ScenarioTablePanel(QWidget):
         if popup.exec() == QDialog.DialogCode.Accepted:
             self._schedule_rebuild()
 
+    def _ensure_consequence_double_click_editor(self, row, cons_id):
+        """Open KON's normal editor when Qt failed to emit itemDoubleClicked."""
+        if self._table.state() == QAbstractItemView.State.EditingState:
+            return
+        if (not (0 <= row < len(self._row_meta)) or
+                self._row_meta[row][2] != cons_id):
+            return
+        item = self._table.item(row, self._C_KON)
+        if item is not None:
+            self._on_cell_double_clicked(item)
+
     def _on_cell_double_clicked(self, item):
         if item is None:
             return
@@ -8324,6 +8335,19 @@ class ScenarioTablePanel(QWidget):
                             self._double_click_edit = None
                             return True
                 self._double_click_edit = (row, col, point)
+                # QTableWidget's itemDoubleClicked signal is not delivered
+                # consistently once NoEditTriggers is in use (notably for a
+                # populated KON cell on the viewport path). Keep the signal
+                # route as a fallback, but explicitly continue to the same
+                # inline-editor handler on the next event-loop turn. The
+                # helper is a no-op if the normal signal route already
+                # opened the editor.
+                if col == self._C_KON and 0 <= row < len(self._row_meta):
+                    cons_id = self._row_meta[row][2]
+                    if cons_id is not None:
+                        QTimer.singleShot(
+                            0, lambda r=row, cid=cons_id:
+                            self._ensure_consequence_double_click_editor(r, cid))
 
         # ── Drag: record press position for potential drag-start ─────────────────
         if (obj is self._table.viewport() and

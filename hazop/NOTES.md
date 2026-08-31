@@ -4558,3 +4558,16 @@ kopiering, dragens kopieringsåtgärd, Ctrl+C/Ctrl+V-rundan, `py_compile` och
 12 smoke-tester. Den breda testsamlingen har sedan tidigare orelaterade fel i
 utrustningsrensning/utrustningsscope och ett häng i den fulla Qt-integrationskön;
 ingen manuell visuell GUI-verifiering är gjord.
+
+## Befintlig konsekvens öppnas med dubbelklick (2026-08-31)
+
+`itemDoubleClicked` från Qt levererades inte konsekvent när ScenarioTablePanel
+kör med `NoEditTriggers`, trots att användaren dubbelklickade på en befintlig
+konsekvens. Viewportens riktiga dubbelklick fångas nu upp och öppnar samma
+inline-redigerare på nästa event-loop-varv. Om Qt:s vanliga signalväg redan
+har öppnat editorn gör skyddet ingenting, så två editorer kan inte skapas.
+
+Verifierat med ett QTest-baserat verkligt musdubbelklick på en skapad orsak med
+en befintlig konsekvens, det tidigare Worksheet-fallet för tom konsekvens,
+`py_compile` och 12 smoke-tester. Ingen manuell visuell GUI-verifiering är
+gjord.

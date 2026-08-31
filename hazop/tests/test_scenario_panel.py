@@ -1652,6 +1652,49 @@ class CompactScenarioDragGhostTests(unittest.TestCase):
                              'cell-only scope must not bring risk setup')
 
 
+class ConsequenceDoubleClickEditorTests(unittest.TestCase):
+    """A real mouse double-click must reach KON's inline editor.
+
+    Calling _on_cell_double_clicked() directly is not sufficient here: the
+    viewport event filter and QTableWidget's native edit trigger both run in
+    the real GUI path, which is exactly where the reported regression lived.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_double_click_on_existing_consequence_opens_inline_editor(self):
+        from PyQt6.QtTest import QTest
+        from scenario_panel import _BoldTagTextEdit
+
+        with _TempDbMainWindow() as win:
+            db = win.db
+            node_id = db.add_node()
+            dev_id = db.deviations(node_id)[0]['id']
+            cause_id = db.add_cause(dev_id)
+            cons_id = db.add_consequence(cause_id)
+            db.update_consequence(cons_id, 'Befintlig konsekvens', 3)
+            win.scenario_panel.load_node(node_id)
+            win.show()
+            QTest.qWait(30)
+
+            panel = win.scenario_panel
+            row = next(row for row, meta in enumerate(panel._row_meta)
+                       if meta[2] == cons_id)
+            index = panel._table.model().index(row, panel._C_KON)
+            rect = panel._table.visualRect(index)
+            self.assertFalse(rect.isEmpty())
+            QTest.mouseDClick(panel._table.viewport(), Qt.MouseButton.LeftButton,
+                               Qt.KeyboardModifier.NoModifier, rect.center())
+            QTest.qWait(30)
+
+            editors = [editor for editor in panel._table.findChildren(_BoldTagTextEdit)
+                       if (editor.property('editing_row') == row and
+                           editor.property('editing_col') == panel._C_KON)]
+            self.assertEqual(len(editors), 1)
+
+
 class BoldTagPaintSmokeTests(unittest.TestCase):
     """Actually invokes _ScenarioDelegate.paint() for KON/SG cells whose
     description contains drag-appended tags, since find_tag_bold_ranges'
