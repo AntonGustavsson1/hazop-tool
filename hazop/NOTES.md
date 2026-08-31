@@ -4261,6 +4261,22 @@ och som fallerar mot den gamla koden; `tests.test_smoke` och riktade
 `tests.test_integration`-tester passerar. Ingen visuell GUI-verifiering är
 gjord.
 
+## Kopiera hela Worksheeten till Word eller Excel (2026-08-31)
+
+Worksheet har knappen `Kopiera till Word/Excel` och kortkommandot
+`Ctrl+Shift+C`. Funktionen lägger en formaterad HTML-tabell på Urklipp, med
+alla synliga kolumner, rubriker, sammanslagna hierarkiceller, radbrytningar,
+färger i riskrutorna och fetstilta objekttaggar. Word och Excel använder HTML
+vid inklistring; en full tab-separerad textversion följer också med som säker
+fallback. Detta är medvetet separat från vanliga Ctrl+C/Ctrl+V, som fortsätter
+att kopiera HAZOP-poster internt i programmet.
+
+Verifierat med ett Worksheet-regressionstest som kontrollerar hierarki,
+rowspan, färgstil, objekttagg, textfallback och HTML-Urklipp, alla 18
+Worksheet-tester, konsekvensdubbelklicktestet, `py_compile` och 12
+smoke-tester. Ingen manuell inklistring i Word/Excel är ännu visuellt
+verifierad.
+
 ## Högerklicksplacering på P&ID borttagen (2026-08-28)
 
 Den manuella “Objekt”-åtgärden i P&ID-vyns högerklicksmeny är borttagen.

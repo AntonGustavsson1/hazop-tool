@@ -204,6 +204,52 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             ws.deleteLater()
 
+    def test_office_copy_contains_visible_hierarchy_spans_and_formatting(self):
+        """Word/Excel clipboard data must be a faithful rich worksheet table."""
+        from hazop import HAZOPWorksheet
+
+        ids = self._make_full_chain(node_name='Nod A')
+        equipment_id = self.db.add_equipment_item(
+            'PV-101', 'PV-101', 'PV', 1, 'Ventil', '', 0)
+        self.db.update_cause(ids['cause_id'], description='Felar stängd',
+                             comp_type='Ventil', comp_tag='PV-101',
+                             equipment_id=equipment_id)
+        self.db.update_consequence(
+            ids['cons_id'], 'PV-101 ger stopp', 3,
+            comp_type='Ventil', comp_tag='PV-101', tagged_refs='PV-101')
+        self.db.update_safeguard(ids['sg_id'], description='LSHH stoppar', rrf=100)
+        self.db.add_safeguard(ids['cons_id'])  # gives the hierarchy a rowspan
+        category_id = self.db.consequence_categories()[0]['id']
+        self.db.set_consequence_severity(ids['cons_id'], category_id, 4)
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()
+            panel = ws._table_panel
+            html, plain_text = panel._office_clipboard_payload('HAZOP Worksheet')
+            self.assertIn('<table', html)
+            self.assertIn('<th', html)
+            self.assertIn('Nod', html)
+            self.assertIn('Nod A', html)
+            self.assertIn('Felar stängd', html)
+            self.assertIn('PV-101', html)
+            self.assertIn('<strong>PV-101</strong>', html)
+            self.assertIn('rowspan="2"', html)
+            self.assertIn('background:', html)
+            self.assertIn('Nod\tAvvikelse', plain_text)
+            self.assertIn('LSHH stoppar', plain_text)
+
+            self.assertTrue(panel.copy_visible_table_to_office_clipboard())
+            mime = QApplication.clipboard().mimeData()
+            self.assertTrue(mime.hasHtml())
+            self.assertIn('HAZOP Worksheet', mime.html())
+            with unittest.mock.patch('worksheet.QTimer.singleShot') as delayed:
+                ws._office_copy_btn.click()
+            self.assertEqual(ws._office_copy_btn.text(), 'Kopierat')
+            delayed.assert_called_once()
+        finally:
+            ws.deleteLater()
+
     def test_refresh_after_creating_nodes_populates_and_loads(self):
         from hazop import HAZOPWorksheet
 

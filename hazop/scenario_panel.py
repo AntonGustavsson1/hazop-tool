@@ -7,6 +7,7 @@ import re
 import json
 import logging
 import weakref
+from html import escape as _html_escape
 from functools import partial
 from PyQt6 import sip
 
@@ -9230,6 +9231,184 @@ class ScenarioTablePanel(QWidget):
     # text.  This keeps Ctrl+C/Ctrl+V inside HAZOP precise while text/plain
     # remains useful when pasting a table row into Excel or an e-mail.
     _COPY_MIME = 'application/x-hazop-copy-items'
+
+    @staticmethod
+    def _clipboard_brush_css(brush):
+        """Return a CSS colour for an explicitly painted table brush."""
+        if brush is None or brush.style() == Qt.BrushStyle.NoBrush:
+            return ''
+        color = brush.color()
+        if not color.isValid():
+            return ''
+        if color.alpha() < 255:
+            return (f'rgba({color.red()},{color.green()},{color.blue()},'
+                    f'{color.alpha() / 255:.3f})')
+        return color.name()
+
+    @staticmethod
+    def _clipboard_rich_text(text, tags=()):
+        """Escape cell text while retaining the visible bold tag identity."""
+        text = str(text or '')
+        clean_tags = sorted({str(tag).strip() for tag in tags if str(tag).strip()},
+                            key=len, reverse=True)
+        if not clean_tags:
+            return _html_escape(text).replace('\n', '<br>')
+        # A tag is a token, not an arbitrary substring (e.g. FV-1 must not
+        # bold the FV-1 part of FV-10). Hyphen and underscore are accepted
+        # inside the tag but not immediately outside its match.
+        pattern = re.compile(
+            r'(?<![A-Za-z0-9_-])(' + '|'.join(re.escape(tag) for tag in clean_tags) +
+            r')(?![A-Za-z0-9_-])', re.IGNORECASE)
+        result = []
+        at = 0
+        for match in pattern.finditer(text):
+            result.append(_html_escape(text[at:match.start()]))
+            result.append(f'<strong>{_html_escape(match.group(0))}</strong>')
+            at = match.end()
+        result.append(_html_escape(text[at:]))
+        return ''.join(result).replace('\n', '<br>')
+
+    def _clipboard_cell_content(self, row, col):
+        """Return display text and tag identities for a rendered table cell."""
+        table = self._table
+        item = table.item(row, col)
+        text = item.text() if item is not None else ''
+        tags = []
+        if item is not None and col == self._C_ORS:
+            obj_data = item.data(Qt.ItemDataRole.UserRole + 2) or ('', '')
+            group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or []
+            if len(group_tags) >= 2:
+                tags = list(group_tags)
+                lines = str(text or '').splitlines() or ['']
+                operators = self._group_operators(item)
+                rebuilt = []
+                for idx, tag in enumerate(tags):
+                    prefix = str(tag)
+                    if idx:
+                        op = operators[idx] if idx < len(operators) else 'OR'
+                        prefix = f'{op} {prefix}'
+                    rebuilt.append(f'{prefix} {lines[idx] if idx < len(lines) else ""}'.rstrip())
+                text = '\n'.join(rebuilt)
+            elif obj_data and obj_data[1]:
+                tags = [obj_data[1]]
+                # The tag in an ORS cell is painted outside item.text().
+                # Include it in an external copy so the hierarchy remains
+                # meaningful after pasting to Word or Excel.
+                if str(obj_data[1]).casefold() not in str(text).casefold():
+                    text = f'{obj_data[1]} {text}'.rstrip()
+        elif item is not None and col == self._C_KON:
+            obj_data = item.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
+            refs = item.data(Qt.ItemDataRole.UserRole + 8) or []
+            tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + list(refs)
+        elif item is not None and col == self._C_SG:
+            obj_data = item.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
+            refs = item.data(Qt.ItemDataRole.UserRole + 7) or []
+            tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + list(refs)
+
+        widget = table.cellWidget(row, col)
+        if widget is not None:
+            labels = [button.text().strip() for button in widget.findChildren(QPushButton)
+                      if button.text().strip()]
+            if not labels:
+                labels = [label.text().strip() for label in widget.findChildren(QLabel)
+                          if label.text().strip()]
+            if labels:
+                text = '\n'.join(labels)
+        return str(text or ''), tags
+
+    def _office_clipboard_payload(self, title='HAZOP Worksheet'):
+        """Build HTML + TSV of the exact visible, merged worksheet grid.
+
+        HTML table clipboard data is understood by both Word and desktop
+        Excel. TSV is included as a safe fallback for applications that only
+        accept plain text. Internal HAZOP copy data is deliberately separate.
+        """
+        table = self._table
+        columns = [col for col in range(table.columnCount())
+                   if not table.isColumnHidden(col)]
+        if not columns or table.rowCount() == 0:
+            return '', ''
+
+        def _anchor_for(row, col):
+            for candidate in range(row, -1, -1):
+                span = table.rowSpan(candidate, col)
+                if span > 1 and candidate + span > row:
+                    return candidate, span
+            return row, 1
+
+        header_cells = []
+        col_defs = []
+        for col in columns:
+            header = table.horizontalHeaderItem(col)
+            header_cells.append(
+                '<th style="background:#F5F5F3;color:#17191C;border:1px solid #B8BDC4;'
+                'padding:4px 5px;text-align:left;font-weight:700;vertical-align:top;">'
+                f'{_html_escape(header.text() if header else "")}</th>')
+            col_defs.append(f'<col style="width:{max(40, table.columnWidth(col))}px">')
+
+        html_rows = []
+        tsv_rows = []
+        for row in range(table.rowCount()):
+            html_cells = []
+            tsv_cells = []
+            for col in columns:
+                anchor, row_span = _anchor_for(row, col)
+                if anchor != row:
+                    # The rowspan cell is already emitted by its anchor.
+                    continue
+                item = table.item(anchor, col)
+                text, tags = self._clipboard_cell_content(anchor, col)
+                tsv_cells.append(text.replace('\t', ' ').replace('\n', ' / '))
+                bg = self._clipboard_brush_css(item.background() if item else None) or '#FFFFFF'
+                fg = self._clipboard_brush_css(item.foreground() if item else None) or '#17191C'
+                font = item.font() if item and item.font().family() else table.font()
+                weight = '700' if font.bold() else '400'
+                point_size = font.pointSizeF() if font.pointSizeF() > 0 else table.font().pointSizeF()
+                style = (
+                    f'background:{bg};color:{fg};border:1px solid #D1D5DB;'
+                    f'padding:3px 5px;vertical-align:top;text-align:left;'
+                    f'font-family:{_html_escape(font.family() or table.font().family())};'
+                    f'font-size:{max(7.0, point_size):.1f}pt;font-weight:{weight};'
+                    f'white-space:normal;')
+                rowspan = f' rowspan="{row_span}"' if row_span > 1 else ''
+                html_cells.append(
+                    f'<td{rowspan} style="{style}">{self._clipboard_rich_text(text, tags)}</td>')
+            # TSV cannot express rowspans, so repeat the displayed hierarchy
+            # values on every physical row. This is the most useful Excel
+            # fallback for filtering and sorting if rich HTML is unavailable.
+            if len(tsv_cells) < len(columns):
+                # Covered cells were skipped above. Fill the plain-text row
+                # separately so it always has one value per visible column.
+                tsv_cells = [self._clipboard_cell_content(row, col)[0]
+                             .replace('\t', ' ').replace('\n', ' / ')
+                             for col in columns]
+            tsv_rows.append('\t'.join(tsv_cells))
+            html_rows.append(
+                f'<tr style="height:{max(18, table.rowHeight(row))}px;">' +
+                ''.join(html_cells) + '</tr>')
+
+        title_html = _html_escape(title)
+        html = (
+            '<html><head><meta charset="utf-8"></head><body>'
+            f'<p style="font-family:Arial;font-size:11pt;font-weight:700;">{title_html}</p>'
+            '<table style="border-collapse:collapse;border-spacing:0;">'
+            f'<colgroup>{"".join(col_defs)}</colgroup>'
+            f'<thead><tr>{"".join(header_cells)}</tr></thead>'
+            f'<tbody>{"".join(html_rows)}</tbody></table></body></html>')
+        headers = [table.horizontalHeaderItem(col).text()
+                   if table.horizontalHeaderItem(col) else '' for col in columns]
+        return html, '\t'.join(headers) + '\n' + '\n'.join(tsv_rows)
+
+    def copy_visible_table_to_office_clipboard(self, title='HAZOP Worksheet'):
+        """Copy visible worksheet hierarchy as formatted HTML for Word/Excel."""
+        html, plain_text = self._office_clipboard_payload(title)
+        if not html:
+            return False
+        mime = QMimeData()
+        mime.setHtml(html)
+        mime.setText(plain_text)
+        QApplication.clipboard().setMimeData(mime)
+        return True
 
     def _copy_row_text(self, row):
         if row < 0 or row >= len(self._row_meta):

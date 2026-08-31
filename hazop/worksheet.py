@@ -2,8 +2,10 @@
 """HAZOP worksheet page — split out of hazop.py 2026-08-17, see NOTES.md
 "Förenkla koden + dela upp hazop.py i fler filer"."""
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QCheckBox
+from PyQt6.QtCore import pyqtSignal, QTimer
+from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+                             QComboBox, QCheckBox, QPushButton)
 
 from database import Database
 
@@ -45,6 +47,11 @@ class HAZOPWorksheet(QWidget):
         top_bar.addWidget(self._all_nodes_cb)
         self._show_empty_dev_cb = QCheckBox("Visa avvikelser utan orsaker")
         top_bar.addWidget(self._show_empty_dev_cb)
+        self._office_copy_btn = QPushButton("Kopiera till Word/Excel")
+        self._office_copy_btn.setToolTip(
+            "Kopierar den synliga worksheeten med hierarki, färger och "
+            "sammanslagna celler. Kortkommando: Ctrl+Shift+C")
+        top_bar.addWidget(self._office_copy_btn)
         top_bar.addStretch()
         layout.addLayout(top_bar)
 
@@ -87,6 +94,9 @@ class HAZOPWorksheet(QWidget):
         self._node_combo.currentIndexChanged.connect(self._on_node_combo_changed)
         self._all_nodes_cb.toggled.connect(self._on_all_nodes_toggled)
         self._show_empty_dev_cb.toggled.connect(self._table_panel.set_show_empty_deviations)
+        self._office_copy_btn.clicked.connect(self._copy_to_office)
+        self._office_copy_shortcut = QShortcut(QKeySequence('Ctrl+Shift+C'), self)
+        self._office_copy_shortcut.activated.connect(self._copy_to_office)
 
         # "I Worksheet ska rutorna visa samtliga noder som standard.
         # Inställningen visa orsaker utan avvikelser ska vara ikryssad som
@@ -104,6 +114,16 @@ class HAZOPWorksheet(QWidget):
         # page to P&ID-page-only UI state for little benefit.
 
         self._populate_node_combo()
+
+    def _copy_to_office(self):
+        """Put the current visible worksheet on the Word/Excel clipboard."""
+        copied = self._table_panel.copy_visible_table_to_office_clipboard(
+            'HAZOP Worksheet')
+        if not copied:
+            return
+        original = 'Kopiera till Word/Excel'
+        self._office_copy_btn.setText('Kopierat')
+        QTimer.singleShot(1800, lambda: self._office_copy_btn.setText(original))
 
     def _populate_node_combo(self):
         """Refill the node dropdown from the DB, preserving the current selection if possible."""
