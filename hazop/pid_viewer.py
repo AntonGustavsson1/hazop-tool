@@ -3742,59 +3742,96 @@ def _draw_pid_marker(page, x, y, rgb, letter, label):
 
 
 def _draw_pdf_equipment_marker(page, x, y, rgb, label, occupied=None):
-    """Export one equipment label as a movable, upright PDF annotation.
+    """Export one equipment marker as a clear, movable circle + label.
 
-    Equipment coordinates are stored in the viewer's rotated display space,
-    while PyMuPDF writes in the page's unrotated content space.  The anchor
-    is therefore derotated once here.  PyMuPDF's annotation rotation is
-    applied in the opposite direction from the page display rotation, so
-    using the page rotation value keeps the text horizontal to the reader.
-
-    ``occupied`` is a per-page list of already placed marker rectangles.  A
-    small deterministic candidate search moves labels apart when several
-    objects are close together.  This is export-only layout: the saved P&ID
-    coordinates are not changed, and the resulting FreeText annotations can
-    still be dragged in a PDF editor/viewer.
+    The circle restores the earlier high-contrast PDF appearance.  The
+    circle and its label are separate annotations because PDF has no native
+    movable ``circle-with-text`` primitive; both are placed together and can
+    be moved in a PDF editor.  The label is never truncated: long values are
+    wrapped to fit its annotation rectangle.
     """
     pt = fitz.Point(float(x), float(y)) * page.derotation_matrix
-    label_text = str(label or '').strip()[:40]
+    label_text = str(label or '').strip()
     fontsize = 7.0
-    text_w = fitz.get_text_length(label_text, fontname='helv', fontsize=fontsize) if label_text else 0.0
-    card_w = max(14.0, text_w + 10.0)
-    card_h = 14.0
-    base = fitz.Rect(pt.x, pt.y - card_h / 2, pt.x + card_w, pt.y + card_h / 2)
+    radius = 7.0
+    gap = 3.0
     occupied = occupied if occupied is not None else []
 
-    def _rect_at(dx, dy):
-        return fitz.Rect(base.x0 + dx, base.y0 + dy,
-                         base.x1 + dx, base.y1 + dy)
+    def _measure(value):
+        return fitz.get_text_length(value, fontname='helv', fontsize=fontsize)
 
-    # Prefer the original anchor, then place around it in expanding rows.
-    candidates = [_rect_at(0, 0)]
+    max_line_width = min(220.0, max(60.0, float(page.cropbox.width) - 20.0))
+    lines = []
+    for word in label_text.split() or ['']:
+        if not lines:
+            lines.append(word)
+            continue
+        candidate = f'{lines[-1]} {word}'.strip()
+        if _measure(candidate) <= max_line_width:
+            lines[-1] = candidate
+        else:
+            lines.append(word)
+    # A tag may contain no spaces and still be wider than the page/limit.
+    wrapped = []
+    for line in lines:
+        current = ''
+        for char in line:
+            candidate = current + char
+            if current and _measure(candidate) > max_line_width:
+                wrapped.append(current)
+                current = char
+            else:
+                current = candidate
+        wrapped.append(current)
+    lines = wrapped or ['']
+    label_w = max((_measure(line) for line in lines), default=0.0)
+    line_h = fontsize * 1.35
+    label_h = max(line_h, len(lines) * line_h)
+    label_x = pt.x + radius + gap
+    label_rect = fitz.Rect(label_x, pt.y - label_h / 2,
+                           label_x + label_w + 4.0, pt.y + label_h / 2)
+    circle_rect = fitz.Rect(pt.x - radius, pt.y - radius,
+                            pt.x + radius, pt.y + radius)
+    base = circle_rect | label_rect
+
+    def _parts_at(dx, dy):
+        circle = fitz.Rect(circle_rect.x0 + dx, circle_rect.y0 + dy,
+                           circle_rect.x1 + dx, circle_rect.y1 + dy)
+        label_box = fitz.Rect(label_rect.x0 + dx, label_rect.y0 + dy,
+                              label_rect.x1 + dx, label_rect.y1 + dy)
+        return circle, label_box, circle | label_box
+
+    candidates = [_parts_at(0, 0)]
     for ring in range(1, 8):
-        gap = 4.0
-        dx = ring * (card_w + gap)
-        dy = ring * (card_h + gap)
-        candidates.extend((_rect_at(dx, 0), _rect_at(-dx, 0),
-                           _rect_at(0, dy), _rect_at(0, -dy),
-                           _rect_at(dx, dy), _rect_at(-dx, dy),
-                           _rect_at(dx, -dy), _rect_at(-dx, -dy)))
+        step_x = ring * (base.width + 4.0)
+        step_y = ring * (base.height + 4.0)
+        candidates.extend((_parts_at(step_x, 0), _parts_at(-step_x, 0),
+                           _parts_at(0, step_y), _parts_at(0, -step_y),
+                           _parts_at(step_x, step_y), _parts_at(-step_x, step_y),
+                           _parts_at(step_x, -step_y), _parts_at(-step_x, -step_y)))
 
-    rect = next((candidate for candidate in candidates
-                 if not any(candidate.intersects(old) for old in occupied)),
-                candidates[-1])
-    occupied.append(rect)
+    circle_rect, label_rect, combined = next(
+        (parts for parts in candidates
+         if not any(parts[2].intersects(old) for old in occupied)),
+        candidates[-1])
+    occupied.append(combined)
 
-    fill = tuple(min(1.0, 0.70 + 0.30 * c) for c in rgb)
-    text = label_text or ' '
-    annot = page.add_freetext_annot(
-        rect, text, fontsize=fontsize, fontname='helv',
-        text_color=(1.0, 1.0, 1.0), fill_color=fill,
-        opacity=0.85, rotate=int(page.rotation) % 360)
-    annot.set_border({'width': 0.5})
-    annot.set_info(title='Objekt', content=label_text)
-    annot.update()
-    return annot, rect
+    circle = page.add_circle_annot(circle_rect)
+    circle.set_colors({'stroke': list(rgb), 'fill': list(rgb)})
+    circle.set_border({'width': 0.5})
+    circle.set_info(title='Objektmarkering', content=label_text)
+    circle.update(opacity=0.85)
+
+    label_annot = None
+    if label_text:
+        label_annot = page.add_freetext_annot(
+            label_rect, '\n'.join(lines), fontsize=fontsize, fontname='helv',
+            text_color=rgb, fill_color=None,
+            opacity=1.0, rotate=int(page.rotation) % 360)
+        label_annot.set_border({'width': 0})
+        label_annot.set_info(title='Objektetikett', content=label_text)
+        label_annot.update()
+    return circle, label_annot, combined
 
 
 _INSTR_SECONDARY_EFFECTS = [

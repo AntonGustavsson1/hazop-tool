@@ -1962,8 +1962,9 @@ class ExportPdfMarkupTests(unittest.TestCase):
         artificial ``O`` prefix from the exported marker."""
         panel = self._make_panel()
         try:
-            eq_id = self.db.add_equipment_item('V-102', 'V-102', 'V', 0, 'Ventil', '', 0)
-            self.db.add_equipment_marker(eq_id, 'V-102', 0, 90.0, 70.0, 'Ventil')
+            tag = 'V-102-LONG-TAG-EXTENDED'
+            eq_id = self.db.add_equipment_item(tag, tag, 'V', 0, 'Ventil', '', 0)
+            self.db.add_equipment_marker(eq_id, tag, 0, 90.0, 70.0, 'Ventil')
             self._export(panel)
             import fitz
             out = fitz.open(self.out_path)
@@ -1971,8 +1972,9 @@ class ExportPdfMarkupTests(unittest.TestCase):
             annots = list(page.annots() or [])
             text = page.get_text()
             self.assertTrue(any(a.type[1] == 'FreeText' for a in annots))
-            self.assertIn('V-102', text)
+            self.assertIn(tag, text)
             self.assertNotIn('\nO\n', text)
+            self.assertTrue(any(a.type[1] == 'Circle' for a in annots))
             out.close()
         finally:
             panel.deleteLater()

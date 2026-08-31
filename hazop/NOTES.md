@@ -4502,5 +4502,10 @@ vid sidrotation och placeras med kollisionskontroll så objektetiketter inte
 läggs ovanpå varandra. P&ID-data och sparade objektpositioner ändras inte av
 exportens layoutjustering.
 
+2026-08-31 uppföljning: Objektmarkeringens tidigare runda, tydliga
+färgmarkör är återställd. Cirkeln och den kompletta objekttaggen exporteras
+som flyttbara PDF-annoteringar och grupperas visuellt vid placeringen.
+Långa taggar radbryts i etikettens annoteringsyta i stället för att kapas.
+
 Avbockning i P&ID-checklistan tar bara bort utrustningens koppling till
 avvikelsen. Nodavvikelsen och dess HAZOP-data ligger kvar.
