@@ -346,6 +346,20 @@ class DatabaseUndoRedoTests(unittest.TestCase):
         self.db.update_cause(cause_id, description='Ny text')
         self.assertFalse(self.db.can_redo)
 
+    def test_node_update_and_audit_timestamp_are_one_history_step(self):
+        node_id = self.db.add_node()
+        self.db.clear_undo_history()
+        original_name = self.db.get_node(node_id)['name']
+
+        self.db.update_node(node_id, 'Ny nod', 'Beskrivning', 'P-101')
+
+        self.assertEqual(self.db.undo_count, 1)
+        self.assertEqual(self.db.get_node(node_id)['name'], 'Ny nod')
+        self.assertTrue(self.db.undo())
+        self.assertEqual(self.db.get_node(node_id)['name'], original_name)
+        self.assertTrue(self.db.redo())
+        self.assertEqual(self.db.get_node(node_id)['name'], 'Ny nod')
+
     def test_delete_parent_undo_restores_cascade_children(self):
         deviation_id = self._first_deviation_id()
         cause_id = self.db.add_cause(deviation_id)

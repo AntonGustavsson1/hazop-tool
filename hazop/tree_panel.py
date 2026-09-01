@@ -1246,6 +1246,11 @@ class TreePanel(QWidget):
         popup.show()
 
     def _apply_equipment_tag_edit(self, eq_id, comp_type, tag):
+        """Apply an equipment identity edit as one undoable action."""
+        with self.db.history_group():
+            return self._apply_equipment_tag_edit_inner(eq_id, comp_type, tag)
+
+    def _apply_equipment_tag_edit_inner(self, eq_id, comp_type, tag):
         eq = self.db.get_equipment_by_id(eq_id)
         if not eq:
             return
@@ -1479,6 +1484,11 @@ class TreePanel(QWidget):
         self._clipboard = {'type': type_, 'id': id_}
 
     def _paste_item(self):
+        """Paste a tree item as one undoable operation."""
+        with self.db.history_group():
+            return self._paste_item_inner()
+
+    def _paste_item_inner(self):
         if not self._clipboard:
             return
         ct    = self._clipboard['type']
@@ -1753,11 +1763,14 @@ class TreePanel(QWidget):
         if not marker_ids:
             event.ignore(); return
 
-        dev_id = self._deviation_item_at(event, source_obj, create=True)
-        if dev_id is None:
-            event.ignore(); return
-
-        self.equipment_dropped_on_deviation.emit(dev_id, marker_ids)
+        # Resolving a guide-word deviation and linking the dropped markers may
+        # involve several writes in the connected panels. Keep the complete
+        # drop, including synchronous signal handlers, as one undo step.
+        with self.db.history_group():
+            dev_id = self._deviation_item_at(event, source_obj, create=True)
+            if dev_id is None:
+                event.ignore(); return
+            self.equipment_dropped_on_deviation.emit(dev_id, marker_ids)
         event.acceptProposedAction()
 
     def _tree_reparent_target_at(self, event, source_obj):
@@ -1776,6 +1789,11 @@ class TreePanel(QWidget):
                 item.data(0, Qt.ItemDataRole.UserRole))
 
     def _handle_tree_reparent_drop(self, event, source_obj):
+        """Apply one tree drop as one undoable user action."""
+        with self.db.history_group():
+            return self._handle_tree_reparent_drop_inner(event, source_obj)
+
+    def _handle_tree_reparent_drop_inner(self, event, source_obj):
         text = event.mimeData().text()
         if text.startswith('hzp:treeitems:'):
             target = self._tree_reparent_target_at(event, source_obj)
@@ -1929,6 +1947,11 @@ class TreePanel(QWidget):
         return [row['id'] for row in rows]
 
     def _drop_tree_entries(self, entries, target, copied):
+        """Apply a multi-selection tree drop atomically in session history."""
+        with self.db.history_group():
+            return self._drop_tree_entries_inner(entries, target, copied)
+
+    def _drop_tree_entries_inner(self, entries, target, copied):
         self._last_drop_result = None
         tgt_type, tgt_id = target
         target_parent_col, target_parent_id = self._tree_target_parent(tgt_type, tgt_id)

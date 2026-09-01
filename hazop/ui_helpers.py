@@ -330,13 +330,17 @@ def _create_cause_from_pick(db, deviation_id, description, frequency):
     instant the cause exists, without a separate add-consequence step.
     Returns (cause_id, consequence_id).
     """
-    new_id = db.add_cause(deviation_id)
-    like = freq_to_f_level(frequency) if frequency is not None else 3
-    db.update_cause(new_id, description=description or 'Ny orsak', likelihood=like)
-    if frequency is not None:
-        db.conn.execute("UPDATE causes SET base_frequency=? WHERE id=?", (frequency, new_id))
-        db.commit()
-    cons_id = db.add_consequence(new_id)
+    # A picked cause is a small hierarchy operation: create the cause,
+    # initialise its fields, optionally persist frequency, and create the
+    # first consequence.  Keep that whole operation together for undo/redo.
+    with db.history_group():
+        new_id = db.add_cause(deviation_id)
+        like = freq_to_f_level(frequency) if frequency is not None else 3
+        db.update_cause(new_id, description=description or 'Ny orsak', likelihood=like)
+        if frequency is not None:
+            db.conn.execute("UPDATE causes SET base_frequency=? WHERE id=?", (frequency, new_id))
+            db.commit()
+        cons_id = db.add_consequence(new_id)
     return new_id, cons_id
 
 

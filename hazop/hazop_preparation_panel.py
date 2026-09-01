@@ -2956,6 +2956,11 @@ class HAZOPPreparationPanel(QWidget):
         self._axes_dirty = True
 
     def _save_axes_and_categories_values(self, show_confirmation=True):
+        """Save the matrix profile and category descriptions as one action."""
+        with self.db.history_group():
+            return self._save_axes_and_categories_values_inner(show_confirmation)
+
+    def _save_axes_and_categories_values_inner(self, show_confirmation=True):
         """Persist the Axlar working copy, including all pasted descriptions."""
         cfg = json.loads(json.dumps(
             getattr(self, '_last_built_cfg', None) or self.db.get_risk_matrix() or DEFAULT_MATRIX))

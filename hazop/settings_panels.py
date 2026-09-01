@@ -419,8 +419,9 @@ class SettingsPanel(QWidget):
     def _on_pid_line_setting_changed(self, *_args):
         enabled = self._min_pid_lines_chk.isChecked()
         self._min_pid_lines_spin.setEnabled(enabled)
-        self.db.set_config('pid_min_line_width_enabled', '1' if enabled else '0')
-        self.db.set_config('pid_min_line_width', str(self._min_pid_lines_spin.value()))
+        with self.db.history_group():
+            self.db.set_config('pid_min_line_width_enabled', '1' if enabled else '0')
+            self.db.set_config('pid_min_line_width', str(self._min_pid_lines_spin.value()))
         self.pid_render_settings_changed.emit()
 
     def _on_risk_bar_setting_changed(self, enabled):

@@ -392,7 +392,7 @@ class _IdentifiedTagsModel(QAbstractTableModel):
             self.db.conn.executemany(
                 "UPDATE pid_identified_tags SET comp_type=?,confirmed=? WHERE tag_code=?",
                 [(row['comp_type'] or '', conf, row['tag_code']) for row in self._rows])
-            self.db.conn.commit()
+            self.db.commit()
         except Exception:
             logging.exception('_IdentifiedTagsModel.bulk_set_confirmed: DB write failed')
             return
@@ -990,7 +990,7 @@ class _EquipmentTableModel(QAbstractTableModel):
                 row['include'] = 1 if checked else 0
                 self.db.conn.execute("UPDATE equipment_catalog SET include=? WHERE id=?",
                                      (row['include'], row['id']))
-                self.db.conn.commit()
+                self.db.commit()
                 self.dataChanged.emit(index, index, [role])
                 return True
 
@@ -1022,7 +1022,7 @@ class _EquipmentTableModel(QAbstractTableModel):
                 self.db.conn.execute(
                     "UPDATE equipment_catalog SET equipment_type=? WHERE id=?",
                     (row['equipment_type'], row['id']))
-                self.db.conn.commit()
+                self.db.commit()
                 self.dataChanged.emit(index, index, [role])
                 self.identity_changed.emit()
                 return True
@@ -1063,7 +1063,7 @@ class _EquipmentTableModel(QAbstractTableModel):
         try:
             self.db.conn.executemany(
                 "UPDATE equipment_catalog SET include=? WHERE id=?", [(inc, i) for i in ids])
-            self.db.conn.commit()
+            self.db.commit()
         except Exception as e:
             logging.exception('_EquipmentTableModel.bulk_set_include: DB write failed')
             self.write_failed.emit(str(e))
@@ -1364,14 +1364,18 @@ class EquipmentPanel(QWidget):
             QMessageBox.information(self, "Ingen vald", "Kryssa i minst en rad.")
             return
         created = 0
-        for tag, pg, et, desc in to_create:
-            nid = self.db.add_node_with_markup(
-                tag, [], {'color': '#FF8C00', 'width': 2, 'alpha': 180}, pg)
-            self.db.conn.execute(
-                "UPDATE nodes SET name=?, pid_ref=?, description=? WHERE id=?",
-                (tag, f"Sida {pg + 1}", f"{et}{': ' + desc if desc else ''}", nid))
-            self.db.conn.commit()
-            created += 1
+        # Each selected equipment item creates a node plus its initial
+        # metadata.  The whole "create nodes" action should be one undo step,
+        # even when several rows are selected.
+        with self.db.history_group():
+            for tag, pg, et, desc in to_create:
+                nid = self.db.add_node_with_markup(
+                    tag, [], {'color': '#FF8C00', 'width': 2, 'alpha': 180}, pg)
+                self.db.conn.execute(
+                    "UPDATE nodes SET name=?, pid_ref=?, description=? WHERE id=?",
+                    (tag, f"Sida {pg + 1}", f"{et}{': ' + desc if desc else ''}", nid))
+                self.db.commit()
+                created += 1
         QMessageBox.information(self, "Klart",
             f"{created} HAZOP-noder skapade.\nGå till P&ID-vyn och uppdatera trädet.")
 

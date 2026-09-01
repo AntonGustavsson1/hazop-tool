@@ -1310,6 +1310,12 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(_icon('close'), "Avsluta",            self.close)
 
+        edit_menu = mb.addMenu("Redigera")
+        self._act_undo = edit_menu.addAction("Ångra", self._undo_last_change)
+        self._act_undo.setStatusTip("Ångra senaste ändringen (Ctrl+Z)")
+        self._act_redo = edit_menu.addAction("Gör om", self._redo_last_change)
+        self._act_redo.setStatusTip("Gör om senast ångrade ändring (Ctrl+Y)")
+
         export_menu = mb.addMenu("Export")
         export_menu.addAction(_icon('chart'), "Excel",           self._export_excel)
         export_menu.addAction(_icon('chart'), "Åtgärder (Excel)", self._export_actions_excel)
@@ -1634,17 +1640,26 @@ class MainWindow(QMainWindow):
         # ── Application undo/redo ───────────────────────────────────────────
         # Database history is broader than the old markup-only stack: all
         # committed HAZOP/P&ID/settings writes use the same SQLite state
-        # history.  ApplicationShortcut keeps the commands available from
-        # every page, while the normal editor can still consume an uncommitted
-        # text-edit undo before the database action is committed.
+        # history.  WindowShortcut keeps the commands available from every
+        # page in this main window without stealing Ctrl+Z/Ctrl+Y from a
+        # separate popup/dialog.
         self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
-        self._undo_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._undo_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
         self._undo_shortcut.setEnabled(True)
         self._undo_shortcut.activated.connect(self._undo_last_change)
         self._redo_shortcut = QShortcut(QKeySequence("Ctrl+Y"), self)
-        self._redo_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._redo_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
         self._redo_shortcut.setEnabled(True)
         self._redo_shortcut.activated.connect(self._redo_last_change)
+        # QLineEdit/QTextEdit can consume the standard undo key before a
+        # QShortcut gets a chance to activate.  Install a narrow application
+        # event filter as a reliable fallback for the document-level history;
+        # active text editors are deliberately left alone so uncommitted
+        # typing still has normal editor undo semantics.
+        self._application_event_filter = QApplication.instance()
+        if self._application_event_filter is not None:
+            self._application_event_filter.installEventFilter(self)
+        self.db.add_history_listener(self._update_history_actions)
 
         # ── Global search state (the Fil-menu QAction owns Ctrl+F) ───────────
         self._search_dialog = None
@@ -1894,6 +1909,11 @@ class MainWindow(QMainWindow):
         # of what was passed in.
         if hzp_path:
             self._load_hzp(hzp_path)
+        else:
+            # Panel construction can persist harmless view/config defaults.
+            # They are application setup, not a user edit, so the first
+            # document action should be the first available undo entry.
+            self.db.clear_undo_history()
 
     def _refresh_recommendation_views(self):
         """Reflect catalog deletion in both live HAZOP table instances."""
@@ -1901,12 +1921,41 @@ class MainWindow(QMainWindow):
         self.worksheet.refresh()
 
     def _update_history_actions(self):
-        """Keep shortcut state in sync without making history UI-dependent."""
+        """Keep keyboard shortcuts and the visible edit menu in sync."""
         # QShortcut has no useful disabled visual state and must stay enabled
         # across all pages.  The properties are intentionally read here so a
         # future menu/toolbar can bind to the same single source of truth.
         self._can_undo = bool(getattr(self.db, 'can_undo', False))
         self._can_redo = bool(getattr(self.db, 'can_redo', False))
+        if hasattr(self, '_act_undo'):
+            self._act_undo.setEnabled(self._can_undo)
+        if hasattr(self, '_act_redo'):
+            self._act_redo.setEnabled(self._can_redo)
+
+    def eventFilter(self, obj, event):
+        """Route document undo/redo even when a child widget owns focus.
+
+        Native text editors keep Ctrl+Z for their current, uncommitted edit.
+        Once focus is back in the application, Ctrl+Z/Ctrl+Y operate on the
+        central committed database history.  Dialogs and other top-level
+        windows are not intercepted.
+        """
+        if event.type() == QEvent.Type.KeyPress:
+            target = obj if isinstance(obj, QWidget) else None
+            if target is not None and target.window() is self:
+                modifiers = event.modifiers()
+                is_ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+                if (is_ctrl and not event.isAutoRepeat() and
+                        event.key() in (Qt.Key.Key_Z, Qt.Key.Key_Y)):
+                    focus = QApplication.focusWidget()
+                    if not isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit)):
+                        if event.key() == Qt.Key.Key_Z:
+                            self._undo_last_change()
+                        else:
+                            self._redo_last_change()
+                        event.accept()
+                        return True
+        return super().eventFilter(obj, event)
 
     def _refresh_after_history_change(self, message):
         """Rebuild all views after an exact database snapshot restore."""
@@ -2454,6 +2503,11 @@ class MainWindow(QMainWindow):
         return ("group", selected.property("group_operator")) if selected else None
 
     def _on_equipment_dropped_on_deviation(self, dev_id, marker_ids):
+        """Apply an equipment-to-deviation drop as one undoable action."""
+        with self.db.history_group():
+            return self._on_equipment_dropped_on_deviation_inner(dev_id, marker_ids)
+
+    def _on_equipment_dropped_on_deviation_inner(self, dev_id, marker_ids):
         """One or more equipment markers dragged from the P&ID onto a
         deviation in the HAZOP tree (2026-08-08, see NOTES.md) — creates
         one empty, tagged cause per marker directly (no popup), same
@@ -3346,6 +3400,11 @@ class MainWindow(QMainWindow):
         self._global_replace_undo_stack.append({
             'changes': list(changes),
             'history_count': getattr(self.db, 'undo_count', None),
+            # A count alone is not enough: undoing one operation and then
+            # making another can produce the same count while representing a
+            # different document state.  Keep the exact central-history
+            # state so the legacy dialog button can never undo the wrong edit.
+            'history_snapshot': getattr(self.db, '_history_snapshot', None),
         })
         self.status_bar.showMessage(
             f"{sum(c.get('occurrences', 1) for c in changes)} fÃ¶rekomster ersattes", 4000)
@@ -3363,6 +3422,9 @@ class MainWindow(QMainWindow):
             # Compatibility with a dialog that was opened by an older build.
             changes = entry
             history_count = None
+            history_snapshot = None
+        if isinstance(entry, dict):
+            history_snapshot = entry.get('history_snapshot')
         if (history_count is not None and
                 getattr(self.db, 'undo_count', history_count) != history_count):
             self._global_replace_undo_stack.append(entry)
@@ -3370,6 +3432,14 @@ class MainWindow(QMainWindow):
                 self, "Angra ersattning",
                 "En annan andring har gjorts efter ersattningen. "
                 "Angra den forst och forsok sedan igen.")
+            return False
+        if (history_snapshot is not None and
+                getattr(self.db, '_history_snapshot', None) != history_snapshot):
+            self._global_replace_undo_stack.append(entry)
+            QMessageBox.information(
+                self, "Ã„ndringen har Ã¤ndrats",
+                "En annan Ã¤ndring har gjorts efter ersÃ¤ttningen. "
+                "Ã…ngra den fÃ¶rst och fÃ¶rsÃ¶k sedan igen.")
             return False
         try:
             for change in changes:
@@ -3659,10 +3729,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Nytt projekt",
                                  f"Kunde inte skapa ny databas:\n{e}")
             return
+        self.db.add_history_listener(self._update_history_actions)
+        self._update_history_actions()
 
         self._hzp_path = None
         self._update_title()
         self._reload_all_panels(pdf_path=None)
+        self.db.clear_undo_history()
 
     def _hzp_open(self):
         if not self._confirm_discard():
@@ -3822,6 +3895,8 @@ class MainWindow(QMainWindow):
             shutil.copy2(extracted_db, DB_PATH)
         except Exception as e:
             self.db = Database(DB_PATH)   # recover: DB_PATH itself is untouched
+            self.db.add_history_listener(self._update_history_actions)
+            self._update_history_actions()
             QMessageBox.critical(self, "Fel vid inläsning",
                                  f"Kunde inte kopiera databas:\n{e}")
             return
@@ -3829,6 +3904,8 @@ class MainWindow(QMainWindow):
         # Reopen DB at same path
         new_db = Database(DB_PATH)
         self.db = new_db
+        self.db.add_history_listener(self._update_history_actions)
+        self._update_history_actions()
 
         # Resolve PDF
         pdf_path = None
@@ -3847,6 +3924,7 @@ class MainWindow(QMainWindow):
         self._reload_all_panels(pdf_path=pdf_path)
         # Immediately create a startup backup of the freshly loaded project
         self.db._write_backup(startup=True)
+        self.db.clear_undo_history()
         self.status_bar.showMessage(f"Öppnat: {path}", 5000)
 
     def _reload_all_panels(self, pdf_path=None):

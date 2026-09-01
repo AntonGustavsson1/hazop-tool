@@ -5258,3 +5258,23 @@ utrustningsscope; ingen manuell visuell GUI-verifiering är gjord. Nästa
 delmoment är att gruppera sammansatta användaråtgärder och ersätta kvarvarande
 äldre text-/markup-specifika undo-stackar, därefter komplettera UI- och
 projektbytesscenarier.
+
+## Central undo/redo – del 2 (2026-09-01)
+
+Historiken är nu kopplad till de sammansatta användaråtgärderna i HAZOP
+Scenario/Worksheet och P&ID: textcellens följdskrivningar, standardval som
+skapar en hel orsakskedja, flera kopierade trädrader, drag-and-drop/flytt,
+objektplacering med koppling till orsak, markeringsgranskning samt risk- och
+matrisdialoger. Flera interna databascommits blir då ett enda Ctrl+Z-steg.
+Även nodnamn och dess synkade P&ID-textmarkering behandlas som ett steg.
+
+Ctrl+Z och Ctrl+Y finns både som globala kortkommandon och under Redigera.
+Menyn följer historikens aktuella tillstånd direkt. Okommitterad text i en
+aktiv QLineEdit/QTextEdit lämnas till Qt:s vanliga text-undo; när fältet har
+sparats används dokumenthistoriken. Historiken är fortsatt sessionsbaserad
+med 100 steg och sparas inte i `.hzp`-filen.
+
+Verifierat med riktade databas-, MainWindow-, träd-, integrations-, P&ID-
+placerings-, markeringsgransknings- och global-ersättningstester, inklusive
+ett faktiskt Qt-tangenttryck för Ctrl+Z/Ctrl+Y, samt `py_compile` och
+`git diff --check`. Ingen manuell visuell GUI-genomgång är gjord.

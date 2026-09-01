@@ -415,6 +415,11 @@ class _DeviationChecklist(QWidget):
             self._deactivate_deviation(description, checkbox)
 
     def _activate_deviation(self, description, checkbox, causes):
+        """Activate a deviation and any automatically-created HAZOP branch."""
+        with self.db.history_group():
+            return self._activate_deviation_inner(description, checkbox, causes)
+
+    def _activate_deviation_inner(self, description, checkbox, causes):
         eq = self.db.get_equipment_by_id(self._equipment_id)
         node_id = eq.get('node_id') if eq else None
         if node_id is None:
@@ -3439,6 +3444,13 @@ class PIDPanel(QWidget):
 
     def place_cause_from_template(self, dev_id, comp_type, comp_tag, description, frequency,
                                   equipment_id=None):
+        """Create a cause branch as one undoable placement action."""
+        with self.db.history_group():
+            return self._place_cause_from_template_inner(
+                dev_id, comp_type, comp_tag, description, frequency, equipment_id)
+
+    def _place_cause_from_template_inner(self, dev_id, comp_type, comp_tag,
+                                         description, frequency, equipment_id=None):
         """Called by EquipmentDeviationBar._create_cause_for_bar — the only
         remaining caller since the classic P&ID-click cause flow was
         removed (2026-08-13, see NOTES.md: the P&ID canvas is now
@@ -3560,15 +3572,20 @@ class PIDPanel(QWidget):
         if not pending:
             return
         cause_id, tag, comp_type = pending
-        self.place_equipment_marker(tag, comp_type, scene_pos, page)
-        equipment = self.db.get_equipment_by_tag(tag)
-        if equipment:
-            self.db.update_cause(
-                cause_id,
-                equipment_id=equipment['id'],
-                comp_type=equipment.get('equipment_type') or comp_type,
-                comp_tag=equipment.get('tag') or tag)
-            self.cause_equipment_bound.emit(cause_id, equipment['id'])
+        # Marker creation and linking it to the waiting cause are one visible
+        # placement action.  ``place_equipment_marker`` has its own group for
+        # direct callers; this outer group coalesces that nested action with
+        # the follow-up cause link as well.
+        with self.db.history_group():
+            self.place_equipment_marker(tag, comp_type, scene_pos, page)
+            equipment = self.db.get_equipment_by_tag(tag)
+            if equipment:
+                self.db.update_cause(
+                    cause_id,
+                    equipment_id=equipment['id'],
+                    comp_type=equipment.get('equipment_type') or comp_type,
+                    comp_tag=equipment.get('tag') or tag)
+                self.cause_equipment_bound.emit(cause_id, equipment['id'])
 
     def _on_cause_place_zone_requested(self, pdf_rect, page):
         """Finish cause placement from the left-button rubber band."""
@@ -3578,15 +3595,16 @@ class PIDPanel(QWidget):
             return
         cause_id, tag, comp_type = pending
         center = self.viewer.pdf_to_scene(pdf_rect.center().x(), pdf_rect.center().y(), page=page)
-        self.place_equipment_marker(tag, comp_type, center, page, pdf_rect=pdf_rect)
-        equipment = self.db.get_equipment_by_tag(tag)
-        if equipment:
-            self.db.update_cause(
-                cause_id,
-                equipment_id=equipment['id'],
-                comp_type=equipment.get('equipment_type') or comp_type,
-                comp_tag=equipment.get('tag') or tag)
-            self.cause_equipment_bound.emit(cause_id, equipment['id'])
+        with self.db.history_group():
+            self.place_equipment_marker(tag, comp_type, center, page, pdf_rect=pdf_rect)
+            equipment = self.db.get_equipment_by_tag(tag)
+            if equipment:
+                self.db.update_cause(
+                    cause_id,
+                    equipment_id=equipment['id'],
+                    comp_type=equipment.get('equipment_type') or comp_type,
+                    comp_tag=equipment.get('tag') or tag)
+                self.cause_equipment_bound.emit(cause_id, equipment['id'])
 
     def start_secondary_cause_equipment_bind(self, cause_id):
         """Arm the viewer to replace the affected object in a group cause."""
@@ -3649,6 +3667,13 @@ class PIDPanel(QWidget):
             self.db.set_safeguard_tag(id_, tag, comp_type)
 
     def place_equipment_marker(self, tag, comp_type, scene_pos, page, pdf_rect=None):
+        """Place one equipment marker as one undoable creation action."""
+        with self.db.history_group():
+            return self._place_equipment_marker_inner(
+                tag, comp_type, scene_pos, page, pdf_rect)
+
+    def _place_equipment_marker_inner(self, tag, comp_type, scene_pos, page,
+                                      pdf_rect=None):
         """Callback for the P&ID right-click "🔧 Objekt" action and the
         rubber-band menu's own entry (2026-08-07, extended 2026-08-18 —
         see NOTES.md "kombinerad placeringsmeny"). Resolves an existing

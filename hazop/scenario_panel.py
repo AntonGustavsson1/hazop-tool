@@ -1983,6 +1983,11 @@ class ConsequenceStepPickerDialog(QDialog):
         self.accept()
 
     def _do_save(self):
+        """Save the consequence chain as one undoable popup action."""
+        with self.db.history_group():
+            return self._do_save_inner()
+
+    def _do_save_inner(self):
         steps = []
         for i in range(_N_STEPS):
             text = self._selected_text(i)
@@ -2198,12 +2203,13 @@ class ReductionFactorsDialog(QDialog):
         description = description_item.text().strip() if description_item else ''
         if not description or self._is_standard_enabler(description):
             return
-        for factor in self.db.reduction_factors(self.consequence_id):
-            if str(factor['description']).strip().casefold() == description.casefold():
-                self.db.delete_reduction_factor(factor['id'])
-        # Retire instead of hard-deleting the catalogue entry: another
-        # consequence may still use it, but it disappears from future picks.
-        self.db.retire_reduction_factor_catalog_entry(description)
+        with self.db.history_group():
+            for factor in self.db.reduction_factors(self.consequence_id):
+                if str(factor['description']).strip().casefold() == description.casefold():
+                    self.db.delete_reduction_factor(factor['id'])
+            # Retire instead of hard-deleting the catalogue entry: another
+            # consequence may still use it, but it disappears from future picks.
+            self.db.retire_reduction_factor_catalog_entry(description)
         self._refresh()
 
     def _on_cell(self, row, col):
@@ -4172,6 +4178,10 @@ class SgRRFCategoryPopup(QDialog):
         outer.addWidget(ok, alignment=Qt.AlignmentFlag.AlignRight)
 
     def _ok(self):
+        with self.db.history_group():
+            return self._ok_inner()
+
+    def _ok_inner(self):
         new_rrf  = self._spin.value()
         new_type = self._type_combo.currentText()
         if new_rrf != self._current_rrf or new_type != self._current_type:
@@ -4367,8 +4377,9 @@ class ConsCategoryMatrixPopup(QDialog):
             btn.setStyleSheet(self._bstyle(selected))
 
     def _ok(self):
-        for cat_id, sev in self._sel.items():
-            self.db.set_consequence_severity(self._cons_id, cat_id, sev)
+        with self.db.history_group():
+            for cat_id, sev in self._sel.items():
+                self.db.set_consequence_severity(self._cons_id, cat_id, sev)
         self.accept()
 
 
@@ -4502,8 +4513,6 @@ class ScenarioTablePanel(QWidget):
         # retain the preceding REK click explicitly rather than treating a
         # first click as an edit request.
         self._last_recommendation_click = None
-        self._text_undo_stack = []
-        self._undoing_text = False
         # Tags explicitly disconnected by the user must remain ordinary prose
         # even though their text still matches the P&ID catalogue.
         self._detached_tags = set()
@@ -7152,17 +7161,19 @@ class ScenarioTablePanel(QWidget):
         popup.show()
 
     def _apply_risk_from_matrix(self, cause_id, cons_id, new_freq, new_cons):
-        self.db.update_cause(cause_id, likelihood=new_freq)
-        cons = self.db.get_consequence(cons_id)
-        if cons:
-            self.db.update_consequence(
-                cons_id, cons['description'], new_cons, cons['category'] or '')
+        with self.db.history_group():
+            self.db.update_cause(cause_id, likelihood=new_freq)
+            cons = self.db.get_consequence(cons_id)
+            if cons:
+                self.db.update_consequence(
+                    cons_id, cons['description'], new_cons, cons['category'] or '')
         self._schedule_rebuild()
 
     def _apply_risk_from_matrix_cat(self, cause_id, cons_id, cat_id, new_freq, new_cons):
         """Bidirectional: update frequency on cause and category severity on consequence."""
-        self.db.update_cause(cause_id, likelihood=new_freq)
-        self.db.set_consequence_severity(cons_id, cat_id, new_cons)
+        with self.db.history_group():
+            self.db.update_cause(cause_id, likelihood=new_freq)
+            self.db.set_consequence_severity(cons_id, cat_id, new_cons)
         self._schedule_rebuild()
 
     def _show_cat_sg_popup(self, sev_id, all_sgs):
@@ -8056,6 +8067,11 @@ class ScenarioTablePanel(QWidget):
         return True
 
     def _replace_object_reference(self, context, equipment):
+        """Replace an object reference as one undoable edit."""
+        with self.db.history_group():
+            return self._replace_object_reference_inner(context, equipment)
+
+    def _replace_object_reference_inner(self, context, equipment):
         """Apply an explicit ``Byt objekt`` choice without renaming anything."""
         equipment = dict(equipment or {})
         if not equipment.get('id') or not equipment.get('tag'):
@@ -8547,6 +8563,13 @@ class ScenarioTablePanel(QWidget):
         self._move_group_row(cause_id, 0, 1)
 
     def _apply_cause_obj(self, row, cause_id, comp_type, comp_tag, description, frequency):
+        """Apply a cause identity/text edit as one undoable action."""
+        with self.db.history_group():
+            return self._apply_cause_obj_inner(
+                row, cause_id, comp_type, comp_tag, description, frequency)
+
+    def _apply_cause_obj_inner(self, row, cause_id, comp_type, comp_tag,
+                               description, frequency):
         # Live tag link (2026-08-13, see NOTES.md: "taggen är kopplad
         # till objekten i orsaken ... ändrar jag i hazop scenario
         # ändras namnet på p&id och vice versa"). Two cases:
@@ -9319,9 +9342,12 @@ class ScenarioTablePanel(QWidget):
         catalogue tag in the inline editor, which then enables the normal
         standard-cause suggestions.
         """
-        new_id = self.db.add_cause_after(deviation_id, after_cause_id)
-        self.db.update_cause(new_id, description='', comp_type='', comp_tag='',
-                             likelihood=0, base_frequency=None)
+        # Creating a blank cause currently normalises the inserted row with a
+        # second write.  It is still one user action and must undo as one.
+        with self.db.history_group():
+            new_id = self.db.add_cause_after(deviation_id, after_cause_id)
+            self.db.update_cause(new_id, description='', comp_type='', comp_tag='',
+                                 likelihood=0, base_frequency=None)
         self.new_item_created.emit(CAUSE_T, new_id)
 
     def _quick_add_consequence(self, cause_id):
@@ -9382,38 +9408,24 @@ class ScenarioTablePanel(QWidget):
                 return
 
     def undo_last_text_edit(self):
-        """Restore the last committed HAZOP text edit (Ctrl+Z)."""
-        if not self._text_undo_stack:
-            return False
-        kind, id_, old = self._text_undo_stack.pop()
-        self._undoing_text = True
-        try:
-            if kind == 'cause':
-                self.db.update_cause(id_, description=old)
-            elif kind == 'consequence':
-                c = self.db.get_consequence(id_)
-                if c:
-                    self.db.update_consequence(id_, old, c['severity'], c['category'] or '')
-            elif kind == 'safeguard':
-                s = self.db.get_safeguard(id_)
-                if s:
-                    self.db.update_safeguard(id_, old, s['rrf'] or 1)
-            elif kind == 'recommendation':
-                self.db.update_recommendation(id_, description=old)
-            else:
-                return False
-        finally:
-            self._undoing_text = False
-        self._schedule_rebuild()
-        self.item_edited.emit({'cause': CAUSE_T, 'consequence': CONS_T,
-                               'safeguard': SG_T, 'recommendation': CONS_T}[kind], id_)
-        return True
+        """Compatibility entry point for the central database history.
+
+        Older callers still use this method name, but the old per-field stack
+        could only restore a description and created a second history entry
+        while doing so. Delegate to the same atomic session history as the
+        main-window Ctrl+Z action.
+        """
+        return bool(getattr(self.db, 'undo', lambda: False)())
 
     def _on_cell_changed(self, row, col):
-        try:
-            self._on_cell_changed_inner(row, col)
-        except Exception as e:
-            QMessageBox.critical(self, "Fel vid celländring (scenario)", str(e))
+        # A single cell save may update the visible row, tag identity,
+        # frequency metadata and completion history. Treat it as one user
+        # action even though legacy Database methods commit separately.
+        with self.db.history_group():
+            try:
+                self._on_cell_changed_inner(row, col)
+            except Exception as e:
+                QMessageBox.critical(self, "Fel vid celländring (scenario)", str(e))
 
     _INLINE_TAG_RE = re.compile(
         r"(?<![A-Za-z0-9])([A-Za-z]{1,10}[-_][A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*)(?![A-Za-z0-9])")
@@ -9596,7 +9608,6 @@ class ScenarioTablePanel(QWidget):
                         cause = self.db.get_cause(id_)
                 # Check if the text is comp_tag (component tag) or description
                 old_comp_tag = cause.get('comp_tag', '') or ''
-                old_desc = cause.get('description', '') or ''
 
                 # If the edited text matches old_comp_tag, we're editing comp_tag
                 # Otherwise, we're editing description
@@ -9605,8 +9616,6 @@ class ScenarioTablePanel(QWidget):
                     self.db.update_cause(id_, comp_tag=desc)
                 else:
                     # User edited description
-                    if not self._undoing_text and desc != old_desc:
-                        self._text_undo_stack.append(('cause', id_, old_desc))
                     if not desc:
                         # An empty cause is also an empty frequency-bearing
                         # row.  A standard cause or a manually entered base
@@ -9646,9 +9655,6 @@ class ScenarioTablePanel(QWidget):
                 if not accepted:
                     self._schedule_rebuild()
                     return
-                old_desc = cons.get('description', '') or ''
-                if not self._undoing_text and desc != old_desc:
-                    self._text_undo_stack.append(('consequence', id_, old_desc))
                 # A text edit is authoritative: old tagged_refs must not
                 # keep removed objects bold or connected to this cell.
                 refs = self._matching_pid_tags(desc)
@@ -9682,9 +9688,6 @@ class ScenarioTablePanel(QWidget):
                 if not accepted:
                     self._schedule_rebuild()
                     return
-                old_desc = sg.get('description', '') or ''
-                if not self._undoing_text and desc != old_desc:
-                    self._text_undo_stack.append(('safeguard', id_, old_desc))
                 # Keep only catalogue tags still present in the edited cell.
                 refs = self._matching_pid_tags(desc)
                 active_tag = refs[-1] if refs else ''
@@ -9740,11 +9743,6 @@ class ScenarioTablePanel(QWidget):
                 if rec and desc == (rec['description'] or '').strip():
                     desc = ''
             if rec_id is not None and desc:
-                rec = next((a for a in acts if a['id'] == rec_id), None)
-                if rec and not self._undoing_text:
-                    rec = dict(rec)
-                    self._text_undo_stack.append(('recommendation', rec_id,
-                                                  rec.get('description', '') or ''))
                 from hazop import _apply_shared_recommendation_description_update
                 _apply_shared_recommendation_description_update(
                     self.db, self, rec_id, id_, desc)
@@ -10583,6 +10581,13 @@ class ScenarioTablePanel(QWidget):
 
     def _copy_entities_to_target(self, kind, item_ids, target_row, target_col,
                                  ask_scope=True):
+        """Copy one or more entities atomically in the undo history."""
+        with self.db.history_group():
+            return self._copy_entities_to_target_inner(
+                kind, item_ids, target_row, target_col, ask_scope)
+
+    def _copy_entities_to_target_inner(self, kind, item_ids, target_row, target_col,
+                                       ask_scope=True):
         """Copy entities to the hierarchy implied by a table target.
 
         Used by both drop and paste so their rules cannot drift.  Returns the
@@ -11139,6 +11144,11 @@ class ScenarioTablePanel(QWidget):
             menu.exec(self._table.viewport().mapToGlobal(pos))
 
     def _disconnect_tag(self, kind, id_, tag):
+        """Disconnect a tag and keep its related metadata changes atomic."""
+        with self.db.history_group():
+            return self._disconnect_tag_inner(kind, id_, tag)
+
+    def _disconnect_tag_inner(self, kind, id_, tag):
         """Disconnect one P&ID tag while leaving its characters as prose."""
         tag = (tag or '').strip()
         if not tag:
@@ -11189,6 +11199,10 @@ class ScenarioTablePanel(QWidget):
         self._schedule_rebuild()
 
     def _untag_safeguard(self, sg_id):
+        with self.db.history_group():
+            return self._untag_safeguard_inner(sg_id)
+
+    def _untag_safeguard_inner(self, sg_id):
         """Same as _untag_consequence, for a safeguard cell."""
         row = self.db.get_safeguard(sg_id)
         if row:

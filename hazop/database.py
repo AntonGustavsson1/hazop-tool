@@ -1017,6 +1017,7 @@ class Database:
         self._history_snapshot = None
         self._undo_stack = []
         self._redo_stack = []
+        self._history_listeners = []
         self._history_group_depth = 0
         self._history_group_before = None
         self._history_group_changed = False
@@ -5803,6 +5804,25 @@ class Database:
         self._history_group_before = None
         self._history_group_changed = False
         self._history_initialized = self._history_snapshot is not None
+        self._notify_history_listeners()
+
+    def add_history_listener(self, callback):
+        """Subscribe to session-history changes without coupling DB to Qt."""
+        if callable(callback) and callback not in self._history_listeners:
+            self._history_listeners.append(callback)
+
+    def remove_history_listener(self, callback):
+        try:
+            self._history_listeners.remove(callback)
+        except ValueError:
+            pass
+
+    def _notify_history_listeners(self):
+        for callback in list(getattr(self, '_history_listeners', ())):
+            try:
+                callback()
+            except Exception:
+                logging.debug("Undo history listener failed", exc_info=True)
 
     def _push_history_entry(self, before, after):
         if before is None or before == after:
@@ -5812,6 +5832,7 @@ class Database:
             del self._undo_stack[:-self._HISTORY_LIMIT]
         # Any new edit after an undo starts a new branch.
         self._redo_stack.clear()
+        self._notify_history_listeners()
 
     def _record_committed_state(self):
         """Record the state reached by the most recent successful commit."""
@@ -5970,6 +5991,7 @@ class Database:
         self._undo_stack.pop()
         self._redo_stack.append((before, after))
         self._history_snapshot = before
+        self._notify_history_listeners()
         return True
 
     def redo(self):
@@ -5991,6 +6013,7 @@ class Database:
         if len(self._undo_stack) > self._HISTORY_LIMIT:
             del self._undo_stack[:-self._HISTORY_LIMIT]
         self._history_snapshot = after
+        self._notify_history_listeners()
         return True
 
     def _commit_with_history(self):
@@ -6009,14 +6032,15 @@ class Database:
             # crash; diagnostics are still useful during development.
             logging.debug("Database write-through commit failed", exc_info=True)
 
-    def touch_node(self, node_id):
+    def touch_node(self, node_id, commit=True):
         """Update updated_at/updated_by on node (feature 20)."""
         import datetime as _dt
         user = (self.get_config('user_name', '') or '').strip() or 'okänd'
         self.conn.execute(
             "UPDATE nodes SET updated_at=?,updated_by=? WHERE id=?",
             (_dt.datetime.now().strftime('%Y-%m-%d %H:%M'), user, node_id))
-        self.commit()
+        if commit:
+            self.commit()
 
     def update_node(self, id_, name, description, pid_ref,
                     media='', pressure='', temperature=''):
@@ -6034,9 +6058,11 @@ class Database:
         # NodePanel already did this via an external signal connection,
         # but the other two rename paths didn't, so a rename via "Döp
         # om" silently left the on-canvas label stale).
-        self.sync_node_text_markups(id_, name)
+        self.sync_node_text_markups(id_, name, commit=False)
+        # Keep the visible node update and its audit metadata in one undo
+        # step. ``touch_node`` remains independently usable elsewhere.
+        self.touch_node(id_, commit=False)
         self.commit()
-        self.touch_node(id_)
 
     # ── Node markup CRUD ──────────────────────────────────────────────────────
     def add_node_markup(self, node_id, type_, pts, label, color, opacity, line_width, page,
@@ -6306,12 +6332,13 @@ class Database:
                 return i
         return 0
 
-    def sync_node_text_markups(self, node_id, new_name):
+    def sync_node_text_markups(self, node_id, new_name, commit=True):
         """Update label of all 'text' type markups for a node to match its new name."""
         self.conn.execute(
             "UPDATE node_markups SET label=? WHERE node_id=? AND type='text'",
             (new_name, node_id))
-        self.commit()
+        if commit:
+            self.commit()
 
     _SENTINEL = object()
 

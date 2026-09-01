@@ -70,6 +70,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
+from PyQt6.QtTest import QTest  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
 
@@ -220,6 +221,37 @@ class MainWindowUndoRedoTests(unittest.TestCase):
             self.assertIsNone(win.db.get_cause(cause_id))
             self.assertTrue(win._redo_last_change())
             self.assertIsNotNone(win.db.get_cause(cause_id))
+
+    def test_physical_ctrl_shortcuts_reach_document_history(self):
+        """The application event filter covers a real key event as well."""
+        with _TempDbMainWindow() as win:
+            deviation_id = win.db.deviations(win.db.nodes()[0]['id'])[0]['id']
+            cause_id = win.db.add_cause(deviation_id)
+            win.show()
+            win.activateWindow()
+            win.setFocus()
+            QApplication.processEvents()
+
+            QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+            QApplication.processEvents()
+            self.assertIsNone(win.db.get_cause(cause_id))
+
+            QTest.keyClick(win, Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier)
+            QApplication.processEvents()
+            self.assertIsNotNone(win.db.get_cause(cause_id))
+
+    def test_edit_menu_actions_follow_database_history(self):
+        with _TempDbMainWindow() as win:
+            self.assertFalse(win._act_undo.isEnabled())
+            self.assertFalse(win._act_redo.isEnabled())
+            deviation_id = win.db.deviations(win.db.nodes()[0]['id'])[0]['id']
+            cause_id = win.db.add_cause(deviation_id)
+            QApplication.processEvents()
+            self.assertTrue(win._act_undo.isEnabled())
+            win._undo_last_change()
+            self.assertFalse(win._act_undo.isEnabled())
+            self.assertTrue(win._act_redo.isEnabled())
+            self.assertIsNone(win.db.get_cause(cause_id))
 
 class GlobalExceptHookTests(unittest.TestCase):
     """In PyQt5.5+/PyQt6, an exception raised inside a signal/slot callback

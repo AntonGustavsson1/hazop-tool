@@ -1028,6 +1028,27 @@ class TreeInternalReparentDragDropTests(unittest.TestCase):
         self.assertEqual(len(copies), 1)
         self.assertEqual(copies[0]['description'], "Original")
 
+    def test_multi_selection_drop_is_one_undo_step(self):
+        """Several copied tree entries are one reversible user action."""
+        node_id = self.db.add_node()
+        dev_a, dev_b = (self.db.deviations(node_id)[0]['id'],
+                        self.db.deviations(node_id)[1]['id'])
+        cause_a = self.db.add_cause(dev_a)
+        cause_b = self.db.add_cause(dev_a)
+        before = self.db.undo_count
+
+        changed = self.panel._drop_tree_entries(
+            [(CAUSE_T, cause_a), (CAUSE_T, cause_b)],
+            (DEV_T, dev_b), True)
+
+        self.assertTrue(changed)
+        self.assertEqual(self.db.undo_count, before + 1)
+        self.assertEqual(
+            len([row for row in self.db.causes_for_deviation(dev_b)
+                 if row['source_id'] in (cause_a, cause_b)]), 2)
+        self.assertTrue(self.db.undo())
+        self.assertEqual(self.db.causes_for_deviation(dev_b), [])
+
     def test_dropping_onto_same_parent_is_a_noop(self):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']

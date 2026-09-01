@@ -3346,6 +3346,23 @@ class AutoConsequenceOnCauseAddTests(unittest.TestCase):
         self.assertIsNotNone(cons)
         self.assertEqual(dict(cons)['cause_id'], cause_id)
 
+    def test_create_cause_from_pick_is_one_undo_step(self):
+        """Cause + initial consequence is one user action, not three."""
+        from hazop import _create_cause_from_pick
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        before = self.db.undo_count
+
+        cause_id, cons_id = _create_cause_from_pick(
+            self.db, dev_id, "Ny orsak", 2.0)
+
+        self.assertEqual(self.db.undo_count, before + 1)
+        self.assertIsNotNone(self.db.get_cause(cause_id))
+        self.assertIsNotNone(self.db.get_consequence(cons_id))
+        self.assertTrue(self.db.undo())
+        self.assertIsNone(self.db.get_cause(cause_id))
+        self.assertIsNone(self.db.get_consequence(cons_id))
+
     def test_new_item_created_consequence_starts_inline_edit_on_kon(self):
         """Directly exercises the MainWindow-level wiring (matches the
         established pattern in SafeguardCreatedDoubleRebuildTests): emitting

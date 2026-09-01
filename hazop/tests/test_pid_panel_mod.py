@@ -636,6 +636,26 @@ class EquipmentObjectPlacementTests(unittest.TestCase):
         equip = self.db.get_equipment_by_id(markers[0]['equipment_id'])
         self.assertEqual(equip['equipment_type'], "Pump")
 
+    def test_cause_object_placement_links_marker_and_cause_in_one_undo_step(self):
+        """Placing an object for an already-existing cause is one action."""
+        from PyQt6.QtCore import QPointF
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.clear_undo_history()
+        self.panel._pending_cause_place = (cause_id, 'V-701', 'Ventil')
+
+        self.panel._on_cause_place_requested(QPointF(10, 10), 0)
+
+        cause = self.db.get_cause(cause_id)
+        self.assertIsNotNone(cause.get('equipment_id'))
+        self.assertEqual(self.db.undo_count, 1)
+        self.assertTrue(self.db.undo())
+        self.assertIsNone(self.db.get_equipment_by_tag('V-701'))
+        self.assertIsNone(self.db.get_cause(cause_id).get('equipment_id'))
+        self.assertTrue(self.db.redo())
+        self.assertIsNotNone(self.db.get_cause(cause_id).get('equipment_id'))
+
 
 class EquipmentPlacementRubberBandSimplePopupTests(unittest.TestCase):
     """Rubber-band placements (pdf_rect given) get a simplified popup —

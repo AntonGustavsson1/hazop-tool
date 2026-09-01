@@ -2318,6 +2318,11 @@ class EquipmentMarkerReviewDialog(QDialog):
         res['y'] = (min(ys) + max(ys)) / 2
 
     def _save(self):
+        """Save all checked marker-review rows as one undoable action."""
+        with self.db.history_group():
+            return self._save_inner()
+
+    def _save_inner(self):
         saved = 0
         for r, res in enumerate(self._results):
             chk = self._tbl.item(r, self._C_CHK)

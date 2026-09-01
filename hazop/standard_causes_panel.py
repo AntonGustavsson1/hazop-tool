@@ -663,27 +663,30 @@ class StandardCausesSettingsPanel(QWidget):
         except Exception as e:
             QMessageBox.critical(self, 'Fel', str(e)); return
         added_devs = added_causes = added_objs = 0
-        for obj_name in data.get('objects', []):
-            if not self.db.conn.execute(
-                    "SELECT id FROM standard_objects WHERE name=?", (obj_name,)).fetchone():
-                self.db.add_standard_object(obj_name); added_objs += 1
-        for dev_d in data.get('deviations', []):
-            dev_row = self.db.conn.execute(
-                "SELECT id FROM standard_deviations WHERE description=? AND active=1",
-                (dev_d['description'],)).fetchone()
-            if not dev_row:
-                dev_id = self.db.add_standard_deviation(dev_d['description'])
-                added_devs += 1
-            else:
-                dev_id = dev_row[0]
-            for c in dev_d.get('causes', []):
-                obj_id = c.get('object_id')
+        # Importing a library is one deliberate operation from the user's
+        # perspective, although the existing DB helpers commit each row.
+        with self.db.history_group():
+            for obj_name in data.get('objects', []):
                 if not self.db.conn.execute(
-                        "SELECT id FROM standard_causes WHERE deviation_id=? AND description=? AND active=1",
-                        (dev_id, c['description'])).fetchone():
-                    self.db.add_standard_cause_with_object(dev_id, obj_id or 0, c['description'])
-                    added_causes += 1
-        self.db.conn.commit()
+                        "SELECT id FROM standard_objects WHERE name=?", (obj_name,)).fetchone():
+                    self.db.add_standard_object(obj_name); added_objs += 1
+            for dev_d in data.get('deviations', []):
+                dev_row = self.db.conn.execute(
+                    "SELECT id FROM standard_deviations WHERE description=? AND active=1",
+                    (dev_d['description'],)).fetchone()
+                if not dev_row:
+                    dev_id = self.db.add_standard_deviation(dev_d['description'])
+                    added_devs += 1
+                else:
+                    dev_id = dev_row[0]
+                for c in dev_d.get('causes', []):
+                    obj_id = c.get('object_id')
+                    if not self.db.conn.execute(
+                            "SELECT id FROM standard_causes WHERE deviation_id=? AND description=? AND active=1",
+                            (dev_id, c['description'])).fetchone():
+                        self.db.add_standard_cause_with_object(dev_id, obj_id or 0, c['description'])
+                        added_causes += 1
+            self.db.commit()
         self._load_deviations()
         QMessageBox.information(self, 'Importerat',
             f'Lagt till: {added_devs} avvikelser, {added_causes} orsaker, {added_objs} objekt.')
