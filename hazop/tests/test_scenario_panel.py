@@ -4543,6 +4543,43 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
 
         self.assertIsNone(self._popup(), "the popup must close once the editor is destroyed")
 
+    def test_repeated_popup_requests_keep_one_popup_per_editor(self):
+        """Rapid clicks/deferred callbacks must not stack helper popups."""
+        from scenario_panel import StandardCauseSuggestPopup
+        cause_id = self._make_cause()
+        row = self._start_edit(cause_id)
+        editor = self._editor_for_row(row)
+        self.assertIsNotNone(editor)
+        for _ in range(8):
+            self.panel._pid_delegate._show_standard_cause_popup(
+                editor, row, self.panel._table.visualRect(
+                    self.panel._table.model().index(row, self.panel._C_ORS)))
+        popups = [p for p in self.panel.window().findChildren(
+            StandardCauseSuggestPopup)
+                  if p.isVisible()]
+        self.assertEqual(len(popups), 1)
+
+    def test_clicking_away_after_repeated_cause_clicks_closes_popup(self):
+        """Clicking another table area must finish the edit and hide its popup."""
+        from PyQt6.QtTest import QTest
+        cause_id = self._make_cause()
+        row = self._start_edit(cause_id)
+        self.assertIsNotNone(self._popup())
+        viewport = self.panel._table.viewport()
+        # Send several clicks through the same cause-cell route, then click
+        # the adjacent consequence cell.  NoEditTriggers used to leave the
+        # editor (and therefore the popup) alive indefinitely here.
+        ors_pos = self.panel._table.visualRect(
+            self.panel._table.model().index(row, self.panel._C_ORS)).center()
+        for _ in range(6):
+            QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, pos=ors_pos)
+        kon_pos = self.panel._table.visualRect(
+            self.panel._table.model().index(row, self.panel._C_KON)).center()
+        QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, pos=kon_pos)
+        self.app.processEvents()
+        self.assertIsNone(self._popup())
+        self.assertIsNone(self._editor_for_row(row))
+
 
 class ScenarioScrollPreservationTests(unittest.TestCase):
     """Structural table edits must not reset the user to the top row."""

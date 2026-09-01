@@ -1,5 +1,18 @@
 # NOTES.md — Beslut och kontext
 
+## Orsakspopup stängs efter upprepade klick (2026-09-01)
+
+ScenarioTablePanel använder nu en gemensam avslutningsväg för aktiv inline-
+redigering när användaren klickar utanför editorn. Den sparar texten, stänger
+den kopplade standardorsakspopupen och gäller även klick i andra delar av
+programfönstret. Klick i editorn eller i popupens egna kontroller lämnas
+orört. En extra spärr hindrar flera fördröjda popup-anrop från att skapa mer
+än en standardorsakspopup per editor.
+
+Verifierat med 11 riktade standardorsakspopup-tester, `tests.test_worksheet`
+(25 tester), `tests.test_smoke` (12 tester), `py_compile` och
+`git diff --check`. Testningen är headless.
+
 ## Säkrare kopiering av hela HAZOP-tabellen till Excel/Word (2026-09-01)
 
 `Kopierat.xlsx` visade att Excel kunde flytta barriärer, riskvärden och

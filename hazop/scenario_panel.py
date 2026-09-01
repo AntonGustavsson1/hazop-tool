@@ -2844,6 +2844,17 @@ class _PidDelegate(_ScenarioDelegate):
         if cause_id is None:
             return
         try:
+            # A rapid sequence of clicks can leave more than one zero-delay
+            # show request in Qt's event queue.  One editor must have one
+            # standard-cause popup; otherwise an older instance can survive
+            # after the visible editor has been closed and make clicking away
+            # appear ineffective.
+            top_level = panel.window()
+            for existing in top_level.findChildren(StandardCauseSuggestPopup):
+                if getattr(existing, '_editor', None) is editor:
+                    if not existing.isVisible():
+                        existing.show()
+                    return
             group_line = editor.property('group_line')
             equipment = equipment_override or panel._recognized_pid_equipment(
                 editor.toPlainText())
@@ -2858,7 +2869,6 @@ class _PidDelegate(_ScenarioDelegate):
                 panel._ors_standard_causes_for_row(
                     row, group_line if isinstance(group_line, int) and group_line >= 0 else None,
                     equipment_override=equipment)
-            top_level = panel.window()
             popup = StandardCauseSuggestPopup(
                 panel, row, cause_id, editor, comp_type, dev_description, rows,
                 equipment_id=equipment.get('id') if equipment else None,
@@ -4365,6 +4375,16 @@ class ScenarioTablePanel(QWidget):
         self._table.setAcceptDrops(True)
         self._table.installEventFilter(self)
         self._table.viewport().installEventFilter(self)
+        # QTableWidget has NoEditTriggers because the panel starts editors
+        # explicitly (double-click/Enter).  That also means Qt does not
+        # reliably close an active editor when the user clicks another part
+        # of the application.  Listen at application level so a click in a
+        # sibling panel, header or empty area can finish the edit and its
+        # helper popup too.  The filter is deliberately installed once per
+        # panel and is removed automatically with this QObject.
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
         # Drag state
         self._drag_press_pos  = None
         self._drag_press_row  = -1
@@ -6684,6 +6704,105 @@ class ScenarioTablePanel(QWidget):
         self._double_click_edit = None
         self._table.setFocus()
 
+    def _inline_editor_widgets(self):
+        """Return live inline editors owned by this scenario table.
+
+        ``QTableWidget.focusWidget()`` is not sufficient here: after a click
+        outside the table focus may already belong to the clicked widget,
+        while the delegate editor is still visible and still owns the
+        standard-cause popup.  Looking at the editor's explicit identity
+        properties is stable across those focus transitions.
+        """
+        editors = []
+        for editor in self._table.findChildren((_BoldTagTextEdit, QLineEdit)):
+            try:
+                if (editor.isVisible() and
+                        editor.property('editing_row') is not None and
+                        editor.property('editing_col') is not None):
+                    editors.append(editor)
+            except RuntimeError:
+                # The delegate may be in the middle of deferred widget
+                # teardown.  A disappearing editor is already on its way out.
+                continue
+        return editors
+
+    @staticmethod
+    def _is_descendant_of(widget, ancestor):
+        """Whether *widget* is *ancestor* or one of its child widgets."""
+        current = widget
+        while current is not None:
+            if current is ancestor:
+                return True
+            try:
+                current = current.parentWidget()
+            except (AttributeError, RuntimeError):
+                return False
+        return False
+
+    def _is_inline_helper_target(self, target):
+        """Keep clicks inside an editor/helper popup from ending the edit."""
+        if target is None:
+            return False
+        for editor in self._inline_editor_widgets():
+            if self._is_descendant_of(target, editor):
+                return True
+        top_level = self.window()
+        for popup_type in (StandardCauseSuggestPopup,
+                           RecommendationAssistPopup, CauseTagPopup):
+            for popup in top_level.findChildren(popup_type):
+                if self._is_descendant_of(target, popup):
+                    return True
+        return False
+
+    def _finish_inline_editor_for_external_click(self, target):
+        """Commit/close an editor when a click lands outside its edit UI.
+
+        This is the missing counterpart to the popup's editor-Hide filter.
+        It is intentionally a commit (the same path as clicking another
+        normal Qt table cell), not a cancel, so text typed immediately before
+        clicking away is retained.  The helper popup closes synchronously via
+        the editor's Hide event and its explicit close backstop.
+        """
+        if self._is_inline_helper_target(target):
+            return
+        editors = self._inline_editor_widgets()
+        top_level = self.window()
+        popup_types = (StandardCauseSuggestPopup,
+                       RecommendationAssistPopup, CauseTagPopup)
+        # Clean up helpers whose editor has already been hidden/deleted.  This
+        # is deliberately done even when there is no live editor: otherwise a
+        # missed Hide/destroyed notification leaves a popup that appears
+        # impossible to dismiss with an ordinary click.
+        live_ids = {id(editor) for editor in editors}
+        for popup_type in popup_types:
+            for popup in top_level.findChildren(popup_type):
+                linked = (getattr(popup, '_editor', None) or
+                          getattr(popup, '_inline_editor', None))
+                if linked is None or id(linked) not in live_ids:
+                    popup.close()
+        if not editors:
+            return
+        # A pending empty-deviation click belongs to the old click sequence;
+        # do not materialise a new cause after the user has already clicked
+        # away from that cell.
+        if hasattr(self, '_empty_cause_click_timer'):
+            self._empty_cause_click_timer.stop()
+            self._empty_cause_click_target = None
+        for editor in editors:
+            col = editor.property('editing_col')
+            delegate = (self._pid_delegate if col in
+                        (self._C_ORS, self._C_KON, self._C_SG)
+                        else self._delegate)
+            try:
+                delegate.commitData.emit(editor)
+                delegate.closeEditor.emit(
+                    editor, QStyledItemDelegate.EndEditHint.NoHint)
+            except RuntimeError:
+                # A rebuild may have deleted this editor while another event
+                # in the same click sequence was being delivered.
+                continue
+        self._double_click_edit = None
+
     def ors_cell_global_pos(self, dev_id):
         """Return global top-right corner of the first placeholder ORS cell for dev_id."""
         for row, meta in enumerate(self._row_meta):
@@ -8368,6 +8487,27 @@ class ScenarioTablePanel(QWidget):
     # ── Enter-tangent: snabblägg-till ─────────────────────────────────────────
 
     def eventFilter(self, obj, event):
+        # QApplication may deliver one final event while this panel is being
+        # torn down.  In that window the table attribute can already be gone;
+        # never let the global filter turn normal widget destruction into a
+        # crash report.
+        if getattr(self, '_table', None) is None:
+            return False
+
+        # The table deliberately uses NoEditTriggers and opens its inline
+        # editors from explicit handlers.  Consequently a click outside the
+        # table is not guaranteed to produce the delegate's normal
+        # closeEditor sequence.  Handle that at application level so the
+        # standard-cause helper cannot become stuck after repeated clicks.
+        if (event.type() == QEvent.Type.MouseButtonPress and
+                event.button() in (Qt.MouseButton.LeftButton,
+                                   Qt.MouseButton.RightButton)):
+            target = obj
+            top_level = self.window()
+            if (target is top_level or
+                    self._is_descendant_of(target, top_level)):
+                self._finish_inline_editor_for_external_click(target)
+
         ctrl = bool(event.type() == QEvent.Type.KeyPress and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier)
 
