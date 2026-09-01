@@ -468,9 +468,15 @@ class _AxisMappingCanvas(QWidget):
         if chip.role == 'old':
             self.drag_chip = chip
             self.drag_point = self.mapFromGlobal(global_pos)
-            self.dialog.activate_old_step(chip.kind, chip.value)
+            if chip.kind == 'category':
+                self.dialog.activate_source_category(chip.value)
+            else:
+                self.dialog.activate_old_step(chip.kind, chip.value)
         else:
-            self.dialog.activate_target_step(chip.kind, chip.value)
+            if chip.kind == 'category':
+                self.dialog.activate_target_category(chip.value)
+            else:
+                self.dialog.activate_target_step(chip.kind, chip.value)
         self.sync_state()
 
     def chip_moved(self, chip, global_pos):
@@ -486,18 +492,30 @@ class _AxisMappingCanvas(QWidget):
         if chip is self.drag_chip:
             target = self._chip_at(global_pos)
             if target and target.role == 'target' and target.kind == chip.kind:
-                self.dialog.set_axis_mapping(chip.kind, chip.value, target.value)
+                if chip.kind == 'category':
+                    self.dialog.set_category_mapping(chip.value, target.value)
+                else:
+                    self.dialog.set_axis_mapping(chip.kind, chip.value, target.value)
             self.drag_chip = self.drag_point = self.drag_over = None
         self.sync_state()
 
     def sync_state(self):
         armed = self.dialog.armed
         for key, chip in self.old_chips.items():
-            chip.apply_state(armed=(key == armed), mapped=self.dialog.is_mapped(*key))
+            kind, value = key
+            if kind == 'category':
+                chip.apply_state(armed=(value == self.dialog.category_armed),
+                                 mapped=self.dialog.category_mapped(value))
+            else:
+                chip.apply_state(armed=(key == armed),
+                                 mapped=self.dialog.is_mapped(*key))
         for key, chip in self.target_chips.items():
-            chip.apply_state(mapped=self.dialog.target_count(*key) > 0,
-                             over=(chip is self.drag_over),
-                             count=self.dialog.target_count(*key))
+            kind, value = key
+            count = (self.dialog.category_target_count(value)
+                     if kind == 'category'
+                     else self.dialog.target_count(*key))
+            chip.apply_state(mapped=count > 0, over=(chip is self.drag_over),
+                             count=count)
         self.update()
 
     def _chip_center(self, chip, side):
@@ -642,7 +660,7 @@ class MatrixAgainstMatrix(_AxisMappingCanvas):
 
 
 class CategoryMappingChip(QPushButton):
-    """One draggable source/target category chip in the mapping drawer."""
+    """Legacy category chip retained for import compatibility."""
 
     def __init__(self, panel, role, key, name, color):
         super().__init__(name, panel)
@@ -682,6 +700,36 @@ class CategoryMappingChip(QPushButton):
             "QPushButton:hover{background:#eef2f7;}")
 
 
+class _CategoryMappingCanvas(_AxisMappingCanvas):
+    """Category mapping view using the same link-field interaction as axes."""
+
+    def iter_mappings(self):
+        return sorted(
+            ((('category', source), target)
+             for source, target in self.dialog._category_mapping.items()),
+            key=lambda item: item[0][1])
+
+    def rebuild(self):
+        self.clear_canvas()
+        self._layout.setColumnStretch(0, 1)
+        self._layout.setColumnStretch(1, 1)
+        self._layout.setColumnStretch(2, 1)
+        self._layout.addWidget(
+            self._section_label('KONSEKVENSKATEGORI'), 0, 0, 1, 3)
+        self._layout.addWidget(self._section_label('BEFINTLIG MATRIS'), 1, 0)
+        self._layout.addWidget(self._section_label('NY MATRIS'), 1, 2)
+
+        source_categories = self.dialog.plan.get('source_categories', [])
+        target_categories = self.dialog.plan.get('target_categories', [])
+        for row, category in enumerate(source_categories, start=2):
+            self.add_chip('old', 'category', str(category['source_id']),
+                          category['name'], '', row, 0, compact=True)
+        for row, category in enumerate(target_categories, start=2):
+            self.add_chip('target', 'category', category['key'],
+                          category['name'], '', row, 2, compact=True)
+        QTimer.singleShot(0, self.sync_state)
+
+
 class CategoryMappingPanel(QWidget):
     """Collapsible category and per-category severity conversion editor."""
 
@@ -689,6 +737,7 @@ class CategoryMappingPanel(QWidget):
         super().__init__(parent)
         self.dialog = dialog
         self.source_chips, self.target_chips = {}, {}
+        self._mapping_canvas = None
         self.drag_chip = self.drag_over = None
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -756,7 +805,19 @@ class CategoryMappingPanel(QWidget):
             chip = CategoryMappingChip(self, 'target', category['key'],
                                        category['name'], category.get('color'))
             self.target_chips[chip.key] = chip; grid.addWidget(chip, row, 2)
-        self._layout.addWidget(links)
+        # Replace the old category-only grid with the shared axis-style
+        # mapping canvas.  It provides the same visible links, target counts,
+        # drag/drop and click-click interaction as frequency/consequence.
+        links.deleteLater()
+        self._mapping_canvas = _CategoryMappingCanvas(self.dialog, self)
+        self._mapping_canvas.rebuild()
+        self._layout.addWidget(self._mapping_canvas, 1)
+        self.source_chips = {
+            key[1]: chip for key, chip in self._mapping_canvas.old_chips.items()
+        }
+        self.target_chips = {
+            key[1]: chip for key, chip in self._mapping_canvas.target_chips.items()
+        }
 
         converters = QGroupBox("Nivåöversättning per kategori")
         converters_lay = QVBoxLayout(converters)
@@ -789,12 +850,8 @@ class CategoryMappingPanel(QWidget):
         QTimer.singleShot(0, self.sync_state)
 
     def sync_state(self):
-        armed = self.dialog.category_armed
-        for key, chip in self.source_chips.items():
-            chip.set_state(armed=(key == armed), mapped=self.dialog.category_mapped(key))
-        for key, chip in self.target_chips.items():
-            chip.set_state(mapped=self.dialog.category_target_count(key) > 0,
-                           over=(chip is self.drag_over))
+        if self._mapping_canvas is not None:
+            self._mapping_canvas.sync_state()
 
 
 class RiskMatrixMigrationDialog(QDialog):

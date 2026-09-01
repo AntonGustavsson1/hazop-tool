@@ -5024,6 +5024,13 @@ Ctrl+V-event för fem Excel-rader, spara-runda till databasen, `py_compile` och
 `git diff --check`. Ingen manuell visuell GUI-verifiering är gjord.
 ## Inline-editor: ingen spoktext i konsekvens och safeguard (2026-09-01)
 
+## Konsekvenskategorier i gemensamt kopplingsfalt (2026-09-01)
+
+Kopplingen mellan befintliga och nya konsekvenskategorier anvander nu samma
+interaktiva kopplingsfalt som frekvens- och konsekvensaxlarna: samma chip,
+drag-and-drop, klick-klick, statusfarger, malraknare och kurvade lankar.
+Den separata nivaoversattningen per kategori finns kvar under kopplingsfaltet.
+
 Nar inline-editorn oppnas i konsekvens- eller safeguardkolumnen malas inte
 den sparade beskrivningen langre under editorn. Endast det strukturella
 numret och safeguardens RRF-badge ligger kvar som kontext. Det forhindrar att

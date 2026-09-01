@@ -1304,6 +1304,52 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
+    def test_category_mapping_uses_the_shared_link_field_interface(self):
+        from hazop_preparation_panel import (RiskMatrixMigrationDialog,
+                                              AxisMappingChip,
+                                              _CategoryMappingCanvas)
+        source = {
+            'rows': 2, 'cols': 2, 'x_labels': ['A', 'B'],
+            'y_labels': ['1', '2'], 'freq_boundaries': [0.1],
+            'consequence_categories': [
+                {'key': 'old-person', 'name': 'Person', 'color': '#2563eb'},
+                {'key': 'old-asset', 'name': 'Tillgångar', 'color': '#d97706'},
+            ],
+        }
+        target = {
+            'rows': 2, 'cols': 2, 'x_labels': ['1', '2'],
+            'y_labels': ['1', '2'], 'freq_boundaries': [0.1],
+            'consequence_categories': [
+                {'key': 'new-person', 'name': 'Människor', 'color': '#16a34a'},
+                {'key': 'new-assets', 'name': 'Assets', 'color': '#7c3aed'},
+            ],
+        }
+        self.db.set_risk_matrix(source)
+        dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
+        try:
+            canvas = dialog._category_panel._mapping_canvas
+            self.assertIsInstance(canvas, _CategoryMappingCanvas)
+            first_source_key = next(iter(canvas.old_chips))[1]
+            self.assertIsInstance(
+                canvas.old_chips[('category', first_source_key)], AxisMappingChip)
+            self.assertIsInstance(canvas.target_chips[('category', 'new-person')],
+                                  AxisMappingChip)
+
+            dialog.clear_mappings()
+            canvas = dialog._category_panel._mapping_canvas
+            first_source_key = next(iter(canvas.old_chips))[1]
+            source_id = first_source_key
+            dialog.activate_source_category(source_id)
+            dialog.activate_target_category('new-person')
+            self.assertEqual(dialog._category_mapping[source_id], 'new-person')
+            canvas = dialog._category_panel._mapping_canvas
+            self.assertEqual(canvas.iter_mappings(),
+                             [(('category', source_id), 'new-person')])
+            self.assertTrue(canvas.old_chips[('category', source_id)].text() == 'Person')
+            self.assertIn('(1)', canvas.target_chips[('category', 'new-person')].text())
+        finally:
+            dialog.deleteLater()
+
     def test_deleting_category_refreshes_matrix_cell_buttons(self):
         """'När jag lägger till eller tar bort en konsekvenskategori skall
         detta synas i riskmatrisen direkt.' (2026-08-11) — _cat_add already
