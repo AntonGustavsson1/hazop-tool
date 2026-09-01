@@ -1248,8 +1248,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
             self.assertEqual([dialog._tabs.tabText(i) for i in range(dialog._tabs.count())],
-                             ['1. Konsekvenskategorier', '2. Kopplingsfält',
-                              '3. Matris mot matris'])
+                             ['1. Kopplingsfält', '2. Matris mot matris'])
+            self.assertEqual(dialog._pages.currentIndex(), 0)
             self.assertTrue(hasattr(dialog, '_category_panel'))
             source_chip = dialog._link_field.old_chips[('frequency', -1)]
             target_chip = dialog._link_field.target_chips[('frequency', -1)]
@@ -1289,8 +1289,9 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         self.db.set_risk_matrix(source)
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
-            self.assertEqual(dialog._tabs.count(), 3)
-            self.assertEqual(dialog._tabs.tabText(0), '1. Konsekvenskategorier')
+            self.assertEqual(dialog._tabs.count(), 2)
+            self.assertEqual(dialog._tabs.tabText(0), '1. Kopplingsfält')
+            self.assertEqual(dialog._pages.currentIndex(), 0)
             source_id = str(dialog.plan['source_categories'][0]['source_id'])
             self.assertEqual(dialog.plan['category_map'][source_id], 'person')
             canvas = dialog._category_panel._mapping_canvas
@@ -1300,6 +1301,12 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
                           dialog._category_panel.source_chips[source_id])
             self.assertLess(dialog._category_panel._mapping_canvas.geometry().y(), 50)
             self.assertIn('konsekvenskategorier mappade.', dialog._progress.text())
+
+            # Category links are a required first page.  The next page is
+            # available only after every source category has a destination.
+            dialog._show_axis_page()
+            self.assertEqual(dialog._pages.currentIndex(), 1)
+            self.assertTrue(dialog._global_scope_button.isChecked())
 
             dialog.clear_mappings()
             dialog.activate_source_category(source_id)
@@ -1331,7 +1338,7 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
             self.assertTrue(hasattr(dialog, '_category_panel'))
-            self.assertEqual(dialog._tabs.tabText(0), '1. Konsekvenskategorier')
+            self.assertEqual(dialog._pages.currentIndex(), 0)
             source_id = str(dialog.plan['source_categories'][0]['source_id'])
             dialog.clear_mappings()
             dialog.activate_source_category(source_id)
@@ -1340,6 +1347,58 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             self.assertEqual(dialog._mapping, {})
             self.assertEqual(dialog._category_panel._mapping_canvas.iter_mappings(),
                              [(('category', source_id), 'new-person')])
+        finally:
+            dialog.deleteLater()
+
+    def test_category_severity_calibration_inherits_global_mapping_and_allows_override(self):
+        """Global severity mapping is shared, with optional per-category links."""
+        from hazop_preparation_panel import RiskMatrixMigrationDialog
+        source = {
+            'rows': 3, 'cols': 2, 'x_labels': ['A', 'B'],
+            'y_labels': ['1', '2', '3'], 'freq_boundaries': [0.1],
+            'consequence_categories': [
+                {'key': 'old-person', 'name': 'Person', 'color': '#2563eb'},
+                {'key': 'old-asset', 'name': 'Tillgångar', 'color': '#d97706'},
+            ],
+        }
+        target = {
+            'rows': 4, 'cols': 2, 'x_labels': ['1', '2'],
+            'y_labels': ['1', '2', '3', '4'], 'freq_boundaries': [0.1],
+            'consequence_categories': [
+                {'key': 'new-person', 'name': 'Människor', 'color': '#16a34a'},
+                {'key': 'new-assets', 'name': 'Assets', 'color': '#7c3aed'},
+            ],
+        }
+        self.db.set_risk_matrix(source)
+        dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
+        try:
+            source_id = str(dialog.plan['source_categories'][0]['source_id'])
+            dialog.set_axis_mapping('severity', 1, 4)
+            self.assertEqual(dialog.category_level_target(source_id, 1), 4)
+            dialog.remove_axis_mapping('severity', 1)
+            self.assertEqual(dialog.category_level_target(source_id, 1), 1)
+            dialog.set_axis_mapping('severity', 1, 4)
+
+            dialog.set_category_severity_mapping(source_id, 1, 2)
+            self.assertEqual(dialog.category_level_target(source_id, 1), 2)
+            self.assertEqual(dialog.plan['category_severity_maps'][source_id]['1'], 2)
+
+            # Later global changes affect categories without an override, but
+            # must not overwrite the explicitly calibrated category.
+            dialog.set_axis_mapping('severity', 2, 3)
+            self.assertEqual(dialog.category_level_target(source_id, 1), 2)
+            self.assertEqual(dialog.category_level_target(source_id, 2), 3)
+
+            # The page-two Rensa action is deliberately axis-only.  Category
+            # links and a category-specific override must survive it.
+            dialog.set_category_mapping(source_id, 'new-person')
+            dialog.clear_axis_mappings()
+            self.assertEqual(dialog.plan['category_map'][source_id], 'new-person')
+            self.assertEqual(dialog.category_level_target(source_id, 1), 2)
+
+            dialog.reset_category_severity_mapping(source_id)
+            self.assertEqual(dialog.category_level_target(source_id, 1), 1)
+            self.assertNotIn('1', dialog._category_severity_overrides[source_id])
         finally:
             dialog.deleteLater()
 

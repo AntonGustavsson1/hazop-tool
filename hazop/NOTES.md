@@ -5142,3 +5142,23 @@ den inte fick expandera. Både flikens layout och canvasens grid är nu
 förankrade upptill och canvasen får bara den höjd som behövs för kategorierna.
 Ett regressionstest säkerställer att kopplingsfältet inte hamnar långt ned på
 sidan.
+
+## Migrering i två steg med global och per-kategori kalibrering (2026-09-01)
+
+Riskmatrisens migreringsdialog börjar nu med en egen sida där befintliga
+konsekvenskategorier kopplas till den nya mallens kategorier. `Nästa` släpper
+bara fram steg två när alla kategorier är kopplade. Där ligger de befintliga
+vyerna för global frekvens-/konsekvensmappning och matris mot matris kvar.
+
+Den globala konsekvensmappningen används som grund för varje kategori. På
+steg två kan användaren välja en kopplad kategori och kalibrera dess
+konsekvensnivåer separat med samma klick-/drag-and-drop-koppling som de
+globala axlarna. `Återställ till globalt` tar bort den kategorins override,
+medan en ändring av global nivå automatiskt slår igenom för alla kategorier
+som inte har en egen ändring. Allt ligger i den granskningsplan som skickas
+till den befintliga atomiska migreringen; databasen påverkas fortfarande
+först när användaren genomför mallbytet.
+
+Verifierat med riktade kategori-, kalibrerings- och databas-migreringstester,
+offscreen-rendering av båda sidorna och per-kategori-vyn, `tests.test_smoke`,
+`py_compile` och `git diff --check`.

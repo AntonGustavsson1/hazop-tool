@@ -598,6 +598,82 @@ class AxisLinkField(_AxisMappingCanvas):
         QTimer.singleShot(0, self.sync_state)
 
 
+class CategorySeverityLinkField(_AxisMappingCanvas):
+    """Per-category consequence calibration using the shared link-field UI."""
+
+    def __init__(self, dialog, source_id, parent=None):
+        super().__init__(dialog, parent)
+        self.source_id = str(source_id)
+
+    def iter_mappings(self):
+        return [
+            (('severity', source), target)
+            for source, target in self.dialog.category_severity_mappings(
+                self.source_id).items()
+        ]
+
+    def chip_pressed(self, chip, global_pos):
+        if chip.role == 'old':
+            self.drag_chip = chip
+            self.drag_point = self.mapFromGlobal(global_pos)
+            self.dialog.activate_category_severity_step(
+                self.source_id, chip.value)
+        else:
+            self.dialog.activate_category_severity_target(
+                self.source_id, chip.value)
+        self.sync_state()
+
+    def chip_released(self, chip, global_pos):
+        if chip is self.drag_chip:
+            target = self._chip_at(global_pos)
+            if target and target.role == 'target' and target.kind == 'severity':
+                self.dialog.set_category_severity_mapping(
+                    self.source_id, chip.value, target.value)
+            self.drag_chip = self.drag_point = self.drag_over = None
+        self.sync_state()
+
+    def sync_state(self):
+        armed = self.dialog.category_severity_armed
+        for key, chip in self.old_chips.items():
+            _kind, value = key
+            chip.apply_state(
+                armed=(armed == (self.source_id, value)),
+                mapped=self.dialog.category_severity_is_mapped(
+                    self.source_id, value))
+        for key, chip in self.target_chips.items():
+            _kind, value = key
+            count = self.dialog.category_severity_target_count(
+                self.source_id, value)
+            chip.apply_state(mapped=count > 0,
+                             over=(chip is self.drag_over), count=count)
+        self.update()
+
+    def rebuild(self):
+        self.clear_canvas()
+        self._layout.setColumnStretch(0, 1)
+        self._layout.setColumnStretch(1, 1)
+        self._layout.setColumnStretch(2, 1)
+        self._layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._layout.addWidget(
+            self._section_label('KONSEKVENS'), 0, 0, 1, 3)
+        self._layout.addWidget(self._section_label('GLOBAL GRUND'), 1, 0)
+        self._layout.addWidget(self._section_label('KATEGORI'), 1, 2)
+
+        source_levels = self.dialog.axis_levels('source', 'severity')
+        target_levels = self.dialog.axis_levels('target', 'severity')
+        for row, (value, code, description) in enumerate(source_levels, start=2):
+            self.add_chip('old', 'severity', value, code, description,
+                          row, 0)
+        for row, (value, code, description) in enumerate(target_levels, start=2):
+            self.add_chip('target', 'severity', value, code, description,
+                          row, 2)
+        category_count = max(len(source_levels), len(target_levels), 1)
+        self.setMinimumHeight(72 + category_count * 34)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Fixed)
+        QTimer.singleShot(0, self.sync_state)
+
+
 class MatrixAgainstMatrix(_AxisMappingCanvas):
     """Tab 1b: two real coloured matrices linked only through their axes."""
 
@@ -762,6 +838,28 @@ class RiskMatrixMigrationDialog(QDialog):
             self._mapping.update({(kind, int(source)): int(target)
                                   for source, target in self.plan[map_key].items()})
         self._category_mapping = dict(self.plan.get('category_map', {}))
+        self.category_severity_armed = None
+        self._category_severity_overrides = {}
+        self._category_severity_maps = {}
+        global_severity = {
+            str(source): int(target)
+            for source, target in self.plan.get('severity_map', {}).items()
+        }
+        for category in self.plan.get('source_categories', []):
+            source_id = str(category['source_id'])
+            stored = self.plan.get('category_severity_maps', {}).get(source_id, {})
+            effective = {str(source): int(target) for source, target in stored.items()}
+            if not effective:
+                effective = dict(global_severity)
+            self._category_severity_maps[source_id] = effective
+            self._category_severity_overrides[source_id] = {
+                source: target for source, target in effective.items()
+                if global_severity.get(source) != target
+            }
+        self.plan['category_severity_maps'] = {
+            source_id: dict(mapping)
+            for source_id, mapping in self._category_severity_maps.items()
+        }
         self.setWindowTitle(f"Byt riskmatris till {template_name}")
         self.setMinimumSize(1060, 720)
         self.resize(1220, 820)
@@ -784,7 +882,7 @@ class RiskMatrixMigrationDialog(QDialog):
         auto_button = QPushButton("Föreslå automatiskt")
         auto_button.clicked.connect(self.suggest_automatically)
         clear_button = QPushButton("Rensa")
-        clear_button.clicked.connect(self.clear_mappings)
+        clear_button.clicked.connect(self.clear_axis_mappings)
         toolbar.addWidget(auto_button); toolbar.addWidget(clear_button)
         outer.addLayout(toolbar)
 
@@ -796,9 +894,9 @@ class RiskMatrixMigrationDialog(QDialog):
         self._category_panel = CategoryMappingPanel(self)
         self._link_field = AxisLinkField(self)
         self._matrix_against_matrix = MatrixAgainstMatrix(self)
-        self._tabs.addTab(self._category_panel, "1. Konsekvenskategorier")
-        self._tabs.addTab(self._link_field, "2. Kopplingsfält")
-        self._tabs.addTab(self._matrix_against_matrix, "3. Matris mot matris")
+        self._tabs.addTab(self._link_field, "1. Kopplingsfält")
+        self._tabs.addTab(self._matrix_against_matrix, "2. Matris mot matris")
+        self._build_category_calibration_controls(outer)
         outer.addWidget(self._tabs, 1)
 
         buttons = QDialogButtonBox()
@@ -808,7 +906,207 @@ class RiskMatrixMigrationDialog(QDialog):
         self._apply_button.clicked.connect(self._confirm_accept)
         cancel_button.clicked.connect(self.reject)
         outer.addWidget(buttons)
+
+        # The category mapping is a deliberate first step.  The existing
+        # axis/matrix widgets are moved into a second page without cloning
+        # them, so all mapping state remains shared.
+        back_button = buttons.addButton("Tillbaka", QDialogButtonBox.ButtonRole.ActionRole)
+        back_button.clicked.connect(self._show_category_page)
+        axis_page = QWidget()
+        axis_layout = QVBoxLayout(axis_page)
+        axis_layout.setContentsMargins(0, 0, 0, 0)
+        while outer.count():
+            item = outer.takeAt(0)
+            # Re-add widgets/layouts through the typed API so Qt reparents
+            # the existing controls to the second page.  Passing a raw
+            # QLayoutItem leaves widget items parented to the dialog and
+            # makes parts of page 2 float visibly over page 1.
+            if item.widget() is not None:
+                axis_layout.addWidget(item.widget())
+            elif item.layout() is not None:
+                axis_layout.addLayout(item.layout())
+            else:
+                axis_layout.addItem(item)
+        axis_title = QLabel("2. Koppla frekvens och konsekvens")
+        axis_title.setStyleSheet("font-size:12px; font-weight:bold; color:#1f2937;")
+        axis_layout.insertWidget(0, axis_title)
+
+        category_page = QWidget()
+        category_layout = QVBoxLayout(category_page)
+        category_layout.setContentsMargins(0, 0, 0, 0)
+        category_title = QLabel("1. Koppla konsekvenskategorier")
+        category_title.setStyleSheet("font-size:12px; font-weight:bold; color:#1f2937;")
+        category_layout.addWidget(category_title)
+        self._category_progress = QLabel()
+        self._category_progress.setStyleSheet(
+            "background:#f3f4f6; border:1px solid #9ca3af; padding:5px 7px;")
+        category_layout.addWidget(self._category_progress)
+        category_toolbar = QHBoxLayout()
+        category_auto = QPushButton("Föreslå kategorier")
+        category_clear = QPushButton("Rensa kategorier")
+        category_auto.clicked.connect(self.suggest_categories)
+        category_clear.clicked.connect(self.clear_category_mappings)
+        category_toolbar.addWidget(category_auto)
+        category_toolbar.addWidget(category_clear)
+        category_toolbar.addStretch()
+        category_layout.addLayout(category_toolbar)
+        category_layout.addWidget(self._category_panel, 1)
+        category_buttons = QDialogButtonBox()
+        category_next = category_buttons.addButton(
+            "Nästa", QDialogButtonBox.ButtonRole.ActionRole)
+        category_cancel = category_buttons.addButton(
+            "Avbryt", QDialogButtonBox.ButtonRole.RejectRole)
+        category_next.clicked.connect(self._show_axis_page)
+        category_cancel.clicked.connect(self.reject)
+        category_layout.addWidget(category_buttons)
+
+        self._pages = QStackedWidget()
+        self._pages.addWidget(category_page)
+        self._pages.addWidget(axis_page)
+        self._category_page = category_page
+        self._axis_page = axis_page
+        self._pages.setCurrentIndex(0)
+        outer.addWidget(self._pages, 1)
         self._refresh_all()
+
+    def _build_category_calibration_controls(self, outer):
+        """Build optional per-category severity calibration for page two."""
+        self._category_scope_current = None
+        self._category_scope_buttons = {}
+        self._category_scope_fields = {}
+        self._category_scope_indices = {}
+
+        scope_bar = QHBoxLayout()
+        scope_bar.addWidget(QLabel("Kalibrera konsekvensmappning:"))
+        self._global_scope_button = QToolButton()
+        self._global_scope_button.setText("Globalt")
+        self._global_scope_button.setCheckable(True)
+        self._global_scope_button.setChecked(True)
+        self._style_scope_button(self._global_scope_button)
+        self._global_scope_button.clicked.connect(self._select_global_scope)
+        scope_bar.addWidget(self._global_scope_button)
+
+        for category in self.plan.get('source_categories', []):
+            source_id = str(category['source_id'])
+            target = self.target_category(source_id)
+            target_name = target.get('name') if target else 'ej kopplad'
+            button = QToolButton()
+            button.setText(f"{category['name']} → {target_name}")
+            button.setCheckable(True)
+            button.setEnabled(bool(target))
+            self._style_scope_button(button)
+            button.clicked.connect(
+                lambda _checked, sid=source_id: self._select_category_scope(sid))
+            self._category_scope_buttons[source_id] = button
+            scope_bar.addWidget(button)
+        scope_bar.addStretch()
+        outer.addLayout(scope_bar)
+
+        self._category_scope_stack = QStackedWidget()
+        placeholder = QLabel(
+            "Global mappning används som grund. Välj en kategori om den ska kalibreras separat.")
+        placeholder.setStyleSheet("color:#4b5563; padding:5px;")
+        self._category_scope_stack.addWidget(placeholder)
+        for category in self.plan.get('source_categories', []):
+            source_id = str(category['source_id'])
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(0, 0, 0, 0)
+            reset = QPushButton("Återställ till globalt")
+            reset.setFixedWidth(150)
+            reset.clicked.connect(
+                lambda _checked=False, sid=source_id:
+                self.reset_category_severity_mapping(sid))
+            page_layout.addWidget(reset, 0, Qt.AlignmentFlag.AlignRight)
+            field = CategorySeverityLinkField(self, source_id, page)
+            field.rebuild()
+            page_layout.addWidget(field)
+            index = self._category_scope_stack.addWidget(page)
+            self._category_scope_indices[source_id] = index
+            self._category_scope_fields[source_id] = field
+        self._category_scope_stack.setVisible(False)
+        outer.addWidget(self._category_scope_stack)
+
+    @staticmethod
+    def _style_scope_button(button):
+        button.setStyleSheet(
+            "QToolButton{border:1px solid #8b949e; padding:4px 8px;}"
+            "QToolButton:checked{background:#dbeafe; border-color:#1d2d3d;}")
+
+    def _select_global_scope(self):
+        self._category_scope_current = None
+        self.category_severity_armed = None
+        self._global_scope_button.setChecked(True)
+        for button in self._category_scope_buttons.values():
+            button.setChecked(False)
+        self._category_scope_stack.setVisible(False)
+        self._refresh_visuals()
+
+    def _select_category_scope(self, source_id):
+        source_id = str(source_id)
+        if not self.category_mapped(source_id):
+            self._select_global_scope()
+            return
+        self._category_scope_current = source_id
+        self.category_severity_armed = None
+        self._global_scope_button.setChecked(False)
+        for sid, button in self._category_scope_buttons.items():
+            button.setChecked(sid == source_id)
+        self._category_scope_stack.setCurrentIndex(
+            self._category_scope_indices[source_id])
+        self._category_scope_stack.setVisible(True)
+        self._category_scope_fields[source_id].sync_state()
+
+    def _show_axis_page(self):
+        expected = len(self.plan.get('source_categories', []))
+        if len(self._category_mapping) != expected:
+            QMessageBox.warning(
+                self, "Ofullständig kategorikoppling",
+                "Koppla varje befintlig konsekvenskategori innan du går vidare.")
+            return
+        self._pages.setCurrentIndex(1)
+        self._select_global_scope()
+
+    def _show_category_page(self):
+        self._pages.setCurrentIndex(0)
+
+    def _refresh_category_scope_buttons(self):
+        """Keep the optional calibration buttons in sync with category links."""
+        for category in self.plan.get('source_categories', []):
+            source_id = str(category['source_id'])
+            button = self._category_scope_buttons.get(source_id)
+            if button is None:
+                continue
+            target = self.target_category(source_id)
+            target_name = target.get('name') if target else 'ej kopplad'
+            button.setText(f"{category['name']} → {target_name}")
+            button.setEnabled(target is not None)
+            if source_id == self._category_scope_current and target is None:
+                self._select_global_scope()
+
+    def suggest_categories(self):
+        """Apply the database's conservative category suggestions on page one."""
+        preview = self.db.risk_matrix_migration_preview(
+            self.plan['source_matrix'], self.plan['target_matrix'])
+        self._category_mapping = dict(preview.get('category_map', {}))
+        self.plan['category_map'] = dict(self._category_mapping)
+        self.category_armed = None
+        for source_id in self._category_severity_maps:
+            self._sync_category_record_targets(source_id)
+        self._category_panel.rebuild()
+        self._refresh_category_scope_buttons()
+        self._refresh_visuals()
+
+    def clear_category_mappings(self):
+        """Clear only category links; keep all axis calibrations untouched."""
+        self._category_mapping.clear()
+        self.plan['category_map'] = {}
+        self.category_armed = None
+        for source_id in self._category_severity_maps:
+            self._sync_category_record_targets(source_id)
+        self._category_panel.rebuild()
+        self._refresh_category_scope_buttons()
+        self._refresh_visuals()
 
     @property
     def display_x_axis(self):
@@ -844,8 +1142,59 @@ class RiskMatrixMigrationDialog(QDialog):
     def category_target_count(self, target_key):
         return sum(1 for key in self._category_mapping.values() if key == target_key)
 
+    def category_severity_mappings(self, source_id):
+        return dict(self._category_severity_maps.get(str(source_id), {}))
+
+    def category_severity_is_mapped(self, source_id, source_value):
+        return str(source_value) in self._category_severity_maps.get(
+            str(source_id), {})
+
+    def category_severity_target_count(self, source_id, target_value):
+        return sum(1 for target in self._category_severity_maps.get(
+            str(source_id), {}).values() if target == target_value)
+
+    def activate_category_severity_step(self, source_id, source_value):
+        key = (str(source_id), int(source_value))
+        self.category_severity_armed = (
+            None if self.category_severity_armed == key else key)
+        self._refresh_visuals()
+
+    def activate_category_severity_target(self, source_id, target_value):
+        if (self.category_severity_armed and
+                self.category_severity_armed[0] == str(source_id)):
+            self.set_category_severity_mapping(
+                source_id, self.category_severity_armed[1], target_value)
+
+    def set_category_severity_mapping(self, source_id, source_value, target_value):
+        source_id = str(source_id)
+        source_key = str(source_value)
+        target_value = int(target_value)
+        self._category_severity_overrides.setdefault(source_id, {})[
+            source_key] = target_value
+        self._category_severity_maps.setdefault(source_id, {})[
+            source_key] = target_value
+        self.plan.setdefault('category_severity_maps', {})[source_id] = dict(
+            self._category_severity_maps[source_id])
+        self.category_severity_armed = None
+        self._sync_category_record_targets(source_id)
+        self._refresh_visuals()
+
+    def reset_category_severity_mapping(self, source_id):
+        source_id = str(source_id)
+        self._category_severity_overrides[source_id] = {}
+        self._category_severity_maps[source_id] = {
+            str(key[1]): int(value)
+            for key, value in self._mapping.items()
+            if key[0] == 'severity'
+        }
+        self.plan.setdefault('category_severity_maps', {})[source_id] = dict(
+            self._category_severity_maps[source_id])
+        self.category_severity_armed = None
+        self._sync_category_record_targets(source_id)
+        self._refresh_visuals()
+
     def category_level_target(self, source_id, source_value):
-        mapping = self.plan.get('category_severity_maps', {}).get(str(source_id), {})
+        mapping = self._category_severity_maps.get(str(source_id), {})
         return mapping.get(str(source_value),
                            self.plan['severity_map'].get(str(source_value), 1))
 
@@ -879,6 +1228,7 @@ class RiskMatrixMigrationDialog(QDialog):
         if previous_source:
             self._sync_category_record_targets(previous_source)
         self._category_panel.rebuild()
+        self._refresh_category_scope_buttons()
         self._refresh_visuals()
 
     def remove_category_mapping(self, source_id):
@@ -886,25 +1236,26 @@ class RiskMatrixMigrationDialog(QDialog):
         self.plan['category_map'] = dict(self._category_mapping)
         self.category_armed = None
         self._category_panel.rebuild()
+        self._refresh_category_scope_buttons()
         self._refresh_visuals()
 
     def set_category_level_mapping(self, source_id, source_value, target_value):
-        source_id = str(source_id)
-        mapping = self.plan.setdefault('category_severity_maps', {}).setdefault(source_id, {})
-        mapping[str(source_value)] = int(target_value)
-        self._sync_category_record_targets(source_id)
-        self._refresh_visuals()
+        self.set_category_severity_mapping(source_id, source_value, target_value)
 
     def _sync_category_record_targets(self, source_id):
         source_id = str(source_id)
-        mapping = self.plan.get('category_severity_maps', {}).get(source_id, {})
+        mapping = self._category_severity_maps.get(source_id, {})
         target_key = self._category_mapping.get(source_id)
         for record in self.plan.get('severity_records', []):
             if str(record.get('category_id')) == source_id:
-                record['target'] = mapping.get(str(record['source']), record['target'])
+                source_key = str(record['source'])
+                record['target'] = mapping.get(
+                    source_key, self.plan['severity_map'].get(source_key))
         for record in self.plan.get('definition_records', []):
             if str(record.get('category_id')) == source_id:
-                record['target'] = mapping.get(str(record['source']), record['target'])
+                source_key = str(record['source'])
+                record['target'] = mapping.get(
+                    source_key, self.plan['severity_map'].get(source_key))
                 record['target_category_key'] = target_key
 
     def activate_old_step(self, kind, value):
@@ -932,9 +1283,23 @@ class RiskMatrixMigrationDialog(QDialog):
                 if record.get('source') == source and not record.get('override'):
                     record['target'] = target
 
+    def _update_inherited_category_severity(self, source, target):
+        source_key = str(source)
+        for source_id, mapping in self._category_severity_maps.items():
+            if source_key in self._category_severity_overrides.get(source_id, {}):
+                continue
+            if target is None:
+                mapping.pop(source_key, None)
+            else:
+                mapping[source_key] = int(target)
+            self.plan.setdefault('category_severity_maps', {})[source_id] = dict(mapping)
+            self._sync_category_record_targets(source_id)
+
     def set_axis_mapping(self, kind, source, target):
         self._mapping[self._mapping_key(kind, source)] = int(target)
         self._apply_mapping_to_plan(kind, int(source), int(target))
+        if kind == 'severity':
+            self._update_inherited_category_severity(source, int(target))
         self.armed = None
         self._refresh_visuals()
 
@@ -952,13 +1317,49 @@ class RiskMatrixMigrationDialog(QDialog):
             for record in self.plan['definition_records']:
                 if record.get('source') == source and not record.get('override'):
                     record['target'] = None
+            self._update_inherited_category_severity(source, None)
         self.armed = None
+        self._refresh_visuals()
+
+    def clear_axis_mappings(self):
+        """Clear only the global frequency/consequence axis mappings."""
+        self._mapping.clear()
+        self.armed = None
+        self.plan['frequency_map'].clear()
+        self.plan['severity_map'].clear()
+        for record in self.plan['frequency_records']:
+            if record.get('source_kind') == 'manual' and not record.get('override'):
+                record['target'] = None
+        for record in self.plan['severity_records']:
+            if not record.get('override'):
+                record['target'] = None
+        for record in self.plan['definition_records']:
+            if not record.get('override'):
+                record['target'] = None
+        for source_id, overrides in self._category_severity_overrides.items():
+            self._category_severity_maps[source_id] = dict(overrides)
+            self.plan.setdefault('category_severity_maps', {})[source_id] = dict(
+                overrides)
+            self._sync_category_record_targets(source_id)
+        self.category_severity_armed = None
         self._refresh_visuals()
 
     def clear_mappings(self):
         self._mapping.clear(); self.armed = None; self.category_armed = None
+        self.category_severity_armed = None
         self._category_mapping.clear(); self.plan['category_map'] = {}
         self.plan['frequency_map'].clear(); self.plan['severity_map'].clear()
+        self._category_severity_overrides = {
+            str(category['source_id']): {}
+            for category in self.plan.get('source_categories', [])
+        }
+        self._category_severity_maps = {
+            str(category['source_id']): {}
+            for category in self.plan.get('source_categories', [])
+        }
+        self.plan['category_severity_maps'] = {
+            source_id: {} for source_id in self._category_severity_maps
+        }
         for record in self.plan['frequency_records']:
             if record.get('source_kind') == 'manual' and not record.get('override'):
                 record['target'] = None
@@ -970,6 +1371,7 @@ class RiskMatrixMigrationDialog(QDialog):
                 record['target'] = None
                 record['target_category_key'] = None
         self._category_panel.rebuild()
+        self._refresh_category_scope_buttons()
         self._refresh_visuals()
 
     def suggest_automatically(self):
@@ -983,19 +1385,8 @@ class RiskMatrixMigrationDialog(QDialog):
                 self._mapping[(kind, int(old))] = int(new)
                 self._apply_mapping_to_plan(kind, int(old), int(new))
         self.armed = None
-        # Recreate the safe category proposal too.  This keeps the toolbar
-        # action meaningful for all three mapping views.
-        category_plan = self.db.risk_matrix_migration_preview(
-            self.plan['source_matrix'], self.plan['target_matrix'])
-        self._category_mapping = dict(category_plan.get('category_map', {}))
-        self.plan['category_map'] = dict(self._category_mapping)
-        self.plan['category_severity_maps'] = {
-            str(category['source_id']): dict(severity)
-            for category in self.plan.get('source_categories', [])
-        }
-        for source_id in self._category_mapping:
-            self._sync_category_record_targets(source_id)
-        self._category_panel.rebuild()
+        for source, target in severity.items():
+            self._update_inherited_category_severity(source, int(target))
         self._refresh_visuals()
 
     def _set_display_x_axis(self, kind):
@@ -1006,7 +1397,7 @@ class RiskMatrixMigrationDialog(QDialog):
         self._x_consequence.setChecked(kind == 'severity')
         # Switching the display axis is a new mapping session.  This avoids
         # carrying an interpretation made in the other orientation.
-        self.clear_mappings()
+        self.clear_axis_mappings()
         self._matrix_against_matrix.rebuild()
         self._refresh_visuals()
 
@@ -1021,6 +1412,8 @@ class RiskMatrixMigrationDialog(QDialog):
         self._link_field.sync_state()
         self._matrix_against_matrix.sync_state()
         self._category_panel.sync_state()
+        for field in self._category_scope_fields.values():
+            field.sync_state()
         self._refresh_summary()
 
     @staticmethod
@@ -1067,6 +1460,10 @@ class RiskMatrixMigrationDialog(QDialog):
         self._progress.setText(
             f"{mapped} av {total} gamla steg mappade. {category_status} "
             "Inget sparas förrän du genomför migreringen.")
+        if hasattr(self, '_category_progress'):
+            self._category_progress.setText(
+                f"{category_mapped} av {category_total} konsekvenskategorier "
+                "mappade. Kopplingen Ã¤r ett obligatoriskt fÃ¶rsta steg.")
         self._apply_button.setEnabled(mapped == total and
                                       category_mapped == category_total)
 
