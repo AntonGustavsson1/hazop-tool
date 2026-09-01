@@ -701,7 +701,7 @@ class RiskMatrixPopup(QDialog):
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setFixedWidth(cell_width)
             lbl.setStyleSheet("font-size:9px; font-weight:bold; padding:1px;")
-            lbl.setToolTip(full)
+            lbl.setToolTip(f"{code} — {full}" if full else code)
             grid.addWidget(lbl, 0, c + 1)
 
         # Rows — respect y_rev
@@ -717,7 +717,7 @@ class RiskMatrixPopup(QDialog):
             rl = QLabel(code_r)
             rl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             rl.setStyleSheet("font-size:9px; font-weight:bold; padding-right:4px;")
-            rl.setToolTip(full_r)
+            rl.setToolTip(f"{code_r} — {full_r}" if full_r else code_r)
             rl.setFixedWidth(cell_width)
             grid.addWidget(rl, r + 1, 0)
 

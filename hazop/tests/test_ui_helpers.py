@@ -67,7 +67,7 @@ from hazop import (  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit, QDialog,
-    QToolButton,
+    QToolButton, QLabel,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
@@ -83,6 +83,64 @@ from test_helpers import (
     _ensure_qapp, _menu_action_labels, _fake_pdf_loaded,
     _TempDbMainWindow, _find_tree_item,
 )
+
+
+class FrequencyCodePresentationTests(unittest.TestCase):
+    """Frequency code is compact in tables and expanded only in pickers."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix='hazop_frequency_code_')
+        self.db = Database(path=os.path.join(self._tmpdir, 'project.db'))
+        self.db.set_risk_matrix({
+            'rows': 2, 'cols': 2,
+            'x_codes': ['A', 'B'], 'x_labels': ['Aldrig', 'Har hänt'],
+            'y_codes': ['1', '2'], 'y_labels': ['Liten', 'Stor'],
+            'cell_colors': [['#22c55e', '#eab308'], ['#eab308', '#dc2626']],
+            'cell_labels': [['Låg', 'Mellan'], ['Mellan', 'Hög']],
+            'freq_boundaries': [0.1],
+        })
+
+    def tearDown(self):
+        self.db.conn.close()
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_frequency_code_is_compact_in_risk_cells_and_expanded_in_pickers(self):
+        from hazop import RiskMatrixPopup, ScenarioTablePanel
+        from tree_panel import FrequencyPickerPopup
+        from ui_helpers import freq_axis_label, freq_axis_label_full
+
+        self.assertEqual(freq_axis_label(-1), 'A')
+        self.assertEqual(freq_axis_label_full(-1), 'A \u2014 Aldrig')
+
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, likelihood=-1)
+        cons_id = self.db.add_consequence(cause_id)
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(cons_id, category['id'], 1)
+
+        panel = ScenarioTablePanel(self.db)
+        frequency_popup = FrequencyPickerPopup(-1, None)
+        risk_popup = RiskMatrixPopup(-1, 1)
+        try:
+            panel.load_node(node_id)
+            row = next(row for row, meta in enumerate(panel._row_meta)
+                       if meta[1] == cause_id)
+            self.assertIn('A', panel._table.item(row, panel._C_RFORE).text())
+            self.assertIn('A', panel._table.item(row, panel._C_SLUT).text())
+            self.assertEqual(frequency_popup._preset_items[-1].text(), 'A \u2014 Aldrig')
+            header = next(label for label in risk_popup.findChildren(QLabel)
+                          if label.text() == 'A')
+            self.assertEqual(header.toolTip(), 'A \u2014 Aldrig')
+        finally:
+            panel.deleteLater()
+            frequency_popup.close()
+            risk_popup.close()
 
 class TagRefsAndBoldRangeTests(unittest.TestCase):
     """Pure helper functions backing 'fetmarkera objekttexten i

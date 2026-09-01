@@ -1,5 +1,19 @@
 # NOTES.md — Beslut och kontext
 
+## Frekvensformat i HAZOP (2026-09-01)
+
+Kompakta frekvensfalt i Scenario och Worksheet visar nu matrisens tecken,
+exempelvis A eller F2, i stallet for forsta ordet i beskrivningen. Detta
+galler aven Risk fore barrier och Slutkonsekvens. Manuellt angiven frekvens
+per ar visas fortsatt numeriskt.
+
+Frekvensvaljaren och riskmatrisens axelverktygstips visar tecken fore
+beskrivning, exempelvis A - Aldrig.
+
+Verifierat med riktad Scenario/riskpopup/frekvensvaljarregression,
+hela tests.test_worksheet (25 tester), tests.test_smoke (12 tester),
+py_compile och git diff --check. Testningen ar headless.
+
 ## Ta bort egna riskmatrismallar (2026-09-01)
 
 Varje egen, projektlokal riskmatrismall har ett litet × bredvid sitt namn.

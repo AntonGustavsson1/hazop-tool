@@ -83,10 +83,14 @@ def add_mini_popup_close_button(popup):
 
 
 def freq_axis_label(f_val: int) -> str:
-    """Short configured label (first word only) for a frequency value (-1..5)."""
+    """Configured frequency code for compact table and risk-cell displays."""
     cfg  = get_matrix()
     cols = cfg.get('cols', 7)
     idx  = max(0, min(int(f_val) + 1, cols - 1))
+    codes = cfg.get('x_codes', [])
+    code = str(codes[idx]).strip() if idx < len(codes) else ''
+    if code:
+        return code
     lbls = cfg.get('x_labels', [])
     full = lbls[idx] if idx < len(lbls) else f'F={f_val}'
     return full.split()[0] if full.strip() else f'F={f_val}'
@@ -97,8 +101,11 @@ def freq_axis_label_full(f_val: int) -> str:
     cfg  = get_matrix()
     cols = cfg.get('cols', 7)
     idx  = max(0, min(int(f_val) + 1, cols - 1))
+    codes = cfg.get('x_codes', [])
     lbls = cfg.get('x_labels', [])
-    return lbls[idx] if idx < len(lbls) else f'F={f_val}'
+    code = str(codes[idx]).strip() if idx < len(codes) else f'F={f_val}'
+    description = str(lbls[idx]).strip() if idx < len(lbls) else ''
+    return f"{code} — {description}" if description else code
 
 
 def cons_axis_label(c_val: int) -> str:

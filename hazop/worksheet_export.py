@@ -29,8 +29,12 @@ _CHAIN_LABELS = {
 
 def freq_axis_label(value):
     matrix = get_matrix()
+    codes = matrix.get('x_codes', [])
     labels = matrix.get('x_labels', [])
     index = max(0, min(int(value) + 1, matrix.get('cols', 7) - 1))
+    code = str(codes[index]).strip() if index < len(codes) else ''
+    if code:
+        return code
     label = labels[index] if index < len(labels) else f'F={value}'
     return label.split()[0] if label.strip() else f'F={value}'
 
