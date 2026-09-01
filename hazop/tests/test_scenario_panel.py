@@ -67,7 +67,7 @@ from hazop import (  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QAbstractItemView, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
-    QTableWidgetItem,
+    QTableWidgetItem, QLabel,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent, QKeyEvent, QFontMetrics  # noqa: E402
 from PyQt6.QtCore import (Qt, QPoint, QDate, QEvent, QThread, pyqtSignal,
@@ -2975,6 +2975,85 @@ class RiskMatrixCategorySectionTests(unittest.TestCase):
             cat_ids = {c['id'] for c in cats}
             button_cat_ids = {cid for (cid, _sev) in popup._cat_buttons}
             self.assertEqual(button_cat_ids, cat_ids)
+        finally:
+            popup.deleteLater()
+
+    def test_category_labels_bold_only_the_shortest_unique_prefix(self):
+        from hazop import RiskMatrixPopup
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3,
+                                 db=self.db, cons_id=self.cons_id)
+        try:
+            categories = self.db.consequence_categories()
+            person = next(c for c in categories if c['name'] == 'Person')
+            self.assertEqual(popup._category_prefixes[person['id']], 'P')
+            self.assertTrue(any(
+                label.text() == '<b>P</b>erson'
+                for label in popup.findChildren(QLabel)))
+        finally:
+            popup.deleteLater()
+
+    def test_category_shortcut_grows_when_prefixes_collide(self):
+        from hazop import RiskMatrixPopup
+        process_id = self.db.add_category('Process')
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3,
+                                 db=self.db, cons_id=self.cons_id)
+        try:
+            categories = self.db.consequence_categories()
+            person = next(c for c in categories if c['name'] == 'Person')
+            process = next(c for c in categories if c['id'] == process_id)
+            self.assertEqual(popup._category_prefixes[person['id']], 'Pe')
+            self.assertEqual(popup._category_prefixes[process['id']], 'Pr')
+            self.assertTrue(any(
+                label.text() == '<b>Pe</b>rson'
+                for label in popup.findChildren(QLabel)))
+        finally:
+            popup.deleteLater()
+
+    def test_category_shortcut_p5_selects_person_consequence_five(self):
+        from hazop import RiskMatrixPopup
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3,
+                                 db=self.db, cons_id=self.cons_id)
+        try:
+            person = next(c for c in self.db.consequence_categories()
+                          if c['name'] == 'Person')
+            for key, text in (
+                    (Qt.Key.Key_P, 'p'),
+                    (Qt.Key.Key_5, '5'),
+                    (Qt.Key.Key_Return, '')):
+                popup.keyPressEvent(QKeyEvent(
+                    QEvent.Type.KeyPress, key,
+                    Qt.KeyboardModifier.NoModifier, text))
+            saved = {row['category_id']: row['severity']
+                     for row in self.db.get_consequence_severities(self.cons_id)}
+            self.assertEqual(saved.get(person['id']), 5)
+        finally:
+            popup.deleteLater()
+
+    def test_category_shortcut_uses_letter_consequence_codes(self):
+        import copy
+        from database import DEFAULT_MATRIX
+        from hazop import RiskMatrixPopup
+        cfg = copy.deepcopy(DEFAULT_MATRIX)
+        cfg['y_codes'] = ['A', 'B', 'C', 'D', 'E']
+        cfg['y_labels'] = ['A', 'B', 'C', 'D', 'E']
+        self.db.set_risk_matrix(cfg)
+        anlaggning = next(c for c in self.db.consequence_categories()
+                          if c['name'] == 'Anläggning')
+        self.db.delete_category(anlaggning['id'])
+        assets_id = self.db.add_category('Assets')
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3,
+                                 db=self.db, cons_id=self.cons_id)
+        try:
+            for key, text in (
+                    (Qt.Key.Key_A, 'a'),
+                    (Qt.Key.Key_B, 'b'),
+                    (Qt.Key.Key_Return, '')):
+                popup.keyPressEvent(QKeyEvent(
+                    QEvent.Type.KeyPress, key,
+                    Qt.KeyboardModifier.NoModifier, text))
+            saved = {row['category_id']: row['severity']
+                     for row in self.db.get_consequence_severities(self.cons_id)}
+            self.assertEqual(saved.get(assets_id), 2)
         finally:
             popup.deleteLater()
 

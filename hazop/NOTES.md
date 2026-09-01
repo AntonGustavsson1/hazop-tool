@@ -5216,3 +5216,19 @@ presentationen – inte riskvärden eller riskmatrisens beräkning.
 
 Verifierat med riktade tester för inställning, kolumnbredd och faktisk Qt-
 rendering i båda visningslägena, `py_compile` och `git diff --check`.
+
+## Unika kategoriprefix och snabbval i riskmatris-popupen (2026-09-01)
+
+Kategorinamnen i riskmatris-popupen visar nu bara det kortaste unika prefixet
+i fetstil: Person visas exempelvis med P, medan Person och Process får Pe
+respektive Pr. Detta ger samtidigt en tydlig kortkommando-ledtråd.
+
+I kategori-läget kan en användare skriva kategori-prefix följt av
+konsekvensaxelns tecken och trycka Enter. P5 väljer Person på nivå 5 och AB
+väljer Assets på nivån B när axeln använder bokstavskoder. Snabbvalet använder
+de faktiska redigerade axelkoderna och sparar via samma befintliga
+kategori-toggle som klick i popupen.
+
+Verifierat med 12 riktade riskmatris-popup-tester, inklusive numeriska och
+bokstavsbaserade snabbval, `tests.test_smoke`, `py_compile` och
+`git diff --check`.

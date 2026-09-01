@@ -641,6 +641,7 @@ class RiskMatrixPopup(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName("riskMatrixPopup")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setStyleSheet(
             "QWidget#riskMatrixPopup{background:#FFFFFF;"
             "border:1px solid #4B5563;border-radius:3px;}")
@@ -697,6 +698,14 @@ class RiskMatrixPopup(QDialog):
         self._current_value_label.setToolTip(
             "Numeriskt/konfigurerat värde för den markerade riskcellen")
         outer.addWidget(self._current_value_label)
+        self._shortcut_buffer = ''
+        self._shortcut_status = None
+        if self._category_mode:
+            self._shortcut_status = QLabel()
+            self._shortcut_status.setStyleSheet(
+                "font-size:9px; color:#6B7280; padding:1px 2px;")
+            self._set_shortcut_status()
+            outer.addWidget(self._shortcut_status)
 
         grid = QGridLayout()
         grid.setSpacing(0)
@@ -834,6 +843,50 @@ class RiskMatrixPopup(QDialog):
 
         self.adjustSize()
         add_mini_popup_close_button(self)
+        QTimer.singleShot(0, self.setFocus)
+
+    @staticmethod
+    def _unique_category_prefix_lengths(categories):
+        """Return the shortest case-insensitive unique prefix per category.
+
+        The prefix is also the keyboard shortcut shown in bold next to each
+        category. Thus Person becomes P when it is unambiguous, while
+        Person/Process become Pe/Pr.
+        """
+        names = [str(category.get('name') or '').strip()
+                 for category in categories]
+        folded = [name.casefold() for name in names]
+        lengths = {}
+        for index, name in enumerate(names):
+            if not name:
+                lengths[index] = 0
+                continue
+            length = len(name)
+            for candidate_length in range(1, len(name) + 1):
+                prefix = folded[index][:candidate_length]
+                matches = sum(other.startswith(prefix) for other in folded)
+                if matches == 1:
+                    length = candidate_length
+                    break
+            lengths[index] = length
+        return lengths
+
+    def _category_label_html(self, category):
+        """Render a category with only its unique shortcut prefix in bold."""
+        name = str(category.get('name') or '').strip()
+        prefix_length = self._category_prefix_lengths.get(
+            category.get('id'), len(name))
+        prefix = name[:prefix_length]
+        return f"<b>{_html_escape(prefix)}</b>{_html_escape(name[prefix_length:])}"
+
+    def _set_shortcut_status(self, text=None):
+        label = getattr(self, '_shortcut_status', None)
+        if label is None:
+            return
+        if text is None:
+            text = ('Snabbval: kategori-prefix + konsekvenstecken + Enter '
+                    '(t.ex. P5)')
+        label.setText(text)
 
     def _build_category_section(self, outer, inline=False):
         """Build the per-category picker on the same axis as the matrix.
@@ -848,6 +901,16 @@ class RiskMatrixPopup(QDialog):
         cats  = [dict(r) for r in self._db.consequence_categories()]
         if not cats:
             return
+        prefix_lengths = self._unique_category_prefix_lengths(cats)
+        self._category_prefix_lengths = {
+            category['id']: prefix_lengths[index]
+            for index, category in enumerate(cats)
+        }
+        self._category_prefixes = {
+            category['id']: str(category.get('name') or '').strip()[
+                :prefix_lengths[index]]
+            for index, category in enumerate(cats)
+        }
         saved = {r['category_id']: r['severity']
                  for r in self._db.get_consequence_severities(self._cons_id)}
         final_saved = ({r['category_id']: r['severity']
@@ -905,11 +968,14 @@ class RiskMatrixPopup(QDialog):
             corner.setStyleSheet("font-size:9px; font-weight:bold; color:#555;")
             grid.addWidget(corner, 0, 0)
             for col, cat in enumerate(cats, 1):
-                name_l = QLabel(cat['name'])
+                name_l = QLabel(self._category_label_html(cat))
+                name_l.setTextFormat(Qt.TextFormat.RichText)
                 name_l.setFixedSize(50, 16)
                 name_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                name_l.setStyleSheet("font-size:8px; font-weight:bold;")
-                name_l.setToolTip(cat['name'])
+                name_l.setStyleSheet("font-size:8px; font-weight:normal;")
+                name_l.setToolTip(
+                    f"{cat['name']} (snabbval: "
+                    f"{self._category_prefixes.get(cat['id'], '')})")
                 grid.addWidget(name_l, 0, col)
             severity_order = (range(1, self._n_cons + 1) if self._y_rev
                               else range(self._n_cons, 0, -1))
@@ -938,9 +1004,14 @@ class RiskMatrixPopup(QDialog):
             outer.addLayout(hdr)
             for cat in cats:
                 row_l = QHBoxLayout(); row_l.setSpacing(0); row_l.setContentsMargins(0, 0, 0, 0)
-                name_l = QLabel(cat['name']); name_l.setFixedWidth(70)
-                name_l.setStyleSheet("font-size:9px; font-weight:bold;")
-                name_l.setToolTip(cat['name']); row_l.addWidget(name_l)
+                name_l = QLabel(self._category_label_html(cat))
+                name_l.setTextFormat(Qt.TextFormat.RichText)
+                name_l.setFixedWidth(70)
+                name_l.setStyleSheet("font-size:9px; font-weight:normal;")
+                name_l.setToolTip(
+                    f"{cat['name']} (snabbval: "
+                    f"{self._category_prefixes.get(cat['id'], '')})")
+                row_l.addWidget(name_l)
                 for s in severity_order:
                     add_button(cat['id'], s, row_l.addWidget)
                 outer.addLayout(row_l)
@@ -1019,8 +1090,60 @@ class RiskMatrixPopup(QDialog):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
             self.reject()
-        else:
+            return
+        if not self._category_mode:
             super().keyPressEvent(event)
+            return
+
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self._apply_category_shortcut():
+                event.accept()
+            else:
+                self._set_shortcut_status(
+                    'Snabbvalet känns inte igen – skriv prefix + nivå, t.ex. P5')
+                self._shortcut_buffer = ''
+                event.accept()
+            return
+
+        if event.key() == Qt.Key.Key_Backspace:
+            self._shortcut_buffer = self._shortcut_buffer[:-1]
+            self._set_shortcut_status(
+                f'Snabbval: {self._shortcut_buffer.upper()}'
+                if self._shortcut_buffer else None)
+            event.accept()
+            return
+
+        text = event.text() or ''
+        if text and all(character.isalnum() for character in text):
+            self._shortcut_buffer += text
+            self._set_shortcut_status(
+                f'Snabbval: {self._shortcut_buffer.upper()} – tryck Enter')
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _apply_category_shortcut(self):
+        """Apply one category-prefix + consequence-code command."""
+        command = self._shortcut_buffer.strip().casefold()
+        if not command:
+            return False
+        matches = []
+        for category in getattr(self, '_cats', []):
+            prefix = self._category_prefixes.get(category['id'], '').casefold()
+            if not prefix or not command.startswith(prefix):
+                continue
+            severity_code = command[len(prefix):]
+            for severity in range(1, self._n_cons + 1):
+                if cons_axis_label(severity).strip().casefold() == severity_code:
+                    matches.append((category, severity))
+        if len(matches) != 1:
+            return False
+        category, severity = matches[0]
+        self._toggle_category(category['id'], severity)
+        self._shortcut_buffer = ''
+        self._set_shortcut_status(
+            f'Valt: {category["name"]} · {cons_axis_label(severity)}')
+        return True
 
 
 class GroupCausePopup(QDialog):
