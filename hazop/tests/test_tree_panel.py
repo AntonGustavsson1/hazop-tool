@@ -122,6 +122,12 @@ class TreePanelLayerToggleTests(unittest.TestCase):
             self.assertTrue(button.isChecked())
             self.assertEqual(self.panel._vis_colors[type_key].lower(), '#00c800')
 
+    def test_recommendation_visibility_button_is_available(self):
+        button = self.panel._vis_btns['recommendation']
+        self.assertTrue(button.isChecked())
+        self.assertEqual(button.text(), 'Rekommendation')
+        self.assertEqual(self.panel._vis_colors['recommendation'].lower(), '#8e44ad')
+
     def test_click_only_changes_pid_layer_signal_not_tree_rows(self):
         cases = (
             ('cause', CAUSE_T, self.cause_id),

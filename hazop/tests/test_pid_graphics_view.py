@@ -706,13 +706,35 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
         badges = [item for item in items if isinstance(item, QGraphicsEllipseItem)]
 
         self.assertEqual(tag_item.brush().color(), QColor('#FFFFFF'))
-        self.assertEqual(backing.brush().color(), QColor('#000000'))
+        self.assertEqual(backing.brush().color(), QColor(0, 0, 0, 204))
         self.assertGreater(backing.path().elementCount(), 4)
         tag_right = tag_item.sceneBoundingRect().right()
         self.assertTrue(all(badge.sceneBoundingRect().left() > tag_right
                             for badge in badges))
         self.assertTrue(all(backing.path().contains(
             badge.sceneBoundingRect().center()) for badge in badges))
+
+    def test_recommendation_badge_is_last_and_respects_visibility(self):
+        from pid_viewer import PIDGraphicsView
+        from PyQt6.QtWidgets import QGraphicsEllipseItem
+
+        view = PIDGraphicsView()
+        view.add_equipment_marker(
+            1, 0, 0, "Ventil", tag="V-101", deviation_count=2,
+            consequence_count=3, safeguard_count=4, recommendation_count=5,
+            show_cause=False, show_consequence=False, show_safeguard=False,
+            show_recommendation=True)
+        badges = [item for item in view._type_items['equipment']
+                  if isinstance(item, QGraphicsEllipseItem)]
+        self.assertEqual(len(badges), 1)
+        self.assertEqual(badges[0].brush().color().name(), '#8e44ad')
+
+        view = PIDGraphicsView()
+        view.add_equipment_marker(
+            2, 0, 0, "Ventil", tag="V-102", recommendation_count=5,
+            show_recommendation=False)
+        self.assertFalse(any(isinstance(item, QGraphicsEllipseItem)
+                             for item in view._type_items['equipment']))
 
 
 # ══════════════════════════════════════════════════════════════════════════

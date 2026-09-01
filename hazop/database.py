@@ -3275,6 +3275,19 @@ class Database:
             if self._equipment_tag_matches_row(dict(row), comp_tag)
         )
 
+    def equipment_recommendation_count(self, comp_tag, comp_type=''):
+        """Count recommendation rows whose visible text contains this tag.
+
+        Recommendations are study-wide catalog rows, so a reused
+        recommendation is counted once, not once per consequence link.
+        """
+        if not comp_tag:
+            return 0
+        return sum(
+            1 for row in self.conn.execute("SELECT * FROM recommendations").fetchall()
+            if self._equipment_tag_matches_row(dict(row), comp_tag)
+        )
+
     def set_deviation_equipment(self, deviation_id, equipment_id):
         """Tie an EXISTING deviation to a specific equipment item — used
         when equipment is drag-and-dropped directly onto a deviation

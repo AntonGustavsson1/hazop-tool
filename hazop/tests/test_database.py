@@ -743,6 +743,18 @@ class EquipmentConsequenceSafeguardCountTests(unittest.TestCase):
         self.db.set_consequence_tag(c1, '', '')
         self.assertEqual(self.db.equipment_consequence_count('', ''), 0)
         self.assertEqual(self.db.equipment_safeguard_count('', ''), 0)
+        self.assertEqual(self.db.equipment_recommendation_count('', ''), 0)
+
+    def test_recommendation_count_matches_catalog_rows_once(self):
+        rec_id = self.db.add_recommendation('Verifiera V-101 före start')
+        self.db.add_recommendation_to_consequence(
+            self.db.add_consequence(self.cause_id), 'Kontrollera V-101')
+        self.assertEqual(self.db.equipment_recommendation_count('V-101', 'Ventil'), 2)
+        # Reusing the same catalog recommendation must not count it once per
+        # consequence link.
+        self.db.link_recommendation_to_consequence(rec_id,
+                                                   self.db.add_consequence(self.cause_id))
+        self.assertEqual(self.db.equipment_recommendation_count('V-101', 'Ventil'), 2)
 
     def test_stale_identity_fields_do_not_count_without_tag_in_cell(self):
         cons_id = self.db.add_consequence(self.cause_id)

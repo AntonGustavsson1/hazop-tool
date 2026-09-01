@@ -1409,6 +1409,7 @@ class PIDPanel(QWidget):
         # its linked equipment visible, but colours it grey.
         self._tree_context_layer_visibility = {
             'cause': True, 'consequence': True, 'safeguard': True,
+            'recommendation': True,
         }
         self._active_markup_class         = 'node' # 'node' or 'red'
         self._active_symbol_id            = None   # set when red markup symbol tool selected
@@ -3215,11 +3216,19 @@ class PIDPanel(QWidget):
                               if tag_val else 0)
                 sg_count = (self.db.equipment_safeguard_count(tag_val, comp_type_val)
                             if tag_val else 0)
+                rec_count = (self.db.equipment_recommendation_count(tag_val, comp_type_val)
+                             if tag_val else 0)
+                layer_visible = self._tree_context_layer_visibility
                 self.viewer.add_equipment_marker(
                     md['id'], md['x'], md['y'], comp_type_val,
                     tag_val, md.get('confidence', 0.0) or 0.0,
                     outline_pdf=md.get('shape_outline'), deviation_count=dev_count,
-                    consequence_count=cons_count, safeguard_count=sg_count)
+                    consequence_count=cons_count, safeguard_count=sg_count,
+                    recommendation_count=rec_count,
+                    show_cause=layer_visible.get('cause', True),
+                    show_consequence=layer_visible.get('consequence', True),
+                    show_safeguard=layer_visible.get('safeguard', True),
+                    show_recommendation=layer_visible.get('recommendation', True))
 
         # Feature 8: load sticky note annotations
         if hasattr(self.db, 'get_board_annotations'):
@@ -3990,6 +3999,9 @@ class PIDPanel(QWidget):
         self._tree_context_layer_visibility[layer_type] = bool(visible)
         if self._tree_scope_id is not None:
             self.set_tree_context(self._tree_scope_type, self._tree_scope_id)
+        # Badge visibility is decided while equipment labels are built, so a
+        # toggle must rebuild the lightweight overlays immediately.
+        self.reload_overlays()
 
     def _apply_tree_context_highlight(self):
         """The CHEAP half of the two-tier cache — no DB tree-walk. Re-maps

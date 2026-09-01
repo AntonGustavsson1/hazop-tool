@@ -2004,7 +2004,7 @@ class PIDGraphicsView(QGraphicsView):
         path.addRoundedRect(bg_rect, 4.0, 4.0)
         bg = QGraphicsPathItem(path)
         bg.setPen(QPen(Qt.PenStyle.NoPen))
-        bg.setBrush(QBrush(QColor('#000000')))
+        bg.setBrush(QBrush(QColor(0, 0, 0, 204)))
         bg.setZValue(Z_OVERLAY + 1)
 
         self._add_tracked(bg, marker_type)
@@ -2031,7 +2031,10 @@ class PIDGraphicsView(QGraphicsView):
 
     def add_equipment_marker(self, marker_id, x_pdf, y_pdf, comp_type, tag='',
                              confidence=0.0, outline_pdf=None, deviation_count=0,
-                             consequence_count=0, safeguard_count=0):
+                             consequence_count=0, safeguard_count=0,
+                             recommendation_count=0, show_cause=True,
+                             show_consequence=True, show_safeguard=True,
+                             show_recommendation=True):
         """Draw an auto-detected equipment symbol marker: a semi-transparent
         shape tracing the detected symbol's outline (or a generic
         valve-bowtie icon if no outline was captured), linked to `tag` via
@@ -2084,6 +2087,8 @@ class PIDGraphicsView(QGraphicsView):
             tip += f"\n{consequence_count} konsekvens{'er' if consequence_count != 1 else ''}"
         if safeguard_count > 0:
             tip += f"\n{safeguard_count} safeguard{'s' if safeguard_count != 1 else ''}"
+        if recommendation_count > 0:
+            tip += f"\n{recommendation_count} rekommendation{'er' if recommendation_count != 1 else ''}"
         # Gesture hints (2026-08-10, see NOTES.md) — Ctrl/Shift modifiers on
         # equipment markers have no other visible affordance in the UI.
         tip += ("\n\nCtrl+klick: markera flera\nCtrl+drag: gummiband-markera flera\n"
@@ -2115,12 +2120,15 @@ class PIDGraphicsView(QGraphicsView):
         # Three corners, one counter each — colours distinct from the
         # The three counters use the matching configurable cause,
         # consequence and safeguard colours from the HAZOP tree buttons.
-        if has_deviations:
+        if has_deviations and show_cause:
             badge_specs.append(_badge_spec(deviation_count, 'cause', '#e74c3c'))
-        if consequence_count > 0:
+        if consequence_count > 0 and show_consequence:
             badge_specs.append(_badge_spec(consequence_count, 'consequence', '#e67e22'))
-        if safeguard_count > 0:
+        if safeguard_count > 0 and show_safeguard:
             badge_specs.append(_badge_spec(safeguard_count, 'safeguard', '#27ae60'))
+        if recommendation_count > 0 and show_recommendation:
+            badge_specs.append(_badge_spec(
+                recommendation_count, 'recommendation', '#8e44ad'))
 
         if tag or badge_specs:
             self._place_label(tag, x_pdf, y_pdf, r, QColor('#FFFFFF'),

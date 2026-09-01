@@ -1981,6 +1981,10 @@ class MainWindow(QMainWindow):
         """Repaint the current P&ID context immediately after a color choice."""
         set_tree_context_link_color(link_type, color_hex)
         self.pid_panel.set_tree_context(self._cur_type, self._cur_id)
+        # Equipment counter bubbles are created together with the marker
+        # label, so rebuild the lightweight P&ID overlays immediately when a
+        # visibility-button colour changes.
+        self.pid_panel.reload_overlays()
 
     def _on_selected(self, type_, id_):
         self._cur_type = type_

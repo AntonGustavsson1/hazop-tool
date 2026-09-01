@@ -5095,3 +5095,10 @@ mellan vit och mörk text beroende på bakgrundens ljushet.
 Verifierat med tester för alla tre badgefärger, färgknapparnas sparade färger,
 `tests.test_smoke`, `py_compile` och `git diff --check`. Ingen manuell visuell
 GUI-verifiering är gjord.
+## P&ID-taggen och räknarbollarna (2026-09-01)
+
+Taggtexten visas vit på en svart bakgrund med 80 procent opacitet och rundade
+hörn. Orsaks-, konsekvens-, safeguard- och rekommendationsräknarna ligger
+direkt efter taggen; rekommendationsräknaren ligger sist. Varje räknare visas
+bara när motsvarande knapp ovanför HAZOP-trädet är aktiverad, och färgbyte via
+knapparnas färgval ritas om direkt på P&ID.

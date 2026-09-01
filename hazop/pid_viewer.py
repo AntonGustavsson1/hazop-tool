@@ -772,6 +772,7 @@ TREE_CONTEXT_LINK_COLORS = {
     'cause':       QColor(0, 200, 0),
     'consequence': QColor(0, 200, 0),
     'safeguard':   QColor(0, 200, 0),
+    'recommendation': QColor(142, 68, 173),
 }
 TREE_CONTEXT_HIGHLIGHT_DEFAULT = QColor(0, 200, 0)   # fallback for an unknown link type
 # A linked object remains visible when its layer is unchecked, but loses the

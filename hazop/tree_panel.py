@@ -123,19 +123,23 @@ class TreePanel(QWidget):
             ('safeguard',    '🛡️ Safeguards',    '#27ae60', '#e8f8e8'),
             ('equipment',    '🔧 Utrustning',    '#7f8c8d', '#ecf0f1'),
         ]
+        _VIS_BTNS.insert(3, ('recommendation', 'Rekommendation',
+                             '#8e44ad', '#f3e8ff'))
         self._vis_btns = {}
         self._vis_colors = {}
         for type_key, label, _old_color_on, _old_color_off in _VIS_BTNS:
             btn = QPushButton(label)
             btn.setCheckable(True)
-            configurable = type_key in ('cause', 'consequence', 'safeguard')
+            configurable = type_key in ('cause', 'consequence', 'safeguard',
+                                        'recommendation')
             # These controls belong to the P&ID marker layers. They must not
             # filter or hide rows in the HAZOP tree itself.
             config_visible = True
-            color_on = (self.db.get_config(f'tree_color_{type_key}', '#00c800')
+            default_color = '#8e44ad' if type_key == 'recommendation' else '#00c800'
+            color_on = (self.db.get_config(f'tree_color_{type_key}', default_color)
                         if configurable else '#7f8c8d')
             if not QColor(color_on).isValid():
-                color_on = '#00c800' if configurable else '#7f8c8d'
+                color_on = default_color if configurable else '#7f8c8d'
             self._vis_colors[type_key] = color_on
             if configurable:
                 set_tree_context_link_color(type_key, color_on)
