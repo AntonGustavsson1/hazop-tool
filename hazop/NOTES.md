@@ -1,5 +1,19 @@
 # NOTES.md — Beslut och kontext
 
+## Säkrare kopiering av hela HAZOP-tabellen till Excel/Word (2026-09-01)
+
+`Kopierat.xlsx` visade att Excel kunde flytta barriärer, riskvärden och
+rekommendationer till fel kolumn när hela tabellen importerades med många
+nästlade HTML-rowspan. Heltabellskopiering använder därför ett rektangulärt
+HTML-rutnät med exakt en cell per synlig kolumn och blanka platshållare under
+sammanslagna hierarkinivåer. Mindre markerade områden behåller den tidigare
+hierarkiska rowspan-representationen.
+
+Verifierat mot projektets riktiga databas: 34 data­rader och 9 synliga
+kolumner per HTML-rad, med barriärer i rätt kolumn. Även `tests.test_worksheet`
+(25 tester), `tests.test_smoke` (12 tester), `py_compile` och `git diff --check`
+är gröna. Testningen är headless.
+
 ## Riskpopup visar aktuella axelkoder (2026-09-01)
 
 Risk fore barrier och Slutkonsekvens visar nu popupens aktuella risk som

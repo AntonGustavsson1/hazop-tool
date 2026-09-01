@@ -9634,6 +9634,20 @@ class ScenarioTablePanel(QWidget):
                           (selected_cells is None or all(
             (row, col) in selected_cells for row in rows for col in columns))
         )
+        # Excel's HTML importer can honour the first large Nod/Avvikelse
+        # rowspan but lose track of later nested rowspans.  Once that happens
+        # a safeguard or recommendation is imported one or more columns too
+        # far to the left (the exact failure seen when copying the complete
+        # worksheet).  A complete-table copy therefore uses a strict
+        # rectangular grid: covered hierarchy cells are explicit blanks and
+        # no rowspan is emitted.  Smaller selections keep the richer merge
+        # representation, where the selected anchor and its span are clear.
+        visible_columns = [col for col in range(table.columnCount())
+                           if not table.isColumnHidden(col)]
+        flat_office_grid = (
+            full_rectangle and not compact_hierarchy_rows and
+            rows == list(range(table.rowCount())) and
+            columns == visible_columns)
 
         def _anchor_for(row, col):
             if compact_hierarchy_rows:
@@ -9680,7 +9694,16 @@ class ScenarioTablePanel(QWidget):
                         '<td style="background:#FFFFFF;border:1px solid #D1D5DB;'
                         'padding:3px 5px;"></td>')
                     continue
-                if full_rectangle:
+                if flat_office_grid:
+                    # Keep every rendered row rectangular for Excel.  The
+                    # physical QTableWidget contains repeated item text even
+                    # where the UI paints a rowspan, so covered positions
+                    # must be cleared explicitly rather than copied again.
+                    item = table.item(row, col) if anchor == row else None
+                    text, tags = (self._clipboard_cell_content(row, col)
+                                  if anchor == row else ('', []))
+                    export_row_span = 1
+                elif full_rectangle:
                     span_start = max(anchor, row_min)
                     span_end = min(anchor + row_span, row_max + 1)
                     if row != span_start:
@@ -9688,13 +9711,15 @@ class ScenarioTablePanel(QWidget):
                         # first selected row.
                         continue
                     export_row_span = max(1, span_end - span_start)
+                    item = table.item(anchor, col)
+                    text, tags = self._clipboard_cell_content(anchor, col)
                 else:
                     # Sparse Ctrl-selections cannot safely retain a rowspan:
                     # it could cover an unselected gap. Repeat only the
                     # explicitly selected cell's displayed value instead.
                     export_row_span = 1
-                item = table.item(anchor, col)
-                text, tags = self._clipboard_cell_content(anchor, col)
+                    item = table.item(anchor, col)
+                    text, tags = self._clipboard_cell_content(anchor, col)
                 tsv_cells.append(text.replace('\t', ' ').replace('\n', ' / '))
                 bg = self._clipboard_brush_css(item.background() if item else None) or '#FFFFFF'
                 fg = self._clipboard_brush_css(item.foreground() if item else None) or '#17191C'

@@ -262,7 +262,48 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertIn('Felar stängd', html)
             self.assertIn('PV-101', html)
             self.assertIn('<strong>PV-101</strong>', html)
-            self.assertIn('rowspan="2"', html)
+            self.assertNotIn('rowspan="', html)
+            # Excel must receive a rectangular HTML grid for a whole-table
+            # copy; otherwise a later barrier/recommendation can slide into
+            # the preceding consequence/risk column when Excel imports it.
+            from html.parser import HTMLParser
+            class _OfficeTableParser(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self.rows = []
+                    self._row = None
+                    self._cell = None
+
+                def handle_starttag(self, tag, attrs):
+                    if tag == 'tr':
+                        self._row = []
+                    elif tag == 'td' and self._row is not None:
+                        self._cell = []
+
+                def handle_data(self, data):
+                    if self._cell is not None:
+                        self._cell.append(data)
+
+                def handle_endtag(self, tag):
+                    if tag == 'td' and self._cell is not None:
+                        self._row.append(''.join(self._cell))
+                        self._cell = None
+                    elif tag == 'tr' and self._row is not None:
+                        self.rows.append(self._row)
+                        self._row = None
+
+            parser = _OfficeTableParser()
+            parser.feed(html)
+            visible_columns = [col for col in range(panel._table.columnCount())
+                               if not panel._table.isColumnHidden(col)]
+            data_rows = [row for row in parser.rows if row]
+            self.assertTrue(data_rows)
+            self.assertTrue(all(len(row) == len(visible_columns)
+                                for row in data_rows))
+            barrier_row = next(row for row in data_rows
+                               if 'LSHH stoppar' in ''.join(row))
+            self.assertEqual(barrier_row[visible_columns.index(panel._C_SG)],
+                             '1. LSHH stoppar (RRF: 100)')
             self.assertIn('background:', html)
             self.assertIn('Nod\tAvvikelse', plain_text)
             self.assertIn('LSHH stoppar', plain_text)
