@@ -1223,8 +1223,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
-    def test_template_migration_exposes_only_the_two_matrix_mapping_views(self):
-        """Category matching is automatic and is not an editable popup step."""
+    def test_template_migration_exposes_category_and_matrix_mapping_views(self):
+        """Category matching uses the same interactive mapping canvas as axes."""
         from hazop_preparation_panel import RiskMatrixMigrationDialog
         source = {
             'rows': 2, 'cols': 2, 'x_axis': 'frequency', 'y_reversed': True,
@@ -1248,8 +1248,9 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
             self.assertEqual([dialog._tabs.tabText(i) for i in range(dialog._tabs.count())],
-                             ['1. Kopplingsfält', '2. Matris mot matris'])
-            self.assertFalse(hasattr(dialog, '_category_panel'))
+                             ['1. Konsekvenskategorier', '2. Kopplingsfält',
+                              '3. Matris mot matris'])
+            self.assertTrue(hasattr(dialog, '_category_panel'))
             source_chip = dialog._link_field.old_chips[('frequency', -1)]
             target_chip = dialog._link_field.target_chips[('frequency', -1)]
             self.assertEqual(source_chip.code, 'A')
@@ -1265,12 +1266,11 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             self.assertTrue(dialog._link_field.old_chips[('frequency', -1)].isEnabled())
             self.assertTrue(dialog._matrix_against_matrix.old_chips[('frequency', -1)].isEnabled())
             self.assertIn('1 av 4 gamla steg mappade.', dialog._progress.text())
-            self.assertIn('Konsekvenskategorier kopplas automatiskt.',
-                          dialog._progress.text())
+            self.assertIn('konsekvenskategorier mappade.', dialog._progress.text())
         finally:
             dialog.deleteLater()
 
-    def test_template_migration_keeps_automatic_category_mapping_internal(self):
+    def test_template_migration_allows_category_mapping_in_its_own_tab(self):
         from hazop_preparation_panel import RiskMatrixMigrationDialog
         source = {'rows': 3, 'cols': 2, 'x_labels': ['A', 'B'],
                   'y_labels': ['1', '2', '3'], 'freq_boundaries': [0.1]}
@@ -1289,17 +1289,26 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         self.db.set_risk_matrix(source)
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
-            self.assertEqual(dialog._tabs.count(), 2)
-            self.assertFalse(any('kategori' in dialog._tabs.tabText(i).lower()
-                                 for i in range(dialog._tabs.count())))
+            self.assertEqual(dialog._tabs.count(), 3)
+            self.assertEqual(dialog._tabs.tabText(0), '1. Konsekvenskategorier')
             source_id = str(dialog.plan['source_categories'][0]['source_id'])
             self.assertEqual(dialog.plan['category_map'][source_id], 'person')
-            self.assertIn('Konsekvenskategorier kopplas automatiskt.',
-                          dialog._progress.text())
+            canvas = dialog._category_panel._mapping_canvas
+            self.assertIn(source_id, dialog._category_panel.source_chips)
+            self.assertIn('person', dialog._category_panel.target_chips)
+            self.assertIs(canvas.old_chips[('category', source_id)],
+                          dialog._category_panel.source_chips[source_id])
+            self.assertIn('konsekvenskategorier mappade.', dialog._progress.text())
+
+            dialog.clear_mappings()
+            dialog.activate_source_category(source_id)
+            dialog.activate_target_category('person')
+            self.assertEqual(dialog.plan['category_map'][source_id], 'person')
+            self.assertEqual(dialog.category_target_count('person'), 1)
         finally:
             dialog.deleteLater()
 
-    def test_category_matching_field_is_not_constructed(self):
+    def test_category_mapping_can_be_changed_without_touching_axis_mapping(self):
         from hazop_preparation_panel import RiskMatrixMigrationDialog
         source = {
             'rows': 2, 'cols': 2, 'x_labels': ['A', 'B'],
@@ -1320,10 +1329,14 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         self.db.set_risk_matrix(source)
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
-            self.assertFalse(hasattr(dialog, '_category_panel'))
-            self.assertNotIn('Konsekvenskategorier',
-                             [dialog._tabs.tabText(i)
-                              for i in range(dialog._tabs.count())])
+            self.assertTrue(hasattr(dialog, '_category_panel'))
+            self.assertEqual(dialog._tabs.tabText(0), '1. Konsekvenskategorier')
+            source_id = str(dialog.plan['source_categories'][0]['source_id'])
+            dialog.clear_mappings()
+            dialog.activate_source_category(source_id)
+            dialog.activate_target_category('new-person')
+            self.assertEqual(dialog.plan['category_map'][source_id], 'new-person')
+            self.assertEqual(dialog._mapping, {})
         finally:
             dialog.deleteLater()
 

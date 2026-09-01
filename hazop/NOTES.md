@@ -5111,3 +5111,15 @@ konsekvens, safeguard eller rekommendation som hör till aktuell trädkontext
 visas aktiva; övriga blir neutrala. Rekommendationer matchas mot synlig tagg i
 den länkade rekommendationstexten. Den tidigare färgningen av själva
 gummibands-/utrustningspolygonen från trädkontexten är borttagen.
+## Konsekvenskategorier i egen migreringsflik (2026-09-01)
+
+Riskmatrisens migreringsdialog har en separat flik för koppling av befintlig
+konsekvenskategori till en kategori i den nya mallen. Fliken använder samma
+visuella kopplingsfält som axlarna: klick-klick och drag-and-drop, status för
+valda och kopplade rutor, räknare på målrutor och kurvade länkar.
+
+Mappningen ligger på dialognivå och används av samma migreringsplan. Den
+ändrar därför inte databasen innan migreringen genomförs. `Rensa` och
+`Föreslå automatiskt` hanterar även kategorikopplingarna. Verifierat med
+riktade migreringstester, `tests.test_smoke`, `py_compile` och `git diff --check`.
+Ingen manuell visuell GUI-verifiering är gjord.

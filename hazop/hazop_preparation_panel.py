@@ -468,9 +468,15 @@ class _AxisMappingCanvas(QWidget):
         if chip.role == 'old':
             self.drag_chip = chip
             self.drag_point = self.mapFromGlobal(global_pos)
-            self.dialog.activate_old_step(chip.kind, chip.value)
+            if chip.kind == 'category':
+                self.dialog.activate_source_category(chip.value)
+            else:
+                self.dialog.activate_old_step(chip.kind, chip.value)
         else:
-            self.dialog.activate_target_step(chip.kind, chip.value)
+            if chip.kind == 'category':
+                self.dialog.activate_target_category(chip.value)
+            else:
+                self.dialog.activate_target_step(chip.kind, chip.value)
         self.sync_state()
 
     def chip_moved(self, chip, global_pos):
@@ -486,7 +492,10 @@ class _AxisMappingCanvas(QWidget):
         if chip is self.drag_chip:
             target = self._chip_at(global_pos)
             if target and target.role == 'target' and target.kind == chip.kind:
-                self.dialog.set_axis_mapping(chip.kind, chip.value, target.value)
+                if chip.kind == 'category':
+                    self.dialog.set_category_mapping(chip.value, target.value)
+                else:
+                    self.dialog.set_axis_mapping(chip.kind, chip.value, target.value)
             self.drag_chip = self.drag_point = self.drag_over = None
         self.sync_state()
 
@@ -494,11 +503,17 @@ class _AxisMappingCanvas(QWidget):
         armed = self.dialog.armed
         for key, chip in self.old_chips.items():
             kind, value = key
-            chip.apply_state(armed=(key == armed),
-                             mapped=self.dialog.is_mapped(*key))
+            if kind == 'category':
+                chip.apply_state(armed=(value == self.dialog.category_armed),
+                                 mapped=self.dialog.category_mapped(value))
+            else:
+                chip.apply_state(armed=(key == armed),
+                                 mapped=self.dialog.is_mapped(*key))
         for key, chip in self.target_chips.items():
             kind, value = key
-            count = self.dialog.target_count(*key)
+            count = (self.dialog.category_target_count(value)
+                     if kind == 'category'
+                     else self.dialog.target_count(*key))
             chip.apply_state(mapped=count > 0, over=(chip is self.drag_over),
                              count=count)
         self.update()
@@ -644,6 +659,111 @@ class MatrixAgainstMatrix(_AxisMappingCanvas):
         return group
 
 
+class _CategoryMappingCanvas(_AxisMappingCanvas):
+    """Category mapping view using the same link-field interaction as axes."""
+
+    def iter_mappings(self):
+        return sorted(
+            ((('category', source), target)
+             for source, target in self.dialog._category_mapping.items()),
+            key=lambda item: item[0][1])
+
+    def rebuild(self):
+        self.clear_canvas()
+        self._layout.setColumnStretch(0, 1)
+        self._layout.setColumnStretch(1, 1)
+        self._layout.setColumnStretch(2, 1)
+        self._layout.addWidget(
+            self._section_label('KONSEKVENSKATEGORI'), 0, 0, 1, 3)
+        self._layout.addWidget(self._section_label('BEFINTLIG MATRIS'), 1, 0)
+        self._layout.addWidget(self._section_label('NY MATRIS'), 1, 2)
+
+        source_categories = self.dialog.plan.get('source_categories', [])
+        target_categories = self.dialog.plan.get('target_categories', [])
+        for row, category in enumerate(source_categories, start=2):
+            self.add_chip('old', 'category', str(category['source_id']),
+                          category['name'], '', row, 0, compact=True)
+        for row, category in enumerate(target_categories, start=2):
+            self.add_chip('target', 'category', category['key'],
+                          category['name'], '', row, 2, compact=True)
+        QTimer.singleShot(0, self.sync_state)
+
+
+class CategoryMappingPanel(QWidget):
+    """Consequence-category links plus optional per-category level mapping."""
+
+    def __init__(self, dialog, parent=None):
+        super().__init__(parent)
+        self.dialog = dialog
+        self.source_chips, self.target_chips = {}, {}
+        self._mapping_canvas = None
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(5)
+
+    def rebuild(self):
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.source_chips.clear(); self.target_chips.clear()
+        title = QLabel("Koppla varje befintlig kategori till en kategori i den nya mallen.")
+        title.setStyleSheet("color:#4b5563; font-size:10px;")
+        self._layout.addWidget(title)
+        source_categories = self.dialog.plan.get('source_categories', [])
+        self._mapping_canvas = _CategoryMappingCanvas(self.dialog, self)
+        self._mapping_canvas.rebuild()
+        self._layout.addWidget(self._mapping_canvas, 1)
+        self.source_chips = {
+            key[1]: chip for key, chip in self._mapping_canvas.old_chips.items()
+        }
+        self.target_chips = {
+            key[1]: chip for key, chip in self._mapping_canvas.target_chips.items()
+        }
+
+        converters = QGroupBox("Nivåöversättning per kategori")
+        converters_lay = QVBoxLayout(converters)
+        for category in source_categories:
+            source_id = str(category['source_id'])
+            target = self.dialog.target_category(source_id)
+            toggle = QToolButton()
+            toggle.setCheckable(True)
+            toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            target_name = target.get('name') if target else 'välj mallkategori'
+            toggle.setText(f"{category['name']}  →  {target_name}")
+            toggle.setArrowType(Qt.ArrowType.RightArrow)
+            body = QWidget()
+            form = QFormLayout(body)
+            form.setContentsMargins(18, 0, 0, 4)
+            for source_value, source_code, _source_description in self.dialog.axis_levels(
+                    'source', 'severity'):
+                combo = QComboBox()
+                for target_value, target_code, target_description in self.dialog.axis_levels(
+                        'target', 'severity'):
+                    combo.addItem(
+                        f"{target_code} — {target_description}"
+                        if target_description else target_code,
+                        target_value)
+                combo.setCurrentIndex(max(0, combo.findData(
+                    self.dialog.category_level_target(source_id, source_value))))
+                combo.currentIndexChanged.connect(
+                    lambda _index, sid=source_id, sv=source_value, c=combo:
+                    self.dialog.set_category_level_mapping(sid, sv, c.currentData()))
+                form.addRow(QLabel(source_code), combo)
+            body.setVisible(False)
+            toggle.toggled.connect(body.setVisible)
+            toggle.toggled.connect(lambda checked, t=toggle: t.setArrowType(
+                Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow))
+            converters_lay.addWidget(toggle)
+            converters_lay.addWidget(body)
+        self._layout.addWidget(converters)
+        QTimer.singleShot(0, self.sync_state)
+
+    def sync_state(self):
+        if self._mapping_canvas is not None:
+            self._mapping_canvas.sync_state()
+
+
 class RiskMatrixMigrationDialog(QDialog):
     """Review and explicitly map HAZOP data before changing matrix template."""
 
@@ -653,12 +773,14 @@ class RiskMatrixMigrationDialog(QDialog):
         self.template_name = template_name
         self.plan = db.risk_matrix_migration_preview(source_cfg, target_cfg)
         self.armed = None
+        self.category_armed = None
         self._display_x_axis = ('frequency' if self.plan['source_matrix'].get(
             'x_axis', 'frequency') == 'frequency' else 'severity')
         self._mapping = {}
         for kind, map_key in (('frequency', 'frequency_map'), ('severity', 'severity_map')):
             self._mapping.update({(kind, int(source)): int(target)
                                   for source, target in self.plan[map_key].items()})
+        self._category_mapping = dict(self.plan.get('category_map', {}))
         self.setWindowTitle(f"Byt riskmatris till {template_name}")
         self.setMinimumSize(1060, 720)
         self.resize(1220, 820)
@@ -690,10 +812,12 @@ class RiskMatrixMigrationDialog(QDialog):
         outer.addWidget(self._progress)
 
         self._tabs = QTabWidget()
+        self._category_panel = CategoryMappingPanel(self)
         self._link_field = AxisLinkField(self)
         self._matrix_against_matrix = MatrixAgainstMatrix(self)
-        self._tabs.addTab(self._link_field, "1. Kopplingsfält")
-        self._tabs.addTab(self._matrix_against_matrix, "2. Matris mot matris")
+        self._tabs.addTab(self._category_panel, "1. Konsekvenskategorier")
+        self._tabs.addTab(self._link_field, "2. Kopplingsfält")
+        self._tabs.addTab(self._matrix_against_matrix, "3. Matris mot matris")
         outer.addWidget(self._tabs, 1)
 
         buttons = QDialogButtonBox()
@@ -727,6 +851,80 @@ class RiskMatrixMigrationDialog(QDialog):
     def target_count(self, kind, target):
         return sum(1 for (mapped_kind, _source), mapped_target in self._mapping.items()
                    if mapped_kind == kind and mapped_target == target)
+
+    def target_category(self, source_id):
+        key = self._category_mapping.get(str(source_id))
+        return next((category for category in self.plan.get('target_categories', [])
+                     if category.get('key') == key), None)
+
+    def category_mapped(self, source_id):
+        return str(source_id) in self._category_mapping
+
+    def category_target_count(self, target_key):
+        return sum(1 for key in self._category_mapping.values() if key == target_key)
+
+    def category_level_target(self, source_id, source_value):
+        mapping = self.plan.get('category_severity_maps', {}).get(str(source_id), {})
+        return mapping.get(str(source_value),
+                           self.plan['severity_map'].get(str(source_value), 1))
+
+    def activate_source_category(self, source_id):
+        source_id = str(source_id)
+        if self.category_mapped(source_id) and self.category_armed != source_id:
+            self.remove_category_mapping(source_id)
+            return
+        self.category_armed = None if self.category_armed == source_id else source_id
+        self._refresh_visuals()
+
+    def activate_target_category(self, target_key):
+        if self.category_armed:
+            self.set_category_mapping(self.category_armed, target_key)
+
+    def set_category_mapping(self, source_id, target_key):
+        source_id = str(source_id)
+        target_key = str(target_key)
+        # One target category represents one destination in the new template.
+        # If it was previously used, release that source instead of silently
+        # creating an ambiguous many-to-one category migration.
+        previous_source = next(
+            (source for source, target in self._category_mapping.items()
+             if target == target_key and source != source_id), None)
+        if previous_source:
+            self._category_mapping.pop(previous_source, None)
+        self._category_mapping[source_id] = target_key
+        self.plan['category_map'] = dict(self._category_mapping)
+        self.category_armed = None
+        self._sync_category_record_targets(source_id)
+        if previous_source:
+            self._sync_category_record_targets(previous_source)
+        self._category_panel.rebuild()
+        self._refresh_visuals()
+
+    def remove_category_mapping(self, source_id):
+        self._category_mapping.pop(str(source_id), None)
+        self.plan['category_map'] = dict(self._category_mapping)
+        self.category_armed = None
+        self._category_panel.rebuild()
+        self._refresh_visuals()
+
+    def set_category_level_mapping(self, source_id, source_value, target_value):
+        source_id = str(source_id)
+        mapping = self.plan.setdefault('category_severity_maps', {}).setdefault(source_id, {})
+        mapping[str(source_value)] = int(target_value)
+        self._sync_category_record_targets(source_id)
+        self._refresh_visuals()
+
+    def _sync_category_record_targets(self, source_id):
+        source_id = str(source_id)
+        mapping = self.plan.get('category_severity_maps', {}).get(source_id, {})
+        target_key = self._category_mapping.get(source_id)
+        for record in self.plan.get('severity_records', []):
+            if str(record.get('category_id')) == source_id:
+                record['target'] = mapping.get(str(record['source']), record['target'])
+        for record in self.plan.get('definition_records', []):
+            if str(record.get('category_id')) == source_id:
+                record['target'] = mapping.get(str(record['source']), record['target'])
+                record['target_category_key'] = target_key
 
     def activate_old_step(self, kind, value):
         key = self._mapping_key(kind, value)
@@ -777,7 +975,8 @@ class RiskMatrixMigrationDialog(QDialog):
         self._refresh_visuals()
 
     def clear_mappings(self):
-        self._mapping.clear(); self.armed = None
+        self._mapping.clear(); self.armed = None; self.category_armed = None
+        self._category_mapping.clear(); self.plan['category_map'] = {}
         self.plan['frequency_map'].clear(); self.plan['severity_map'].clear()
         for record in self.plan['frequency_records']:
             if record.get('source_kind') == 'manual' and not record.get('override'):
@@ -788,6 +987,8 @@ class RiskMatrixMigrationDialog(QDialog):
         for record in self.plan['definition_records']:
             if not record.get('override'):
                 record['target'] = None
+                record['target_category_key'] = None
+        self._category_panel.rebuild()
         self._refresh_visuals()
 
     def suggest_automatically(self):
@@ -801,6 +1002,19 @@ class RiskMatrixMigrationDialog(QDialog):
                 self._mapping[(kind, int(old))] = int(new)
                 self._apply_mapping_to_plan(kind, int(old), int(new))
         self.armed = None
+        # Recreate the safe category proposal too.  This keeps the toolbar
+        # action meaningful for all three mapping views.
+        category_plan = self.db.risk_matrix_migration_preview(
+            self.plan['source_matrix'], self.plan['target_matrix'])
+        self._category_mapping = dict(category_plan.get('category_map', {}))
+        self.plan['category_map'] = dict(self._category_mapping)
+        self.plan['category_severity_maps'] = {
+            str(category['source_id']): dict(severity)
+            for category in self.plan.get('source_categories', [])
+        }
+        for source_id in self._category_mapping:
+            self._sync_category_record_targets(source_id)
+        self._category_panel.rebuild()
         self._refresh_visuals()
 
     def _set_display_x_axis(self, kind):
@@ -818,13 +1032,14 @@ class RiskMatrixMigrationDialog(QDialog):
     def _mapping_complete(self):
         expected = sum(len(self.axis_levels('source', kind))
                        for kind in ('frequency', 'severity'))
-        categories_complete = len(self.plan.get('category_map', {})) == len(
+        categories_complete = len(self._category_mapping) == len(
             self.plan.get('source_categories', []))
         return len(self._mapping) == expected and categories_complete
 
     def _refresh_visuals(self):
         self._link_field.sync_state()
         self._matrix_against_matrix.sync_state()
+        self._category_panel.sync_state()
         self._refresh_summary()
 
     @staticmethod
@@ -865,10 +1080,9 @@ class RiskMatrixMigrationDialog(QDialog):
                     for kind in ('frequency', 'severity'))
         mapped = len(self._mapping)
         category_total = len(self.plan.get('source_categories', []))
-        category_mapped = len(self.plan.get('category_map', {}))
-        category_status = ("Konsekvenskategorier kopplas automatiskt." if
-                           category_mapped == category_total else
-                           "Konsekvenskategorier kunde inte kopplas automatiskt.")
+        category_mapped = len(self._category_mapping)
+        category_status = (f"{category_mapped} av {category_total} "
+                           "konsekvenskategorier mappade.")
         self._progress.setText(
             f"{mapped} av {total} gamla steg mappade. {category_status} "
             "Inget sparas förrän du genomför migreringen.")
@@ -876,6 +1090,7 @@ class RiskMatrixMigrationDialog(QDialog):
                                       category_mapped == category_total)
 
     def _refresh_all(self):
+        self._category_panel.rebuild()
         self._link_field.rebuild()
         self._matrix_against_matrix.rebuild()
         self._refresh_summary()
