@@ -2885,7 +2885,8 @@ class FrequencyPickerPopup(QDialog):
     helper popup, with the F-level presets shown as one simple list.
     """
 
-    # (f_level_int_or_None, numeric_freq_or_None) — exactly one is non-None.
+    # (f_level_int_or_None, numeric_freq_or_None). Both None means that the
+    # caller explicitly cleared the frequency for this one cause.
     frequency_selected = pyqtSignal(object, object)
 
     def __init__(self, current_f_level=None, current_numeric_freq=None, parent=None):
@@ -2955,6 +2956,17 @@ class FrequencyPickerPopup(QDialog):
         custom_row.addWidget(ok_btn)
         layout.addLayout(custom_row)
 
+        self._clear_btn = QPushButton("Rensa")
+        self._clear_btn.setObjectName("clearFrequencyButton")
+        self._clear_btn.setToolTip("Ta bort frekvens från denna orsak")
+        self._clear_btn.setStyleSheet(
+            "QPushButton#clearFrequencyButton{border:none;color:#4B5563;"
+            "padding:2px 4px;font-size:10px;text-align:left;}"
+            "QPushButton#clearFrequencyButton:hover{color:#17191C;"
+            "text-decoration:underline;}")
+        self._clear_btn.clicked.connect(self._clear_frequency)
+        layout.addWidget(self._clear_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+
         # ── Live F-level preview for the numeric field ───────────────────────
         self._preview_lbl = QLabel()
         self._preview_lbl.setStyleSheet("border:none;color:#555;font-size:9px;")
@@ -2977,6 +2989,10 @@ class FrequencyPickerPopup(QDialog):
 
     def _pick_numeric(self):
         self.frequency_selected.emit(None, self._spin.value())
+        self.accept()
+
+    def _clear_frequency(self):
+        self.frequency_selected.emit(None, None)
         self.accept()
 
     @classmethod

@@ -6868,6 +6868,26 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         self.assertEqual(cause['base_frequency'], 0.5)
         rebuild_spy.assert_called_once()
 
+    def test_clearing_frequency_hides_only_this_causes_frequency(self):
+        self.db.update_cause(self.cause_id, base_frequency=0.5)
+        rebuild_spy = unittest.mock.Mock()
+        self.panel._schedule_rebuild = rebuild_spy
+
+        self.panel._on_ors_frequency_picked(self.cause_id, None, None)
+
+        cause = self.db.get_cause(self.cause_id)
+        self.assertTrue(cause['frequency_cleared'])
+        self.assertEqual(cause['likelihood'], 0)
+        self.assertIsNone(cause['base_frequency'])
+        self.assertIsNone(self.db.cause_base_frequency_per_year(cause))
+        rebuild_spy.assert_called_once()
+
+        self.panel.load_node(cause['node_id'])
+        row = next(row for row, meta in enumerate(self.panel._row_meta)
+                   if meta[1] == self.cause_id)
+        self.assertIsNone(self.panel._table.item(row, self.panel._C_ORS).data(
+            Qt.ItemDataRole.UserRole + 3))
+
 
 class ShiftClickInsertsTagIntoActiveEditorTests(unittest.TestCase):
     """"Om jag skriver en konsekvens ... och sedan håller nere shift och

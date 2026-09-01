@@ -1588,6 +1588,20 @@ class FrequencyPickerPopupTests(unittest.TestCase):
             popup.close()
             popup.deleteLater()
 
+    def test_clear_frequency_emits_an_explicit_empty_frequency(self):
+        from tree_panel import FrequencyPickerPopup
+
+        popup = FrequencyPickerPopup(current_f_level=2, current_numeric_freq=0.5)
+        selected = []
+        try:
+            popup.frequency_selected.connect(
+                lambda f_level, numeric: selected.append((f_level, numeric)))
+            popup._clear_btn.click()
+            self.assertEqual(selected, [(None, None)])
+        finally:
+            popup.close()
+            popup.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

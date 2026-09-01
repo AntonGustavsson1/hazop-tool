@@ -188,7 +188,8 @@ def _worksheet_rows(db):
 
             for cause_number, cause in enumerate(causes, 1):
                 frequency = db.cause_frequency_level(cause)
-                frequency_label = freq_axis_label(frequency)
+                frequency_label = ('' if cause.get('frequency_cleared')
+                                   else freq_axis_label(frequency))
                 cause_label = _number(cause_text(cause), cause_number)
                 consequences = [dict(cons) for cons in
                                 consequences_by_cause.get(cause['id'], [])]

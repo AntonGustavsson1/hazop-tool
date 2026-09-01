@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS causes (
     node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     description TEXT NOT NULL DEFAULT 'Ny orsak',
     likelihood  INTEGER NOT NULL DEFAULT 1,
+    frequency_cleared INTEGER NOT NULL DEFAULT 0,
     sort_order  INTEGER NOT NULL DEFAULT 0
 );
 
@@ -876,11 +877,14 @@ def _sync_f_levels_from_base_frequency(conn):
     """Set causes.likelihood (F-level) from standard_cause/base_frequency when frequency data exists."""
     updated = 0
     rows = conn.execute("""
-        SELECT c.id, c.base_frequency, c.likelihood, sc.frequency AS sc_freq
+        SELECT c.id, c.base_frequency, c.likelihood, c.frequency_cleared,
+               sc.frequency AS sc_freq
         FROM causes c
         LEFT JOIN standard_causes sc ON sc.id = c.standard_cause_id
     """).fetchall()
     for row in rows:
+        if row['frequency_cleared']:
+            continue
         base_freq_per_year = row['sc_freq'] if row['sc_freq'] is not None else row['base_frequency']
         if base_freq_per_year is None or base_freq_per_year <= 0:
             continue
@@ -1159,6 +1163,7 @@ class Database:
             "ALTER TABLE causes ADD COLUMN likelihood INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE causes ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN base_frequency REAL DEFAULT NULL",
+            "ALTER TABLE causes ADD COLUMN frequency_cleared INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE causes ADD COLUMN deviation_id INTEGER REFERENCES deviations(id)",
             "ALTER TABLE causes ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE safeguards ADD COLUMN rrf INTEGER NOT NULL DEFAULT 1",
@@ -4022,6 +4027,8 @@ class Database:
         if cause is None:
             return None
         d = dict(cause)
+        if d.get('frequency_cleared'):
+            return None
         std_id = d.get('standard_cause_id')
         if std_id:
             sc = self.get_standard_cause(std_id)
@@ -5391,7 +5398,8 @@ class Database:
                      base_freq=_SENTINEL, equipment_id=_SENTINEL,
                      secondary_equipment_id=_SENTINEL,
                      group_choices_set=_SENTINEL,
-                     group_equipment_ids=_SENTINEL):
+                     group_equipment_ids=_SENTINEL,
+                     frequency_cleared=_SENTINEL):
         # Support old parameter name for backward compatibility
         if base_freq is not Database._SENTINEL and base_frequency is Database._SENTINEL:
             base_frequency = base_freq
@@ -5423,6 +5431,9 @@ class Database:
             sets.append("group_equipment_ids=?")
             vals.append(json.dumps(group_equipment_ids) if isinstance(group_equipment_ids, (list, tuple))
                         else group_equipment_ids)
+        if frequency_cleared is not Database._SENTINEL:
+            sets.append("frequency_cleared=?")
+            vals.append(int(bool(frequency_cleared)))
         if sets:
             vals.append(id_)
             self.conn.execute(f"UPDATE causes SET {', '.join(sets)} WHERE id=?", vals)
@@ -5453,6 +5464,7 @@ class Database:
                 SELECT frequency FROM standard_causes WHERE id = causes.standard_cause_id
             )
             WHERE standard_cause_id IS NOT NULL
+              AND COALESCE(frequency_cleared, 0) = 0
               AND EXISTS (
                 SELECT 1 FROM standard_causes
                 WHERE id = causes.standard_cause_id AND frequency IS NOT NULL
@@ -5756,10 +5768,11 @@ class Database:
         node_id = dev['node_id'] if dev else orig['node_id']
         orig = dict(orig)
         cur = self.conn.execute(
-            "INSERT INTO causes (node_id,deviation_id,description,likelihood,source_id,"
+            "INSERT INTO causes (node_id,deviation_id,description,likelihood,frequency_cleared,source_id,"
             "comp_type,comp_tag,equipment_id,secondary_equipment_id,group_equipment_ids,"
-            "group_choices_set) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (node_id, target_deviation_id, orig['description'], orig['likelihood'], cause_id,
+            "group_choices_set) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (node_id, target_deviation_id, orig['description'], orig['likelihood'],
+             orig.get('frequency_cleared') or 0, cause_id,
              orig.get('comp_type') or '', orig.get('comp_tag') or '',
              orig.get('equipment_id'), orig.get('secondary_equipment_id'),
              orig.get('group_equipment_ids') or '', orig.get('group_choices_set') or 0))
@@ -5822,13 +5835,14 @@ class Database:
         cur = self.conn.execute(
             "INSERT INTO causes "
             "(node_id,deviation_id,description,likelihood,sort_order,source_id,"
-            "base_frequency,standard_cause_id,comp_type,comp_tag,comment,"
+            "base_frequency,frequency_cleared,standard_cause_id,comp_type,comp_tag,comment,"
             "equipment_id,secondary_equipment_id,group_equipment_ids,group_choices_set) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (target['node_id'], target_deviation_id,
              original.get('description') or '', original.get('likelihood') or 0,
              self._copy_sort_order('causes', 'deviation_id', target_deviation_id),
              original.get('id'), original.get('base_frequency'),
+             original.get('frequency_cleared') or 0,
              original.get('standard_cause_id'), original.get('comp_type') or '',
              original.get('comp_tag') or '', '', original.get('equipment_id'),
              original.get('secondary_equipment_id'),

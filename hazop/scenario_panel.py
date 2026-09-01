@@ -5105,11 +5105,12 @@ class ScenarioTablePanel(QWidget):
             # A directly-created blank cause keeps the database's required
             # likelihood value for calculations, but must not show a chosen
             # frequency badge until the user selects one.
-            frequency_unset = (not (cause_d.get('description') or '').strip()
+            frequency_unset = (bool(cause_d.get('frequency_cleared')) or
+                               (not (cause_d.get('description') or '').strip()
                                and not (cause_d.get('comp_tag') or '').strip()
                                and cause_d.get('base_frequency') is None
                                and not cause_d.get('standard_cause_id')
-                               and cause_d.get('likelihood') == 0)
+                               and cause_d.get('likelihood') == 0))
             freq = self.db.cause_frequency_level(cause_d)
             if frequency_unset:
                 cause_d['_frequency_unset'] = True
@@ -8239,9 +8240,16 @@ class ScenarioTablePanel(QWidget):
         sets base_frequency directly (causes.likelihood is then derived
         from it, see _sync_f_levels_from_base_frequency)."""
         if f_level is not None:
-            self.db.update_cause(cause_id, likelihood=f_level, base_frequency=None)
+            self.db.update_cause(cause_id, likelihood=f_level, base_frequency=None,
+                                 frequency_cleared=False)
+        elif numeric is None:
+            # Keep the selected standard cause and its text/object link, but
+            # explicitly suppress only its frequency for this cause.
+            self.db.update_cause(cause_id, likelihood=0, base_frequency=None,
+                                 frequency_cleared=True)
         else:
-            self.db.update_cause(cause_id, base_frequency=numeric)
+            self.db.update_cause(cause_id, base_frequency=numeric,
+                                 frequency_cleared=False)
         self._schedule_rebuild()
 
     def _open_comment_popup(self, row, cause_id, global_pos):

@@ -4261,6 +4261,18 @@ och som fallerar mot den gamla koden; `tests.test_smoke` och riktade
 `tests.test_integration`-tester passerar. Ingen visuell GUI-verifiering är
 gjord.
 
+## Frekvens: rensa en enskild orsak (2026-09-01)
+
+Frekvens-popupen har nu knappen `Rensa`. Den tar bort just den valda orsakens
+frekvensetikett i HAZOP Scenario/Worksheet och Excel-exporten, utan att ändra
+orsakstext, objektkoppling eller andra orsaker. Valet lagras explicit i
+projektfilen, så en standardorsaks frekvens inte återkommer vid nästa synkning.
+Att välja en ny förinställd eller egen frekvens aktiverar frekvensen igen.
+
+Verifierat med popup-, scenario-/Worksheet- och migreringsrelaterade
+regressionstester, `tests.test_smoke` och `py_compile`. Ingen manuell
+GUI-verifiering är gjord.
+
 ## Office-kopiering: flera markerade Nod/Avvikelse-rader (2026-09-01)
 
 En Ctrl-markering av separata Nod- och Avvikelse-celler behandlas nu som
