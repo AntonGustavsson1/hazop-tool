@@ -2306,6 +2306,12 @@ class _ScenarioDelegate(QStyledItemDelegate):
             editor.setGeometry(QRect(left, rect.top() + 2,
                                       max(10, rect.right() - left - 3),
                                       max(10, rect.height() - 4)))
+            # The static cell can use its full width, whereas the live
+            # editor starts after the painted running number.  Re-evaluate
+            # immediately now that the narrower editor geometry is known;
+            # waiting for a textChanged signal made a long existing
+            # recommendation appear clipped/smaller until the user typed.
+            panel._resize_recommendation_editor(editor, index.row())
             return
         editor.setGeometry(QRect(option.rect).adjusted(2, 2, -2, -2))
 
@@ -8730,13 +8736,13 @@ class ScenarioTablePanel(QWidget):
                 return True
             if (event.key() == Qt.Key.Key_C and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-                # Ctrl+C is the normal Office workflow: copy precisely the
-                # selected cell rectangle as rich HTML/TSV.  This retains
-                # hierarchy rowspans (for example one cause over several
-                # consequences) instead of flattening the current HAZOP row.
-                # The application-specific copy remains available from the
-                # context menu for copying entities within HAZOP.
-                self.copy_visible_table_to_office_clipboard(
+                # Keep the normal rich Office representation, but add the
+                # same internal entity payload used by drag-and-drop. Ctrl+V
+                # can therefore paste within HAZOP and ask the identical
+                # cell-only/full-branch question, while Word/Excel still get
+                # the exact selected cell rectangle as HTML/TSV.
+                self._copy_selection_to_clipboard(
+                    self._table.currentRow(), self._table.currentColumn(),
                     self._office_clipboard_title)
                 return True
             if (event.key() == Qt.Key.Key_V and
@@ -9330,9 +9336,8 @@ class ScenarioTablePanel(QWidget):
 
     # ── Copy and paste ───────────────────────────────────────────────────────
     # Kept as an application MIME rather than serialising database objects into
-    # text. It is used by the explicit context-menu action for copying entities
-    # within HAZOP; ordinary Ctrl+C is reserved for the standard Office
-    # clipboard path below.
+    # text. It travels alongside the normal Office HTML/TSV data on Ctrl+C,
+    # so the same clipboard supports both Word/Excel and scoped in-HAZOP paste.
     _COPY_MIME = 'application/x-hazop-copy-items'
 
     @staticmethod
@@ -9711,14 +9716,17 @@ class ScenarioTablePanel(QWidget):
                    if table.horizontalHeaderItem(col) else '' for col in columns]
         return html, '\t'.join(headers) + '\n' + '\n'.join(tsv_rows)
 
-    def copy_visible_table_to_office_clipboard(self, title='HAZOP Worksheet'):
-        """Copy selected cells, or the complete visible worksheet, for Office."""
+    def copy_visible_table_to_office_clipboard(self, title='HAZOP Worksheet',
+                                               internal_payload=None):
+        """Copy selected cells for Office, optionally with HAZOP entity data."""
         html, plain_text = self._office_clipboard_payload(title)
         if not html:
             return False
         mime = QMimeData()
         mime.setHtml(html)
         mime.setText(plain_text)
+        if internal_payload:
+            mime.setData(self._COPY_MIME, internal_payload)
         QApplication.clipboard().setMimeData(mime)
         return True
 
@@ -9777,22 +9785,46 @@ class ScenarioTablePanel(QWidget):
         entries.sort(key=lambda entry: entry[1])
         return [entry_id for entry_id, _ in entries]
 
-    def _copy_row_to_clipboard(self, row, col=None):
-        """Copy the active entity plus a human-readable tab-separated row."""
+    def _copy_entity_payload(self, row, col=None):
+        """Return the drag-compatible HAZOP payload for the active cell."""
         if col is None:
             col = self._table.currentColumn()
         kind, item_id = self._copy_kind_for_cell(row, col)
         if not kind or item_id is None:
-            return
-        mime = QMimeData()
+            return None
         payload = {
             'version': 1,
             'kind': kind,
             'ids': self._selected_copy_ids(row, col, kind, item_id),
         }
-        mime.setData(self._COPY_MIME, json.dumps(payload).encode('utf-8'))
+        return json.dumps(payload).encode('utf-8')
+
+    def _copy_row_to_clipboard(self, row, col=None):
+        """Copy the active entity for the explicit in-HAZOP menu action."""
+        payload = self._copy_entity_payload(row, col)
+        if not payload:
+            return False
+        mime = QMimeData()
+        mime.setData(self._COPY_MIME, payload)
         mime.setText(self._copy_row_text(row))
         QApplication.clipboard().setMimeData(mime)
+        return True
+
+    def _copy_selection_to_clipboard(self, row, col, title):
+        """Put one Ctrl+C selection on both the Office and HAZOP clipboards."""
+        payload = self._copy_entity_payload(row, col)
+        if self.copy_visible_table_to_office_clipboard(title, payload):
+            return True
+        # A table without exportable cells can still have a valid active
+        # entity (for example while a view is rebuilding). Preserve the
+        # internal copy path rather than silently losing Ctrl+C entirely.
+        if payload:
+            mime = QMimeData()
+            mime.setData(self._COPY_MIME, payload)
+            mime.setText(self._copy_row_text(row))
+            QApplication.clipboard().setMimeData(mime)
+            return True
+        return False
 
     def _ask_copy_scope(self, kind, count):
         """Ask once per operation whether copied hierarchy children follow."""

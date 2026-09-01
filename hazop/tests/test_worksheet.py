@@ -479,8 +479,8 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_ctrl_c_copies_exact_selected_cells_to_office_clipboard(self):
-        """Ctrl+C must no longer replace a cell selection with one HAZOP row."""
+    def test_ctrl_c_copies_exact_selected_cells_and_hazop_entity(self):
+        """Ctrl+C keeps Office cells while also enabling scoped HAZOP paste."""
         from hazop import HAZOPWorksheet
 
         ids = self._make_full_chain(node_name='Nod A')
@@ -496,6 +496,7 @@ class HAZOPWorksheetTests(unittest.TestCase):
             table = panel._table
             cause_row = next(row for row, meta in enumerate(panel._row_meta)
                              if meta[1] == ids['cause_id'])
+            table.setCurrentCell(cause_row, panel._C_ORS)
             selection = QItemSelection(
                 table.model().index(cause_row, panel._C_ORS),
                 table.model().index(cause_row + 1, panel._C_SG))
@@ -508,7 +509,7 @@ class HAZOPWorksheetTests(unittest.TestCase):
 
             mime = QApplication.clipboard().mimeData()
             self.assertTrue(mime.hasHtml())
-            self.assertFalse(mime.hasFormat(panel._COPY_MIME))
+            self.assertTrue(mime.hasFormat(panel._COPY_MIME))
             self.assertIn('Orsak A', mime.html())
             self.assertIn('Konsekvens A', mime.html())
             self.assertIn('rowspan="2"', mime.html())

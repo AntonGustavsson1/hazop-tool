@@ -4734,3 +4734,22 @@ Verifierat med ett QTest-baserat verkligt musdubbelklick på en skapad orsak med
 en befintlig konsekvens, det tidigare Worksheet-fallet för tom konsekvens,
 `py_compile` och 12 smoke-tester. Ingen manuell visuell GUI-verifiering är
 gjord.
+
+## Ctrl+C/Ctrl+V matchar drag/släpp och REK-editor behåller höjd (2026-09-01)
+
+Vanliga `Ctrl+C` lägger nu både den rika Word/Excel-markeringen och samma
+interna HAZOP-objektdata som drag/släpp på urklippet. `Ctrl+V` i HAZOP
+Scenario eller Worksheet går därför genom exakt samma kopieringsväg som ett
+släpp: orsak och konsekvens visar frågan `Endast cellinnehåll` eller
+`Inkludera underkategorier`; barriär och rekommendation kopieras enligt sina
+vanliga direkta regler. Office-kopieringens HTML, TSV, cellurval och
+hierarkiska sammanslagningar är oförändrade.
+
+Rekommendationens inline-editor räknar nu om radhöjden direkt efter att den
+har fått sin smalare geometri till höger om löpnumret. En befintlig lång
+rekommendation klipps därmed inte eller ser mindre ut bara av att den
+dubbelklickas; befintlig dynamisk tillväxt medan man skriver är kvar.
+
+Verifierat med riktade Ctrl+C/Ctrl+V-, drag- och rekommendationseditor-tester
+(32 totalt), `tests.test_smoke` (12) och `py_compile`. Ingen manuell visuell
+GUI-verifiering är gjord.

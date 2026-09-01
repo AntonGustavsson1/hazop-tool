@@ -69,7 +69,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
     QTableWidgetItem,
 )
-from PyQt6.QtGui import QPixmap, QFocusEvent, QKeyEvent  # noqa: E402
+from PyQt6.QtGui import QPixmap, QFocusEvent, QKeyEvent, QFontMetrics  # noqa: E402
 from PyQt6.QtCore import (Qt, QPoint, QDate, QEvent, QThread, pyqtSignal,
                           QItemSelectionModel)  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
@@ -1616,7 +1616,7 @@ class CompactScenarioDragGhostTests(unittest.TestCase):
             self.assertEqual(
                 drag_cls.return_value.exec.call_args.args[0], Qt.DropAction.CopyAction)
 
-    def test_ctrl_alt_c_ctrl_v_uses_the_same_scoped_copy_path(self):
+    def test_ctrl_c_ctrl_v_uses_the_same_scoped_copy_path(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             db = win.db
@@ -1640,14 +1640,18 @@ class CompactScenarioDragGhostTests(unittest.TestCase):
             panel._table.setCurrentCell(0, panel._C_KON)
             copy_event = QKeyEvent(
                 QEvent.Type.KeyPress, Qt.Key.Key_C,
-                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)
+                Qt.KeyboardModifier.ControlModifier)
             self.assertTrue(panel.eventFilter(panel._table, copy_event))
-            self.assertTrue(QApplication.clipboard().mimeData().hasFormat(panel._COPY_MIME))
+            mime = QApplication.clipboard().mimeData()
+            self.assertTrue(mime.hasFormat(panel._COPY_MIME))
+            self.assertTrue(mime.hasHtml(),
+                            'Ctrl+C must retain the normal Office payload')
             with unittest.mock.patch.object(panel, '_ask_copy_scope',
-                                            return_value='cell'), \
+                                            return_value='cell') as ask_scope, \
                     unittest.mock.patch.object(panel, '_schedule_rebuild'), \
                     unittest.mock.patch('scenario_panel.QTimer.singleShot'):
                 panel._paste_from_clipboard(1, panel._C_KON)
+            ask_scope.assert_called_once_with('cons', 1)
 
             copied = [row for row in db.consequences(target_cause)
                       if row['id'] != target_cons]
@@ -3302,6 +3306,42 @@ class RecommendationInlineAddRowTests(unittest.TestCase):
                            'och göra hela texten synlig under redigering.')
             self.app.processEvents()
             self.assertGreater(panel._table.rowHeight(row), before)
+        finally:
+            panel.deleteLater()
+
+    def test_recommendation_editor_resizes_on_open_for_its_narrower_width(self):
+        """Opening REK must account for the painted number before typing."""
+        from hazop import ScenarioTablePanel
+        from scenario_panel import _BoldTagTextEdit
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_recommendation_to_consequence(
+            cons_id, 'En befintlig rekommendation som måste radbrytas i editorn.')
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, meta in enumerate(panel._row_meta)
+                       if meta[2] == cons_id)
+            panel._table.setColumnWidth(panel._C_REK, 125)
+            with unittest.mock.patch.object(
+                    panel, '_resize_recommendation_editor',
+                    wraps=panel._resize_recommendation_editor) as resize_editor:
+                panel._try_start_edit(row, panel._C_REK)
+                self.app.processEvents()
+            self.assertGreaterEqual(resize_editor.call_count, 1,
+                                    'opening must recalculate the narrower editor area')
+            editor = next(w for w in panel._table.viewport().findChildren(_BoldTagTextEdit)
+                          if (w.property('editing_row') == row and
+                              w.property('editing_col') == panel._C_REK))
+            fm = QFontMetrics(editor.font())
+            required = max(
+                fm.height() + 6,
+                fm.boundingRect(0, 0, max(40, editor.width()), 10000,
+                                Qt.TextFlag.TextWordWrap,
+                                editor.toPlainText()).height() + 4)
+            self.assertGreaterEqual(panel._table.rowHeight(row), required)
         finally:
             panel.deleteLater()
 
