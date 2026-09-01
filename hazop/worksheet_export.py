@@ -41,8 +41,12 @@ def freq_axis_label(value):
 
 def cons_axis_label(value):
     matrix = get_matrix()
+    codes = matrix.get('y_codes', [])
     labels = matrix.get('y_labels', [])
     index = max(0, min(int(value) - 1, matrix.get('rows', 5) - 1))
+    code = str(codes[index]).strip() if index < len(codes) else ''
+    if code:
+        return code
     label = labels[index] if index < len(labels) else f'C={value}'
     return label.split()[0] if label.strip() else f'C={value}'
 
@@ -168,7 +172,11 @@ def _worksheet_rows(db):
             equipment_ids = []
         if len(equipment_ids) >= 2:
             return '\n'.join(db.group_cause_description_lines(cause, equipment_ids))
-        return (cause.get('description') or '').strip()
+        description = (cause.get('description') or '').strip()
+        tag = (cause.get('comp_tag') or '').strip()
+        if tag and description and not description.startswith(tag):
+            return f'{tag}, {description}'
+        return tag or description
 
     def consequence_text(consequence):
         chain = parse_chain_from_json(consequence.get('consequence_chain', ''))
@@ -230,7 +238,9 @@ def _worksheet_rows(db):
                             aggregate_rrf *= max(1.0, float(factor.get('rrf') or 1))
                         except (TypeError, ValueError):
                             continue
-                    enablers_label = f'{len(active_factors)} ({aggregate_rrf:g})'
+                    enablers_label = (
+                        f'{len(active_factors)} ({aggregate_rrf:g})'
+                        if active_factors else '')
 
                     excluded_cause_safeguards = {
                         sg['id'] for sg in safeguards

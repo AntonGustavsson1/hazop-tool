@@ -4977,3 +4977,12 @@ physical row has one explicit export cell per column; covered hierarchy
 positions are blank so Excel cannot shift later barrier or recommendation
 values into another column. Smaller marked selections keep their prior exact
 selection layout.
+
+## Uppfoljning: worksheet-exportens radmotor anvands (2026-09-01)
+
+Den fullstandiga kopieringen hamtar nu raderna fran samma `_worksheet_rows`
+som den vanliga redigerbara Excel-exporten. Darfor anvands samma ordning och
+samma fordelning av kategorier, barriarer, RRF, enablers och rekommendationer.
+Objekttaggar i orsaker foljer med, riskvarden visar konfigurerade axelkoder
+och enablerkolumnen ar blank nar inga enablers ar aktiva. Den tidigare
+Qt-baserade aterskapningen av dessa rader anvands inte langre for heltabellen.

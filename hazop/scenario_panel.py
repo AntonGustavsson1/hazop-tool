@@ -9537,71 +9537,118 @@ class ScenarioTablePanel(QWidget):
                 text = '\n'.join(labels)
         return str(text or ''), tags
 
-    def _worksheet_office_projection_enabled(self, columns):
-        """Whether a complete copy should use the worksheet presentation.
+    def _worksheet_office_reference_payload(self):
+        """Build the complete Office copy from the canonical worksheet rows.
 
-        The on-screen table deliberately keeps the cause frequency and the
-        safeguard RRF as compact badges inside their parent columns.  That is
-        useful in the application, but it is not the worksheet layout shown
-        when the table is copied to Excel/Word.  The worksheet presentation
-        therefore expands those two badges into real columns.  Keep this
-        limited to the full Nod/Avvikelse view so ordinary small selections
-        preserve their exact on-screen column rectangle.
+        ``worksheet_export._worksheet_rows`` is also used by the saved Excel
+        export and already contains the correct shared grid for consequence
+        categories, safeguards, enablers and recommendations.  Reusing that
+        row motor is important: the Qt table deliberately packs frequency and
+        RRF into visual badges, while the worksheet reference has them as
+        separate columns.
+
+        This path is only used for an unfiltered complete worksheet.  A
+        smaller selection, an equipment filter or a single consequence keeps
+        the existing exact-selection clipboard path below.
         """
-        expected = [self._C_NOD, self._C_DEV, self._C_ORS, self._C_KON,
-                    self._C_RFORE, self._C_SG, self._C_LOPA,
-                    self._C_SLUT, self._C_REK]
-        return (columns == expected and
-                self._C_UTR not in columns and
-                not self._table.isColumnHidden(self._C_NOD) and
-                not self._table.isColumnHidden(self._C_DEV))
+        if (self._equipment_filter_id is not None or self._cons_id is not None):
+            return None
+        try:
+            from worksheet_export import _worksheet_rows
+            rows = list(_worksheet_rows(self.db))
+        except Exception:
+            logging.exception('Worksheet Office-copy row generation failed')
+            return None
 
-    def _worksheet_office_cell_content(self, row, kind, source_col):
-        """Return a worksheet-export cell with compact badges expanded.
+        if not self._all_nodes and self._node_id is not None:
+            rows = [row for row in rows
+                    if row.get('merge_key', (None,))[0] == self._node_id]
+        if not rows:
+            return '', ''
 
-        ``source_col`` is always a real table column.  ``kind`` is only
-        different for the two presentation-only columns (frequency and RRF).
-        Empty safeguards intentionally produce two empty cells rather than a
-        misleading RRF-only value.
-        """
-        if kind == 'frequency':
-            item = self._table.item(row, self._C_ORS)
-            frequency = (item.data(Qt.ItemDataRole.UserRole + 3)
-                         if item is not None else None)
-            if frequency is None:
-                return '', []
-            base_frequency = (item.data(Qt.ItemDataRole.UserRole + 5)
-                              if item is not None else None)
-            return self._ors_freq_label(frequency, base_frequency), []
+        headers = [
+            'Nod', 'Avvikelse', 'Orsak', 'Frekvens', 'Konsekvens',
+            'Riskklass före barriärer', 'Barriär', 'RRF', 'Enablers',
+            'Riskklass efter barriärer', 'Rekommendation',
+        ]
+        # These proportions mirror worksheet_export.py and the Sheet 3
+        # reference: text columns are wide, axis/RRF columns are narrow.
+        widths = [120, 160, 300, 70, 430, 155, 370, 55, 110, 155, 330]
 
-        if kind == 'cause':
-            text, tags = self._clipboard_cell_content(row, source_col)
-            item = self._table.item(row, self._C_ORS)
-            frequency = (item.data(Qt.ItemDataRole.UserRole + 3)
-                         if item is not None else None)
-            if frequency is not None:
-                base_frequency = (item.data(Qt.ItemDataRole.UserRole + 5)
-                                  if item is not None else None)
-                label = self._ors_freq_label(frequency, base_frequency)
-                suffix = f'\n{label}'
-                if text.endswith(suffix):
-                    text = text[:-len(suffix)]
-            return text, tags
+        def _colour(value, fallback):
+            value = str(value or fallback).strip()
+            return value if value.startswith('#') else f'#{value.lstrip("#")}'
 
-        if kind == 'rrf':
-            sg_id = (self._row_meta[row][3]
-                     if 0 <= row < len(self._row_meta) else None)
-            safeguard = (dict(self.db.get_safeguard(sg_id))
-                         if sg_id else None)
-            if not safeguard or not (safeguard.get('description') or '').strip():
-                return '', []
-            return str(safeguard.get('rrf') or 1), []
+        def _row_height(values):
+            max_lines = 1
+            for value, width in zip(values, widths):
+                for line in str(value or '').splitlines() or ['']:
+                    max_lines = max(max_lines,
+                                    1 + len(line) // max(12, width // 7))
+            return min(180, max(24, 15 * max_lines + 8))
 
-        text, tags = self._clipboard_cell_content(row, source_col)
-        if kind == 'safeguard':
-            # RRF is a real neighbouring worksheet column in this layout.
-            text = re.sub(r'\s*\(RRF:\s*[^)]*\)\s*$', '', text).rstrip()
-        return text, tags
+        # The saved worksheet exporter merges only the hierarchy columns.
+        # HTML clipboard data cannot safely use nested rowspans in Excel, so
+        # we reproduce the same visual result with one stable cell per column
+        # and blank continuation cells.  This is both readable and immune to
+        # Excel moving a later barrier/recommendation left or right.
+        hierarchy_keys = {0: 0, 1: 1, 2: 2, 3: 2, 4: 3}
+        previous_keys = {}
+        html_rows = []
+        tsv_rows = []
+        for row_index, row in enumerate(rows):
+            values = list(row.get('values') or [''] * len(headers))
+            merge_key = tuple(row.get('merge_key') or ())
+            for column, key_index in hierarchy_keys.items():
+                key = merge_key[key_index] if key_index < len(merge_key) else None
+                if (column in previous_keys and previous_keys[column] == key
+                        and values[column]):
+                    values[column] = ''
+                previous_keys[column] = key
+
+            html_cells = []
+            tsv_values = []
+            for column, value in enumerate(values):
+                text = str(value or '')
+                tags = self._matching_pid_tags(text)
+                background = '#FFFFFF' if row_index % 2 == 0 else '#F7F7F5'
+                foreground = '#17191C'
+                bold = column in (5, 8, 9)
+                if column == 5 and row.get('risk_before'):
+                    _level, background, foreground = risk_info(
+                        row['risk_before'][1], row['risk_before'][2])
+                elif column == 9 and row.get('risk_after'):
+                    _level, background, foreground = risk_info(
+                        row['risk_after'][1], row['risk_after'][2])
+                elif column == 8:
+                    background = '#F3F4F6'
+                style = (
+                    f'background:{_colour(background, "#FFFFFF")};'
+                    f'color:{_colour(foreground, "#17191C")};'
+                    'border:1px solid #CBD5E1;padding:3px 5px;'
+                    'vertical-align:top;text-align:left;white-space:normal;'
+                    f'font-family:Arial;font-size:9pt;font-weight:'
+                    f'{700 if bold else 400};')
+                html_cells.append(
+                    f'<td style="{style}">{self._clipboard_rich_text(text, tags)}</td>')
+                tsv_values.append(text.replace('\t', ' ').replace('\n', ' / '))
+            html_rows.append(
+                f'<tr style="height:{_row_height(values)}px;">'
+                + ''.join(html_cells) + '</tr>')
+            tsv_rows.append('\t'.join(tsv_values))
+
+        col_defs = ''.join(f'<col style="width:{width}px">' for width in widths)
+        header_cells = ''.join(
+            '<th style="background:#EEECE1;color:#111827;border:1px solid #CBD5E1;'
+            'padding:4px 5px;text-align:left;font-weight:700;vertical-align:top;">'
+            f'{_html_escape(header)}</th>' for header in headers)
+        html = (
+            '<html><head><meta charset="utf-8"></head><body>'
+            '<table style="border-collapse:collapse;border-spacing:0;">'
+            f'<colgroup>{col_defs}</colgroup>'
+            f'<thead><tr>{header_cells}</tr></thead>'
+            f'<tbody>{"".join(html_rows)}</tbody></table></body></html>')
+        return html, '\t'.join(headers) + '\n' + '\n'.join(tsv_rows)
 
     def _office_copy_selection(self):
         """Return the visible selection bounds, or the whole visible table.
@@ -9700,6 +9747,19 @@ class ScenarioTablePanel(QWidget):
                           (selected_cells is None or all(
             (row, col) in selected_cells for row in rows for col in columns))
         )
+        visible_columns = [col for col in range(table.columnCount())
+                           if not table.isColumnHidden(col)]
+        worksheet_columns = [
+            self._C_NOD, self._C_DEV, self._C_ORS, self._C_KON,
+            self._C_RFORE, self._C_SG, self._C_LOPA, self._C_SLUT,
+            self._C_REK,
+        ]
+        if (full_rectangle and rows == list(range(table.rowCount())) and
+                columns == visible_columns and columns == worksheet_columns):
+            reference_payload = self._worksheet_office_reference_payload()
+            if reference_payload is not None:
+                return reference_payload
+
         # Excel's HTML importer can honour the first large Nod/Avvikelse
         # rowspan but lose track of later nested rowspans.  Once that happens
         # a safeguard or recommendation is imported one or more columns too
@@ -9708,41 +9768,16 @@ class ScenarioTablePanel(QWidget):
         # rectangular grid: covered hierarchy cells are explicit blanks and
         # no rowspan is emitted.  Smaller selections keep the richer merge
         # representation, where the selected anchor and its span are clear.
-        visible_columns = [col for col in range(table.columnCount())
-                           if not table.isColumnHidden(col)]
-        worksheet_projection = (
-            full_rectangle and
-            rows == list(range(table.rowCount())) and
-            columns == visible_columns and
-            self._worksheet_office_projection_enabled(columns))
-        if worksheet_projection:
-            # Keep this order identical to the HAZOP Worksheet picture: the
-            # compact in-app frequency/RRF badges become their own narrow
-            # columns, while all other values retain their table source.
-            export_columns = [
-                (self._C_NOD, 'Nod', 'native', 105),
-                (self._C_DEV, 'Avvikelse', 'native', 125),
-                (self._C_ORS, 'Orsak', 'cause', 405),
-                (self._C_ORS, 'Frekvens', 'frequency', 38),
-                (self._C_KON, 'Konsekvens', 'native', 445),
-                (self._C_RFORE, 'Risk före barriär', 'native', 138),
-                (self._C_SG, 'Barriär', 'safeguard', 410),
-                (self._C_SG, 'RRF', 'rrf', 42),
-                (self._C_LOPA, 'Enablers', 'native', 110),
-                (self._C_SLUT, 'Slutkonsekvens', 'native', 100),
-                (self._C_REK, 'Rekommendation', 'native', 220),
-            ]
-        else:
-            export_columns = [
-                (col, table.horizontalHeaderItem(col).text()
-                 if table.horizontalHeaderItem(col) else '', 'native',
-                 max(40, table.columnWidth(col)))
-                for col in columns
-            ]
+        export_columns = [
+            (col, table.horizontalHeaderItem(col).text()
+             if table.horizontalHeaderItem(col) else '', 'native',
+             max(40, table.columnWidth(col)))
+            for col in columns
+        ]
         flat_office_grid = (
             full_rectangle and not compact_hierarchy_rows and
             rows == list(range(table.rowCount())) and
-            columns == visible_columns and not worksheet_projection)
+            columns == visible_columns)
 
         def _anchor_for(row, col):
             if compact_hierarchy_rows:
@@ -9789,21 +9824,7 @@ class ScenarioTablePanel(QWidget):
                         '<td style="background:#FFFFFF;border:1px solid #D1D5DB;'
                         'padding:3px 5px;"></td>')
                     continue
-                if worksheet_projection:
-                    # One explicit TD per exported column and physical row is
-                    # the important invariant for Excel.  Hierarchy spans
-                    # are represented by blank covered cells here; this
-                    # retains the visible top-anchored worksheet hierarchy
-                    # without allowing Excel's HTML importer to shift a later
-                    # barrier/RRF/recommendation into another column.
-                    item = table.item(anchor, col)
-                    if anchor == row:
-                        text, tags = self._worksheet_office_cell_content(
-                            row, kind, col)
-                    else:
-                        text, tags = '', []
-                    export_row_span = 1
-                elif flat_office_grid:
+                if flat_office_grid:
                     # Keep every rendered row rectangular for Excel.  The
                     # physical QTableWidget contains repeated item text even
                     # where the UI paints a rowspan, so covered positions
@@ -9848,8 +9869,7 @@ class ScenarioTablePanel(QWidget):
             # TSV cannot express rowspans. Keep covered hierarchy positions
             # empty rather than duplicating their anchor value: this mirrors
             # the visual hierarchy for clients that fall back to plain text.
-            if (full_rectangle and not worksheet_projection and
-                    len(tsv_cells) < len(export_columns)):
+            if full_rectangle and len(tsv_cells) < len(export_columns):
                 rebuilt_tsv = []
                 for source_col, _header_text, _kind, _width in export_columns:
                     col = source_col

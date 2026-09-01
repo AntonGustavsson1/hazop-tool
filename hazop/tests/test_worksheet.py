@@ -261,6 +261,7 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertIn('Nod A', html)
             self.assertIn('Felar stängd', html)
             self.assertIn('PV-101', html)
+            self.assertIn('PV-101</strong>,', html)
             self.assertIn('<strong>PV-101</strong>', html)
             self.assertNotIn('rowspan="', html)
             # Excel must receive a rectangular HTML grid for a whole-table
@@ -304,8 +305,8 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertEqual(
                 plain_text.splitlines()[0].split('\t'),
                 ['Nod', 'Avvikelse', 'Orsak', 'Frekvens', 'Konsekvens',
-                 'Risk före barriär', 'Barriär', 'RRF', 'Enablers',
-                 'Slutkonsekvens', 'Rekommendation'])
+                 'Riskklass före barriärer', 'Barriär', 'RRF', 'Enablers',
+                 'Riskklass efter barriärer', 'Rekommendation'])
             self.assertTrue(all(len(row) == len(visible_columns) + 2
                                 for row in data_rows))
             barrier_row = next(row for row in data_rows
