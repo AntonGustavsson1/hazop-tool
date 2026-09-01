@@ -4753,3 +4753,23 @@ dubbelklickas; befintlig dynamisk tillväxt medan man skriver är kvar.
 Verifierat med riktade Ctrl+C/Ctrl+V-, drag- och rekommendationseditor-tester
 (32 totalt), `tests.test_smoke` (12) och `py_compile`. Ingen manuell visuell
 GUI-verifiering är gjord.
+
+## Riskmatris: Axlar och inklistring av konsekvensbeskrivningar (2026-09-01)
+
+Riskmatrisinställningar har nu en lokal andra rad med `Riskmatris` och
+`Axlar`. Själva matrisen ligger till vänster om kategorilistan och har en
+gemensam, användarinställbar cellbredd. Alla riskkolumner behåller därmed
+samma bredd; kategoriområdet är separat justerbart med splittern. Hover på
+en riskcell ändrar inte längre ramens storlek, vilket tog bort knapphoppet.
+
+`Axlar` ger större tabeller för frekvens- och konsekvensetiketter samt en
+tabell med en rad per konsekvensnivå och en kolumn per konsekvenskategori.
+Markera en cell och klistra in en kolumn eller rektangel från Excel med
+`Ctrl+V`; flera markerade celler kan också fyllas cell-för-cell. Ändringar
+är en arbetskopia tills `Spara axlar och kategorier` väljs. Frekvensetiketter
+skapas bara av den uttryckliga knappen `Generera frekvensetiketter från
+gränser`, så X/Y-växlingar skriver inte oönskad text.
+
+Verifierat med 13 riktade riskmatris-/kategoritester, inklusive verkligt
+Ctrl+V-event för fem Excel-rader, spara-runda till databasen, `py_compile` och
+`git diff --check`. Ingen manuell visuell GUI-verifiering är gjord.

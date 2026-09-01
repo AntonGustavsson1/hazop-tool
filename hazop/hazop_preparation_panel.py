@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTableWidget,
-    QTableWidgetItem, QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
+    QTableWidgetItem, QStackedWidget, QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
     QWidget,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QDate, QEvent, QMimeData, QTimer
@@ -33,6 +33,7 @@ from standard_causes_panel import StandardCausesSettingsPanel
 
 _PALETTE_MIME = 'application/x-hazop-palette-color'
 _MATRIX_CELL_MIME = 'application/x-hazop-matrix-cell'
+_MATRIX_CELL_WIDTH_DEFAULT = 92
 
 # ST1 Sverige AB risk matrix transcribed from
 # ej_programfiler/reference_material/St1/St1 SA 04 - Riskmatris#4_161189.pdf.
@@ -169,7 +170,11 @@ class MatrixCellButton(QPushButton):
             f"border-bottom:1px solid #444; border-right:1px solid #444;"
             f"{top}{left}"
             f"border-radius:0px; margin:0px; padding:0px;}}"
-            f"QPushButton:hover{{border:2px solid #000; margin:-1px;}}")
+            # Do not change the border thickness or margin on hover. Those
+            # values feed the grid's size calculation and made neighbouring
+            # cells visibly jump while moving the pointer across the matrix.
+            f"QPushButton:hover{{border-bottom:1px solid #111; border-right:1px solid #111;"
+            f"{top}{left} border-radius:0px; margin:0px; padding:0px;}}")
         self.setText(self._label)
 
     def set_cell(self, color, label=None, fg_color=None):
@@ -301,8 +306,11 @@ class HAZOPPreparationPanel(QWidget):
         self._x_label_edits  = []   # QLineEdit per column
         self._y_label_edits  = []   # QLineEdit per row (high→low)
         self._palette_swatches = []
-        self._sev_def_edits  = {}   # (cat_id, sev_level) → QLineEdit, embedded in matrix grid
+        self._sev_def_edits  = {}   # (cat_id, sev_level) → editable description table item
         self._tor_report_fields = {}  # (tor|report, prepared|reviewed|approved) → QComboBox
+        self._matrix_cell_width = _MATRIX_CELL_WIDTH_DEFAULT
+        self._axes_loading = False
+        self._axes_dirty = False
 
         tabs = QTabWidget()
         self._tabs = tabs   # kept as an attribute for testability (tabText() lookups)
@@ -439,9 +447,12 @@ class HAZOPPreparationPanel(QWidget):
         tabs.addTab(tor_report_tab, "ToR and Report")
         tabs.currentChanged.connect(self._on_prep_tab_changed)
 
-        # ── Tab: Riskmatris ───────────────────────────────────────────────────
-        matrix_tab = QWidget()
-        ml = QVBoxLayout(matrix_tab)
+        # ── Riskmatris: local subviews ────────────────────────────────────────
+        # The main preparation navigation stays compact.  Riskmatris gets its
+        # own second row only while that main tab is active: one view for the
+        # coloured matrix and one (built below) for readable axis/category text.
+        matrix_editor = QWidget()
+        ml = QVBoxLayout(matrix_editor)
         ml.setSpacing(6)
 
         # Size row
@@ -459,6 +470,15 @@ class HAZOPPreparationPanel(QWidget):
         self._cols_spin.setValue(7)
         self._cols_spin.setToolTip("Antal nivåer på frekvens-axeln (F-1…Fn)")
         size_row.addWidget(self._cols_spin)
+        size_row.addWidget(QLabel("  Cellbredd:"))
+        self._matrix_cell_width_spin = QSpinBox()
+        self._matrix_cell_width_spin.setRange(48, 260)
+        self._matrix_cell_width_spin.setValue(_MATRIX_CELL_WIDTH_DEFAULT)
+        self._matrix_cell_width_spin.setSuffix(" px")
+        self._matrix_cell_width_spin.setToolTip(
+            "Gemensam bredd för alla riskmatrisceller. "
+            "Konsekvenskategoriernas bredd påverkas inte.")
+        size_row.addWidget(self._matrix_cell_width_spin)
         size_row.addStretch()
         ml.addLayout(size_row)
 
@@ -599,6 +619,8 @@ class HAZOPPreparationPanel(QWidget):
         self._y_rev_chk.toggled.connect(self._apply_size)
         self._rows_spin.valueChanged.connect(self._apply_size)
         self._cols_spin.valueChanged.connect(self._apply_size)
+        self._matrix_cell_width_spin.valueChanged.connect(
+            self._on_matrix_cell_width_changed)
 
         # Standard matrix/frequency presets
         preset_row = QHBoxLayout()
@@ -637,6 +659,31 @@ class HAZOPPreparationPanel(QWidget):
             "background:#2F5FD0; color:#fff; font-weight:bold; padding:4px 12px;")
         save_matrix_btn.clicked.connect(self._save_matrix)
         ml.addWidget(save_matrix_btn)
+
+        risk_tab = QWidget()
+        risk_lay = QVBoxLayout(risk_tab)
+        risk_lay.setContentsMargins(0, 0, 0, 0)
+        risk_lay.setSpacing(4)
+        subnav = QHBoxLayout()
+        subnav.setContentsMargins(8, 6, 8, 0)
+        self._risk_matrix_btn = QPushButton("Riskmatris")
+        self._risk_axes_btn = QPushButton("Axlar")
+        for btn in (self._risk_matrix_btn, self._risk_axes_btn):
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            subnav.addWidget(btn)
+        subnav.addStretch()
+        risk_lay.addLayout(subnav)
+        self._risk_substack = QStackedWidget()
+        self._risk_substack.addWidget(matrix_editor)
+        self._axes_page = self._create_axes_page()
+        self._risk_substack.addWidget(self._axes_page)
+        risk_lay.addWidget(self._risk_substack)
+        self._risk_matrix_btn.clicked.connect(
+            lambda: self._set_risk_subview(0))
+        self._risk_axes_btn.clicked.connect(
+            lambda: self._set_risk_subview(1))
+        self._set_risk_subview(0)
 
         # ── Tab: Kategorier ───────────────────────────────────────────────────
         cat_tab = QWidget()
@@ -682,11 +729,14 @@ class HAZOPPreparationPanel(QWidget):
         combined_l = QHBoxLayout(combined_tab)
         combined_l.setContentsMargins(0, 0, 0, 0)
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Matrix first, categories second: widening the matrix is now a
+        # deliberate left-pane operation and never silently stretches the
+        # category definitions or makes matrix columns unequal.
+        splitter.addWidget(risk_tab)
         splitter.addWidget(cat_tab)
-        splitter.addWidget(matrix_tab)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([220, 760])
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setSizes([760, 220])
         combined_l.addWidget(splitter)
         tabs.addTab(combined_tab, "Riskmatris")
 
@@ -788,6 +838,7 @@ class HAZOPPreparationPanel(QWidget):
         self._load_matrix_ui()
         self._load_palette_ui()
         self._load_categories()
+        self._reload_axes_tables()
         self._proj_name.setText(self.db.get_config('project_name', ''))
         self._proj_number.setText(self.db.get_config('project_number', ''))
         self._proj_client.setText(self.db.get_config('project_client', ''))
@@ -1257,42 +1308,379 @@ class HAZOPPreparationPanel(QWidget):
 
     # ── Matrix ────────────────────────────────────────────────────────────────
 
-    def _on_matrix_splitter_moved(self, _pos, _index):
-        """Keep grid controls readable when the matrix pane is widened.
+    def _set_risk_subview(self, index):
+        """Select the local Riskmatris/Axlar view without touching data."""
+        if not hasattr(self, '_risk_substack'):
+            return
+        index = 1 if int(index) == 1 else 0
+        if index == 1 and self._risk_substack.currentIndex() != 1:
+            # Bring unsaved matrix header/cell edits into the same working
+            # configuration before showing the larger, spreadsheet-style
+            # axis editor.  This is presentation only; Save remains explicit.
+            self._apply_size()
+            self._reload_axes_tables()
+        self._risk_substack.setCurrentIndex(index)
+        self._risk_matrix_btn.setChecked(index == 0)
+        self._risk_axes_btn.setChecked(index == 1)
 
-        The grid uses compact fixed-size controls by default.  On a drag of
-        the splitter handle, distribute the available width over its columns
-        so the matrix and the consequence definitions below grow together.
+    def _create_axes_page(self):
+        """Build the large, paste-friendly editor for axes and categories."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(7)
+
+        intro = QLabel(
+            "Redigera axlar och konsekvensbeskrivningar här. Markera en eller "
+            "flera beskrivningsceller och klistra in från Excel med Ctrl+V.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#444; font-size:11px;")
+        layout.addWidget(intro)
+
+        axis_split = QSplitter(Qt.Orientation.Horizontal)
+        freq_box = QGroupBox("Frekvensaxel")
+        freq_lay = QVBoxLayout(freq_box)
+        self._frequency_axis_table = QTableWidget(0, 3)
+        self._frequency_axis_table.setHorizontalHeaderLabels(
+            ["Nivå", "Etikett", "Övre gräns (/år)"])
+        self._configure_axes_table(self._frequency_axis_table)
+        self._frequency_axis_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch)
+        self._frequency_axis_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents)
+        self._frequency_axis_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents)
+        self._frequency_axis_table.itemChanged.connect(self._on_axes_item_changed)
+        freq_lay.addWidget(self._frequency_axis_table)
+        axis_split.addWidget(freq_box)
+
+        cons_box = QGroupBox("Konsekvensaxel")
+        cons_lay = QVBoxLayout(cons_box)
+        self._consequence_axis_table = QTableWidget(0, 2)
+        self._consequence_axis_table.setHorizontalHeaderLabels(["Nivå", "Etikett"])
+        self._configure_axes_table(self._consequence_axis_table)
+        self._consequence_axis_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch)
+        self._consequence_axis_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents)
+        self._consequence_axis_table.itemChanged.connect(self._on_axes_item_changed)
+        cons_lay.addWidget(self._consequence_axis_table)
+        axis_split.addWidget(cons_box)
+        axis_split.setSizes([430, 360])
+        layout.addWidget(axis_split, 0)
+
+        definitions_box = QGroupBox("Beskrivningar per konsekvenskategori")
+        definitions_lay = QVBoxLayout(definitions_box)
+        definition_hint = QLabel(
+            "En rad per konsekvensnivå. Klistra in en kolumn med exempelvis "
+            "fem Excel-celler direkt i den markerade kategorin.")
+        definition_hint.setWordWrap(True)
+        definition_hint.setStyleSheet("color:#555; font-size:10px;")
+        definitions_lay.addWidget(definition_hint)
+        self._category_definition_table = QTableWidget(0, 0)
+        self._configure_axes_table(self._category_definition_table)
+        self._category_definition_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._category_definition_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectItems)
+        self._category_definition_table.setWordWrap(True)
+        self._category_definition_table.installEventFilter(self)
+        self._category_definition_table.itemChanged.connect(self._on_axes_item_changed)
+        definitions_lay.addWidget(self._category_definition_table)
+        layout.addWidget(definitions_box, 1)
+
+        actions = QHBoxLayout()
+        generate = QPushButton("Generera frekvensetiketter från gränser")
+        generate.setToolTip("Skapar etiketter som < 0,1/år och 0,1–1/år."
+                            " Körs bara när du väljer knappen.")
+        generate.clicked.connect(self._generate_frequency_labels)
+        self._axes_save_btn = QPushButton("Spara axlar och kategorier")
+        self._axes_save_btn.setIcon(_icon('save', 16, '#ffffff'))
+        self._axes_save_btn.setStyleSheet(
+            "background:#2F5FD0; color:#fff; font-weight:bold; padding:4px 12px;")
+        self._axes_save_btn.clicked.connect(self._save_axes_and_categories)
+        actions.addWidget(generate)
+        actions.addStretch()
+        actions.addWidget(self._axes_save_btn)
+        layout.addLayout(actions)
+        return page
+
+    @staticmethod
+    def _configure_axes_table(table):
+        table.setAlternatingRowColors(True)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked |
+            QAbstractItemView.EditTrigger.EditKeyPressed |
+            QAbstractItemView.EditTrigger.SelectedClicked)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setStretchLastSection(False)
+
+    @staticmethod
+    def _axes_item(text, editable=True):
+        item = QTableWidgetItem(str(text))
+        if not editable:
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        return item
+
+    def _on_axes_item_changed(self, _item):
+        if self._axes_loading:
+            return
+        self._axes_dirty = True
+        QTimer.singleShot(0, self._resize_axes_category_rows)
+
+    def _reload_axes_tables(self, cfg=None):
+        """Reload the Axlar page from its current in-memory working copy."""
+        if not hasattr(self, '_frequency_axis_table'):
+            return
+        cfg = cfg or getattr(self, '_last_built_cfg', None) or \
+            self.db.get_risk_matrix() or DEFAULT_MATRIX
+        n_freq = int(cfg.get('cols', 7))
+        n_cons = int(cfg.get('rows', 5))
+        freq_labels = list(cfg.get('x_labels', []))
+        cons_labels = list(cfg.get('y_labels', []))
+        boundaries = list(cfg.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES))
+        cats = self.db.consequence_categories()
+        definitions = self.db.get_severity_definitions()
+
+        self._axes_loading = True
+        try:
+            self._frequency_axis_table.setRowCount(n_freq)
+            for row in range(n_freq):
+                label = freq_labels[row] if row < len(freq_labels) else ''
+                bound = '' if row >= n_freq - 1 else (
+                    f"{float(boundaries[row]):.8g}" if row < len(boundaries) else '')
+                self._frequency_axis_table.setItem(row, 0, self._axes_item(f"F{row + 1}", False))
+                self._frequency_axis_table.setItem(row, 1, self._axes_item(label))
+                self._frequency_axis_table.setItem(
+                    row, 2, self._axes_item(bound if row < n_freq - 1 else "—", row < n_freq - 1))
+
+            self._consequence_axis_table.setRowCount(n_cons)
+            for row in range(n_cons):
+                label = cons_labels[row] if row < len(cons_labels) else ''
+                self._consequence_axis_table.setItem(row, 0, self._axes_item(f"C{row + 1}", False))
+                self._consequence_axis_table.setItem(row, 1, self._axes_item(label))
+
+            table = self._category_definition_table
+            table.setRowCount(n_cons)
+            table.setColumnCount(len(cats) + 1)
+            table.setHorizontalHeaderLabels(
+                ["Konsekvensnivå"] + [cat['name'] for cat in cats])
+            for row in range(n_cons):
+                table.setItem(row, 0, self._axes_item(f"C{row + 1}", False))
+                for cat_col, cat in enumerate(cats, start=1):
+                    text = definitions.get(row + 1, {}).get(cat['id'], '')
+                    item = self._axes_item(text)
+                    item.setData(Qt.ItemDataRole.UserRole, cat['id'])
+                    table.setItem(row, cat_col, item)
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            for col in range(1, table.columnCount()):
+                table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+                table.setColumnWidth(col, 250)
+        finally:
+            self._axes_loading = False
+        self._axes_dirty = False
+        self._resize_axes_category_rows()
+
+    def _resize_axes_category_rows(self):
+        table = getattr(self, '_category_definition_table', None)
+        if table is None:
+            return
+        table.resizeRowsToContents()
+        for row in range(table.rowCount()):
+            table.setRowHeight(row, max(CONFIG['H_ROW_STD'], table.rowHeight(row)))
+
+    def _selected_category_description_cells(self):
+        table = self._category_definition_table
+        return sorted(
+            (index.row(), index.column()) for index in table.selectedIndexes()
+            if index.column() > 0)
+
+    def _copy_category_description_cells(self):
+        selected = self._selected_category_description_cells()
+        if not selected:
+            return False
+        min_row, max_row = selected[0][0], selected[-1][0]
+        min_col = min(col for _row, col in selected)
+        max_col = max(col for _row, col in selected)
+        selected_set = set(selected)
+        lines = []
+        for row in range(min_row, max_row + 1):
+            values = []
+            for col in range(min_col, max_col + 1):
+                item = self._category_definition_table.item(row, col)
+                values.append(item.text() if (row, col) in selected_set and item else '')
+            lines.append('\t'.join(values))
+        QApplication.clipboard().setText('\n'.join(lines))
+        return True
+
+    def _paste_category_description_cells(self):
+        text = QApplication.clipboard().text()
+        if not text:
+            return False
+        source = [line.split('\t') for line in text.replace('\r\n', '\n').split('\n')]
+        if source and source[-1] == ['']:
+            source.pop()
+        if not source:
+            return False
+        selected = self._selected_category_description_cells()
+        if not selected:
+            current = self._category_definition_table.currentIndex()
+            if not current.isValid() or current.column() == 0:
+                return False
+            selected = [(current.row(), current.column())]
+
+        # A matching multi-selection receives values cell-for-cell; otherwise
+        # paste starts at the active top-left cell exactly as in Excel.
+        flat = [value for row in source for value in row]
+        if len(selected) > 1 and len(flat) == len(selected):
+            targets = list(zip(selected, flat))
+        else:
+            start_row = min(row for row, _col in selected)
+            start_col = min(col for _row, col in selected)
+            targets = []
+            for source_row, values in enumerate(source):
+                for source_col, value in enumerate(values):
+                    targets.append(((start_row + source_row, start_col + source_col), value))
+
+        table = self._category_definition_table
+        changed = False
+        self._axes_loading = True
+        try:
+            for (row, col), value in targets:
+                if not (0 <= row < table.rowCount() and 0 < col < table.columnCount()):
+                    continue
+                item = table.item(row, col)
+                if item is not None and item.text() != value:
+                    item.setText(value)
+                    changed = True
+        finally:
+            self._axes_loading = False
+        if changed:
+            self._axes_dirty = True
+            self._resize_axes_category_rows()
+        return changed
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, '_category_definition_table', None) and \
+                event.type() == QEvent.Type.KeyPress and \
+                self._category_definition_table.state() != QAbstractItemView.State.EditingState:
+            ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            if ctrl and event.key() == Qt.Key.Key_C and self._copy_category_description_cells():
+                return True
+            if ctrl and event.key() == Qt.Key.Key_V and self._paste_category_description_cells():
+                return True
+        return super().eventFilter(obj, event)
+
+    def _generate_frequency_labels(self):
+        table = self._frequency_axis_table
+        bounds = []
+        for row in range(max(0, table.rowCount() - 1)):
+            item = table.item(row, 2)
+            try:
+                value = float(item.text().strip()) if item else 0
+            except ValueError:
+                value = 0
+            bounds.append(value if value > 0 else None)
+
+        def _format(value):
+            return f"{value:.4g}/år" if value and value >= 0.001 else f"{value:.2e}/år"
+
+        self._axes_loading = True
+        try:
+            for row in range(table.rowCount()):
+                left = bounds[row - 1] if row > 0 else None
+                right = bounds[row] if row < len(bounds) else None
+                if left is None and right is not None:
+                    label = f"< {_format(right)}"
+                elif left is not None and right is None:
+                    label = f"≥ {_format(left)}"
+                elif left is not None and right is not None:
+                    label = f"{_format(left)} – {_format(right)}"
+                else:
+                    label = ''
+                table.item(row, 1).setText(label)
+        finally:
+            self._axes_loading = False
+        self._axes_dirty = True
+
+    def _save_axes_and_categories(self):
+        """Persist the Axlar working copy, including all pasted descriptions."""
+        cfg = json.loads(json.dumps(
+            getattr(self, '_last_built_cfg', None) or self.db.get_risk_matrix() or DEFAULT_MATRIX))
+        n_freq, n_cons = self._frequency_axis_table.rowCount(), self._consequence_axis_table.rowCount()
+        cfg['cols'], cfg['rows'] = n_freq, n_cons
+        cfg['x_labels'] = [self._frequency_axis_table.item(row, 1).text().strip()
+                           for row in range(n_freq)]
+        cfg['y_labels'] = [self._consequence_axis_table.item(row, 1).text().strip()
+                           for row in range(n_cons)]
+        boundaries = []
+        for row in range(max(0, n_freq - 1)):
+            raw = self._frequency_axis_table.item(row, 2).text().strip()
+            try:
+                value = float(raw)
+            except ValueError:
+                QMessageBox.warning(self, "Ogiltig gräns",
+                                    f"F{row + 1} har en ogiltig övre gräns: {raw or 'tom'}.")
+                return
+            if value <= 0:
+                QMessageBox.warning(self, "Ogiltig gräns",
+                                    "Frekvensgränser måste vara större än noll.")
+                return
+            boundaries.append(value)
+        if any(right <= left for left, right in zip(boundaries, boundaries[1:])):
+            QMessageBox.warning(self, "Ogiltiga gränser",
+                                "Frekvensgränserna måste öka rad för rad.")
+            return
+        cfg['freq_boundaries'] = boundaries
+        cfg = _normalise_matrix(cfg)
+        self.db.set_risk_matrix(cfg)
+
+        table = self._category_definition_table
+        for row in range(table.rowCount()):
+            for col in range(1, table.columnCount()):
+                item = table.item(row, col)
+                if item is not None:
+                    cat_id = item.data(Qt.ItemDataRole.UserRole)
+                    if cat_id is not None:
+                        self.db.set_severity_definition(row + 1, cat_id, item.text().strip())
+
+        self._last_built_cfg = cfg
+        self._load_matrix_ui()
+        self._reload_axes_tables(cfg)
+        QMessageBox.information(self, "Sparat", "Axlar och konsekvenskategorier sparade.")
+        self.matrix_changed.emit()
+
+    def _on_matrix_cell_width_changed(self, value):
+        """Keep every visual matrix column equally wide at a chosen width."""
+        self._matrix_cell_width = max(48, int(value))
+        self.db.set_config('risk_matrix_cell_width', str(self._matrix_cell_width))
+        self._apply_matrix_column_widths()
+
+    def _on_matrix_splitter_moved(self, _pos, _index):
+        """Splitter movement must not distort individual matrix columns."""
+        QTimer.singleShot(0, self._sync_x_axis_button_width)
+
+    def _apply_matrix_column_widths(self):
+        """Apply one common width to matrix data columns only.
+
+        Axis/category support columns keep their own readable widths.  This
+        is deliberately independent of the outer splitter: a narrower pane
+        scrolls rather than silently making one risk column wider than
+        another.
         """
-        container = getattr(self, '_matrix_container', None)
         grid = getattr(self, '_matrix_grid', None)
-        if container is None or grid is None:
+        if grid is None:
             return
-        target = max(0, container.width())
-        count = grid.columnCount()
-        if target <= 0 or count <= 0:
+        main_cols = getattr(self, '_matrix_main_column_count', 0)
+        if not main_cols:
             return
-        # Use current content widths as proportions.  Unlike the previous
-        # implementation this also handles dragging left (shrinking), not
-        # only dragging right to enlarge the matrix.
-        base = []
-        for col in range(count):
-            widest = 30
-            for row in range(grid.rowCount()):
-                item = grid.itemAtPosition(row, col)
-                widget = item.widget() if item else None
-                if widget is not None:
-                    widest = max(widest, widget.sizeHint().width())
-            base.append(widest)
-        natural = max(sum(base), 1)
-        usable = max(count * 30, target)
-        scaled = [max(30, int(usable * width / natural)) for width in base]
-        correction = usable - sum(scaled)
-        if correction:
-            scaled[-1] += correction
-        for col in range(count):
-            width = scaled[col]
+        header_width = max(96, min(180, self._matrix_cell_width + 24))
+        for col in range(min(main_cols, grid.columnCount())):
+            width = header_width if col == 0 else self._matrix_cell_width
             grid.setColumnMinimumWidth(col, width)
+            grid.setColumnStretch(col, 0)
             for row in range(grid.rowCount()):
                 item = grid.itemAtPosition(row, col)
                 widget = item.widget() if item else None
@@ -1333,7 +1721,8 @@ class HAZOPPreparationPanel(QWidget):
         self._last_built_cfg = None   # reset before blocking so _apply_size sees None
         # Block all signals that would trigger _apply_size while we populate controls
         _senders = (self._rows_spin, self._cols_spin, self._axis_combo,
-                    self._x_rev_chk, self._y_rev_chk)
+                    self._x_rev_chk, self._y_rev_chk,
+                    self._matrix_cell_width_spin)
         for w in _senders:
             w.blockSignals(True)
         self._rows_spin.setValue(cfg.get('rows', 5))
@@ -1344,6 +1733,13 @@ class HAZOPPreparationPanel(QWidget):
             self._axis_combo.setCurrentIndex(idx)
         self._x_rev_chk.setChecked(bool(cfg.get('x_reversed', False)))
         self._y_rev_chk.setChecked(bool(cfg.get('y_reversed', False)))
+        try:
+            cell_width = int(self.db.get_config(
+                'risk_matrix_cell_width', str(_MATRIX_CELL_WIDTH_DEFAULT)))
+        except (TypeError, ValueError):
+            cell_width = _MATRIX_CELL_WIDTH_DEFAULT
+        self._matrix_cell_width = max(48, min(260, cell_width))
+        self._matrix_cell_width_spin.setValue(self._matrix_cell_width)
         for w in _senders:
             w.blockSignals(False)
         self._build_matrix_grid(cfg)
@@ -1374,9 +1770,10 @@ class HAZOPPreparationPanel(QWidget):
             nc = len(self._x_label_edits)
             for c, e in enumerate(self._x_label_edits):
                 data_c = (nc - 1 - c) if disp_x_rev else c
+                # A deliberate blank label must survive an X/Y rebuild. The
+                # earlier fallback silently restored an older label and made
+                # the direction controls look as though they wrote text.
                 txt = e.text().strip()
-                if not txt:
-                    continue
                 if disp_freq_on_x:
                     if data_c < len(freq_lbls):
                         freq_lbls[data_c] = txt
@@ -1389,8 +1786,6 @@ class HAZOPPreparationPanel(QWidget):
             for r, e in enumerate(self._y_label_edits):
                 data_r = r if disp_y_rev else (nr - 1 - r)
                 txt = e.text().strip()
-                if not txt:
-                    continue
                 if disp_freq_on_x:
                     if data_r < len(cons_lbls):
                         cons_lbls[data_r] = txt
@@ -1510,10 +1905,10 @@ class HAZOPPreparationPanel(QWidget):
                       "border:1px solid #aaa; border-radius:0px;"
                       "background:#eef2f7; padding:0 3px; margin:0px;")
 
-        # The corner is an actual control: clicking F\\C (or C\\F) swaps
-        # the semantic axes while keeping the matrix data intact.
+        # The corner swaps presentation only; it never generates or changes
+        # label text.
         corner = QToolButton()
-        corner.setText(corner_txt)
+        corner.setText("Byt\naxlar")
         corner.setToolTip("Byt vilken axel som visar frekvens respektive konsekvens")
         corner.clicked.connect(lambda: self._axis_combo.setCurrentIndex(
             1 - max(0, self._axis_combo.currentIndex())))
@@ -1529,7 +1924,7 @@ class HAZOPPreparationPanel(QWidget):
             e.setMinimumWidth(30)
             e.setAlignment(Qt.AlignmentFlag.AlignCenter)
             e.setStyleSheet(_hdr_style)
-            e.setToolTip(col_tip + "\nEtiketten uppdateras automatiskt när du ändrar gränsvärdet.")
+            e.setToolTip(col_tip + "\nÄndra etiketter i vyn Axlar.")
             # QLineEdit.setText() leaves the cursor at the END of the text —
             # for a label wider than the fixed 80px field (e.g. "< 0.1/år"
             # at 8px font measures ~96px, see NOTES.md "'<'-tecknet syns
@@ -1625,9 +2020,6 @@ class HAZOPPreparationPanel(QWidget):
                         f"Exempel: 0.1 = en gång per 10 år")
                     self._matrix_grid.addWidget(e, n_drows + 1, c + 1)
                     self._freq_boundary_edits.append(e)
-                    # Connect boundary edit → auto-update adjacent axis labels
-                    e.editingFinished.connect(
-                        lambda _e=e, _c=c: self._sync_freq_label_from_boundary(_e, _c))
         else:
             # When frequency on Y: add interval boundary column on the right
             bnd_lbl = QLabel("Gräns\n(/år)")
@@ -1670,7 +2062,7 @@ class HAZOPPreparationPanel(QWidget):
         _cat_hdr_style = ("font-size:9px; font-weight:bold; background:#e8edf5;"
                           "border:1px solid #bbb; padding:2px 6px;")
 
-        if not freq_on_x:
+        if False:  # retired inline description layout; Axlar owns this content
             # Consequence on X (columns) → category rows go BELOW the matrix
             # n_drows = n_freq; no boundary row exists (boundary is a column)
             base_row = n_drows + 1
@@ -1712,7 +2104,7 @@ class HAZOPPreparationPanel(QWidget):
                     row_edits.append(e)
                 self._x_category_rows.append((cat_lbl, row_edits))
             self._resize_category_rows()
-        else:
+        elif False:
             # Consequence on Y (rows) → category columns go to the RIGHT
             # n_dcols = n_freq; no boundary column exists (boundary is a row)
             base_col = n_dcols + 1
@@ -1760,6 +2152,7 @@ class HAZOPPreparationPanel(QWidget):
             self._category_row_edits = row_cat_edits
             self._resize_category_rows()
 
+        self._apply_matrix_column_widths()
         QTimer.singleShot(0, self._sync_x_axis_button_width)
 
     def _schedule_category_row_resize(self):
@@ -2059,6 +2452,7 @@ class HAZOPPreparationPanel(QWidget):
             self.db.add_category(name.strip())
             self._load_categories()
             self._apply_size()
+            self._reload_axes_tables()
 
     def _cat_rename(self):
         from PyQt6.QtWidgets import QInputDialog
@@ -2069,6 +2463,7 @@ class HAZOPPreparationPanel(QWidget):
             self.db.update_category(item.data(Qt.ItemDataRole.UserRole), name.strip())
             self._load_categories()
             self._apply_size()
+            self._reload_axes_tables()
 
     def _cat_delete(self):
         item = self._cat_list.currentItem()
@@ -2082,6 +2477,7 @@ class HAZOPPreparationPanel(QWidget):
         # category's severity-definition row until the next unrelated
         # rebuild (e.g. resizing the rows/cols spinners).
         self._apply_size()
+        self._reload_axes_tables()
         if hasattr(self, '_sev_def_panel') and self._sev_def_panel:
             self._sev_def_panel.refresh()
 
@@ -2103,6 +2499,7 @@ class HAZOPPreparationPanel(QWidget):
         self._load_categories()
         self._cat_list.setCurrentRow(new_row)
         self._apply_size()
+        self._reload_axes_tables()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

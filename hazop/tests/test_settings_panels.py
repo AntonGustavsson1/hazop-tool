@@ -68,7 +68,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
 )
-from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
+from PyQt6.QtGui import QPixmap, QFocusEvent, QKeyEvent  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
 
@@ -1008,40 +1008,58 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_category_row_height_matches_tallest_wrapped_text(self):
-        """"Tillåt flera rader text i konsekvenskategorier; radhöjden i hela
-        matrisen ska följa den högsta raden ... bara när Frekvens→X,
-        Konsekvens→Y" (2026-08-17). A category cell with long text should
-        wrap (QTextEdit, not QLineEdit) and grow its whole grid row —
-        row header AND cell buttons — to match, not just itself."""
-        from hazop import HAZOPPreparationPanel, CONFIG
+    def test_axes_view_accepts_a_multirow_excel_paste_and_saves_descriptions(self):
+        """Five copied Excel cells map to five consequence rows in one category.
+
+        Description editing deliberately lives outside the visual matrix, so
+        wrapped text cannot change the size or placement of risk cells.
+        """
+        from hazop import HAZOPPreparationPanel
         panel = HAZOPPreparationPanel(self.db)
         try:
             cat_id = self.db.add_category("Miljö")
-            # Frekvens→X, Konsekvens→Y is the default orientation
-            # (self._axis_combo's first entry) — no need to change it.
-            long_text = "En mycket lång konsekvensbeskrivning som med säkerhet " \
-                        "kräver flera rader när den bryts vid 130 pixlars bredd."
-            self.db.set_severity_definition(1, cat_id, long_text)
-            panel._apply_size()
+            panel._load_categories()
+            panel._set_risk_subview(1)
+            table = panel._category_definition_table
+            category_column = next(
+                col for col in range(1, table.columnCount())
+                if table.item(0, col).data(Qt.ItemDataRole.UserRole) == cat_id)
+            table.setCurrentCell(0, category_column)
+            QApplication.clipboard().setText(
+                "Nivå 1\nNivå 2\nNivå 3\nNivå 4\nNivå 5")
+            paste = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_V,
+                              Qt.KeyboardModifier.ControlModifier)
+            self.assertTrue(panel.eventFilter(table, paste))
+            self.assertEqual(
+                [table.item(row, category_column).text() for row in range(5)],
+                ["Nivå 1", "Nivå 2", "Nivå 3", "Nivå 4", "Nivå 5"])
+            self.assertEqual(self.db.get_severity_definitions().get(1, {}).get(cat_id, ''),
+                             '', "paste is a working copy until Spara")
 
-            tallest_row = 0
-            for r in range(len(panel._y_label_edits)):
-                h = panel._y_label_edits[r].height()
-                tallest_row = max(tallest_row, h)
-            self.assertGreater(tallest_row, CONFIG['H_ROW_STD'],
-                                "A row containing the long category text should "
-                                "have grown taller than the standard row height")
+            with unittest.mock.patch.object(QMessageBox, 'information'):
+                panel._save_axes_and_categories()
+            definitions = self.db.get_severity_definitions()
+            self.assertEqual(
+                [definitions.get(row, {}).get(cat_id, '') for row in range(1, 6)],
+                ["Nivå 1", "Nivå 2", "Nivå 3", "Nivå 4", "Nivå 5"])
+        finally:
+            panel.deleteLater()
 
-            # Whichever row grew, its header and every cell button in that
-            # row must share the exact same height (not just the text cell).
-            grown = [r for r in range(len(panel._y_label_edits))
-                     if panel._y_label_edits[r].height() > CONFIG['H_ROW_STD']]
-            self.assertTrue(grown)
-            r = grown[0]
-            row_h = panel._y_label_edits[r].height()
-            for btn in panel._cell_buttons[r][1]:
-                self.assertEqual(btn.height(), row_h)
+    def test_axes_is_a_local_view_and_matrix_columns_keep_a_common_width(self):
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            self.assertEqual(panel._risk_substack.count(), 2)
+            self.assertEqual(panel._risk_substack.currentIndex(), 0)
+            panel._set_risk_subview(1)
+            self.assertEqual(panel._risk_substack.currentIndex(), 1)
+            self.assertTrue(panel._category_definition_table.isVisible() or
+                            panel._category_definition_table.parentWidget() is not None)
+
+            panel._on_matrix_cell_width_changed(118)
+            row_buttons = panel._cell_buttons[0][1]
+            self.assertTrue(all(btn.maximumWidth() == 118 for btn in row_buttons))
+            self.assertNotIn('margin:-1px', row_buttons[0].styleSheet())
         finally:
             panel.deleteLater()
 
