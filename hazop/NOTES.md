@@ -4310,6 +4310,26 @@ flerkolumnsmarkering, det verkliga Ctrl+C-händelseflödet, intern Ctrl+Alt+C
 + Ctrl+V, `py_compile` och riktade paneltester. Ingen manuell Office-
 inklistring är ännu visuellt verifierad.
 
+## Konsekvens, scroll och Escape i Scenario/Worksheet (2026-09-01)
+
+En tom konsekvensplats på en befintlig orsak är nu symmetrisk med en tom
+safeguardplats: dubbelklick skapar den saknade konsekvensposten och går vidare
+till den vanliga inline-redigeraren. Detta täcker orsaker som saknar en
+konsekvens helt, inte bara redan skapade konsekvenser med tom beskrivning.
+
+Rebuild-vägen tvingar nu tabellen att uppdatera sin layout innan den återställer
+scrollpositionen. Tidigare kunde Qt rapportera en tillfälligt tom scrollbar
+när en safeguard lades till; det gamla scrollvärdet klampades då till noll och
+vyn hoppade till toppen. `select_item()` scrollar dessutom bara när den nya
+cellen faktiskt ligger utanför synlig yta.
+
+Escape i en inline-editor avbryter utan att spara, stänger text-/tagg-
+kompletteringar och stänger den hjälp-popup som hör till editorn. Fördröjda
+popupanrop kontrollerar nu också att editorn fortfarande är synlig, så den kan
+inte återuppstå efter Escape. Verifierat med tom-konsekvens-regression,
+Escape-regression, safeguard-scrollregression, riktade tester och `py_compile`.
+Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Högerklicksplacering på P&ID borttagen (2026-08-28)
 
 Den manuella “Objekt”-åtgärden i P&ID-vyns högerklicksmeny är borttagen.

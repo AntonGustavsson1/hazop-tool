@@ -65,7 +65,7 @@ from hazop import (  # noqa: E402
     freq_to_idx,
 )
 from PyQt6.QtWidgets import (  # noqa: E402
-    QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
+    QApplication, QAbstractItemView, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
     QTableWidgetItem,
 )
@@ -4504,6 +4504,44 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
         self.assertIsNone(self._popup(), "the popup must close once the editor is destroyed")
 
 
+class ScenarioScrollPreservationTests(unittest.TestCase):
+    """Structural table edits must not reset the user to the top row."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_adding_safeguard_preserves_nonzero_vertical_scroll(self):
+        with _TempDbMainWindow() as win:
+            db = win.db
+            node_id = db.add_node()
+            dev_id = db.deviations(node_id)[0]['id']
+            consequence_ids = []
+            for number in range(28):
+                cause_id = db.add_cause(dev_id)
+                db.update_cause(cause_id, description=f'Orsak {number}')
+                cons_id = db.add_consequence(cause_id)
+                db.update_consequence(cons_id, f'Konsekvens {number}', 3)
+                consequence_ids.append(cons_id)
+
+            panel = win.scenario_panel
+            panel.load_node(node_id)
+            panel.resize(900, 160)
+            panel.show()
+            self.app.processEvents()
+            bar = panel._table.verticalScrollBar()
+            self.assertGreater(bar.maximum(), 0)
+            before = max(1, bar.maximum() // 2)
+            bar.setValue(before)
+            self.app.processEvents()
+
+            db.add_safeguard(consequence_ids[-1])
+            panel._rebuild()
+            self.app.processEvents()
+
+            self.assertGreater(panel._table.verticalScrollBar().value(), 0)
+
+
 class InlineIdentityEditTests(unittest.TestCase):
     """Prompt 2: tag edits in KON/SG are guarded before persistence."""
 
@@ -4574,6 +4612,29 @@ class InlineIdentityEditTests(unittest.TestCase):
         editor.set_bold_tags(['PSHH-101'])
         self.assertEqual(editor.textCursor().anchor(), 5)
         self.assertEqual(editor.textCursor().position(), 12)
+
+    def test_escape_cancels_inline_consequence_without_saving(self):
+        """Escape must close a live cell editor without committing its text."""
+        self.db.update_consequence(self.cons_id, 'Original konsekvens', 3)
+        self.panel.load_consequence(self.cons_id)
+        row = next(r for r, meta in enumerate(self.panel._row_meta)
+                   if meta[2] == self.cons_id)
+        self.panel._try_start_edit(row, self.panel._C_KON)
+        self.app.processEvents()
+        editor = next(w for w in self.panel._table.viewport().findChildren(
+            self.editor_type) if (w.property('editing_row') == row and
+                                   w.property('editing_col') == self.panel._C_KON))
+        editor.setText('Detta ska inte sparas')
+
+        escape = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape,
+                           Qt.KeyboardModifier.NoModifier)
+        self.assertTrue(self.panel.eventFilter(editor, escape))
+        self.app.processEvents()
+
+        self.assertEqual(self.db.get_consequence(self.cons_id)['description'],
+                         'Original konsekvens')
+        self.assertNotEqual(self.panel._table.state(),
+                            QAbstractItemView.State.EditingState)
 
     def test_double_click_caret_is_positioned_without_selection(self):
         editor = self.editor_type(self.panel._table.viewport())

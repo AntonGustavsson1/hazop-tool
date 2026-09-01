@@ -2316,6 +2316,8 @@ class _ScenarioDelegate(QStyledItemDelegate):
         docstring for why this must be a plain non-toplevel child widget
         of the panel's top-level window, not a QDialog/separate top-level
         Popup) -- only the popup class and its cons_id differ."""
+        if editor is None or sip.isdeleted(editor) or not editor.isVisible():
+            return
         panel = self._panel
         try:
             if (popup_token is not None and
@@ -2806,6 +2808,8 @@ class _PidDelegate(_ScenarioDelegate):
         the time this runs, e.g. a very fast Enter right after opening
         it) must never surface as a crash — there's simply no popup to
         show anymore at that point."""
+        if editor is None or sip.isdeleted(editor) or not editor.isVisible():
+            return
         panel = self._panel
         row_meta = getattr(panel, '_row_meta', [])
         cause_id = row_meta[row][1] if row < len(row_meta) else None
@@ -2905,7 +2909,7 @@ class _PidDelegate(_ScenarioDelegate):
 
     def _refresh_typed_cause_object(self, editor_ref, serial, row, cell_rect):
         editor = editor_ref()
-        if editor is None or sip.isdeleted(editor):
+        if editor is None or sip.isdeleted(editor) or not editor.isVisible():
             return
         try:
             if serial != int(editor.property('typed_cause_object_serial') or 0):
@@ -2934,6 +2938,8 @@ class _PidDelegate(_ScenarioDelegate):
 
     def _show_typed_object_type_popup(self, editor, row, cell_rect, equipment):
         """Ask only for the missing object type after a typed tag resolves."""
+        if editor is None or sip.isdeleted(editor) or not editor.isVisible():
+            return
         panel = self._panel
         cause_id = panel._row_meta[row][1] if row < len(panel._row_meta) else None
         if cause_id is None:
@@ -2945,6 +2951,9 @@ class _PidDelegate(_ScenarioDelegate):
         popup = CauseTagPopup(
             panel.db, '', equipment.get('tag') or '', parent=panel,
             cause_id=cause_id, equipment_id=equipment_id)
+        # This instance was opened from an inline editor. Keep that link so
+        # the editor's Escape handler can close both surfaces together.
+        popup._inline_editor = editor
         popup.committed.connect(
             lambda ct, tg, r=row, cid=cause_id:
                 panel._apply_cause_obj(r, cid, ct, tg, '', None))
@@ -5638,9 +5647,17 @@ class ScenarioTablePanel(QWidget):
         # undivided floor here would have re-inflated the anchor row
         # right back up, undoing that distribution.
         logging.info('_resize_rows: K2 — row-height pass done, restoring scroll position')
-        self._table.verticalScrollBar().setValue(vscroll_value)
-        self._table.horizontalScrollBar().setValue(hscroll_value)
         self._table.setUpdatesEnabled(True)
+        # Recalculate the viewport before restoring the saved position.
+        # During a structural edit (especially adding a safeguard), Qt may
+        # otherwise still report a zero scrollbar range while updates are
+        # disabled. Setting the old value then silently clamps to zero and
+        # makes the page jump to the top.
+        self._table.doItemsLayout()
+        vbar = self._table.verticalScrollBar()
+        hbar = self._table.horizontalScrollBar()
+        vbar.setValue(max(vbar.minimum(), min(vscroll_value, vbar.maximum())))
+        hbar.setValue(max(hbar.minimum(), min(hscroll_value, hbar.maximum())))
         logging.info('_resize_rows: K3 — done (setUpdatesEnabled True)')
 
     def _add_placeholder_row(self, node_name, dev_d):
@@ -6585,6 +6602,39 @@ class ScenarioTablePanel(QWidget):
             return None
         return editor, meta[0], meta[1]
 
+    def _cancel_inline_editor(self, editor):
+        """Dismiss one inline editor and every helper it opened, without save."""
+        if editor is None:
+            return
+        # Cancel delayed completions/popups before closing the delegate. A
+        # zero-delay helper must never reappear after the user pressed Escape.
+        for serial_name in ('_completion_serial', '_tag_completion_serial'):
+            if hasattr(editor, serial_name):
+                setattr(editor, serial_name, getattr(editor, serial_name) + 1)
+        for completer_name in ('_completer', '_tag_completer'):
+            completer = getattr(editor, completer_name, None)
+            if completer is not None:
+                try:
+                    completer.popup().hide()
+                except RuntimeError:
+                    pass
+
+        top_level = self.window()
+        for popup_type in (StandardCauseSuggestPopup, RecommendationAssistPopup,
+                           CauseTagPopup):
+            for popup in top_level.findChildren(popup_type):
+                if (getattr(popup, '_editor', None) is editor or
+                        getattr(popup, '_inline_editor', None) is editor):
+                    popup.close()
+
+        col = editor.property('editing_col')
+        delegate = (self._pid_delegate if col in
+                    (self._C_ORS, self._C_KON, self._C_SG) else self._delegate)
+        delegate.closeEditor.emit(
+            editor, QStyledItemDelegate.EndEditHint.RevertModelCache)
+        self._double_click_edit = None
+        self._table.setFocus()
+
     def ors_cell_global_pos(self, dev_id):
         """Return global top-right corner of the first placeholder ORS cell for dev_id."""
         for row, meta in enumerate(self._row_meta):
@@ -6749,6 +6799,15 @@ class ScenarioTablePanel(QWidget):
                 self._empty_cause_click_timer.stop()
                 self._empty_cause_click_target = None
                 self._quick_add_cause(dev_id)
+                self._double_click_edit = None
+                return
+            if col == self._C_KON and cons_id is None and cause_id is not None:
+                # A cause without any consequence is rendered as an empty,
+                # non-editable KON placeholder. Treat its double-click like
+                # the equivalent empty Safeguard cell: materialise the
+                # missing record, then let the normal new-item route rebuild
+                # and open its inline editor.
+                self._quick_add_consequence(cause_id)
                 self._double_click_edit = None
                 return
         group_line = None
@@ -8598,6 +8657,9 @@ class ScenarioTablePanel(QWidget):
                 obj.property('editing_row') is not None and
                 obj.property('sg_id') is None):
             if event.type() == QEvent.Type.KeyPress:
+                if event.key() == Qt.Key.Key_Escape:
+                    self._cancel_inline_editor(obj)
+                    return True
                 if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                     if (not ctrl and isinstance(obj, _BoldTagTextEdit) and
                             obj._accept_visible_tag_completion()):
@@ -8801,6 +8863,16 @@ class ScenarioTablePanel(QWidget):
     def _add_safeguard_via_plus_row(self, cons_id):
         self._quick_add_safeguard(cons_id)
 
+    def _keep_item_visible(self, item):
+        """Scroll only when the target is genuinely outside the viewport."""
+        if item is None:
+            return
+        rect = self._table.visualItemRect(item)
+        viewport = self._table.viewport().rect()
+        if rect.isEmpty() or not viewport.intersects(rect):
+            self._table.scrollToItem(
+                item, QAbstractItemView.ScrollHint.PositionAtCenter)
+
     def select_item(self, type_, id_):
         """Move the current cell to the row for (type_, id_) and start inline
         editing where supported (Orsak/Safeguard columns). Call this after
@@ -8819,8 +8891,7 @@ class ScenarioTablePanel(QWidget):
             if meta[field_idx] == id_:
                 self._table.setCurrentCell(row, col)
                 item = self._table.item(row, col)
-                if item is not None:
-                    self._table.scrollToItem(item)
+                self._keep_item_visible(item)
                 self._try_start_edit(row, col)  # KON supported too since 2026-08-07 — see NOTES.md
                 return
 

@@ -7784,6 +7784,27 @@ class EmptyScenarioCellDoubleClickTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_consequence_placeholder_double_click_creates_a_consequence(self):
+        """A cause without KON data must materialise it on double-click."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, meta in enumerate(panel._row_meta)
+                       if meta[1] == cause_id and meta[2] is None)
+            calls = []
+            panel._quick_add_consequence = lambda cid: calls.append(cid)
+
+            panel._on_cell_double_clicked(
+                panel._table.item(row, panel._C_KON))
+
+            self.assertEqual(calls, [cause_id])
+        finally:
+            panel.deleteLater()
+
     def test_legacy_consequence_chain_entry_uses_inline_editor(self):
         """No caller may reopen the retired five-column consequence popup."""
         from hazop import ScenarioTablePanel
