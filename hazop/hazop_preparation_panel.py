@@ -16,8 +16,11 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QStackedWidget, QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QDate, QEvent, QMimeData, QTimer
-from PyQt6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics
+from PyQt6.QtCore import Qt, pyqtSignal, QDate, QEvent, QMimeData, QPoint, QPointF, QTimer
+from PyQt6.QtGui import (
+    QBrush, QColor, QDrag, QFont, QFontMetrics, QPainter, QPainterPath,
+    QPen, QPolygonF,
+)
 
 from constants import CONFIG, SEV_LABELS
 from database import (
@@ -337,6 +340,283 @@ class RiskScaleLevelList(QListWidget):
         event.acceptProposedAction()
 
 
+class AxisMappingChip(QPushButton):
+    """Clickable and draggable axis step shared by both migration views."""
+
+    def __init__(self, canvas, role, kind, value, code, description='', compact=False):
+        text = code if compact else f"{code}   {description or '—'}"
+        super().__init__(text, canvas)
+        self.canvas, self.role = canvas, role
+        self.kind, self.value = kind, value
+        self.code, self.description = code, description
+        self.compact = compact
+        self._pressed = False
+        self.setToolTip(description or code)
+        self.setCursor(Qt.CursorShape.OpenHandCursor if role == 'old'
+                       else Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(28 if compact else 31)
+        self.setStyleSheet("text-align:left; padding:3px 6px;")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed = True
+            self.canvas.chip_pressed(self, event.globalPosition().toPoint())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._pressed and event.buttons() & Qt.MouseButton.LeftButton:
+            self.canvas.chip_moved(self, event.globalPosition().toPoint())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._pressed and event.button() == Qt.MouseButton.LeftButton:
+            self._pressed = False
+            self.canvas.chip_released(self, event.globalPosition().toPoint())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def apply_state(self, armed=False, mapped=False, over=False, count=0):
+        if armed:
+            border, background = '#1d2d3d', '#dbeafe'
+        elif over:
+            border, background = '#1d2d3d', '#e0f2fe'
+        elif mapped:
+            border, background = '#2f5fd0', '#eef4ff'
+        else:
+            border, background = '#8b949e', '#ffffff'
+        suffix = f"   ({count})" if self.role == 'target' and count else ''
+        text = self.code if self.compact else f"{self.code}   {self.description or '—'}"
+        self.setText(text + suffix)
+        self.setStyleSheet(
+            f"QPushButton{{background:{background}; border:1px solid {border};"
+            "border-radius:0px; text-align:left; padding:3px 6px; font-size:10px;}"
+            "QPushButton:hover{background:#eef2f7;}"
+            "QPushButton:pressed{background:#dbeafe;}" )
+
+
+class _AxisMappingCanvas(QWidget):
+    """Base canvas that draws links behind interactive mapping chips."""
+
+    def __init__(self, dialog, parent=None):
+        super().__init__(parent)
+        self.dialog = dialog
+        self.old_chips = {}
+        self.target_chips = {}
+        self.drag_chip = None
+        self.drag_point = None
+        self.drag_over = None
+        self._layout = QGridLayout(self)
+        self._layout.setContentsMargins(12, 12, 12, 12)
+        self._layout.setHorizontalSpacing(80)
+        self._layout.setVerticalSpacing(6)
+
+    @staticmethod
+    def _section_label(text):
+        label = QLabel(text)
+        label.setStyleSheet("font-size:9px; font-weight:bold; letter-spacing:1px; color:#374151;")
+        return label
+
+    def clear_canvas(self):
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.old_chips.clear(); self.target_chips.clear()
+
+    def add_chip(self, role, kind, value, code, description, row, col, compact=False):
+        chip = AxisMappingChip(self, role, kind, value, code, description, compact)
+        self._layout.addWidget(chip, row, col)
+        (self.old_chips if role == 'old' else self.target_chips)[(kind, value)] = chip
+        return chip
+
+    def _chip_at(self, global_pos):
+        widget = QApplication.widgetAt(global_pos)
+        while widget is not None and not isinstance(widget, AxisMappingChip):
+            widget = widget.parentWidget()
+        return widget
+
+    def chip_pressed(self, chip, global_pos):
+        if chip.role == 'old':
+            self.drag_chip = chip
+            self.drag_point = self.mapFromGlobal(global_pos)
+            self.dialog.activate_old_step(chip.kind, chip.value)
+        else:
+            self.dialog.activate_target_step(chip.kind, chip.value)
+        self.sync_state()
+
+    def chip_moved(self, chip, global_pos):
+        if chip is not self.drag_chip:
+            return
+        target = self._chip_at(global_pos)
+        self.drag_point = self.mapFromGlobal(global_pos)
+        self.drag_over = (target if target and target.role == 'target' and
+                          target.kind == chip.kind else None)
+        self.sync_state()
+
+    def chip_released(self, chip, global_pos):
+        if chip is self.drag_chip:
+            target = self._chip_at(global_pos)
+            if target and target.role == 'target' and target.kind == chip.kind:
+                self.dialog.set_axis_mapping(chip.kind, chip.value, target.value)
+            self.drag_chip = self.drag_point = self.drag_over = None
+        self.sync_state()
+
+    def sync_state(self):
+        armed = self.dialog.armed
+        for key, chip in self.old_chips.items():
+            chip.apply_state(armed=(key == armed), mapped=self.dialog.is_mapped(*key))
+        for key, chip in self.target_chips.items():
+            chip.apply_state(mapped=self.dialog.target_count(*key) > 0,
+                             over=(chip is self.drag_over),
+                             count=self.dialog.target_count(*key))
+        self.update()
+
+    def _chip_center(self, chip, side):
+        # Chips in the matrix tab are children of a group box, while chips in
+        # the link tab are direct children of the canvas.  Map their local
+        # coordinates so the links use one common coordinate system.
+        if side == 'right':
+            local = QPoint(chip.width(), chip.height() // 2)
+        elif side == 'left':
+            local = QPoint(0, chip.height() // 2)
+        elif side == 'top':
+            local = QPoint(chip.width() // 2, 0)
+        else:
+            local = QPoint(chip.width() // 2, chip.height())
+        return QPointF(chip.mapTo(self, local))
+
+    def _draw_curve(self, painter, start, end, dashed=False, arrow=False, fan=0):
+        dx = max(45, min(120, abs(end.x() - start.x()) * .30) + fan)
+        path = QPainterPath(start)
+        path.cubicTo(start.x() + dx, start.y(), end.x() - dx, end.y(), end.x(), end.y())
+        pen = QPen(QColor('#5980a6' if dashed else '#1d1f20'), 1.5)
+        if dashed:
+            pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen); painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+        if arrow:
+            painter.setBrush(QColor('#1d1f20')); painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawPolygon(QPolygonF([
+                QPointF(end.x(), end.y()), QPointF(end.x() - 7, end.y() - 4),
+                QPointF(end.x() - 7, end.y() + 4)]))
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for index, ((kind, source), target) in enumerate(self.dialog.iter_mappings()):
+            old = self.old_chips.get((kind, source))
+            new = self.target_chips.get((kind, target))
+            if old and new:
+                self._draw_curve(painter, self._chip_center(old, 'right'),
+                                 self._chip_center(new, 'left'),
+                                 arrow=getattr(self, 'arrow_links', False),
+                                 fan=index * (13 if getattr(self, 'arrow_links', False) else 7))
+        if self.drag_chip and self.drag_point:
+            self._draw_curve(painter, self._chip_center(self.drag_chip, 'right'),
+                             self.drag_point, dashed=True)
+
+
+class AxisLinkField(_AxisMappingCanvas):
+    """Tab 1a: list-to-list mapping with visible curved links."""
+
+    def rebuild(self):
+        self.clear_canvas()
+        row = 0
+        for kind, title in (('severity', 'KONSEKVENS'), ('frequency', 'FREKVENS / SANNOLIKHET')):
+            self._layout.addWidget(self._section_label(title), row, 0, 1, 3); row += 1
+            self._layout.addWidget(self._section_label('GAMMAL MATRIS'), row, 0)
+            self._layout.addWidget(self._section_label('NY MATRIS'), row, 2); row += 1
+            old_levels = self.dialog.axis_levels('source', kind)
+            new_levels = self.dialog.axis_levels('target', kind)
+            for index in range(max(len(old_levels), len(new_levels))):
+                if index < len(old_levels):
+                    value, code, description = old_levels[index]
+                    self.add_chip('old', kind, value, code, description, row + index, 0)
+                if index < len(new_levels):
+                    value, code, description = new_levels[index]
+                    self.add_chip('target', kind, value, code, description, row + index, 2)
+            row += max(len(old_levels), len(new_levels)) + 2
+        self._layout.setColumnStretch(0, 1); self._layout.setColumnStretch(1, 1); self._layout.setColumnStretch(2, 1)
+        QTimer.singleShot(0, self.sync_state)
+
+
+class MatrixAgainstMatrix(_AxisMappingCanvas):
+    """Tab 1b: two real coloured matrices linked only through their axes."""
+
+    arrow_links = True
+
+    def rebuild(self):
+        self.clear_canvas()
+        old = self._matrix_widget('source', 'Nuvarande matris')
+        new = self._matrix_widget('target', 'Ny matris')
+        self._layout.addWidget(old, 0, 0)
+        self._layout.addWidget(new, 2, 2)
+        self._layout.setColumnStretch(0, 1); self._layout.setColumnStretch(1, 1); self._layout.setColumnStretch(2, 1)
+        self._layout.setRowStretch(0, 1); self._layout.setRowStretch(1, 1); self._layout.setRowStretch(2, 1)
+        QTimer.singleShot(0, self.sync_state)
+
+    def _matrix_widget(self, side, title):
+        cfg = self.dialog.matrix_cfg(side)
+        group = QGroupBox(title)
+        grid = QGridLayout(group); grid.setSpacing(0)
+        x_kind = self.dialog.display_x_axis
+        y_kind = 'severity' if x_kind == 'frequency' else 'frequency'
+        x_levels = self.dialog.axis_levels(side, x_kind)
+        y_levels = self.dialog.axis_levels(side, y_kind)
+        # Preserve the saved visual orientation of each real matrix.  The
+        # mappable ordinal remains attached to the chip, so the view order
+        # never changes the migration meaning.
+        stored_x_kind = ('frequency' if cfg.get('x_axis', 'frequency') == 'frequency'
+                         else 'severity')
+        x_reversed = cfg.get('x_reversed', False) if x_kind == stored_x_kind \
+            else cfg.get('y_reversed', False)
+        y_reversed = cfg.get('y_reversed', False) if y_kind != stored_x_kind \
+            else cfg.get('x_reversed', False)
+        if x_reversed:
+            x_levels = list(reversed(x_levels))
+        if not y_reversed:
+            y_levels = list(reversed(y_levels))
+        corner = QLabel('K \\ F' if x_kind == 'frequency' else 'F \\ K')
+        corner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        corner.setStyleSheet('font-size:9px; color:#555; border:1px solid #888;')
+        grid.addWidget(corner, 0, 0)
+        role = 'old' if side == 'source' else 'target'
+        for col, (value, code, description) in enumerate(x_levels, start=1):
+            chip = AxisMappingChip(self, role, x_kind, value, code, description, compact=True)
+            grid.addWidget(chip, 0, col)
+            (self.old_chips if role == 'old' else self.target_chips)[(x_kind, value)] = chip
+        for row, (value, code, description) in enumerate(y_levels, start=1):
+            chip = AxisMappingChip(self, role, y_kind, value, code, description, compact=True)
+            grid.addWidget(chip, row, 0)
+            (self.old_chips if role == 'old' else self.target_chips)[(y_kind, value)] = chip
+            for col, (x_value, _x_code, _x_desc) in enumerate(x_levels, start=1):
+                cons = value if y_kind == 'severity' else x_value
+                freq = value if y_kind == 'frequency' else x_value
+                ci, fi = int(cons) - 1, int(freq) + 1
+                try: color = cfg['cell_colors'][ci][fi]
+                except (KeyError, IndexError): color = '#ffffff'
+                try: text = cfg['cell_labels'][ci][fi]
+                except (KeyError, IndexError): text = ''
+                cell = QLabel(text)
+                cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                cell.setWordWrap(True)
+                cell.setToolTip(f"Celltext: {text}" if text else 'Tom celltext')
+                cell.setMinimumSize(48, 32)
+                try: foreground = cfg['cell_fg_colors'][ci][fi]
+                except (KeyError, IndexError): foreground = '#000000'
+                cell.setStyleSheet(
+                    f"background:{color}; color:{foreground}; border:1px solid #444; "
+                    "font-size:8px; padding:1px;")
+                grid.addWidget(cell, row, col)
+        return group
+
+
 class RiskMatrixMigrationDialog(QDialog):
     """Review and explicitly map HAZOP data before changing matrix template."""
 
@@ -345,117 +625,178 @@ class RiskMatrixMigrationDialog(QDialog):
         self.db = db
         self.template_name = template_name
         self.plan = db.risk_matrix_migration_preview(source_cfg, target_cfg)
+        self.armed = None
+        self._display_x_axis = ('frequency' if self.plan['source_matrix'].get(
+            'x_axis', 'frequency') == 'frequency' else 'severity')
+        self._mapping = {}
+        for kind, map_key in (('frequency', 'frequency_map'), ('severity', 'severity_map')):
+            self._mapping.update({(kind, int(source)): int(target)
+                                  for source, target in self.plan[map_key].items()})
         self.setWindowTitle(f"Byt riskmatris till {template_name}")
-        self.setMinimumSize(980, 640)
-        self.resize(1100, 700)
+        self.setMinimumSize(1060, 720)
+        self.resize(1220, 820)
 
         outer = QVBoxLayout(self)
-        intro = QLabel(
-            "Jämför den nuvarande matrisen med den nya. Axelns korta tecken "
-            "kartläggs nedan, exempelvis A → 1. Texten i färgade rutor är "
-            "riskklass/celltext; hovra över ett axeltecken för dess beskrivning.")
-        intro.setWordWrap(True)
-        intro.setStyleSheet("font-size:11px; color:#1f2937; padding:4px;")
-        outer.addWidget(intro)
-        self._summary = QLabel()
-        self._summary.setWordWrap(True)
-        self._summary.setStyleSheet(
-            "background:#fff8db; border:1px solid #d6b656; padding:5px 7px; color:#3d3210;")
-        outer.addWidget(self._summary)
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("Visa X-axel som:"))
+        self._x_frequency = QToolButton(); self._x_frequency.setText("X = Frekvens")
+        self._x_consequence = QToolButton(); self._x_consequence.setText("X = Konsekvens")
+        for button in (self._x_frequency, self._x_consequence):
+            button.setCheckable(True)
+            button.setStyleSheet("QToolButton{border:1px solid #8b949e; padding:4px 8px;}"
+                                 "QToolButton:checked{background:#dbeafe; border-color:#1d2d3d;}")
+            toolbar.addWidget(button)
+        self._x_frequency.setChecked(self._display_x_axis == 'frequency')
+        self._x_consequence.setChecked(self._display_x_axis == 'severity')
+        self._x_frequency.clicked.connect(lambda: self._set_display_x_axis('frequency'))
+        self._x_consequence.clicked.connect(lambda: self._set_display_x_axis('severity'))
+        toolbar.addStretch()
+        auto_button = QPushButton("Föreslå automatiskt")
+        auto_button.clicked.connect(self.suggest_automatically)
+        clear_button = QPushButton("Rensa")
+        clear_button.clicked.connect(self.clear_mappings)
+        toolbar.addWidget(auto_button); toolbar.addWidget(clear_button)
+        outer.addLayout(toolbar)
 
-        self._build_overview_tab()
-        outer.addWidget(self._overview, 1)
+        self._progress = QLabel()
+        self._progress.setStyleSheet("background:#f3f4f6; border:1px solid #9ca3af; padding:5px 7px;")
+        outer.addWidget(self._progress)
+
+        self._tabs = QTabWidget()
+        self._link_field = AxisLinkField(self)
+        self._matrix_against_matrix = MatrixAgainstMatrix(self)
+        self._tabs.addTab(self._link_field, "Kopplingsfält")
+        self._tabs.addTab(self._matrix_against_matrix, "Matris mot matris")
+        outer.addWidget(self._tabs, 1)
 
         buttons = QDialogButtonBox()
-        apply_button = buttons.addButton("Genomför migrering", QDialogButtonBox.ButtonRole.AcceptRole)
-        apply_button.setStyleSheet("background:#b45309; color:white; font-weight:bold; padding:5px 12px;")
+        self._apply_button = buttons.addButton("Genomför migrering", QDialogButtonBox.ButtonRole.AcceptRole)
+        self._apply_button.setStyleSheet("background:#b45309; color:white; font-weight:bold; padding:5px 12px;")
         cancel_button = buttons.addButton("Avbryt", QDialogButtonBox.ButtonRole.RejectRole)
-        apply_button.clicked.connect(self._confirm_accept)
+        self._apply_button.clicked.connect(self._confirm_accept)
         cancel_button.clicked.connect(self.reject)
         outer.addWidget(buttons)
         self._refresh_all()
 
-    @staticmethod
-    def _levels(cfg, kind):
-        if kind == 'frequency':
-            codes, labels = cfg.get('x_codes', []), cfg.get('x_labels', [])
-            return [(index - 1, (f"{codes[index]} — {labels[index]}"
-                                 if index < len(codes) and index < len(labels) and labels[index]
-                                 else (codes[index] if index < len(codes) else f"F={index - 1}")))
-                    for index in range(cfg.get('cols', 0))]
-        codes, labels = cfg.get('y_codes', []), cfg.get('y_labels', [])
-        return [(index + 1, (f"{codes[index]} — {labels[index]}"
-                             if index < len(codes) and index < len(labels) and labels[index]
-                             else (codes[index] if index < len(codes) else f"C={index + 1}")))
-                for index in range(cfg.get('rows', 0))]
+    @property
+    def display_x_axis(self):
+        return self._display_x_axis
 
-    @staticmethod
-    def _level_label(cfg, kind, value):
-        for ordinal, label in RiskMatrixMigrationDialog._levels(cfg, kind):
-            if ordinal == value:
-                return label
-        return f"{('F' if kind == 'frequency' else 'C')}={value}"
+    def matrix_cfg(self, side):
+        return self.plan['source_matrix' if side == 'source' else 'target_matrix']
 
-    def _build_overview_tab(self):
-        self._overview = QWidget(); layout = QVBoxLayout(self._overview)
-        row = QHBoxLayout()
-        source_box = QGroupBox("Nuvarande matris")
-        source_lay = QVBoxLayout(source_box)
-        self._source_preview = QTableWidget()
-        self._configure_preview(self._source_preview)
-        source_lay.addWidget(self._source_preview)
-        row.addWidget(source_box, 1)
-        target_box = QGroupBox("Ny mall")
-        target_lay = QVBoxLayout(target_box)
-        self._target_preview = QTableWidget()
-        self._configure_preview(self._target_preview)
-        target_lay.addWidget(self._target_preview)
-        axis_row = QHBoxLayout()
-        self._swap_target_axes_btn = QPushButton("Byt axlar i nya mallen")
-        self._swap_target_axes_btn.setToolTip(
-            "Ändrar bara den nya matrisens visning. Kartläggningen mellan nivåer behålls.")
-        self._swap_target_axes_btn.clicked.connect(self._swap_target_axes)
-        axis_row.addWidget(self._swap_target_axes_btn)
-        axis_row.addStretch()
-        target_lay.addLayout(axis_row)
-        row.addWidget(target_box, 1)
-        layout.addLayout(row, 1)
-        mapping = QGroupBox("Kartlägg axelnivåer")
-        mapping_lay = QHBoxLayout(mapping)
-        mapping_lay.setContentsMargins(8, 7, 8, 7)
-        self._simple_mapping_tables = {}
-        for kind, title in (('frequency', 'Frekvens (X)'),
-                            ('severity', 'Konsekvens (Y)')):
-            box = QGroupBox(title)
-            box_lay = QVBoxLayout(box)
-            hint = QLabel("Välj vilken nivå i den nya mallen som ersätter varje nivå.")
-            hint.setWordWrap(True); hint.setStyleSheet("font-size:10px; color:#555;")
-            box_lay.addWidget(hint)
-            table = QTableWidget(0, 3)
-            table.setHorizontalHeaderLabels(["Nu", "→", "Ny nivå"])
-            table.verticalHeader().setVisible(False)
-            table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-            table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-            table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-            box_lay.addWidget(table)
-            mapping_lay.addWidget(box, 1)
-            self._simple_mapping_tables[kind] = table
-        layout.addWidget(mapping)
-        note = QLabel(
-            "Numeriska orsaksfrekvenser placeras automatiskt enligt den nya "
-            "frekvensskalan. Denna kartläggning gäller manuellt valda nivåer.")
-        note.setWordWrap(True); note.setStyleSheet("color:#555; font-size:10px;")
-        layout.addWidget(note)
+    def axis_levels(self, side, kind):
+        return self._axis_levels(self.matrix_cfg(side), kind)
 
-    @staticmethod
-    def _configure_preview(table):
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        table.setWordWrap(True)
-        table.verticalHeader().setVisible(True)
-        table.horizontalHeader().setStretchLastSection(False)
+    def _mapping_key(self, kind, value):
+        return (kind, int(value))
+
+    def iter_mappings(self):
+        return sorted(self._mapping.items(), key=lambda item: (item[0][0], item[0][1]))
+
+    def is_mapped(self, kind, value):
+        return self._mapping_key(kind, value) in self._mapping
+
+    def target_count(self, kind, target):
+        return sum(1 for (mapped_kind, _source), mapped_target in self._mapping.items()
+                   if mapped_kind == kind and mapped_target == target)
+
+    def activate_old_step(self, kind, value):
+        key = self._mapping_key(kind, value)
+        if key in self._mapping and self.armed != key:
+            self.remove_axis_mapping(kind, value)
+            return
+        self.armed = None if self.armed == key else key
+        self._refresh_visuals()
+
+    def activate_target_step(self, kind, value):
+        if self.armed and self.armed[0] == kind:
+            self.set_axis_mapping(kind, self.armed[1], value)
+
+    def _apply_mapping_to_plan(self, kind, source, target):
+        map_key = 'frequency_map' if kind == 'frequency' else 'severity_map'
+        self.plan[map_key][str(source)] = target
+        records_key = 'frequency_records' if kind == 'frequency' else 'severity_records'
+        for record in self.plan[records_key]:
+            if record.get('source') == source and not record.get('override'):
+                if kind != 'frequency' or record.get('source_kind') == 'manual':
+                    record['target'] = target
+        if kind == 'severity':
+            for record in self.plan['definition_records']:
+                if record.get('source') == source and not record.get('override'):
+                    record['target'] = target
+
+    def set_axis_mapping(self, kind, source, target):
+        self._mapping[self._mapping_key(kind, source)] = int(target)
+        self._apply_mapping_to_plan(kind, int(source), int(target))
+        self.armed = None
+        self._refresh_visuals()
+
+    def remove_axis_mapping(self, kind, source):
+        key = self._mapping_key(kind, source)
+        self._mapping.pop(key, None)
+        map_key = 'frequency_map' if kind == 'frequency' else 'severity_map'
+        self.plan[map_key].pop(str(source), None)
+        records_key = 'frequency_records' if kind == 'frequency' else 'severity_records'
+        for record in self.plan[records_key]:
+            if record.get('source') == source and not record.get('override'):
+                if kind != 'frequency' or record.get('source_kind') == 'manual':
+                    record['target'] = None
+        if kind == 'severity':
+            for record in self.plan['definition_records']:
+                if record.get('source') == source and not record.get('override'):
+                    record['target'] = None
+        self.armed = None
+        self._refresh_visuals()
+
+    def clear_mappings(self):
+        self._mapping.clear(); self.armed = None
+        self.plan['frequency_map'].clear(); self.plan['severity_map'].clear()
+        for record in self.plan['frequency_records']:
+            if record.get('source_kind') == 'manual' and not record.get('override'):
+                record['target'] = None
+        for record in self.plan['severity_records']:
+            if not record.get('override'):
+                record['target'] = None
+        for record in self.plan['definition_records']:
+            if not record.get('override'):
+                record['target'] = None
+        self._refresh_visuals()
+
+    def suggest_automatically(self):
+        source = self.plan['source_matrix']; target = self.plan['target_matrix']
+        frequency = self.db._rank_level_map(source['cols'], target['cols'], -1, -1)
+        severity = self.db._rank_level_map(source['rows'], target['rows'], 1, 1)
+        self._mapping.clear()
+        self.plan['frequency_map'].clear(); self.plan['severity_map'].clear()
+        for kind, mapping in (('frequency', frequency), ('severity', severity)):
+            for old, new in mapping.items():
+                self._mapping[(kind, int(old))] = int(new)
+                self._apply_mapping_to_plan(kind, int(old), int(new))
+        self.armed = None
+        self._refresh_visuals()
+
+    def _set_display_x_axis(self, kind):
+        if kind == self._display_x_axis:
+            return
+        self._display_x_axis = kind
+        self._x_frequency.setChecked(kind == 'frequency')
+        self._x_consequence.setChecked(kind == 'severity')
+        # Switching the display axis is a new mapping session.  This avoids
+        # carrying an interpretation made in the other orientation.
+        self.clear_mappings()
+        self._matrix_against_matrix.rebuild()
+        self._refresh_visuals()
+
+    def _mapping_complete(self):
+        expected = sum(len(self.axis_levels('source', kind))
+                       for kind in ('frequency', 'severity'))
+        return len(self._mapping) == expected
+
+    def _refresh_visuals(self):
+        self._link_field.sync_state()
+        self._matrix_against_matrix.sync_state()
+        self._refresh_summary()
 
     @staticmethod
     def _axis_levels(cfg, kind):
@@ -474,273 +815,43 @@ class RiskMatrixMigrationDialog(QDialog):
                            str(descriptions[index]) if index < len(descriptions) else ''))
         return result
 
-    def _fill_preview(self, table, cfg):
-        freq_on_x = cfg.get('x_axis', 'frequency') == 'frequency'
-        x_rev, y_rev = cfg.get('x_reversed', False), cfg.get('y_reversed', False)
-        n_freq, n_cons = cfg['cols'], cfg['rows']
-        cols, rows = (n_freq, n_cons) if freq_on_x else (n_cons, n_freq)
-        col_kind, row_kind = ('frequency', 'severity') if freq_on_x else ('severity', 'frequency')
-        col_levels = self._axis_levels(cfg, col_kind)
-        row_levels = self._axis_levels(cfg, row_kind)
-        table.clear(); table.setRowCount(rows); table.setColumnCount(cols)
-        for col in range(cols):
-            index = (cols - 1 - col) if x_rev else col
-            _value, code, description = col_levels[index]
-            header = QTableWidgetItem(code)
-            header.setToolTip(description or code)
-            table.setHorizontalHeaderItem(col, header)
-        for row in range(rows):
-            index = row if y_rev else (rows - 1 - row)
-            _value, code, description = row_levels[index]
-            header = QTableWidgetItem(code)
-            header.setToolTip(description or code)
-            table.setVerticalHeaderItem(row, header)
-        colors, labels = cfg.get('cell_colors', []), cfg.get('cell_labels', [])
-        for row in range(rows):
-            drow = row if y_rev else rows - 1 - row
-            for col in range(cols):
-                dcol = cols - 1 - col if x_rev else col
-                cons_idx, freq_idx = (drow, dcol) if freq_on_x else (dcol, drow)
-                label = ''
-                color = '#ffffff'
-                try: label = labels[cons_idx][freq_idx]
-                except (IndexError, TypeError): pass
-                try: color = colors[cons_idx][freq_idx]
-                except (IndexError, TypeError): pass
-                item = QTableWidgetItem(label)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setBackground(QBrush(QColor(color)))
-                item.setToolTip(f"Celltext: {label}" if label else "Tom celltext")
-                table.setItem(row, col, item)
-                table.setColumnWidth(col, 82)
-            table.setRowHeight(row, 38)
-
-    def _refresh_simple_mapping(self, kind):
-        table = self._simple_mapping_tables[kind]
-        source = self.plan['source_matrix']
-        target = self.plan['target_matrix']
-        map_key = 'frequency_map' if kind == 'frequency' else 'severity_map'
-        mapping = self.plan[map_key]
-        source_levels = self._axis_levels(source, kind)
-        target_levels = self._axis_levels(target, kind)
-        table.setRowCount(len(source_levels))
-        for row, (value, code, description) in enumerate(source_levels):
-            current = QTableWidgetItem(code)
-            current.setToolTip(description or code)
-            current.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            table.setItem(row, 0, current)
-            arrow = QTableWidgetItem("→")
-            arrow.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            table.setItem(row, 1, arrow)
-            combo = QComboBox()
-            for target_value, target_code, target_description in target_levels:
-                combo.addItem(target_code, target_value)
-                combo.setItemData(combo.count() - 1, target_description or target_code,
-                                  Qt.ItemDataRole.ToolTipRole)
-            combo.setCurrentIndex(max(0, combo.findData(mapping.get(str(value)))) )
-            combo.currentIndexChanged.connect(
-                lambda _index, k=kind, s=value, c=combo:
-                self._set_global_mapping(k, s, c.currentData()))
-            table.setCellWidget(row, 2, combo)
-        table.resizeRowsToContents()
-
-    def _build_mapping_tab(self):
-        page = QWidget(); layout = QHBoxLayout(page)
-        self._mapping_widgets = {}
-        for kind, title in (('frequency', 'Frekvensnivåer'),
-                            ('severity', 'Konsekvensnivåer')):
-            box = QGroupBox(title)
-            box_lay = QVBoxLayout(box)
-            hint = QLabel("Dra nivå från nuvarande skala till önskad nivå i nya mallen.")
-            hint.setWordWrap(True); hint.setStyleSheet("font-size:10px; color:#555;")
-            box_lay.addWidget(hint)
-            lists = QHBoxLayout()
-            source_list = RiskScaleLevelList(kind)
-            target_list = RiskScaleLevelList(kind, accepts_drops=True)
-            target_list.level_dropped.connect(self._on_level_dropped)
-            lists.addWidget(source_list); lists.addWidget(target_list)
-            box_lay.addLayout(lists, 1)
-            mapping = QTableWidget(0, 3)
-            mapping.setHorizontalHeaderLabels(["Nuvarande", "Mål i ny mall", "Berörda rader"])
-            mapping.verticalHeader().setVisible(False)
-            mapping.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-            mapping.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-            mapping.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-            box_lay.addWidget(mapping, 1)
-            layout.addWidget(box, 1)
-            self._mapping_widgets[kind] = (source_list, target_list, mapping)
-        self._tabs.addTab(page, "2. Kartlägg nivåer")
-
-    def _build_records_tab(self):
-        page = QWidget(); layout = QVBoxLayout(page)
-        hint = QLabel(
-            "Varje rad får först standardvalet från kartläggningen. Ändra enskilda "
-            "undantag här, exempelvis när samma gamla nivå ska bli olika nya nivåer.")
-        hint.setWordWrap(True); hint.setStyleSheet("font-size:10px; color:#555;")
-        layout.addWidget(hint)
-        self._records_table = QTableWidget(0, 9)
-        self._records_table.setHorizontalHeaderLabels([
-            "Typ", "Nod", "Avvikelse", "Orsak", "Konsekvens", "Kategori",
-            "Nuvarande", "Ny nivå", "Metod"])
-        self._records_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._records_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._records_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self._records_table.verticalHeader().setVisible(False)
-        for col in (1, 2, 3, 4):
-            self._records_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self._records_table)
-        self._tabs.addTab(page, "3. Berörda rader")
-
-    def _build_definitions_tab(self):
-        page = QWidget(); layout = QVBoxLayout(page)
-        note = QLabel(
-            "Beskrivningarna i konsekvenskategorierna flyttas med den valda "
-            "konsekvenskartläggningen. Två olika texter får aldrig skrivas över tyst.")
-        note.setWordWrap(True); note.setStyleSheet("font-size:10px; color:#555;")
-        layout.addWidget(note)
-        self._definitions_table = QTableWidget(0, 4)
-        self._definitions_table.setHorizontalHeaderLabels(
-            ["Kategori", "Nuvarande nivå", "Beskrivning", "Ny nivå"])
-        self._definitions_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._definitions_table.verticalHeader().setVisible(False)
-        self._definitions_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self._definitions_table)
-        self._tabs.addTab(page, "4. Kategoribeskrivningar")
-
     def _swap_target_axes(self):
-        target = self.plan['target_matrix']
-        target['x_axis'] = ('consequence' if target.get('x_axis', 'frequency') == 'frequency'
-                            else 'frequency')
-        self._fill_preview(self._target_preview, target)
+        self._set_display_x_axis(
+            'severity' if self.display_x_axis == 'frequency' else 'frequency')
 
     def _on_level_dropped(self, kind, source, target):
         self._set_global_mapping(kind, source, target)
 
     def _set_global_mapping(self, kind, source, target):
-        map_key = 'frequency_map' if kind == 'frequency' else 'severity_map'
-        self.plan[map_key][str(source)] = target
-        records_key = 'frequency_records' if kind == 'frequency' else 'severity_records'
-        for record in self.plan[records_key]:
-            if record.get('source') == source and not record.get('override'):
-                if kind != 'frequency' or record.get('source_kind') == 'manual':
-                    record['target'] = target
-        if kind == 'severity':
-            for record in self.plan['definition_records']:
-                if record.get('source') == source and not record.get('override'):
-                    record['target'] = target
-        self._refresh_all()
+        """Compatibility entry point for the retained drag helper/tests."""
+        self.set_axis_mapping(kind, source, target)
 
     def _set_record_mapping(self, records_key, index, value):
         self.plan[records_key][index]['target'] = value
         self.plan[records_key][index]['override'] = True
         self._refresh_summary()
 
-    def _refresh_mapping(self, kind):
-        source_list, target_list, table = self._mapping_widgets[kind]
-        source_cfg, target_cfg = self.plan['source_matrix'], self.plan['target_matrix']
-        map_key = 'frequency_map' if kind == 'frequency' else 'severity_map'
-        mapping = self.plan[map_key]
-        source_list.clear(); target_list.clear(); table.setRowCount(0)
-        source_levels = self._levels(source_cfg, kind)
-        target_levels = self._levels(target_cfg, kind)
-        for value, label in source_levels:
-            item = QListWidgetItem(label); item.setData(Qt.ItemDataRole.UserRole, value)
-            source_list.addItem(item)
-        reverse = {}
-        for source, target in mapping.items():
-            reverse.setdefault(int(target), []).append(int(source))
-        for value, label in target_levels:
-            suffix = ', '.join(self._level_label(source_cfg, kind, src)
-                               for src in reverse.get(value, []))
-            item = QListWidgetItem(f"{label}" + (f"  ← {suffix}" if suffix else ''))
-            item.setData(Qt.ItemDataRole.UserRole, value)
-            target_list.addItem(item)
-        records = self.plan['frequency_records' if kind == 'frequency' else 'severity_records']
-        for row, (source, label) in enumerate(source_levels):
-            table.insertRow(row)
-            table.setItem(row, 0, QTableWidgetItem(label))
-            combo = QComboBox()
-            for target, target_label in target_levels:
-                combo.addItem(target_label, target)
-            combo.setCurrentIndex(max(0, combo.findData(mapping.get(str(source)))))
-            combo.currentIndexChanged.connect(
-                lambda _i, k=kind, s=source, c=combo: self._set_global_mapping(k, s, c.currentData()))
-            table.setCellWidget(row, 1, combo)
-            if kind == 'frequency':
-                count = sum(1 for record in records if record.get('source') == source and
-                            record.get('source_kind') == 'manual')
-            else:
-                count = sum(1 for record in records if record.get('source') == source)
-            table.setItem(row, 2, QTableWidgetItem(str(count)))
-
-    def _refresh_records(self):
-        table = self._records_table
-        rows = [('frequency_records', index, record)
-                for index, record in enumerate(self.plan['frequency_records'])]
-        rows += [('severity_records', index, record)
-                 for index, record in enumerate(self.plan['severity_records'])]
-        table.setRowCount(0)
-        for row_idx, (record_key, index, record) in enumerate(rows):
-            table.insertRow(row_idx)
-            kind = 'frequency' if record_key == 'frequency_records' else 'severity'
-            if kind == 'frequency':
-                type_label = 'Frekvens'
-                if record.get('source_kind') == 'numeric':
-                    type_label += ' (numerisk)'
-                method = (f"{record.get('numeric_frequency'):.4g}/år → ny gräns"
-                          if record.get('source_kind') == 'numeric' else 'Kartlagd nivå')
-            else:
-                type_label = {'base': 'Konsekvens', 'category': 'Kategori',
-                              'final': 'Slutkonsekvens'}.get(record.get('kind'), 'Konsekvens')
-                method = 'Kartlagd nivå'
-            values = [type_label, record.get('node', ''), record.get('deviation', ''),
-                      record.get('cause', ''), record.get('consequence', ''),
-                      record.get('category', ''),
-                      self._level_label(self.plan['source_matrix'], kind, record['source'])]
-            for col, value in enumerate(values):
-                table.setItem(row_idx, col, QTableWidgetItem(str(value)))
-            combo = QComboBox()
-            for value, label in self._levels(self.plan['target_matrix'], kind):
-                combo.addItem(label, value)
-            combo.setCurrentIndex(max(0, combo.findData(record['target'])))
-            combo.currentIndexChanged.connect(
-                lambda _i, rk=record_key, ri=index, c=combo:
-                self._set_record_mapping(rk, ri, c.currentData()))
-            table.setCellWidget(row_idx, 7, combo)
-            table.setItem(row_idx, 8, QTableWidgetItem(method))
-        table.resizeRowsToContents()
-
-    def _refresh_definitions(self):
-        table = self._definitions_table
-        table.setRowCount(0)
-        for row, record in enumerate(self.plan['definition_records']):
-            table.insertRow(row)
-            table.setItem(row, 0, QTableWidgetItem(record.get('category', '')))
-            table.setItem(row, 1, QTableWidgetItem(
-                self._level_label(self.plan['source_matrix'], 'severity', record['source'])))
-            table.setItem(row, 2, QTableWidgetItem(record.get('description', '')))
-            table.setItem(row, 3, QTableWidgetItem(
-                self._level_label(self.plan['target_matrix'], 'severity', record['target'])))
-        table.resizeRowsToContents()
-
     def _refresh_summary(self):
-        frequency = len(self.plan['frequency_records'])
-        numeric = sum(1 for row in self.plan['frequency_records']
-                      if row.get('source_kind') == 'numeric')
-        severity = len(self.plan['severity_records'])
-        self._summary.setText(
-            f"{frequency} orsaksfrekvenser och {severity} konsekvensbedömningar "
-            f"följer kartläggningen. {numeric} numeriska frekvenser placeras "
-            "automatiskt enligt den nya skalan. Inget sparas förrän du bekräftar.")
+        total = sum(len(self.axis_levels('source', kind))
+                    for kind in ('frequency', 'severity'))
+        mapped = len(self._mapping)
+        self._progress.setText(
+            f"{mapped} av {total} gamla steg mappade. "
+            "Inget sparas förrän du genomför migreringen.")
+        self._apply_button.setEnabled(mapped == total)
 
     def _refresh_all(self):
-        self._fill_preview(self._source_preview, self.plan['source_matrix'])
-        self._fill_preview(self._target_preview, self.plan['target_matrix'])
-        self._refresh_simple_mapping('frequency')
-        self._refresh_simple_mapping('severity')
+        self._link_field.rebuild()
+        self._matrix_against_matrix.rebuild()
         self._refresh_summary()
 
     def _confirm_accept(self):
+        if not self._mapping_complete():
+            QMessageBox.warning(
+                self, "Ofullständig kartläggning",
+                "Koppla varje gammalt frekvens- och konsekvenssteg innan "
+                "migreringen kan genomföras.")
+            return
         answer = QMessageBox.question(
             self, "Genomför mallbyte",
             "En backup skapas. Därefter används kartläggningen för att byta "

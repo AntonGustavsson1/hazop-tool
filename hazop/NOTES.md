@@ -1,5 +1,32 @@
 # NOTES.md — Beslut och kontext
 
+## Två sammanlänkade vyer för axelmappning vid matrisbyte (2026-09-01)
+
+Riskmatrismigreringen är ombyggd enligt `HAZOP-Axelmappning-Handoff.md`.
+Dialogen har nu en gemensam verktygsrad och två flikar: `Kopplingsfält` för
+ett tydligt gammalt-steg-till-nytt-steg-flöde och `Matris mot matris` för två
+verkliga, färgsatta matriser. Båda flikarna arbetar direkt mot samma
+mappningsstate och samma migrationsplan; en mappning syns därför omedelbart i
+den andra vyn.
+
+Axelchips använder nu de sparade tecknen och beskrivningarna från aktuell och
+ny riskmatris, aldrig demonstrationsdata. Ett gammalt steg aktiveras med
+klick eller dras till ett nytt steg av samma typ. Ett redan kopplat gammalt
+steg kan klickas för att tas bort. Flera gamla steg får kopplas till samma
+nya steg, men ett gammalt steg har alltid exakt ett mål. `Föreslå automatiskt`
+ger rangbaserade förslag och `Rensa` nollställer dem. Byte av visad X-axel
+nollställer avsiktligt mappningen för att inte blanda tolkningar mellan
+orienteringarna.
+
+Migrationsknappen är spärrad tills samtliga gamla frekvens- och
+konsekvenssteg är kopplade. Den befintliga databasmigreringen och dess
+transaktionella backup/audit används oförändrade när dialogen bekräftas.
+
+Verifierat med 17 riktade riskmatris-/inställningstester, två
+datalagertester för migrering, `tests.test_smoke` (12 tester), `py_compile`
+och `git diff --check`. Testerna är headless; ingen manuell visuell
+genomklickning av de nya kurvorna har gjorts.
+
 ## Förenklad riskmatrismigrering (2026-09-01)
 
 Migrationsdialogen visar nu en enda arbetsyta i stället för fyra täta flikar.

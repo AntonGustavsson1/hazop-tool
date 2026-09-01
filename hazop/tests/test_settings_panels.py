@@ -1117,7 +1117,7 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_template_migration_dialog_keeps_drag_mapping_separate_from_row_override(self):
+    def test_template_migration_dialog_keeps_mapping_state_and_row_override_separate(self):
         from hazop_preparation_panel import RiskMatrixMigrationDialog
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
@@ -1134,10 +1134,11 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         self.db.set_risk_matrix(source)
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
-            # This is the same slot used by dropping source frequency A/F=-1
-            # on a target level. It changes the global map, not data in DB.
+            # This is the same entry point used by a chip drag/drop.  It
+            # changes the shared visual mapping state, not data in DB.
             dialog._on_level_dropped('frequency', 0, -1)
             self.assertEqual(dialog.plan['frequency_map']['0'], -1)
+            self.assertEqual(dialog._mapping[('frequency', 0)], -1)
             record = next(row for row in dialog.plan['frequency_records']
                           if row['cause_id'] == cause_id)
             self.assertEqual(record['target'], -1)
@@ -1150,15 +1151,22 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             self.assertTrue(record['override'])
             self.assertEqual(dialog.plan['frequency_map']['0'], -1)
 
-            before = dialog.plan['frequency_map'].copy()
+            # Both tabs read the same state. A mapped source chip is visible
+            # in both collections, without copying an independent map.
+            self.assertIn(('frequency', 0), dialog._link_field.old_chips)
+            self.assertIn(('frequency', 0), dialog._matrix_against_matrix.old_chips)
+
+            # Changing the display axis deliberately starts a fresh mapping
+            # session, per the migration handoff specification.
             dialog._swap_target_axes()
-            self.assertEqual(dialog.plan['frequency_map'], before,
-                             'axis swap must only change visual presentation')
+            self.assertEqual(dialog.plan['frequency_map'], {})
+            self.assertEqual(dialog._mapping, {})
+            self.assertEqual(dialog.display_x_axis, 'severity')
         finally:
             dialog.deleteLater()
 
-    def test_template_migration_overview_is_coloured_and_code_focused(self):
-        """The first migration view explains A -> 1 without raw row detail."""
+    def test_template_migration_has_two_real_matrix_views_with_shared_state(self):
+        """Both migration views use actual codes, descriptions and colours."""
         from hazop_preparation_panel import RiskMatrixMigrationDialog
         source = {
             'rows': 2, 'cols': 2, 'x_axis': 'frequency', 'y_reversed': True,
@@ -1181,17 +1189,24 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         self.db.set_risk_matrix(source)
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
-            self.assertEqual(dialog._source_preview.horizontalHeaderItem(0).text(), 'A')
-            self.assertEqual(dialog._source_preview.horizontalHeaderItem(0).toolTip(),
-                             'Sällsynt händelse')
-            self.assertEqual(dialog._source_preview.item(0, 0).background().color().name(),
-                             '#123456')
-            self.assertEqual(dialog._target_preview.item(0, 0).background().color().name(),
-                             '#abcdef')
-            mapping = dialog._simple_mapping_tables['frequency']
-            self.assertEqual(mapping.item(0, 0).text(), 'A')
-            self.assertEqual(mapping.item(0, 1).text(), '→')
-            self.assertEqual(mapping.cellWidget(0, 2).currentText(), '1')
+            self.assertEqual([dialog._tabs.tabText(i) for i in range(dialog._tabs.count())],
+                             ['Kopplingsfält', 'Matris mot matris'])
+            source_chip = dialog._link_field.old_chips[('frequency', -1)]
+            target_chip = dialog._link_field.target_chips[('frequency', -1)]
+            self.assertEqual(source_chip.code, 'A')
+            self.assertEqual(source_chip.toolTip(), 'Sällsynt händelse')
+            self.assertEqual(target_chip.code, '1')
+            self.assertEqual(
+                dialog._matrix_against_matrix.old_chips[('severity', 1)].code, '0')
+
+            dialog.clear_mappings()
+            dialog.activate_old_step('frequency', -1)
+            dialog.activate_target_step('frequency', 0)
+            self.assertEqual(dialog._mapping[('frequency', -1)], 0)
+            self.assertTrue(dialog._link_field.old_chips[('frequency', -1)].isEnabled())
+            self.assertTrue(dialog._matrix_against_matrix.old_chips[('frequency', -1)].isEnabled())
+            self.assertEqual(dialog._progress.text(), '1 av 4 gamla steg mappade. '
+                             'Inget sparas förrän du genomför migreringen.')
         finally:
             dialog.deleteLater()
 
