@@ -4704,6 +4704,49 @@ class CellObjectReferenceEditTests(unittest.TestCase):
         self.assertEqual(self.db.get_equipment_by_id(self.old_id)['tag'], 'PV-101',
                          'Byt objekt must not rename the object that was clicked')
 
+    def test_active_cause_editor_does_not_paint_saved_description_underneath(self):
+        """Inline ORS editing keeps the tag context, never stale prose."""
+        from PyQt6.QtGui import QPainter
+        from PyQt6.QtCore import QRect
+        from PyQt6.QtWidgets import QStyleOptionViewItem
+        from scenario_panel import _BoldTagTextEdit
+
+        stale_text = 'Sparad text som inte får ligga bakom editorn'
+        self.db.update_cause(
+            self.cause_id, description=stale_text, comp_type='Ventil',
+            comp_tag='PV-101', equipment_id=self.old_id)
+        self.panel.load_node(self.node_id)
+        self.panel.resize(900, 400)
+        self.panel.show()
+        self.app.processEvents()
+        row = next(row for row, meta in enumerate(self.panel._row_meta)
+                   if meta[1] == self.cause_id)
+        index = self.panel._table.model().index(row, self.panel._C_ORS)
+        self.panel._table.edit(index)
+        self.app.processEvents()
+        self.assertTrue(any(
+            editor.isVisible() and editor.property('editing_row') == row
+            for editor in self.panel._table.findChildren(_BoldTagTextEdit)))
+
+        painted_text = []
+        def record_text(_painter, _rect, text, *_args, **_kwargs):
+            painted_text.append(text)
+
+        option = QStyleOptionViewItem()
+        option.rect = QRect(0, 0, 320, 60)
+        option.font = self.panel._table.font()
+        pixmap = QPixmap(option.rect.size())
+        painter = QPainter(pixmap)
+        try:
+            with unittest.mock.patch('scenario_panel._draw_text_with_bold_tags',
+                                     side_effect=record_text):
+                self.panel._pid_delegate.paint(painter, option, index)
+        finally:
+            painter.end()
+
+        self.assertNotIn(stale_text, painted_text)
+        self.assertTrue(any('PV-101, ' in text for text in painted_text))
+
     def test_group_object_switch_updates_only_the_clicked_group_member(self):
         fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
                                            'Flödesgivare', '', 0)

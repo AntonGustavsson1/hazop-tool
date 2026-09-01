@@ -4261,6 +4261,18 @@ och som fallerar mot den gamla koden; `tests.test_smoke` och riktade
 `tests.test_integration`-tester passerar. Ingen visuell GUI-verifiering är
 gjord.
 
+## Orsak: ingen spöktext under inline-redigering (2026-09-01)
+
+När en orsaksrad redigeras ritas inte längre den sparade fritexten under
+inline-redigeraren. Orsaksnummer och fet objekttagg ligger kvar som synlig
+kontext. Grupporsaker använder samma säkra editoridentifiering, så den
+redigerade primär-/sekundär-/tertiärraden inte kan få sin gamla text under
+den aktuella editorn medan övriga grupprader fortsatt visas.
+
+Verifierat med ett nytt renderingsnära regressionstest för vanlig orsak,
+alla 13 objekt-/grupporsakstester, `tests.test_smoke` och `py_compile`.
+Ingen manuell GUI-verifiering är gjord.
+
 ## Frekvens: rensa en enskild orsak (2026-09-01)
 
 Frekvens-popupen har nu knappen `Rensa`. Den tar bort just den valda orsakens

@@ -3013,27 +3013,29 @@ class _PidDelegate(_ScenarioDelegate):
         text.  Identify the live editor by the row/column identity already
         stored on it; the other grouped line must remain painted as context.
         """
-        viewport = self._panel._table.viewport()
-        for editor in viewport.findChildren(_BoldTagTextEdit):
-            if not editor.isVisible():
-                continue
-            if (editor.property('editing_row') != index.row() or
-                    editor.property('editing_col') != index.column()):
-                continue
-            # QAbstractItemView normally parents the editor to the viewport,
-            # but use an explicit mapping so this remains correct if Qt or a
-            # style inserts another intermediate parent later.  Both rects
-            # are then expressed in the viewport's coordinate system.
-            editor_top_left = editor.mapTo(viewport, QPoint(0, 0))
-            editor_rect = QRect(editor_top_left, editor.size())
-            if not editor_rect.intersects(rect):
-                continue
+        editor = self._active_inline_editor(index)
+        if editor is not None:
             try:
                 group_line = int(editor.property('group_line'))
             except (TypeError, ValueError):
-                continue
-            if group_line is not None and group_line >= 0:
+                return None
+            if group_line >= 0:
                 return group_line
+        return None
+
+    def _active_inline_editor(self, index):
+        """Return the live editor for exactly this table cell, if any.
+
+        The delegate paints before the editor widget, so a saved description
+        must be deliberately suppressed here rather than relying on the
+        editor's white background to cover it.  That coverage is incomplete
+        for the compact group-row editors, which occupy only one visual line.
+        """
+        for editor in self._panel._table.viewport().findChildren(_BoldTagTextEdit):
+            if (editor.isVisible() and
+                    editor.property('editing_row') == index.row() and
+                    editor.property('editing_col') == index.column()):
+                return editor
         return None
 
     def updateEditorGeometry(self, editor, option, index):
@@ -3232,6 +3234,7 @@ class _PidDelegate(_ScenarioDelegate):
                 desc = index.data(Qt.ItemDataRole.DisplayRole) or ''
                 tag_label, show_tag = self._panel._ors_tag_prefix(item)
                 combined = self._panel._ors_combined_text(item, desc)
+                active_editor = self._active_inline_editor(index)
 
                 meta_      = self._panel._row_meta
                 _cause_id  = meta_[row][1] if row < len(meta_) else None
@@ -3334,9 +3337,26 @@ class _PidDelegate(_ScenarioDelegate):
                                              Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                                              parts[1])
                 else:
-                    _draw_text_with_bold_tags(
-                        painter, desc_rect.adjusted(0, 1, 0, -1),
-                        combined, tags, option.font, tc, word_wrap=True)
+                    if active_editor is not None:
+                        # Keep the structural context outside the editor,
+                        # but do not paint the saved description underneath
+                        # the text currently being edited.  This mirrors the
+                        # recommendation editor's ghost-text rule.
+                        number = item.data(Qt.ItemDataRole.UserRole + 10) if item else None
+                        context = f"{number}.  " if number else ''
+                        if show_tag:
+                            context += tag_label
+                            if desc.strip() not in ('', 'Ny orsak'):
+                                context += ', '
+                        if context:
+                            _draw_text_with_bold_tags(
+                                painter, desc_rect.adjusted(0, 1, 0, -1),
+                                context, [tag_label] if show_tag else [],
+                                option.font, tc, word_wrap=False)
+                    else:
+                        _draw_text_with_bold_tags(
+                            painter, desc_rect.adjusted(0, 1, 0, -1),
+                            combined, tags, option.font, tc, word_wrap=True)
 
                 # ── Frequency — floats over the first line, right-aligned,
                 # drawn AFTER the text so it stays on top ("längst ut till
