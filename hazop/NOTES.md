@@ -5059,3 +5059,15 @@ Verifierat med regressionstest för bokstav på tom konsekvenscell, test för
 snabba byten mellan grupporsakens sekundär/primärrad, berörda grupporsaks- och
 inline-editor-tester, `py_compile` och `git diff --check`. Ingen manuell
 visuell GUI-verifiering är gjord.
+
+## Räknare på P&ID följer HAZOP-trädets färgknappar (2026-09-01)
+
+De tre räknarna på utrustningsmarkörens gummiband/badges använder nu samma
+färger som knapparna `Orsaker`, `Konsekvenser` och `Safeguards` ovanför
+HAZOP-trädet. Färgval som ändras via knappens högerklick slår därför igenom
+även på räknarna när P&ID-lagret ritas om. Räknarnas text växlar automatiskt
+mellan vit och mörk text beroende på bakgrundens ljushet.
+
+Verifierat med tester för alla tre badgefärger, färgknapparnas sparade färger,
+`tests.test_smoke`, `py_compile` och `git diff --check`. Ingen manuell visuell
+GUI-verifiering är gjord.

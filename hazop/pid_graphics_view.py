@@ -42,7 +42,7 @@ from pid_viewer import (
     MODE_PLACE_EQUIPMENT,
     MODE_EDIT_EQUIPMENT,
     _icon, _get_red_symbol_svg, _PageRenderer, _apply_min_pdf_line_width,
-    SimilarSymbolSearchDialog,
+    SimilarSymbolSearchDialog, TREE_CONTEXT_LINK_COLORS,
 )
 # MODE_SMART_POLYLINE / SmartPipeTracer ("Smart polylinje") removed
 # 2026-08-26 -- see NOTES.md and archive/smart_pipe_tracer.py.
@@ -2052,7 +2052,20 @@ class PIDGraphicsView(QGraphicsView):
         item.setCursor(Qt.CursorShape.PointingHandCursor)   # matches cause/consequence/safeguard markers
         self._add_tracked(item, 'equipment')
 
-        def _draw_corner_badge(bx, by, count, outline, fill):
+        def _draw_corner_badge(bx, by, count, link_type, fallback):
+            # Use the same configurable colours as the three visibility
+            # buttons above the HAZOP tree.  These badges represent the
+            # corresponding cause/consequence/safeguard counts, so hardcoded
+            # green/orange/blue colours made the P&ID disagree with the
+            # user's selected tree palette.
+            fill = QColor(TREE_CONTEXT_LINK_COLORS.get(
+                link_type, QColor(fallback)))
+            if not fill.isValid():
+                fill = QColor(fallback)
+            outline = fill.darker(140)
+            luminance = (0.299 * fill.red() + 0.587 * fill.green()
+                         + 0.114 * fill.blue())
+            text_color = QColor('#111111' if luminance > 155 else '#ffffff')
             badge_r = 8.0
             badge = QGraphicsEllipseItem(bx - badge_r, by - badge_r, 2 * badge_r, 2 * badge_r)
             badge.setPen(QPen(outline, 1))
@@ -2064,7 +2077,7 @@ class PIDGraphicsView(QGraphicsView):
             count_txt = QGraphicsSimpleTextItem(str(count))
             f = QFont(); f.setPointSize(8); f.setBold(True)
             count_txt.setFont(f)
-            count_txt.setBrush(QBrush(QColor(255, 255, 255)))
+            count_txt.setBrush(QBrush(text_color))
             tb = count_txt.boundingRect()
             count_txt.setPos(bx - tb.width() / 2, by - tb.height() / 2)
             count_txt.setZValue(Z_OVERLAY + 2)
@@ -2072,17 +2085,17 @@ class PIDGraphicsView(QGraphicsView):
 
         poly_rect = QPolygonF(points).boundingRect()
         # Three corners, one counter each — colours distinct from the
-        # cause/consequence/safeguard markers themselves (red/orange/green)
-        # so the two never get visually conflated at a glance.
+        # The three counters use the matching configurable cause,
+        # consequence and safeguard colours from the HAZOP tree buttons.
         if has_deviations:
-            _draw_corner_badge(poly_rect.right(), poly_rect.top(), deviation_count,
-                               QColor(0, 100, 40), QColor(0, 140, 60))
+            _draw_corner_badge(poly_rect.right(), poly_rect.top(),
+                               deviation_count, 'cause', '#e74c3c')
         if consequence_count > 0:
-            _draw_corner_badge(poly_rect.right(), poly_rect.bottom(), consequence_count,
-                               QColor(180, 100, 0), QColor(230, 140, 20))
+            _draw_corner_badge(poly_rect.right(), poly_rect.bottom(),
+                               consequence_count, 'consequence', '#e67e22')
         if safeguard_count > 0:
-            _draw_corner_badge(poly_rect.left(), poly_rect.bottom(), safeguard_count,
-                               QColor(20, 60, 130), QColor(52, 110, 200))
+            _draw_corner_badge(poly_rect.left(), poly_rect.bottom(),
+                               safeguard_count, 'safeguard', '#27ae60')
 
         if tag:
             self._place_label(tag, x_pdf, y_pdf, r, QColor(140, 0, 0), 'equipment')

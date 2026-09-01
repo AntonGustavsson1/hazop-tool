@@ -640,6 +640,39 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
                                   deviation_count=0, consequence_count=5, safeguard_count=0)
         self.assertEqual(self._badge_count(view), 1)
 
+    def test_badges_use_the_tree_visibility_button_colours(self):
+        from pid_viewer import (PIDGraphicsView, TREE_CONTEXT_LINK_COLORS,
+                                set_tree_context_link_color)
+        from PyQt6.QtGui import QColor
+        from PyQt6.QtWidgets import QGraphicsSimpleTextItem
+
+        original = {key: QColor(value)
+                    for key, value in TREE_CONTEXT_LINK_COLORS.items()}
+        chosen = {
+            'cause': '#2457a6',
+            'consequence': '#d97706',
+            'safeguard': '#16a34a',
+        }
+        try:
+            for key, value in chosen.items():
+                set_tree_context_link_color(key, value)
+            view = PIDGraphicsView()
+            view.add_equipment_marker(
+                1, 0, 0, "Ventil", tag="V-101", deviation_count=2,
+                consequence_count=1, safeguard_count=3)
+            badges = [item for item in view._type_items['equipment']
+                      if item.__class__.__name__ == 'QGraphicsEllipseItem']
+            self.assertEqual({badge.brush().color().name() for badge in badges},
+                             set(chosen.values()))
+            count_texts = [item for item in view._type_items['equipment']
+                           if isinstance(item, QGraphicsSimpleTextItem)]
+            self.assertTrue(count_texts)
+            self.assertTrue(all(item.brush().color().isValid()
+                                for item in count_texts))
+        finally:
+            for key, value in original.items():
+                set_tree_context_link_color(key, value)
+
     def test_tooltip_mentions_all_three_counts(self):
         from pid_viewer import PIDGraphicsView
         from PyQt6.QtWidgets import QGraphicsPolygonItem
