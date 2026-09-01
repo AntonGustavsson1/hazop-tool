@@ -5123,3 +5123,15 @@ Mappningen ligger på dialognivå och används av samma migreringsplan. Den
 `Föreslå automatiskt` hanterar även kategorikopplingarna. Verifierat med
 riktade migreringstester, `tests.test_smoke`, `py_compile` och `git diff --check`.
 Ingen manuell visuell GUI-verifiering är gjord.
+## Kategorikoppling: permanenta connectors och renare flik (2026-09-01)
+
+Kopplingscanvasen använde tidigare alltid axelmappningen när den målade sina
+vanliga länkar. Kategorikopplingarna fanns därför i state men syntes bara som
+en tillfällig streckad draglinje. Canvasen använder nu sin egen iterator, så
+aktiva kategori-connectorer visas permanent även efter att musknappen släppts.
+
+Kategorifliken visar bara själva kategorikopplingen. Den tidigare extra
+nivåöversättningsdelen är borttagen från vyn och layouten använder en kompakt
+fast höjd för kategoriraderna. Verifierat med renderkontroll, riktade
+migreringstester, `tests.test_smoke`, `py_compile` och `git diff --check`.
+Ingen manuell visuell GUI-verifiering är gjord.

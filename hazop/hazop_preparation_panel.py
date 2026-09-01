@@ -439,6 +439,16 @@ class _AxisMappingCanvas(QWidget):
         self._layout.setHorizontalSpacing(80)
         self._layout.setVerticalSpacing(6)
 
+    def iter_mappings(self):
+        """Return mappings rendered by this canvas.
+
+        Category mapping uses the same canvas but keeps its mapping in a
+        separate dialog-level dictionary.  Looking up the iterator on the
+        canvas, rather than hard-coding the axis iterator in ``paintEvent``,
+        keeps both views' connectors visible after a normal render.
+        """
+        return self.dialog.iter_mappings()
+
     @staticmethod
     def _section_label(text):
         label = QLabel(text)
@@ -551,7 +561,7 @@ class _AxisMappingCanvas(QWidget):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        for index, ((kind, source), target) in enumerate(self.dialog.iter_mappings()):
+        for index, ((kind, source), target) in enumerate(self.iter_mappings()):
             old = self.old_chips.get((kind, source))
             new = self.target_chips.get((kind, target))
             if old and new:
@@ -673,6 +683,7 @@ class _CategoryMappingCanvas(_AxisMappingCanvas):
         self._layout.setColumnStretch(0, 1)
         self._layout.setColumnStretch(1, 1)
         self._layout.setColumnStretch(2, 1)
+        self._layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._layout.addWidget(
             self._section_label('KONSEKVENSKATEGORI'), 0, 0, 1, 3)
         self._layout.addWidget(self._section_label('BEFINTLIG MATRIS'), 1, 0)
@@ -690,7 +701,7 @@ class _CategoryMappingCanvas(_AxisMappingCanvas):
 
 
 class CategoryMappingPanel(QWidget):
-    """Consequence-category links plus optional per-category level mapping."""
+    """Minimal consequence-category mapping tab."""
 
     def __init__(self, dialog, parent=None):
         super().__init__(parent)
@@ -713,7 +724,12 @@ class CategoryMappingPanel(QWidget):
         source_categories = self.dialog.plan.get('source_categories', [])
         self._mapping_canvas = _CategoryMappingCanvas(self.dialog, self)
         self._mapping_canvas.rebuild()
-        self._layout.addWidget(self._mapping_canvas, 1)
+        category_count = max(len(source_categories),
+                             len(self.dialog.plan.get('target_categories', [])), 1)
+        self._mapping_canvas.setMinimumHeight(72 + category_count * 34)
+        self._mapping_canvas.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                            QSizePolicy.Policy.Fixed)
+        self._layout.addWidget(self._mapping_canvas)
         self.source_chips = {
             key[1]: chip for key, chip in self._mapping_canvas.old_chips.items()
         }
@@ -721,42 +737,6 @@ class CategoryMappingPanel(QWidget):
             key[1]: chip for key, chip in self._mapping_canvas.target_chips.items()
         }
 
-        converters = QGroupBox("Nivåöversättning per kategori")
-        converters_lay = QVBoxLayout(converters)
-        for category in source_categories:
-            source_id = str(category['source_id'])
-            target = self.dialog.target_category(source_id)
-            toggle = QToolButton()
-            toggle.setCheckable(True)
-            toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-            target_name = target.get('name') if target else 'välj mallkategori'
-            toggle.setText(f"{category['name']}  →  {target_name}")
-            toggle.setArrowType(Qt.ArrowType.RightArrow)
-            body = QWidget()
-            form = QFormLayout(body)
-            form.setContentsMargins(18, 0, 0, 4)
-            for source_value, source_code, _source_description in self.dialog.axis_levels(
-                    'source', 'severity'):
-                combo = QComboBox()
-                for target_value, target_code, target_description in self.dialog.axis_levels(
-                        'target', 'severity'):
-                    combo.addItem(
-                        f"{target_code} — {target_description}"
-                        if target_description else target_code,
-                        target_value)
-                combo.setCurrentIndex(max(0, combo.findData(
-                    self.dialog.category_level_target(source_id, source_value))))
-                combo.currentIndexChanged.connect(
-                    lambda _index, sid=source_id, sv=source_value, c=combo:
-                    self.dialog.set_category_level_mapping(sid, sv, c.currentData()))
-                form.addRow(QLabel(source_code), combo)
-            body.setVisible(False)
-            toggle.toggled.connect(body.setVisible)
-            toggle.toggled.connect(lambda checked, t=toggle: t.setArrowType(
-                Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow))
-            converters_lay.addWidget(toggle)
-            converters_lay.addWidget(body)
-        self._layout.addWidget(converters)
         QTimer.singleShot(0, self.sync_state)
 
     def sync_state(self):

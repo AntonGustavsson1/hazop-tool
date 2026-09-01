@@ -1337,6 +1337,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             dialog.activate_target_category('new-person')
             self.assertEqual(dialog.plan['category_map'][source_id], 'new-person')
             self.assertEqual(dialog._mapping, {})
+            self.assertEqual(dialog._category_panel._mapping_canvas.iter_mappings(),
+                             [(('category', source_id), 'new-person')])
         finally:
             dialog.deleteLater()
 
