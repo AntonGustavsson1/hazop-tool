@@ -56,19 +56,19 @@ ST1_RISK_MATRIX_PRESET = {
     'x_codes': ['A', 'B', 'C', 'D', 'E'],
     'y_codes': ['0', '1', '2', '3', '4', '5'],
     'x_labels': [
-        'A – Aldrig hört talas om inom industrin',
-        'B – Har inträffat inom industrin',
-        'C – Har inträffat flertalet gånger inom industrin',
-        'D – Har inträffat inom bolaget',
-        'E – Har inträffat flertalet gånger inom bolaget',
+        'Aldrig hört talas om inom industrin',
+        'Har inträffat inom industrin',
+        'Har inträffat flertalet gånger inom industrin',
+        'Har inträffat inom bolaget',
+        'Har inträffat flertalet gånger inom bolaget',
     ],
     'y_labels': [
-        '0 – Ingen skada eller hälsoeffekt',
-        '1 – Liten skada eller hälsoeffekt',
-        '2 – Begränsad skada eller hälsoeffekt',
-        '3 – Stor skada eller hälsoeffekt',
-        '4 – Bestående total invaliditet eller upp till 3 döda',
-        '5 – 4 eller fler döda',
+        'Ingen skada eller hälsoeffekt',
+        'Liten skada eller hälsoeffekt',
+        'Begränsad skada eller hälsoeffekt',
+        'Stor skada eller hälsoeffekt',
+        'Bestående total invaliditet eller upp till 3 döda',
+        '4 eller fler döda',
     ],
     'cell_colors': [
         ['#8DB1DF', '#8DB1DF', '#8DB1DF', '#8DB1DF', '#8DB1DF'],
@@ -95,6 +95,30 @@ ST1_RISK_MATRIX_PRESET = {
         ['#000000', '#000000', '#000000', '#000000', '#000000'],
     ],
     'freq_boundaries': [1e-5, 1e-4, 1e-3, 1e-2],
+    # Template-owned consequence categories.  Short risk-matrix codes and
+    # their full descriptions remain separate just as for the two axes.
+    'consequence_categories': [
+        {'key': 'person', 'name': 'Person', 'color': '#2563eb',
+         'descriptions': ['Ingen skada eller hälsoeffekt', 'Liten skada eller hälsoeffekt',
+                          'Begränsad skada eller hälsoeffekt', 'Stor skada eller hälsoeffekt',
+                          'Bestående total invaliditet eller upp till 3 döda', '4 eller fler döda']},
+        {'key': 'miljo', 'name': 'Miljö', 'color': '#16a34a',
+         'descriptions': ['Ingen miljöpåverkan', 'Liten lokal påverkan', 'Begränsad påverkan',
+                          'Stor lokal eller regional påverkan', 'Allvarlig regional påverkan',
+                          'Omfattande eller långvarig miljöpåverkan']},
+        {'key': 'ekonomi', 'name': 'Ekonomi', 'color': '#d97706',
+         'descriptions': ['Obetydlig kostnad', 'Mindre kostnad', 'Betydande kostnad',
+                          'Stor ekonomisk skada', 'Mycket stor ekonomisk skada',
+                          'Kritisk ekonomisk skada']},
+        {'key': 'tillgangar', 'name': 'Tillgångar', 'color': '#d97706',
+         'descriptions': ['Ingen egendomsskada', 'Mindre skada', 'Betydande skada',
+                          'Stor skada', 'Mycket stor skada eller långt stopp',
+                          'Förlust av anläggning eller verksamhet']},
+        {'key': 'rykte', 'name': 'Rykte', 'color': '#475569',
+         'descriptions': ['Ingen extern påverkan', 'Lokal uppmärksamhet', 'Regional uppmärksamhet',
+                          'Nationell uppmärksamhet', 'Omfattande negativ uppmärksamhet',
+                          'Långvarig internationell uppmärksamhet']},
+    ],
 }
 
 
@@ -617,6 +641,152 @@ class MatrixAgainstMatrix(_AxisMappingCanvas):
         return group
 
 
+class CategoryMappingChip(QPushButton):
+    """One draggable source/target category chip in the mapping drawer."""
+
+    def __init__(self, panel, role, key, name, color):
+        super().__init__(name, panel)
+        self.panel, self.role, self.key = panel, role, key
+        self.color = color or '#64748b'
+        self._pressed = False
+        self.setCursor(Qt.CursorShape.OpenHandCursor if role == 'source'
+                       else Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(28)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed = True
+            self.panel.category_pressed(self, event.globalPosition().toPoint())
+            event.accept(); return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._pressed and event.buttons() & Qt.MouseButton.LeftButton:
+            self.panel.category_moved(self, event.globalPosition().toPoint())
+            event.accept(); return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._pressed and event.button() == Qt.MouseButton.LeftButton:
+            self._pressed = False
+            self.panel.category_released(self, event.globalPosition().toPoint())
+            event.accept(); return
+        super().mouseReleaseEvent(event)
+
+    def set_state(self, armed=False, mapped=False, over=False):
+        background = '#dbeafe' if armed else ('#eef4ff' if mapped else '#ffffff')
+        border = '#1d2d3d' if armed or over else self.color
+        self.setStyleSheet(
+            f"QPushButton{{background:{background}; border:1px solid {border}; "
+            "border-radius:0px; padding:3px 6px; text-align:left; font-size:10px;}"
+            "QPushButton:hover{background:#eef2f7;}")
+
+
+class CategoryMappingPanel(QWidget):
+    """Collapsible category and per-category severity conversion editor."""
+
+    def __init__(self, dialog, parent=None):
+        super().__init__(parent)
+        self.dialog = dialog
+        self.source_chips, self.target_chips = {}, {}
+        self.drag_chip = self.drag_over = None
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(5)
+
+    def _chip_at(self, global_pos):
+        widget = QApplication.widgetAt(global_pos)
+        while widget is not None and not isinstance(widget, CategoryMappingChip):
+            widget = widget.parentWidget()
+        return widget
+
+    def category_pressed(self, chip, _global_pos):
+        if chip.role == 'source':
+            self.drag_chip = chip
+            self.dialog.activate_source_category(chip.key)
+        else:
+            self.dialog.activate_target_category(chip.key)
+        self.sync_state()
+
+    def category_moved(self, chip, global_pos):
+        if chip is not self.drag_chip:
+            return
+        target = self._chip_at(global_pos)
+        self.drag_over = target if target and target.role == 'target' else None
+        self.sync_state()
+
+    def category_released(self, chip, global_pos):
+        if chip is self.drag_chip:
+            target = self._chip_at(global_pos)
+            if target and target.role == 'target':
+                self.dialog.set_category_mapping(chip.key, target.key)
+        self.drag_chip = self.drag_over = None
+        self.sync_state()
+
+    def rebuild(self):
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.source_chips.clear(); self.target_chips.clear()
+        title = QLabel("Dra eller klicka en befintlig kategori till dess mallkategori.")
+        title.setStyleSheet("color:#4b5563; font-size:10px;")
+        self._layout.addWidget(title)
+        links = QWidget(); grid = QGridLayout(links)
+        grid.setContentsMargins(0, 0, 0, 0); grid.setHorizontalSpacing(58); grid.setVerticalSpacing(4)
+        grid.addWidget(QLabel("BEFINTLIG KATEGORI"), 0, 0)
+        grid.addWidget(QLabel("MALLKATEGORI"), 0, 2)
+        source_categories = self.dialog.plan.get('source_categories', [])
+        target_categories = self.dialog.plan.get('target_categories', [])
+        for row, category in enumerate(source_categories, start=1):
+            chip = CategoryMappingChip(self, 'source', str(category['source_id']),
+                                       category['name'], category.get('color'))
+            self.source_chips[chip.key] = chip; grid.addWidget(chip, row, 0)
+        for row, category in enumerate(target_categories, start=1):
+            chip = CategoryMappingChip(self, 'target', category['key'],
+                                       category['name'], category.get('color'))
+            self.target_chips[chip.key] = chip; grid.addWidget(chip, row, 2)
+        self._layout.addWidget(links)
+
+        converters = QGroupBox("Nivåöversättning per kategori")
+        converters_lay = QVBoxLayout(converters)
+        for category in source_categories:
+            source_id = str(category['source_id'])
+            target = self.dialog.target_category(source_id)
+            toggle = QToolButton()
+            toggle.setCheckable(True); toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            target_name = target.get('name') if target else 'välj mallkategori'
+            toggle.setText(f"{category['name']}  →  {target_name}")
+            toggle.setArrowType(Qt.ArrowType.RightArrow)
+            body = QWidget(); form = QFormLayout(body); form.setContentsMargins(18, 0, 0, 4)
+            for source_value, source_code, _source_description in self.dialog.axis_levels('source', 'severity'):
+                combo = QComboBox()
+                for target_value, target_code, target_description in self.dialog.axis_levels('target', 'severity'):
+                    combo.addItem(f"{target_code} — {target_description}" if target_description else target_code,
+                                  target_value)
+                combo.setCurrentIndex(max(0, combo.findData(
+                    self.dialog.category_level_target(source_id, source_value))))
+                combo.currentIndexChanged.connect(
+                    lambda _index, sid=source_id, sv=source_value, c=combo:
+                    self.dialog.set_category_level_mapping(sid, sv, c.currentData()))
+                form.addRow(QLabel(source_code), combo)
+            body.setVisible(False)
+            toggle.toggled.connect(body.setVisible)
+            toggle.toggled.connect(lambda checked, t=toggle: t.setArrowType(
+                Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow))
+            converters_lay.addWidget(toggle); converters_lay.addWidget(body)
+        self._layout.addWidget(converters)
+        QTimer.singleShot(0, self.sync_state)
+
+    def sync_state(self):
+        armed = self.dialog.category_armed
+        for key, chip in self.source_chips.items():
+            chip.set_state(armed=(key == armed), mapped=self.dialog.category_mapped(key))
+        for key, chip in self.target_chips.items():
+            chip.set_state(mapped=self.dialog.category_target_count(key) > 0,
+                           over=(chip is self.drag_over))
+
+
 class RiskMatrixMigrationDialog(QDialog):
     """Review and explicitly map HAZOP data before changing matrix template."""
 
@@ -626,12 +796,14 @@ class RiskMatrixMigrationDialog(QDialog):
         self.template_name = template_name
         self.plan = db.risk_matrix_migration_preview(source_cfg, target_cfg)
         self.armed = None
+        self.category_armed = None
         self._display_x_axis = ('frequency' if self.plan['source_matrix'].get(
             'x_axis', 'frequency') == 'frequency' else 'severity')
         self._mapping = {}
         for kind, map_key in (('frequency', 'frequency_map'), ('severity', 'severity_map')):
             self._mapping.update({(kind, int(source)): int(target)
                                   for source, target in self.plan[map_key].items()})
+        self._category_mapping = dict(self.plan.get('category_map', {}))
         self.setWindowTitle(f"Byt riskmatris till {template_name}")
         self.setMinimumSize(1060, 720)
         self.resize(1220, 820)
@@ -669,6 +841,20 @@ class RiskMatrixMigrationDialog(QDialog):
         self._tabs.addTab(self._matrix_against_matrix, "Matris mot matris")
         outer.addWidget(self._tabs, 1)
 
+        self._category_toggle = QToolButton()
+        self._category_toggle.setCheckable(True)
+        self._category_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._category_toggle.setText("Konsekvenskategorier och nivåöversättning")
+        self._category_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self._category_toggle.setStyleSheet("QToolButton{font-weight:bold; padding:4px 2px;}")
+        outer.addWidget(self._category_toggle)
+        self._category_panel = CategoryMappingPanel(self)
+        self._category_panel.setVisible(False)
+        self._category_toggle.toggled.connect(self._category_panel.setVisible)
+        self._category_toggle.toggled.connect(lambda checked: self._category_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow))
+        outer.addWidget(self._category_panel)
+
         buttons = QDialogButtonBox()
         self._apply_button = buttons.addButton("Genomför migrering", QDialogButtonBox.ButtonRole.AcceptRole)
         self._apply_button.setStyleSheet("background:#b45309; color:white; font-weight:bold; padding:5px 12px;")
@@ -700,6 +886,74 @@ class RiskMatrixMigrationDialog(QDialog):
     def target_count(self, kind, target):
         return sum(1 for (mapped_kind, _source), mapped_target in self._mapping.items()
                    if mapped_kind == kind and mapped_target == target)
+
+    def target_category(self, source_id):
+        key = self._category_mapping.get(str(source_id))
+        return next((category for category in self.plan.get('target_categories', [])
+                     if category.get('key') == key), None)
+
+    def category_mapped(self, source_id):
+        return str(source_id) in self._category_mapping
+
+    def category_target_count(self, target_key):
+        return sum(1 for key in self._category_mapping.values() if key == target_key)
+
+    def category_level_target(self, source_id, source_value):
+        mapping = self.plan.get('category_severity_maps', {}).get(str(source_id), {})
+        return mapping.get(str(source_value), self.plan['severity_map'].get(str(source_value), 1))
+
+    def activate_source_category(self, source_id):
+        source_id = str(source_id)
+        if self.category_mapped(source_id) and self.category_armed != source_id:
+            self.remove_category_mapping(source_id)
+            return
+        self.category_armed = None if self.category_armed == source_id else source_id
+        self._refresh_visuals()
+
+    def activate_target_category(self, target_key):
+        if self.category_armed:
+            self.set_category_mapping(self.category_armed, target_key)
+
+    def set_category_mapping(self, source_id, target_key):
+        source_id = str(source_id)
+        previous_source = next((source for source, target in self._category_mapping.items()
+                                if target == target_key and source != source_id), None)
+        if previous_source:
+            self._category_mapping.pop(previous_source, None)
+        self._category_mapping[source_id] = target_key
+        self.plan['category_map'] = dict(self._category_mapping)
+        self.category_armed = None
+        self._sync_category_record_targets(source_id)
+        if previous_source:
+            self._sync_category_record_targets(previous_source)
+        self._category_panel.rebuild()
+        self._refresh_visuals()
+
+    def remove_category_mapping(self, source_id):
+        self._category_mapping.pop(str(source_id), None)
+        self.plan['category_map'] = dict(self._category_mapping)
+        self.category_armed = None
+        self._category_panel.rebuild()
+        self._refresh_visuals()
+
+    def set_category_level_mapping(self, source_id, source_value, target_value):
+        source_id = str(source_id)
+        mapping = self.plan.setdefault('category_severity_maps', {}).setdefault(source_id, {})
+        mapping[str(source_value)] = int(target_value)
+        self._sync_category_record_targets(source_id)
+        self._refresh_visuals()
+
+    def _sync_category_record_targets(self, source_id):
+        source_id = str(source_id)
+        mapping = self.plan.get('category_severity_maps', {}).get(source_id, {})
+        target_key = self._category_mapping.get(source_id)
+        for record in self.plan.get('severity_records', []):
+            if str(record.get('category_id')) == source_id:
+                record['target'] = mapping.get(str(record['source']), record['target'])
+        for record in self.plan.get('definition_records', []):
+            if str(record.get('category_id')) == source_id:
+                record['target'] = mapping.get(str(record['source']), record['target'])
+                record['target_category_key'] = target_key
 
     def activate_old_step(self, kind, value):
         key = self._mapping_key(kind, value)
@@ -750,7 +1004,8 @@ class RiskMatrixMigrationDialog(QDialog):
         self._refresh_visuals()
 
     def clear_mappings(self):
-        self._mapping.clear(); self.armed = None
+        self._mapping.clear(); self.armed = None; self.category_armed = None
+        self._category_mapping.clear(); self.plan['category_map'] = {}
         self.plan['frequency_map'].clear(); self.plan['severity_map'].clear()
         for record in self.plan['frequency_records']:
             if record.get('source_kind') == 'manual' and not record.get('override'):
@@ -761,6 +1016,8 @@ class RiskMatrixMigrationDialog(QDialog):
         for record in self.plan['definition_records']:
             if not record.get('override'):
                 record['target'] = None
+                record['target_category_key'] = None
+        self._category_panel.rebuild()
         self._refresh_visuals()
 
     def suggest_automatically(self):
@@ -774,6 +1031,19 @@ class RiskMatrixMigrationDialog(QDialog):
                 self._mapping[(kind, int(old))] = int(new)
                 self._apply_mapping_to_plan(kind, int(old), int(new))
         self.armed = None
+        # Category suggestions use the safe proposal produced by the database
+        # (matching stable key/name first, then position), while retaining a
+        # separately editable severity map for each category.
+        self._category_mapping = dict(self.db.risk_matrix_migration_preview(
+            self.plan['source_matrix'], self.plan['target_matrix']).get('category_map', {}))
+        self.plan['category_map'] = dict(self._category_mapping)
+        self.plan['category_severity_maps'] = {
+            str(category['source_id']): dict(severity)
+            for category in self.plan.get('source_categories', [])
+        }
+        for source_id in self._category_mapping:
+            self._sync_category_record_targets(source_id)
+        self._category_panel.rebuild()
         self._refresh_visuals()
 
     def _set_display_x_axis(self, kind):
@@ -791,11 +1061,14 @@ class RiskMatrixMigrationDialog(QDialog):
     def _mapping_complete(self):
         expected = sum(len(self.axis_levels('source', kind))
                        for kind in ('frequency', 'severity'))
-        return len(self._mapping) == expected
+        categories_complete = len(self._category_mapping) == len(
+            self.plan.get('source_categories', []))
+        return len(self._mapping) == expected and categories_complete
 
     def _refresh_visuals(self):
         self._link_field.sync_state()
         self._matrix_against_matrix.sync_state()
+        self._category_panel.sync_state()
         self._refresh_summary()
 
     @staticmethod
@@ -835,14 +1108,18 @@ class RiskMatrixMigrationDialog(QDialog):
         total = sum(len(self.axis_levels('source', kind))
                     for kind in ('frequency', 'severity'))
         mapped = len(self._mapping)
+        category_total = len(self.plan.get('source_categories', []))
+        category_mapped = len(self._category_mapping)
         self._progress.setText(
-            f"{mapped} av {total} gamla steg mappade. "
+            f"{mapped} av {total} gamla steg och {category_mapped} av "
+            f"{category_total} kategorier mappade. "
             "Inget sparas förrän du genomför migreringen.")
         self._apply_button.setEnabled(mapped == total)
 
     def _refresh_all(self):
         self._link_field.rebuild()
         self._matrix_against_matrix.rebuild()
+        self._category_panel.rebuild()
         self._refresh_summary()
 
     def _confirm_accept(self):
@@ -1235,17 +1512,20 @@ class HAZOPPreparationPanel(QWidget):
             "AAA (< 10⁻⁵/år)  →  E (> 1/år)\n"
             "Gränsvärden sätts automatiskt och befintliga bedömningar granskas före migrering.")
         norsok_btn.clicked.connect(lambda: self._request_frequency_template(
-            ['AAA', 'AA', 'A', 'B', 'C', 'D', 'E'],
-            [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0], "NORSOK Z-013"))
+            ['< 10⁻⁵/år', '10⁻⁵–10⁻⁴/år', '10⁻⁴–10⁻³/år',
+             '10⁻³–10⁻²/år', '10⁻²–10⁻¹/år', '10⁻¹–1/år', '> 1/år'],
+            [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0], "NORSOK Z-013",
+            ['AAA', 'AA', 'A', 'B', 'C', 'D', 'E']))
         fscale_btn = QPushButton("F-skala  (F-1 – F5)")
         fscale_btn.setToolTip(
             "Fyll frekvensaxeln med internt F-skaleetiketter:\n"
             "F-1 (Otänkbar)  →  F5 (Frekvent > 1/år)\n"
             "Gränsvärden sätts automatiskt och befintliga bedömningar granskas före migrering.")
         fscale_btn.clicked.connect(lambda: self._request_frequency_template(
-            ['F-1 – Otänkbar', 'F0 – Extremt sällan', 'F1 – Sällan',
-             'F2 – Osannolik', 'F3 – Möjlig', 'F4 – Trolig', 'F5 – Frekvent'],
-            [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0], "F-skala"))
+            ['Otänkbar', 'Extremt sällan', 'Sällan', 'Osannolik',
+             'Möjlig', 'Trolig', 'Frekvent'],
+            [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0], "F-skala",
+            ['F-1', 'F0', 'F1', 'F2', 'F3', 'F4', 'F5']))
         preset_row.addWidget(st1_btn)
         preset_row.addWidget(norsok_btn)
         preset_row.addWidget(fscale_btn)
@@ -2242,8 +2522,28 @@ class HAZOPPreparationPanel(QWidget):
                                 "Frekvensgränserna måste öka rad för rad.")
             return
         cfg['freq_boundaries'] = boundaries
+        pending_categories = getattr(self, '_pending_template_categories', None)
+        if pending_categories is not None:
+            cfg['consequence_categories'] = json.loads(json.dumps(pending_categories))
         cfg = _normalise_matrix(cfg)
-        self.db.set_risk_matrix(cfg)
+        try:
+            if pending_categories is not None:
+                self.db.apply_risk_matrix_template_without_assessments(cfg)
+                self._pending_template_categories = None
+                self._load_categories()
+            else:
+                self.db.set_risk_matrix(cfg)
+        except Exception as exc:
+            QMessageBox.critical(self, "Axlar sparades inte", str(exc))
+            return
+
+        if pending_categories is not None:
+            self._last_built_cfg = cfg
+            self._load_matrix_ui()
+            self._reload_axes_tables(cfg)
+            QMessageBox.information(self, "Sparat", "Mallens axlar och konsekvenskategorier sparade.")
+            self.matrix_changed.emit()
+            return
 
         table = self._category_definition_table
         for row in range(table.rowCount()):
@@ -2253,6 +2553,13 @@ class HAZOPPreparationPanel(QWidget):
                     cat_id = item.data(Qt.ItemDataRole.UserRole)
                     if cat_id is not None:
                         self.db.set_severity_definition(row + 1, cat_id, item.text().strip())
+
+        # Store the just-saved category names, colours and descriptions with
+        # the matrix as a complete reusable profile.  Descriptions are saved
+        # first because the snapshot is deliberately authoritative.
+        cfg['consequence_categories'] = self.db._project_category_template(
+            n_cons, cfg.get('consequence_categories'))
+        self.db.set_risk_matrix(cfg)
 
         self._last_built_cfg = cfg
         self._load_matrix_ui()
@@ -2979,8 +3286,24 @@ class HAZOPPreparationPanel(QWidget):
             freq_boundaries = list(reversed(freq_boundaries))
         cfg['freq_boundaries'] = freq_boundaries
 
+        pending_categories = getattr(self, '_pending_template_categories', None)
+        if pending_categories is not None:
+            cfg['consequence_categories'] = json.loads(json.dumps(pending_categories))
+
         cfg = _normalise_matrix(cfg)   # ensure consistent before saving
-        self.db.set_risk_matrix(cfg)
+        try:
+            if pending_categories is not None:
+                self.db.apply_risk_matrix_template_without_assessments(cfg)
+                self._pending_template_categories = None
+                self._load_categories()
+                self._last_built_cfg = cfg
+                self._load_matrix_ui()
+                self._reload_axes_tables(cfg)
+            else:
+                self.db.set_risk_matrix(cfg)
+        except Exception as exc:
+            QMessageBox.critical(self, "Riskmatrisen sparades inte", str(exc))
+            return
         QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
         self.matrix_changed.emit()
 
@@ -3010,13 +3333,19 @@ class HAZOPPreparationPanel(QWidget):
             for widget in senders:
                 widget.blockSignals(False)
         self._last_built_cfg = cfg
+        self._pending_template_categories = json.loads(json.dumps(
+            cfg.get('consequence_categories', [])))
         self._build_matrix_grid(cfg)
 
-    def _request_frequency_template(self, labels, bounds, name):
-        """Build a full candidate matrix for a frequency-only standard preset."""
-        candidate = json.loads(json.dumps(self.db.get_risk_matrix() or DEFAULT_MATRIX))
+    def _request_frequency_template(self, labels, bounds, name, codes=None):
+        """Build a complete, reusable template for a frequency standard."""
+        # Do not borrow project-local categories or colours here.  A standard
+        # template must carry its own categories, axis orientation and cell
+        # colours so the subsequent migration can review every difference.
+        candidate = json.loads(json.dumps(DEFAULT_MATRIX))
         candidate['cols'] = len(labels)
         candidate['x_labels'] = list(labels)
+        candidate['x_codes'] = list(codes or labels)
         candidate['freq_boundaries'] = list(bounds)
         self._request_matrix_template(candidate, name)
 
@@ -3046,6 +3375,7 @@ class HAZOPPreparationPanel(QWidget):
             return
         self._load_matrix_ui()
         self._reload_axes_tables()
+        self._pending_template_categories = None
         QMessageBox.information(
             self, "Riskmatris migrerad",
             f"{result['frequency_count']} frekvens- och {result['severity_count']} "
@@ -3058,23 +3388,7 @@ class HAZOPPreparationPanel(QWidget):
         This is deliberately a working copy only; the database is changed
         only when the user presses ``Spara riskmatris``.
         """
-        cfg = json.loads(json.dumps(ST1_RISK_MATRIX_PRESET))
-        senders = (self._rows_spin, self._cols_spin, self._axis_combo,
-                   self._x_rev_chk, self._y_rev_chk)
-        for widget in senders:
-            widget.blockSignals(True)
-        try:
-            self._rows_spin.setValue(cfg['rows'])
-            self._cols_spin.setValue(cfg['cols'])
-            self._axis_combo.setCurrentIndex(
-                max(0, self._axis_combo.findData(cfg['x_axis'])))
-            self._x_rev_chk.setChecked(cfg['x_reversed'])
-            self._y_rev_chk.setChecked(cfg['y_reversed'])
-        finally:
-            for widget in senders:
-                widget.blockSignals(False)
-        self._last_built_cfg = cfg
-        self._build_matrix_grid(cfg)
+        self._load_matrix_template_working_copy(ST1_RISK_MATRIX_PRESET)
 
     def _apply_freq_preset(self, labels: list, bounds: list):
         """Populate frequency axis headers and boundary edits from a preset.

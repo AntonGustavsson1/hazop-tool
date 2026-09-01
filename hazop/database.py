@@ -263,6 +263,33 @@ CREATE TABLE IF NOT EXISTS equipment_catalog (
 
 # Frequency axis: F=-1..5 (7 levels, logarithmic events/year)
 # Consequence axis: C=1..5 (5 levels)
+#
+# A matrix template is deliberately self-contained.  The category key is a
+# stable template identifier, the name is what users see, and the colour is
+# metadata for the category (separate from the colour of a risk cell).  The
+# severity descriptions belong to the template as well; projects get their
+# own category ids only when a template is applied.
+DEFAULT_TEMPLATE_CATEGORIES = [
+    {'key': 'person', 'name': 'Person', 'color': '#2563eb',
+     'descriptions': ['Första hjälpen', 'Medicinsk behandling',
+                      'Allvarlig personskada', 'Enstaka dödsfall',
+                      'Flera dödsfall']},
+    {'key': 'miljo', 'name': 'Miljö', 'color': '#16a34a',
+     'descriptions': ['Ingen bestående påverkan', 'Lokal och kortvarig påverkan',
+                      'Begränsad sanering', 'Omfattande sanering',
+                      'Långvarig eller omfattande miljöskada']},
+    {'key': 'ekonomi', 'name': 'Ekonomi', 'color': '#d97706',
+     'descriptions': ['Obetydlig kostnad', 'Mindre kostnad', 'Betydande kostnad',
+                      'Stor ekonomisk skada', 'Mycket stor ekonomisk skada']},
+    {'key': 'anlaggning', 'name': 'Anläggning', 'color': '#7c3aed',
+     'descriptions': ['Ingen skada', 'Mindre skada', 'Begränsad produktionstörning',
+                      'Allvarlig anläggningsskada', 'Förlust av anläggning eller långvarigt stopp']},
+    {'key': 'rykte', 'name': 'Rykte', 'color': '#475569',
+     'descriptions': ['Ingen extern påverkan', 'Lokal uppmärksamhet',
+                      'Regional uppmärksamhet', 'Nationell uppmärksamhet',
+                      'Internationell eller långvarig uppmärksamhet']},
+]
+
 DEFAULT_MATRIX = {
     'rows': 5,   # consequence rows, index 0 = C1 (lowest)
     'cols': 7,   # frequency columns, index 0 = F-1 (lowest)
@@ -273,20 +300,20 @@ DEFAULT_MATRIX = {
     'x_codes': ['F-1', 'F0', 'F1', 'F2', 'F3', 'F4', 'F5'],
     'y_codes': ['1', '2', '3', '4', '5'],
     'x_labels': [
-        'F-1 – Otänkbar (<1/100 000 år)',
-        'F0 – Extremt sällan (1/100 000 år)',
-        'F1 – Sällan (1/10 000 år)',
-        'F2 – Osannolik (1/1 000 år)',
-        'F3 – Möjlig (1/100 år)',
-        'F4 – Trolig (1–10 år)',
-        'F5 – Frekvent (>1/år)',
+        'Otänkbar (<1/100 000 år)',
+        'Extremt sällan (1/100 000 år)',
+        'Sällan (1/10 000 år)',
+        'Osannolik (1/1 000 år)',
+        'Möjlig (1/100 år)',
+        'Trolig (1–10 år)',
+        'Frekvent (>1/år)',
     ],
     'y_labels': [
-        'C1 – Försumbar',
-        'C2 – Liten',
-        'C3 – Måttlig',
-        'C4 – Allvarlig',
-        'C5 – Katastrofal',
+        'Försumbar',
+        'Liten',
+        'Måttlig',
+        'Allvarlig',
+        'Katastrofal',
     ],
     'cell_colors': [
         # C=1: F-1 → F5
@@ -307,6 +334,7 @@ DEFAULT_MATRIX = {
         ['Låg',    'Medium', 'Hög',    'Kritisk','Kritisk','Kritisk','Kritisk'],
         ['Medium', 'Hög',    'Kritisk','Kritisk','Kritisk','Kritisk','Kritisk'],
     ],
+    'consequence_categories': DEFAULT_TEMPLATE_CATEGORIES,
 }
 
 # ── Risk Matrix Caching with Automatic Invalidation ──────────────────────────
@@ -412,6 +440,28 @@ def _normalise_matrix(cfg: dict) -> dict:
     cfg['cell_fg_colors'] = _pad_grid(cfg.get('cell_fg_colors', []), '#ffffff')
     cfg['rows'] = rows
     cfg['cols'] = cols
+    categories = cfg.get('consequence_categories')
+    if not isinstance(categories, list):
+        categories = []
+    normalised_categories = []
+    seen_keys = set()
+    for index, raw in enumerate(categories):
+        raw = raw if isinstance(raw, dict) else {}
+        key = str(raw.get('key') or raw.get('name') or f'category-{index + 1}').strip()
+        key = key.casefold().replace(' ', '-').replace('_', '-') or f'category-{index + 1}'
+        if key in seen_keys:
+            key = f'{key}-{index + 1}'
+        seen_keys.add(key)
+        descriptions = list(raw.get('descriptions') or [])
+        descriptions = [str(descriptions[i]) if i < len(descriptions) else ''
+                        for i in range(rows)]
+        normalised_categories.append({
+            'key': key,
+            'name': str(raw.get('name') or key),
+            'color': str(raw.get('color') or '#64748b'),
+            'descriptions': descriptions,
+        })
+    cfg['consequence_categories'] = normalised_categories
     return cfg
 
 
@@ -2236,7 +2286,75 @@ class Database:
         its database reference pointing to whichever project was loaded
         earlier, so a save could redraw the popup with old labels/boundaries.
         """
+        cfg = self._risk_matrix_copy(cfg)
+        # Older projects did not embed categories in the matrix.  Every newly
+        # saved matrix does, so a saved configuration is also a complete
+        # reusable template rather than only a coloured grid.
+        if not cfg.get('consequence_categories'):
+            cfg['consequence_categories'] = self._project_category_template(cfg['rows'])
         self.set_config('risk_matrix', json.dumps(cfg))
+        _risk_matrix_cache.load(self)
+
+    @staticmethod
+    def _template_category_key(value, fallback='category'):
+        text = str(value or fallback).strip().casefold()
+        text = re.sub(r'[^a-z0-9åäö]+', '-', text).strip('-')
+        return text or fallback
+
+    def _project_category_template(self, rows=5, existing_categories=None):
+        """Snapshot active project categories as reusable template metadata."""
+        definitions = self.get_severity_definitions()
+        existing_by_key = {
+            self._template_category_key(item.get('key') or item.get('name')): item
+            for item in (existing_categories or []) if isinstance(item, dict)
+        }
+        result = []
+        for index, category in enumerate(self.consequence_categories()):
+            category = dict(category)
+            key = self._template_category_key(category.get('name'), f'category-{index + 1}')
+            existing = existing_by_key.get(key, {})
+            result.append({
+                'key': key,
+                'name': category.get('name') or key,
+                'color': existing.get('color') or '#64748b',
+                'descriptions': [definitions.get(level, {}).get(category['id'], '')
+                                 for level in range(1, 1 + int(rows))],
+            })
+        return result
+
+    def apply_risk_matrix_template_without_assessments(self, cfg):
+        """Install a complete template in an unassessed project.
+
+        This is the non-destructive counterpart to the reviewed migration:
+        it is valid only before any category assessment or description exists.
+        """
+        cfg = self._risk_matrix_copy(cfg)
+        has_data = self.conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM consequence_severities) OR "
+            "EXISTS(SELECT 1 FROM consequence_final_severities) OR "
+            "EXISTS(SELECT 1 FROM severity_definitions)"
+        ).fetchone()[0]
+        if has_data:
+            raise RuntimeError("Mallen innehåller bedömningar och måste migreras i granskningsdialogen.")
+        try:
+            self.conn.execute('BEGIN IMMEDIATE')
+            self.conn.execute("DELETE FROM consequence_categories")
+            for index, category in enumerate(cfg.get('consequence_categories', [])):
+                cur = self.conn.execute(
+                    "INSERT INTO consequence_categories(name,sort_order) VALUES (?,?)",
+                    (category.get('name') or category.get('key') or 'Kategori', index))
+                for level, text in enumerate(category.get('descriptions', []), start=1):
+                    self.conn.execute(
+                        "INSERT INTO severity_definitions(severity_level,category_id,description) VALUES (?,?,?)",
+                        (level, cur.lastrowid, text or ''))
+            self.conn.execute(
+                "INSERT INTO app_config(key,value) VALUES('risk_matrix',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (json.dumps(cfg),))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
         _risk_matrix_cache.load(self)
 
     # ── Risk-matrix template migration ──────────────────────────────────────
@@ -2292,12 +2410,58 @@ class Database:
         """
         source = self._risk_matrix_copy(source_cfg)
         target = self._risk_matrix_copy(target_cfg)
+        # The database owns the active category ids and is consequently the
+        # source of truth for the source template.  Old saved matrices did
+        # not include this snapshot, so build it here without changing data.
+        source['consequence_categories'] = self._project_category_template(
+            source['rows'], source.get('consequence_categories'))
+        # Backwards compatible candidates (for example older user-created
+        # files) retain the active categories.  Built-in templates always
+        # provide their own category profile.
+        if not target.get('consequence_categories'):
+            target['consequence_categories'] = json.loads(json.dumps(
+                source['consequence_categories']))
+
+        source_categories = []
+        for index, category in enumerate(self.consequence_categories()):
+            category = dict(category)
+            source_categories.append({
+                'source_id': category['id'],
+                'name': category['name'],
+                'key': self._template_category_key(category['name'], f'category-{index + 1}'),
+                'color': next((item.get('color', '#64748b')
+                               for item in source['consequence_categories']
+                               if item.get('key') == self._template_category_key(category['name'])),
+                              '#64748b'),
+            })
+        target_categories = [dict(category) for category in target['consequence_categories']]
+        category_map = {}
+        used_targets = set()
+        for index, category in enumerate(source_categories):
+            matches = [target_category for target_category in target_categories
+                       if target_category['key'] not in used_targets and
+                       target_category['key'] == category['key']]
+            if not matches and index < len(target_categories):
+                candidate = target_categories[index]
+                if candidate['key'] not in used_targets:
+                    matches = [candidate]
+            if matches:
+                category_map[str(category['source_id'])] = matches[0]['key']
+                used_targets.add(matches[0]['key'])
         source_freq_count, target_freq_count = source['cols'], target['cols']
         source_cons_count, target_cons_count = source['rows'], target['rows']
         frequency_map = self._rank_level_map(
             source_freq_count, target_freq_count, -1, -1)
         severity_map = self._rank_level_map(
             source_cons_count, target_cons_count, 1, 1)
+        category_severity_maps = {
+            str(category['source_id']): dict(severity_map)
+            for category in source_categories
+        }
+
+        def _category_target(category_id, source_value):
+            return category_severity_maps.get(str(category_id), severity_map).get(
+                str(source_value), 1)
 
         frequency_records = []
         cause_rows = self.conn.execute("""
@@ -2380,7 +2544,7 @@ class Database:
                 'cause': r.get('cause_description') or '',
                 'consequence': r.get('consequence_description') or '',
                 'category': r.get('category_name') or '',
-                'source': source_value, 'target': severity_map.get(str(source_value), 1),
+                'source': source_value, 'target': _category_target(r['category_id'], source_value),
                 'expected_severity': source_value,
             })
         final_rows = self.conn.execute("""
@@ -2405,7 +2569,7 @@ class Database:
                 'cause': r.get('cause_description') or '',
                 'consequence': r.get('consequence_description') or '',
                 'category': r.get('category_name') or '',
-                'source': source_value, 'target': severity_map.get(str(source_value), 1),
+                'source': source_value, 'target': _category_target(r['category_id'], source_value),
                 'expected_severity': source_value,
             })
 
@@ -2422,12 +2586,17 @@ class Database:
                 'definition_id': r['id'], 'category_id': r['category_id'],
                 'category': r.get('category_name') or '',
                 'description': r.get('description') or '', 'source': source_value,
-                'target': severity_map.get(str(source_value), 1),
+                'target': _category_target(r['category_id'], source_value),
+                'target_category_key': category_map.get(str(r['category_id'])),
             })
 
         return {
-            'version': 1, 'source_matrix': source, 'target_matrix': target,
+            'version': 2, 'source_matrix': source, 'target_matrix': target,
             'frequency_map': frequency_map, 'severity_map': severity_map,
+            'category_map': category_map,
+            'category_severity_maps': category_severity_maps,
+            'source_categories': source_categories,
+            'target_categories': target_categories,
             'frequency_records': frequency_records,
             'severity_records': severity_records,
             'definition_records': definition_records,
@@ -2439,11 +2608,14 @@ class Database:
         Raises ``ValueError`` for incomplete/conflicting plans and propagates
         database failures after rolling the complete transaction back.
         """
-        if not isinstance(plan, dict) or plan.get('version') != 1:
+        if not isinstance(plan, dict) or plan.get('version') not in (1, 2):
             raise ValueError("Ogiltig migreringsplan för riskmatris.")
         source = self._risk_matrix_copy(plan.get('source_matrix'))
         target = self._risk_matrix_copy(plan.get('target_matrix'))
         current = self._risk_matrix_copy(self.get_risk_matrix())
+        if plan.get('version') == 2:
+            current['consequence_categories'] = self._project_category_template(
+                current['rows'], current.get('consequence_categories'))
         if json.dumps(current, sort_keys=True) != json.dumps(source, sort_keys=True):
             raise RuntimeError(
                 "Riskmatrisen ändrades medan migreringen granskades. Öppna förhandsgranskningen igen.")
@@ -2459,19 +2631,41 @@ class Database:
                 raise ValueError(f"{label} har mål-nivå utanför den nya matrisen.")
             return value
 
-        # Moving several written category descriptions onto one target level
-        # would overwrite text. Stop rather than guess or concatenate it.
-        definitions = {}
+        category_map = plan.get('category_map', {})
+        target_categories = {row.get('key'): row for row in plan.get(
+            'target_categories', target.get('consequence_categories', [])) if row.get('key')}
+        source_categories = list(plan.get('source_categories', []))
+        if plan.get('version') == 2:
+            if len(source_categories) != len(self.consequence_categories()):
+                raise RuntimeError("Konsekvenskategorier ändrades medan migreringen granskades.")
+            targets = []
+            for source_category in source_categories:
+                source_id = str(source_category.get('source_id'))
+                target_key = category_map.get(source_id)
+                if target_key not in target_categories:
+                    raise ValueError("Varje befintlig konsekvenskategori måste kopplas till en mallkategori.")
+                targets.append(target_key)
+            if len(targets) != len(set(targets)):
+                raise ValueError("Flera befintliga kategorier kan inte kopplas till samma mallkategori.")
+
+        # The template descriptions are authoritative.  A mapped project
+        # description is used only when the selected template deliberately
+        # leaves that target level blank.
+        fallback_definitions = {}
         for record in plan.get('definition_records', []):
             target_value = _target(record, sev_min, sev_max, "Konsekvensbeskrivning")
-            key = (record.get('category_id'), target_value)
+            target_key = record.get('target_category_key') or category_map.get(
+                str(record.get('category_id')))
+            if target_key not in target_categories:
+                continue
+            key = (target_key, target_value)
             text = (record.get('description') or '').strip()
-            existing = definitions.get(key)
+            existing = fallback_definitions.get(key)
             if existing is not None and text and existing and text != existing:
                 raise ValueError(
                     "Två olika konsekvensbeskrivningar skulle hamna på samma "
                     "nivå. Ändra kartläggningen innan du genomför bytet.")
-            definitions[key] = text or existing or ''
+            fallback_definitions[key] = text or existing or ''
 
         backup = self._write_backup(startup=True)
         if backup is None or not Path(backup).exists() or Path(backup).stat().st_size == 0:
@@ -2490,6 +2684,30 @@ class Database:
                     mapping_json TEXT NOT NULL, backup_path TEXT NOT NULL DEFAULT ''
                 )
             """)
+            target_category_ids = {}
+            if plan.get('version') == 2:
+                # Retain source ids for mapped categories.  All assessments,
+                # final levels and applicability exclusions therefore keep
+                # their foreign keys while their category receives the
+                # template's name and order.
+                for source_category in source_categories:
+                    source_id = int(source_category['source_id'])
+                    target_key = category_map[str(source_id)]
+                    target_category = target_categories[target_key]
+                    self.conn.execute(
+                        "UPDATE consequence_categories SET name=?, sort_order=? WHERE id=?",
+                        (target_category.get('name') or target_key,
+                         list(target_categories).index(target_key), source_id))
+                    target_category_ids[target_key] = source_id
+                for index, (target_key, target_category) in enumerate(target_categories.items()):
+                    if target_key not in target_category_ids:
+                        cur = self.conn.execute(
+                            "INSERT INTO consequence_categories(name,sort_order) VALUES (?,?)",
+                            (target_category.get('name') or target_key, index))
+                        target_category_ids[target_key] = cur.lastrowid
+            else:
+                target_category_ids = {str(row['id']): row['id']
+                                       for row in self.consequence_categories()}
             for record in plan.get('frequency_records', []):
                 target_value = _target(record, freq_min, freq_max, "Frekvens")
                 cur = self.conn.execute(
@@ -2519,14 +2737,29 @@ class Database:
                 if cur.rowcount != 1:
                     raise RuntimeError("En konsekvens ändrades medan migreringen granskades.")
 
-            # Definition row ids are not referenced elsewhere. Rebuild the
-            # compact set so a many-to-one mapping cannot violate its unique
-            # (severity_level, category_id) key.
+            # Definition row ids are not referenced elsewhere. Rebuild from
+            # the template, falling back to mapped project text only where
+            # the template has intentionally left a target level blank.
             self.conn.execute("DELETE FROM severity_definitions")
-            for (category_id, severity), text in definitions.items():
-                self.conn.execute(
-                    "INSERT INTO severity_definitions(severity_level,category_id,description) "
-                    "VALUES (?,?,?)", (severity, category_id, text))
+            if plan.get('version') == 2:
+                for target_key, target_category in target_categories.items():
+                    category_id = target_category_ids[target_key]
+                    descriptions = list(target_category.get('descriptions') or [])
+                    for severity in range(1, sev_max + 1):
+                        template_text = (descriptions[severity - 1]
+                                         if severity <= len(descriptions) else '')
+                        text = template_text or fallback_definitions.get(
+                            (target_key, severity), '')
+                        self.conn.execute(
+                            "INSERT INTO severity_definitions(severity_level,category_id,description) "
+                            "VALUES (?,?,?)", (severity, category_id, text))
+            else:
+                for record in plan.get('definition_records', []):
+                    severity = _target(record, sev_min, sev_max, "Konsekvensbeskrivning")
+                    self.conn.execute(
+                        "INSERT INTO severity_definitions(severity_level,category_id,description) "
+                        "VALUES (?,?,?)", (severity, record['category_id'],
+                                             (record.get('description') or '').strip()))
 
             self.conn.execute(
                 "INSERT INTO app_config(key,value) VALUES('risk_matrix',?) "

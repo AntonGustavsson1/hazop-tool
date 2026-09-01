@@ -1096,6 +1096,11 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             self.assertEqual(
                 [definitions.get(row, {}).get(cat_id, '') for row in range(1, 6)],
                 ["Nivå 1", "Nivå 2", "Nivå 3", "Nivå 4", "Nivå 5"])
+            saved_category = next(category for category in self.db.get_risk_matrix()
+                                  ['consequence_categories']
+                                  if category['name'] == 'Miljö')
+            self.assertEqual(saved_category['descriptions'],
+                             ["Nivå 1", "Nivå 2", "Nivå 3", "Nivå 4", "Nivå 5"])
         finally:
             panel.deleteLater()
 
@@ -1205,8 +1210,41 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             self.assertEqual(dialog._mapping[('frequency', -1)], 0)
             self.assertTrue(dialog._link_field.old_chips[('frequency', -1)].isEnabled())
             self.assertTrue(dialog._matrix_against_matrix.old_chips[('frequency', -1)].isEnabled())
-            self.assertEqual(dialog._progress.text(), '1 av 4 gamla steg mappade. '
+            self.assertEqual(dialog._progress.text(),
+                             '1 av 4 gamla steg och 0 av 5 kategorier mappade. '
                              'Inget sparas förrän du genomför migreringen.')
+        finally:
+            dialog.deleteLater()
+
+    def test_template_migration_category_drawer_maps_categories_and_levels(self):
+        from hazop_preparation_panel import RiskMatrixMigrationDialog
+        source = {'rows': 3, 'cols': 2, 'x_labels': ['A', 'B'],
+                  'y_labels': ['1', '2', '3'], 'freq_boundaries': [0.1]}
+        target = {
+            'rows': 4, 'cols': 2, 'x_labels': ['L', 'H'],
+            'y_labels': ['1', '2', '3', '4'], 'freq_boundaries': [0.1],
+            'consequence_categories': [
+                {'key': key, 'name': name, 'color': color,
+                 'descriptions': [f'{name} {level}' for level in range(1, 5)]}
+                for key, name, color in [
+                    ('person', 'Människor', '#2563eb'), ('miljo', 'Miljö', '#16a34a'),
+                    ('ekonomi', 'Ekonomi', '#d97706'), ('assets', 'Tillgångar', '#7c3aed'),
+                    ('rykte', 'Rykte', '#475569')]
+            ],
+        }
+        self.db.set_risk_matrix(source)
+        dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
+        try:
+            self.assertIn('Konsekvenskategorier', dialog._category_toggle.text())
+            source_id = str(dialog.plan['source_categories'][0]['source_id'])
+            self.assertIn(source_id, dialog._category_panel.source_chips)
+            dialog.clear_mappings()
+            dialog.activate_source_category(source_id)
+            dialog.activate_target_category('person')
+            self.assertEqual(dialog.plan['category_map'][source_id], 'person')
+            dialog.set_category_level_mapping(source_id, 2, 4)
+            self.assertEqual(dialog.plan['category_severity_maps'][source_id]['2'], 4)
+            self.assertIn('1 av 5 kategorier mappade', dialog._progress.text())
         finally:
             dialog.deleteLater()
 

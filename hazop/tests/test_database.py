@@ -1860,6 +1860,75 @@ class RiskMatrixTemplateMigrationTests(unittest.TestCase):
         self.assertEqual(self.db.get_consequence(self.cons_id)['severity'], 2)
         self.assertEqual(self.db.get_risk_matrix()['rows'], 3)
 
+    def test_template_categories_and_per_category_levels_migrate_together(self):
+        """A template owns category metadata, descriptions and colours."""
+        target = dict(self.target)
+        target['consequence_categories'] = [
+            {'key': 'people', 'name': 'Människor', 'color': '#2563eb',
+             'descriptions': ['P1', 'P2', 'P3', 'P4']},
+            {'key': 'environment', 'name': 'Miljö', 'color': '#16a34a',
+             'descriptions': ['M1', 'M2', 'M3', 'M4']},
+            {'key': 'assets', 'name': 'Tillgångar', 'color': '#d97706',
+             'descriptions': ['T1', 'T2', 'T3', 'T4']},
+            {'key': 'plant', 'name': 'Anläggning', 'color': '#7c3aed',
+             'descriptions': ['A1', 'A2', 'A3', 'A4']},
+            {'key': 'reputation', 'name': 'Rykte', 'color': '#475569',
+             'descriptions': ['R1', 'R2', 'R3', 'R4']},
+        ]
+        plan = self.db.risk_matrix_migration_preview(self.source, target)
+        ids_by_name = {row['name']: str(row['source_id']) for row in plan['source_categories']}
+        plan['category_map'] = {
+            ids_by_name['Person']: 'people', ids_by_name['Miljö']: 'environment',
+            ids_by_name['Ekonomi']: 'assets', ids_by_name['Anläggning']: 'plant',
+            ids_by_name['Rykte']: 'reputation',
+        }
+        person_id = ids_by_name['Person']
+        plan['category_severity_maps'][person_id]['3'] = 4
+        for record in plan['severity_records']:
+            if str(record.get('category_id')) == person_id and record['source'] == 3:
+                record['target'] = 4
+        for record in plan['definition_records']:
+            if str(record['category_id']) == person_id and record['source'] == 2:
+                record['target_category_key'] = 'people'
+        self.db.apply_risk_matrix_migration(plan)
+
+        categories = self.db.consequence_categories()
+        self.assertIn('Människor', [row['name'] for row in categories])
+        people_id = next(row['id'] for row in categories if row['name'] == 'Människor')
+        self.assertEqual(self.db.get_consequence_severities(self.cons_id)[0]['severity'], 4)
+        self.assertEqual(self.db.get_severity_definitions()[4][people_id], 'P4')
+        saved = self.db.get_risk_matrix()
+        self.assertEqual(saved['consequence_categories'][0]['color'], '#2563eb')
+        self.assertEqual(saved['consequence_categories'][2]['name'], 'Tillgångar')
+
+    def test_empty_project_installs_complete_template_profile(self):
+        empty_path = os.path.join(self.tmpdir, 'empty-template.db')
+        empty = Database(path=empty_path)
+        try:
+            template = {
+                'rows': 2, 'cols': 2, 'x_axis': 'severity',
+                'x_reversed': True, 'y_reversed': False,
+                'x_codes': ['1', '2'], 'y_codes': ['A', 'B'],
+                'x_labels': ['Liten', 'Stor'], 'y_labels': ['Sällsynt', 'Trolig'],
+                'cell_colors': [['#111111', '#222222'], ['#333333', '#444444']],
+                'cell_labels': [['Låg', 'Mellan'], ['Mellan', 'Hög']],
+                'consequence_categories': [
+                    {'key': 'assets', 'name': 'Tillgångar', 'color': '#d97706',
+                     'descriptions': ['Mindre skada', 'Stor skada']},
+                ],
+            }
+            empty.apply_risk_matrix_template_without_assessments(template)
+            saved = empty.get_risk_matrix()
+            self.assertEqual(saved['x_axis'], 'severity')
+            self.assertTrue(saved['x_reversed'])
+            self.assertEqual(saved['cell_colors'][1][1], '#444444')
+            self.assertEqual(saved['consequence_categories'][0]['color'], '#d97706')
+            category = empty.consequence_categories()[0]
+            self.assertEqual(category['name'], 'Tillgångar')
+            self.assertEqual(empty.get_severity_definitions()[2][category['id']], 'Stor skada')
+        finally:
+            empty.conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

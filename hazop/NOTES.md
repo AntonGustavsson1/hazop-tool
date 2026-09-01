@@ -1,5 +1,38 @@
 # NOTES.md — Beslut och kontext
 
+## Mallbundna kategorier och kategoriöversättning vid riskmatrisbyte (2026-09-01)
+
+En riskmatrismall innehåller nu hela sin egen profil: cellernas bakgrunds-
+och textfärger, X/Y-axlarnas riktning, separata korta axeltecken och längre
+axelbeskrivningar, samt konsekvenskategorier med stabil nyckel, visningsnamn,
+kategorifärg och beskrivning per konsekvensnivå. ST1, NORSOK- och F-skale-
+mallarna bygger därmed inte längre på den öppna studiens lokala kategorier.
+
+Vid byte av mall finns en utfällbar sektion `Konsekvenskategorier och
+nivåöversättning`. Där kopplas befintlig kategori till mallkategori med
+klick eller drag, exempelvis `Anläggning → Tillgångar`. För varje sådan
+koppling finns en egen utfällbar nivåtabell: varje gammal konsekvensnivå kan
+väljas till en specifik ny nivå. Grundkonsekvens använder den vanliga
+axelmappningen, medan kategori- och slutkonsekvensbedömningar använder sin
+egen kategoriöversättning.
+
+Mallen är auktoritativ för kategori- och nivåbeskrivningar. Projektets gamla
+beskrivning används endast om mallen medvetet lämnar den målnivån tom.
+Migreringen behåller kategori-id för en entydigt mappad kategori, byter namn
+och ordning från mallen, lägger till mallkategorier som saknas och kör allt i
+samma backupskyddade transaktion som tidigare. Två gamla kategorier får inte
+av misstag mappas till samma nya kategori.
+
+I en studie utan riskbedömningar installeras mallen först när användaren
+sparar arbetskopian; då läggs även mallens kategorier och nivåbeskrivningar
+in. Detta behåller tidigare arbetskopia-princip men gör den sparade mallen
+komplett.
+
+Verifierat med 5 databas-migreringstester, 18 riskmatris-/dialogtester,
+`tests.test_smoke` (12 tester), komplett `py_compile` och `git diff --check`.
+Testerna är headless; ingen manuell visuell genomklickning av kategoridraget
+eller gardinerna har gjorts.
+
 ## Två sammanlänkade vyer för axelmappning vid matrisbyte (2026-09-01)
 
 Riskmatrismigreringen är ombyggd enligt `HAZOP-Axelmappning-Handoff.md`.
