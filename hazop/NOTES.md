@@ -1,5 +1,16 @@
 # NOTES.md — Beslut och kontext
 
+## Tom orsak exporteras utan frekvens (2026-09-01)
+
+Exportmotorn känner nu även igen äldre tomma orsaksrader där
+`frequency_cleared` ännu inte var satt. Om raden saknar beskrivning, objekt,
+basfrekvens och standardorsak samt har standardvärdet `likelihood=0`, exporteras
+frekvensfältet blankt precis som i worksheet-tabellen. När användaren tömmer
+en orsak i inline-redigeraren sparas dessutom frekvensen explicit som rensad.
+
+Den aktuella tomma raden för `Högt flöde` i `hazop_project.db` har städats med
+ett villkor som endast träffade raden när den fortfarande var tom.
+
 ## Office-kopiering: stabil mergning och delurval (2026-09-01)
 
 Heltabellskopiering från HAZOP Scenario eller Worksheet använder nu den

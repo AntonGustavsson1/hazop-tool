@@ -16,7 +16,7 @@ for _path in (_HAZOP_DIR, _TEST_DIR):
 # already-loaded helpers without introducing a new circular import path.
 import hazop  # noqa: E402,F401
 from database import Database  # noqa: E402
-from worksheet_export import export_worksheet_excel  # noqa: E402
+from worksheet_export import export_worksheet_excel, _worksheet_rows  # noqa: E402
 
 
 class WorksheetExportTests(unittest.TestCase):
@@ -95,6 +95,21 @@ class WorksheetExportTests(unittest.TestCase):
                              ['HAZOP Scenario', 'Rekommendationer'])
         finally:
             os.unlink(path)
+
+    def test_empty_legacy_cause_does_not_export_default_frequency(self):
+        """Old blank causes with likelihood 0 must remain blank on export."""
+        node_id = self._node('Node A')
+        deviation_id = self._deviation(node_id, 'Högt flöde', 1)
+        self.db.conn.commit()
+        cause_id = self.db.add_cause(deviation_id)
+        # Simulates a row cleared before frequency_cleared was introduced.
+        self.db.update_cause(cause_id, description='', likelihood=0,
+                             base_frequency=None, frequency_cleared=False)
+
+        row = next(row for row in _worksheet_rows(self.db)
+                   if row['merge_key'][2] == cause_id)
+        self.assertEqual(row['values'][2], '')
+        self.assertEqual(row['values'][3], '')
 
 
 if __name__ == '__main__':

@@ -111,6 +111,25 @@ def _number(value, number):
     return f'{number}. {value}' if value else ''
 
 
+def _cause_frequency_is_cleared(cause):
+    """Recognise explicit and legacy cleared frequencies consistently.
+
+    Older projects can contain an empty cause with the default likelihood
+    ``0`` but without the newer ``frequency_cleared`` flag.  Such a row is
+    already treated as frequency-unset by the worksheet UI and must not
+    regain a frequency merely because it is exported.
+    """
+    if cause.get('frequency_cleared'):
+        return True
+    return (
+        not (cause.get('description') or '').strip()
+        and not (cause.get('comp_tag') or '').strip()
+        and cause.get('base_frequency') is None
+        and not cause.get('standard_cause_id')
+        and (cause.get('likelihood') or 0) == 0
+    )
+
+
 def _worksheet_rows(db):
     """Yield rows in node -> deviation -> cause -> worksheet-row order."""
     nodes = [dict(node) for node in db.nodes()]
@@ -203,7 +222,7 @@ def _worksheet_rows(db):
 
             for cause_number, cause in enumerate(causes, 1):
                 frequency = db.cause_frequency_level(cause)
-                frequency_label = ('' if cause.get('frequency_cleared')
+                frequency_label = ('' if _cause_frequency_is_cleared(cause)
                                    else freq_axis_label(frequency))
                 cause_label = _number(cause_text(cause), cause_number)
                 consequences = [dict(cons) for cons in
