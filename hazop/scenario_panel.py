@@ -9303,7 +9303,19 @@ class ScenarioTablePanel(QWidget):
                     # User edited description
                     if not self._undoing_text and desc != old_desc:
                         self._text_undo_stack.append(('cause', id_, old_desc))
-                    self.db.update_cause(id_, desc)
+                    if not desc:
+                        # An empty cause is also an empty frequency-bearing
+                        # row.  A standard cause or a manually entered base
+                        # frequency otherwise survives the text edit and is
+                        # easy to miss in the compact table; the worksheet
+                        # exporter then correctly exposes that stale value.
+                        # Mark it cleared explicitly so both the UI and all
+                        # exports use the same persisted state.
+                        self.db.update_cause(
+                            id_, desc, likelihood=0, base_frequency=None,
+                            standard_cause_id=None, frequency_cleared=True)
+                    else:
+                        self.db.update_cause(id_, desc)
                     # Sync any OTHER row showing this same cause (span groups
                     # merge same-id rows visually, but each still has its own
                     # QTableWidgetItem) — no full rebuild needed, see

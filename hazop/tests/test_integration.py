@@ -6888,6 +6888,35 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         self.assertIsNone(self.panel._table.item(row, self.panel._C_ORS).data(
             Qt.ItemDataRole.UserRole + 3))
 
+    def test_clearing_cause_text_also_clears_stale_frequency(self):
+        """Deleting the cause must not leave an export-only frequency."""
+        standard_deviation = self.db.conn.execute(
+            'SELECT id FROM standard_deviations LIMIT 1').fetchone()
+        deviation_id = (standard_deviation['id'] if standard_deviation
+                        else self.db.add_standard_deviation('Testavvikelse'))
+        standard_cause_id = self.db.add_standard_cause(
+            deviation_id, 'Högt flöde')
+        self.db.update_standard_cause(standard_cause_id, frequency=0.5)
+        self.db.update_cause(
+            self.cause_id, description='Högt flöde', likelihood=2,
+            base_frequency=0.5, standard_cause_id=standard_cause_id,
+            frequency_cleared=False)
+        item = self.panel._table.item(self.row, self.panel._C_ORS)
+        item.setText('')
+        self.panel._on_cell_changed_inner(self.row, self.panel._C_ORS)
+
+        cause = self.db.get_cause(self.cause_id)
+        self.assertEqual(cause['description'], '')
+        self.assertEqual(cause['likelihood'], 0)
+        self.assertIsNone(cause['base_frequency'])
+        self.assertIsNone(cause['standard_cause_id'])
+        self.assertTrue(cause['frequency_cleared'])
+        self.assertIsNone(self.db.cause_base_frequency_per_year(cause))
+        from worksheet_export import _worksheet_rows
+        exported_row = next(row for row in _worksheet_rows(self.db)
+                            if row['merge_key'][2] == self.cause_id)
+        self.assertEqual(exported_row['values'][3], '')
+
 
 class ShiftClickInsertsTagIntoActiveEditorTests(unittest.TestCase):
     """"Om jag skriver en konsekvens ... och sedan håller nere shift och

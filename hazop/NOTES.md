@@ -18,6 +18,18 @@ Verifierat med `tests.test_worksheet` (28 tester), riktade export-, smoke-,
 drag- och standardorsakspopup-tester (28 tester), `py_compile` och
 `git diff --check`. Testningen är headless.
 
+## Rensa frekvens när orsaken rensas (2026-09-01)
+
+När en vanlig orsaksrad töms i inline-redigeraren rensas nu även dess sparade
+frekvensläge: manuell basfrekvens, standardorsakskoppling och frekvensnivå.
+Raden markeras som frekvensrensad, vilket gör att samma resultat används i
+tabellen och i Excel/Word-kopieringen. Ett senare frekvensval kan fortfarande
+lägga tillbaka frekvensen på raden.
+
+Verifierat med frekvens-/inline-testet samt worksheet-, export- och smoke-
+tester (41 tester), `py_compile` och `git diff --check`. Testningen är
+headless.
+
 ## Orsakspopup stängs efter upprepade klick (2026-09-01)
 
 ScenarioTablePanel använder nu en gemensam avslutningsväg för aktiv inline-
