@@ -9446,18 +9446,18 @@ class ScenarioTablePanel(QWidget):
                     text = tag if not description else f'{tag}, {description}'
                 else:
                     text = description
-                if number:
+                if number and text:
                     text = f'{number}.  {text}'.rstrip()
             frequency = (self.db.cause_frequency_level(cause)
                          if cause and item.data(Qt.ItemDataRole.UserRole + 3) is not None
                          else None)
-            if frequency is not None:
+            if frequency is not None and text:
                 text = f'{text}\n{self._ors_freq_label(frequency, cause.get("base_frequency"))}'.strip()
         elif item is not None and col == self._C_KON:
             consequence = dict(self.db.get_consequence(cons_id)) if cons_id else {}
             text = str(consequence.get('description') or text or '')
             number = item.data(Qt.ItemDataRole.UserRole + 10)
-            if number:
+            if number and text:
                 text = f'{number}.  {text}'.rstrip()
             refs = parse_tag_refs(consequence.get('tagged_refs') or '')
             tags = (self._active_tag_refs_in_text(refs, text) +
@@ -9469,11 +9469,11 @@ class ScenarioTablePanel(QWidget):
             tags = (self._active_tag_refs_in_text(refs, text) +
                     self._matching_pid_tags(text))
             number = item.data(Qt.ItemDataRole.UserRole + 10)
-            if number:
-                text = f'{number}.  {text}'.rstrip()
+            if number and text:
+                text = f'{number}. {text}'.rstrip()
             rrf = safeguard.get('rrf') if safeguard else item.data(Qt.ItemDataRole.UserRole + 1)
-            if rrf is not None:
-                text = f'{text}\nRRF {rrf}'.strip()
+            if rrf is not None and text:
+                text = f'{text} (RRF: {rrf})'
 
         if col == self._C_LOPA and cons_id:
             active_factors = [dict(factor) for factor in self.db.reduction_factors(cons_id)
@@ -9484,15 +9484,17 @@ class ScenarioTablePanel(QWidget):
                     total_rrf *= max(1.0, float(factor.get('rrf') or 1))
                 except (TypeError, ValueError):
                     continue
-            text = f'{len(active_factors)} ({_LopaWidget._format_rrf(total_rrf)})'
+            text = (f'{len(active_factors)} ({_LopaWidget._format_rrf(total_rrf)})'
+                    if active_factors else '')
         elif item is not None and col == self._C_REK:
             recommendation_id = (self._row_recommendation_ids[row]
                                  if row < len(self._row_recommendation_ids) else None)
             recommendation = (self.db.get_recommendation(recommendation_id)
                               if recommendation_id else None)
             if recommendation:
-                text = (f"{int(recommendation['display_number']):03d}. "
-                        f"{(recommendation.get('description') or '').strip()}")
+                description = (recommendation.get('description') or '').strip()
+                text = (f"{int(recommendation['display_number']):03d}. {description}"
+                        if description else '')
             tags = self._matching_pid_tags(text)
 
         widget = table.cellWidget(row, col)

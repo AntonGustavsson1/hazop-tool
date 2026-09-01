@@ -1,5 +1,15 @@
 # NOTES.md — Beslut och kontext
 
+## Office-kopiering av barriarer (2026-09-01)
+
+Kopiering fran HAZOP Scenario eller Worksheet till Word/Excel skriver varje
+barriar pa en rad med dess RRF, exempelvis `1. TAG-123 (RRF: 1)`. En tom
+orsak, konsekvens, barriar, enabler- eller rekommendationsrad exporteras som
+en blank cell i stallet for att visa enbart ett nummer, RRF eller `0 (1)`.
+
+Verifierat med `tests.test_worksheet` (25 tester), `tests.test_smoke`
+(12 tester), `py_compile` och `git diff --check`. Testningen ar headless.
+
 ## Frekvensformat i HAZOP (2026-09-01)
 
 Kompakta frekvensfalt i Scenario och Worksheet visar nu matrisens tecken,
