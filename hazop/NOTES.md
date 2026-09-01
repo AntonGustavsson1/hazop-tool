@@ -1,5 +1,20 @@
 # NOTES.md — Beslut och kontext
 
+## En gemensam sparaåtgärd och egna riskmatrismallar (2026-09-01)
+
+Riskmatris och Axlar delar nu en enda knapp: `Spara ändringar som mall…`.
+Den samlar matrisens celler, färger och axelriktning samt axlarnas tecken,
+beskrivningar, frekvensgränser och konsekvensbeskrivningar i samma sparning.
+Vid ändring efterfrågas ett mallnamn. Den kompletta profilen blir både aktiv
+i projektet och en egen, återanvändbar mall direkt under standardmallarna.
+Samma namn uppdaterar den egna mallen i stället för att skapa dubbletter.
+Mallar är projektlokala och påverkar inte andra projekt.
+
+Verifierat med 19 riktade riskmatris-/inställningstester, 5
+databas-migreringstester, `tests.test_smoke` (12 tester), `py_compile` och
+`git diff --check`. Testningen är headless; visuellt genomklick av namnfrågan
+och den nya mallraden återstår.
+
 ## Mallbundna kategorier och kategoriöversättning vid riskmatrisbyte (2026-09-01)
 
 En riskmatrismall innehåller nu hela sin egen profil: cellernas bakgrunds-

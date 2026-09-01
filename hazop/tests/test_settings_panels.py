@@ -803,16 +803,49 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             # confirmation -- headless offscreen Qt still runs a real modal event
             # loop for exec(), so it must be stubbed out or the test hangs forever
             # waiting for a click that never comes.
-            original_information = QMessageBox.information
-            QMessageBox.information = staticmethod(lambda *a, **k: None)
-            try:
-                panel._save_matrix()
-            finally:
-                QMessageBox.information = original_information
+            with unittest.mock.patch.object(
+                    panel, '_ask_custom_matrix_template_name',
+                    return_value=('Testmall', True)):
+                original_information = QMessageBox.information
+                QMessageBox.information = staticmethod(lambda *a, **k: None)
+                try:
+                    panel._save_matrix()
+                finally:
+                    QMessageBox.information = original_information
             self.assertTrue(saved, "matrix_changed signal should still fire on save")
             cfg = self.db.get_risk_matrix()
             self.assertEqual(cfg['rows'], 4)
             self.assertEqual(cfg['cols'], 5)
+        finally:
+            panel.deleteLater()
+
+    def test_unified_matrix_save_creates_a_named_template_button(self):
+        """One save action persists both the active matrix and a reusable name."""
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            self.assertFalse(hasattr(panel, '_axes_save_btn'))
+            panel._rows_spin.setValue(4)
+            with unittest.mock.patch.object(
+                    panel, '_ask_custom_matrix_template_name',
+                    return_value=('Min processmall', True)), \
+                    unittest.mock.patch.object(QMessageBox, 'information'):
+                panel._save_matrix()
+            templates = self.db.get_custom_risk_matrix_templates()
+            self.assertEqual([item['name'] for item in templates], ['Min processmall'])
+            self.assertEqual(templates[0]['matrix']['rows'], 4)
+            panel._rows_spin.setValue(5)
+            with unittest.mock.patch.object(
+                    panel, '_ask_custom_matrix_template_name',
+                    return_value=('Min processmall', True)), \
+                    unittest.mock.patch.object(QMessageBox, 'information'):
+                panel._save_matrix()
+            templates = self.db.get_custom_risk_matrix_templates()
+            self.assertEqual(len(templates), 1, "a repeated name updates the existing template")
+            self.assertEqual(templates[0]['matrix']['rows'], 5)
+            buttons = [button for button in panel.findChildren(QPushButton)
+                       if button.text() == 'Min processmall']
+            self.assertTrue(buttons, "the custom template must be shown below standard templates")
         finally:
             panel.deleteLater()
 
@@ -862,7 +895,10 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
                     QInputDialog, 'getText', return_value=('Text från meny', True)):
                 menu.actions()[1].trigger()
             self.assertEqual(button.label(), 'Text från meny')
-            with unittest.mock.patch.object(QMessageBox, 'information'):
+            with unittest.mock.patch.object(
+                    panel, '_ask_custom_matrix_template_name',
+                    return_value=('Testmall', True)), \
+                    unittest.mock.patch.object(QMessageBox, 'information'):
                 panel._save_matrix()
             from hazop import RiskMatrixPopup
             popup = RiskMatrixPopup(button.col - 1, button.row + 1)
@@ -903,7 +939,10 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             for i, edit in enumerate(panel._y_label_edits):
                 edit.setText(f'C-visible-{i}')
 
-            with unittest.mock.patch.object(QMessageBox, 'information'):
+            with unittest.mock.patch.object(
+                    panel, '_ask_custom_matrix_template_name',
+                    return_value=('Testmall 1', True)), \
+                    unittest.mock.patch.object(QMessageBox, 'information'):
                 panel._save_matrix()
 
             cfg = self.db.get_risk_matrix()
@@ -925,7 +964,10 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
                 edit.setText(f'C2-visible-{i}')
             for i, edit in enumerate(panel._y_label_edits):
                 edit.setText(f'F2-visible-{i}')
-            with unittest.mock.patch.object(QMessageBox, 'information'):
+            with unittest.mock.patch.object(
+                    panel, '_ask_custom_matrix_template_name',
+                    return_value=('Testmall 2', True)), \
+                    unittest.mock.patch.object(QMessageBox, 'information'):
                 panel._save_matrix()
 
             cfg = self.db.get_risk_matrix()
@@ -1045,7 +1087,10 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             panel._frequency_axis_table.item(0, 1).setText('Aldrig')
             panel._consequence_axis_table.item(0, 0).setText('0')
             panel._consequence_axis_table.item(0, 1).setText('Ingen skada')
-            with unittest.mock.patch.object(QMessageBox, 'information'):
+            with unittest.mock.patch.object(
+                    panel, '_ask_custom_matrix_template_name',
+                    return_value=('Testmall', True)), \
+                    unittest.mock.patch.object(QMessageBox, 'information'):
                 panel._save_axes_and_categories()
             cfg = self.db.get_risk_matrix()
             self.assertEqual(cfg['x_codes'][0], 'A')
@@ -1090,7 +1135,10 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             self.assertEqual(self.db.get_severity_definitions().get(1, {}).get(cat_id, ''),
                              '', "paste is a working copy until Spara")
 
-            with unittest.mock.patch.object(QMessageBox, 'information'):
+            with unittest.mock.patch.object(
+                    panel, '_ask_custom_matrix_template_name',
+                    return_value=('Testmall', True)), \
+                    unittest.mock.patch.object(QMessageBox, 'information'):
                 panel._save_axes_and_categories()
             definitions = self.db.get_severity_definitions()
             self.assertEqual(

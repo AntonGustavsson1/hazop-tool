@@ -2295,6 +2295,45 @@ class Database:
         self.set_config('risk_matrix', json.dumps(cfg))
         _risk_matrix_cache.load(self)
 
+    def get_custom_risk_matrix_templates(self):
+        """Return this project's named, user-created risk-matrix templates.
+
+        Templates live alongside the project configuration rather than in the
+        active matrix itself. A malformed or obsolete saved entry is ignored
+        so it can never prevent the project from opening.
+        """
+        try:
+            raw = json.loads(self.get_config('custom_risk_matrix_templates', '[]'))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw = []
+        templates = []
+        for item in raw if isinstance(raw, list) else []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('name') or '').strip()
+            matrix = item.get('matrix')
+            if not name or not isinstance(matrix, dict):
+                continue
+            templates.append({'name': name, 'matrix': self._risk_matrix_copy(matrix)})
+        return templates
+
+    def save_custom_risk_matrix_template(self, name, cfg):
+        """Create or replace a named project-local risk-matrix template."""
+        name = str(name or '').strip()
+        if not name:
+            raise ValueError("Mallnamn saknas.")
+        template = {'name': name, 'matrix': self._risk_matrix_copy(cfg)}
+        templates = self.get_custom_risk_matrix_templates()
+        key = name.casefold()
+        for index, existing in enumerate(templates):
+            if existing['name'].casefold() == key:
+                templates[index] = template
+                break
+        else:
+            templates.append(template)
+        self.set_config('custom_risk_matrix_templates', json.dumps(templates))
+        return templates
+
     @staticmethod
     def _template_category_key(value, fallback='category'):
         text = str(value or fallback).strip().casefold()

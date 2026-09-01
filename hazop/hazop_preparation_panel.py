@@ -1530,12 +1530,12 @@ class HAZOPPreparationPanel(QWidget):
         preset_row.addStretch()
         ml.addLayout(preset_row)
 
-        save_matrix_btn = QPushButton("Spara riskmatris")
-        save_matrix_btn.setIcon(_icon('save', 16, '#ffffff'))
-        save_matrix_btn.setStyleSheet(
-            "background:#2F5FD0; color:#fff; font-weight:bold; padding:4px 12px;")
-        save_matrix_btn.clicked.connect(self._save_matrix)
-        ml.addWidget(save_matrix_btn)
+        self._custom_matrix_templates_widget = QWidget()
+        self._custom_matrix_templates_layout = QHBoxLayout(self._custom_matrix_templates_widget)
+        self._custom_matrix_templates_layout.setContentsMargins(0, 0, 0, 0)
+        self._custom_matrix_templates_layout.setSpacing(5)
+        ml.addWidget(self._custom_matrix_templates_widget)
+        self._reload_custom_matrix_templates()
 
         risk_tab = QWidget()
         risk_lay = QVBoxLayout(risk_tab)
@@ -1556,6 +1556,16 @@ class HAZOPPreparationPanel(QWidget):
         self._axes_page = self._create_axes_page()
         self._risk_substack.addWidget(self._axes_page)
         risk_lay.addWidget(self._risk_substack)
+        save_row = QHBoxLayout()
+        save_row.setContentsMargins(8, 0, 8, 6)
+        save_row.addStretch()
+        self._save_matrix_btn = QPushButton("Spara ändringar som mall…")
+        self._save_matrix_btn.setIcon(_icon('save', 16, '#ffffff'))
+        self._save_matrix_btn.setStyleSheet(
+            "background:#2F5FD0; color:#fff; font-weight:bold; padding:4px 12px;")
+        self._save_matrix_btn.clicked.connect(self._save_matrix)
+        save_row.addWidget(self._save_matrix_btn)
+        risk_lay.addLayout(save_row)
         self._risk_matrix_btn.clicked.connect(
             lambda: self._set_risk_subview(0))
         self._risk_axes_btn.clicked.connect(
@@ -2271,14 +2281,8 @@ class HAZOPPreparationPanel(QWidget):
         generate.setToolTip("Skapar etiketter som < 0,1/år och 0,1–1/år."
                             " Körs bara när du väljer knappen.")
         generate.clicked.connect(self._generate_frequency_labels)
-        self._axes_save_btn = QPushButton("Spara axlar och kategorier")
-        self._axes_save_btn.setIcon(_icon('save', 16, '#ffffff'))
-        self._axes_save_btn.setStyleSheet(
-            "background:#2F5FD0; color:#fff; font-weight:bold; padding:4px 12px;")
-        self._axes_save_btn.clicked.connect(self._save_axes_and_categories)
         actions.addWidget(generate)
         actions.addStretch()
-        actions.addWidget(self._axes_save_btn)
         layout.addLayout(actions)
         return page
 
@@ -2487,7 +2491,7 @@ class HAZOPPreparationPanel(QWidget):
             self._axes_loading = False
         self._axes_dirty = True
 
-    def _save_axes_and_categories(self):
+    def _save_axes_and_categories_values(self, show_confirmation=True):
         """Persist the Axlar working copy, including all pasted descriptions."""
         cfg = json.loads(json.dumps(
             getattr(self, '_last_built_cfg', None) or self.db.get_risk_matrix() or DEFAULT_MATRIX))
@@ -2539,7 +2543,8 @@ class HAZOPPreparationPanel(QWidget):
             self._last_built_cfg = cfg
             self._load_matrix_ui()
             self._reload_axes_tables(cfg)
-            QMessageBox.information(self, "Sparat", "Mallens axlar och konsekvenskategorier sparade.")
+            if show_confirmation:
+                QMessageBox.information(self, "Sparat", "Mallens axlar och konsekvenskategorier sparade.")
             self.matrix_changed.emit()
             return
 
@@ -2562,7 +2567,8 @@ class HAZOPPreparationPanel(QWidget):
         self._last_built_cfg = cfg
         self._load_matrix_ui()
         self._reload_axes_tables(cfg)
-        QMessageBox.information(self, "Sparat", "Axlar och konsekvenskategorier sparade.")
+        if show_confirmation:
+            QMessageBox.information(self, "Sparat", "Axlar och konsekvenskategorier sparade.")
         self.matrix_changed.emit()
 
     def _on_matrix_cell_width_changed(self, value):
@@ -3195,7 +3201,7 @@ class HAZOPPreparationPanel(QWidget):
             btn.update()
             self._matrix_grid.activate()
 
-    def _save_matrix(self):
+    def _save_matrix_values(self, show_confirmation=True):
         n_cons = self._rows_spin.value()   # consequence levels (rows in data)
         n_freq = self._cols_spin.value()   # frequency levels  (cols in data)
         x_axis = self._axis_combo.currentData() or 'frequency'
@@ -3302,8 +3308,85 @@ class HAZOPPreparationPanel(QWidget):
         except Exception as exc:
             QMessageBox.critical(self, "Riskmatrisen sparades inte", str(exc))
             return
-        QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
+        if show_confirmation:
+            QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
         self.matrix_changed.emit()
+
+    def _reload_custom_matrix_templates(self):
+        """Show project-local templates immediately below the standard ones."""
+        layout = getattr(self, '_custom_matrix_templates_layout', None)
+        widget = getattr(self, '_custom_matrix_templates_widget', None)
+        if layout is None or widget is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        templates = self.db.get_custom_risk_matrix_templates()
+        widget.setVisible(bool(templates))
+        if not templates:
+            return
+        label = QLabel("Egna mallar:")
+        label.setStyleSheet("font-size:10px; color:#4b5563;")
+        layout.addWidget(label)
+        for template in templates:
+            button = QPushButton(template['name'])
+            button.setToolTip("Egen riskmatrismall i detta projekt")
+            button.clicked.connect(
+                lambda _checked=False, t=template: self._request_matrix_template(
+                    t['matrix'], t['name']))
+            layout.addWidget(button)
+        layout.addStretch()
+
+    def _ask_custom_matrix_template_name(self):
+        return QInputDialog.getText(
+            self, "Spara egen riskmatrismall", "Mallnamn:",
+            text="Egen riskmatris")
+
+    def _save_matrix(self):
+        """Save the complete risk profile once and retain it as a named template."""
+        # Bring matrix cell/header changes into the same working copy before
+        # deciding whether Axlar also needs to be saved.
+        self._apply_size()
+        has_axes_edits = self._axes_dirty
+        has_matrix_edits = not self._working_matrix_matches_saved()
+        if not has_axes_edits and not has_matrix_edits and \
+                getattr(self, '_pending_template_categories', None) is None:
+            QMessageBox.information(self, "Inga ändringar", "Det finns inga riskmatrisändringar att spara.")
+            return
+
+        name, ok = self._ask_custom_matrix_template_name()
+        name = name.strip()
+        if not ok:
+            return
+        if not name:
+            QMessageBox.warning(self, "Mallnamn saknas", "Ange ett namn för den egna riskmatrismallen.")
+            return
+
+        before = json.dumps(_normalise_matrix(json.loads(json.dumps(
+            self.db.get_risk_matrix() or DEFAULT_MATRIX))), sort_keys=True)
+        if has_axes_edits:
+            self._save_axes_and_categories_values(show_confirmation=False)
+        else:
+            self._save_matrix_values(show_confirmation=False)
+        saved = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        after = json.dumps(_normalise_matrix(json.loads(json.dumps(saved))), sort_keys=True)
+        if after == before:
+            # Validation errors in the delegated save routines leave the
+            # database untouched; in that case never create a misleading
+            # named template.
+            return
+        try:
+            self.db.save_custom_risk_matrix_template(name, saved)
+        except Exception as exc:
+            QMessageBox.critical(self, "Mallen sparades inte", str(exc))
+            return
+        self._reload_custom_matrix_templates()
+        QMessageBox.information(self, "Sparat", f"Riskmatrisen sparades som mallen '{name}'.")
+
+    def _save_axes_and_categories(self):
+        """Compatibility entry point for tests and older callers."""
+        self._save_matrix()
 
     def _working_matrix_matches_saved(self):
         """Template migration must never silently discard unsaved grid edits."""
