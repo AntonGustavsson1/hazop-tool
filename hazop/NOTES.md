@@ -5162,3 +5162,14 @@ först när användaren genomför mallbytet.
 Verifierat med riktade kategori-, kalibrerings- och databas-migreringstester,
 offscreen-rendering av båda sidorna och per-kategori-vyn, `tests.test_smoke`,
 `py_compile` och `git diff --check`.
+
+## Kompakt startsida i migreringspopupen (2026-09-01)
+
+Första sidan i migreringsguiden använder nu en egen kompakt höjd som räknas
+från antalet kategorirader. Den är inte längre lika hög som steg tvås
+matrisvy, vilket tar bort den utdragna tomma ytan under kategorikopplingen.
+När användaren går vidare växlar popupen tillbaka till full höjd för axel- och
+matrisvyerna, och `Tillbaka` återställer den kompakta höjden.
+
+Verifierat med offscreen-rendering och regressionstest för sidornas
+storleksväxling.

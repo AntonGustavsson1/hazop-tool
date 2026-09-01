@@ -1223,6 +1223,30 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
+    def test_template_migration_first_page_is_compact_and_second_page_keeps_room(self):
+        from hazop_preparation_panel import RiskMatrixMigrationDialog
+        source = {
+            'rows': 2, 'cols': 2, 'x_labels': ['A', 'B'],
+            'y_labels': ['1', '2'], 'freq_boundaries': [0.1],
+        }
+        target = {
+            'rows': 2, 'cols': 2, 'x_labels': ['1', '2'],
+            'y_labels': ['1', '2'], 'freq_boundaries': [0.1],
+        }
+        self.db.set_risk_matrix(source)
+        dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
+        try:
+            self.assertEqual(dialog._pages.currentIndex(), 0)
+            self.assertLess(dialog.height(), 600)
+
+            dialog._show_axis_page()
+            self.assertEqual(dialog.height(), dialog._axis_page_height)
+
+            dialog._show_category_page()
+            self.assertEqual(dialog.height(), dialog._category_page_height)
+        finally:
+            dialog.deleteLater()
+
     def test_template_migration_exposes_category_and_matrix_mapping_views(self):
         """Category matching uses the same interactive mapping canvas as axes."""
         from hazop_preparation_panel import RiskMatrixMigrationDialog

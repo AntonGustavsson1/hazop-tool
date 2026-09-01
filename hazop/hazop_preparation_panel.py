@@ -861,8 +861,9 @@ class RiskMatrixMigrationDialog(QDialog):
             for source_id, mapping in self._category_severity_maps.items()
         }
         self.setWindowTitle(f"Byt riskmatris till {template_name}")
-        self.setMinimumSize(1060, 720)
-        self.resize(1220, 820)
+        self.setMinimumWidth(1060)
+        self.setMinimumHeight(420)
+        self.resize(1220, 500)
 
         outer = QVBoxLayout(self)
         toolbar = QHBoxLayout()
@@ -950,7 +951,10 @@ class RiskMatrixMigrationDialog(QDialog):
         category_toolbar.addWidget(category_clear)
         category_toolbar.addStretch()
         category_layout.addLayout(category_toolbar)
-        category_layout.addWidget(self._category_panel, 1)
+        # Keep the first page content-sized.  Stretching this panel to fill
+        # the second page's available height made the category links look
+        # vertically detached from the page buttons.
+        category_layout.addWidget(self._category_panel)
         category_buttons = QDialogButtonBox()
         category_next = category_buttons.addButton(
             "Nästa", QDialogButtonBox.ButtonRole.ActionRole)
@@ -967,7 +971,30 @@ class RiskMatrixMigrationDialog(QDialog):
         self._axis_page = axis_page
         self._pages.setCurrentIndex(0)
         outer.addWidget(self._pages, 1)
+        self._category_page_height = self._page_height_hint('category')
+        self._axis_page_height = 820
+        self._pages.currentChanged.connect(self._resize_for_page)
+        self._resize_for_page(0)
         self._refresh_all()
+
+    def _page_height_hint(self, page):
+        """Return a compact height for the active wizard page."""
+        if page == 'category':
+            count = max(
+                len(self.plan.get('source_categories', [])),
+                len(self.plan.get('target_categories', [])), 1)
+            # The category canvas is intentionally fixed to its content. Add
+            # room for title, status, toolbar and the page buttons without
+            # inheriting the much taller matrix page's size.
+            return max(420, 250 + count * 34)
+        return self._axis_page_height
+
+    def _resize_for_page(self, index):
+        """Keep the wizard's compact first page separate from page two."""
+        height = (self._category_page_height if index == 0
+                  else self._axis_page_height)
+        self.setMinimumHeight(height)
+        self.resize(self.width(), height)
 
     def _build_category_calibration_controls(self, outer):
         """Build optional per-category severity calibration for page two."""
