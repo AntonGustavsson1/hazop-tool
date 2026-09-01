@@ -350,6 +350,112 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             ws.deleteLater()
 
+    def test_office_copy_uses_live_entity_data_in_each_object_column(self):
+        """Clipboard data must not borrow a stale tag/RRF from an item role."""
+        from hazop import HAZOPWorksheet, ScenarioTablePanel
+
+        ids = self._make_full_chain(node_name='Nod A')
+        for tag, equipment_type in (
+                ('KON-TRUE', 'Tank'), ('SG-TRUE', 'Sensor'),
+                ('REC-TRUE', 'Ventil')):
+            self.db.add_equipment_item(tag, tag, tag.split('-')[0], 1,
+                                       equipment_type, '', 0)
+        self.db.update_cause(
+            ids['cause_id'], description='Orsak', comp_type='Ventil',
+            comp_tag='CAUSE-TRUE')
+        self.db.update_consequence(
+            ids['cons_id'], 'KON-TRUE konsekvens', 3,
+            comp_type='Tank', comp_tag='KON-TRUE', tagged_refs='KON-TRUE')
+        self.db.update_safeguard(
+            ids['sg_id'], description='SG-TRUE barriär', rrf=10,
+            tagged_refs='SG-TRUE')
+        self.db.set_safeguard_tag(ids['sg_id'], 'SG-TRUE', 'Sensor')
+        self.db.add_reduction_factor(ids['cons_id'], 'Enabler', 10)
+        self.db.add_recommendation_to_consequence(
+            ids['cons_id'], 'REC-TRUE rekommendation')
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()
+            panel = ws._table_panel
+            table = panel._table
+            row = next(row for row, meta in enumerate(panel._row_meta)
+                       if meta[2] == ids['cons_id'])
+
+            # These role/button changes emulate the short interval after a
+            # user changes an object or RRF and before an old widget instance
+            # is destroyed. The copied result must still use the database.
+            table.item(row, ScenarioTablePanel._C_ORS).setData(
+                Qt.ItemDataRole.UserRole + 2, ('Fel typ', 'CAUSE-WRONG'))
+            table.item(row, ScenarioTablePanel._C_SG).setData(
+                Qt.ItemDataRole.UserRole + 1, 999)
+            table.blockSignals(True)
+            try:
+                table.item(row, ScenarioTablePanel._C_REK).setText(
+                    '999. REC-WRONG rekommendation')
+            finally:
+                table.blockSignals(False)
+            lopa = table.cellWidget(row, ScenarioTablePanel._C_LOPA)
+            lopa._extra_btn.setText('99 (999)')
+
+            selection = QItemSelection(
+                table.model().index(row, ScenarioTablePanel._C_NOD),
+                table.model().index(row, ScenarioTablePanel._C_REK))
+            table.selectionModel().select(
+                selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+            html, plain_text = panel._office_clipboard_payload()
+
+            self.assertIn('<strong>CAUSE-TRUE</strong>', html)
+            self.assertIn('<strong>KON-TRUE</strong>', html)
+            self.assertIn('<strong>SG-TRUE</strong>', html)
+            self.assertIn('<strong>REC-TRUE</strong>', html)
+            self.assertIn('RRF 10', html)
+            self.assertIn('1 (10)', html)
+            self.assertIn('RRF 10', plain_text)
+            self.assertNotIn('CAUSE-WRONG', html)
+            self.assertNotIn('REC-WRONG', html)
+            self.assertNotIn('999', html)
+        finally:
+            ws.deleteLater()
+
+    def test_scenario_office_copy_uses_live_deviation_equipment(self):
+        """Scenario's equipment column must not export an old object label."""
+        from hazop import ScenarioTablePanel
+
+        ids = self._make_full_chain(node_name='Nod A')
+        equipment_id = self.db.add_equipment_item(
+            'DEV-TRUE', 'DEV-TRUE', 'DEV', 1, 'Pump', '', 0)
+        self.db.conn.execute(
+            'UPDATE deviations SET equipment_id=? WHERE id=?',
+            (equipment_id, ids['deviation_id']))
+        self.db.commit()
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(ids['node_id'])
+            table = panel._table
+            table.setColumnHidden(ScenarioTablePanel._C_UTR, False)
+            row = next(row for row, meta in enumerate(panel._row_meta)
+                       if meta[0] == ids['deviation_id'])
+            table.blockSignals(True)
+            try:
+                table.item(row, ScenarioTablePanel._C_UTR).setText('DEV-WRONG')
+            finally:
+                table.blockSignals(False)
+            selection = QItemSelection(
+                table.model().index(row, ScenarioTablePanel._C_UTR),
+                table.model().index(row, ScenarioTablePanel._C_UTR))
+            table.selectionModel().select(
+                selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+
+            html, plain_text = panel._office_clipboard_payload()
+            self.assertIn('DEV-TRUE', html)
+            self.assertIn('Pump', html)
+            self.assertIn('DEV-TRUE', plain_text)
+            self.assertNotIn('DEV-WRONG', html)
+        finally:
+            panel.deleteLater()
+
     def test_ctrl_c_copies_exact_selected_cells_to_office_clipboard(self):
         """Ctrl+C must no longer replace a cell selection with one HAZOP row."""
         from hazop import HAZOPWorksheet

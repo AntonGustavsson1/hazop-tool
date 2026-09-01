@@ -9364,54 +9364,120 @@ class ScenarioTablePanel(QWidget):
         instead of living in ``QTableWidgetItem.text()``: the cause frequency
         chip and the safeguard RRF badge are the two important examples.
         Office copy must materialise those values, otherwise a copied table
-        loses information compared with the Excel worksheet export.
+        loses information compared with the Excel worksheet export.  More
+        importantly, object values are read from their persisted entity here
+        rather than from the item's rendering roles.  A role can briefly be
+        stale after an object/RRF change while the database is already the
+        source of truth.
         """
         table = self._table
         item = table.item(row, col)
         text = item.text() if item is not None else ''
         tags = []
-        if item is not None and col == self._C_ORS:
-            obj_data = item.data(Qt.ItemDataRole.UserRole + 2) or ('', '')
-            group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or []
-            if len(group_tags) >= 2:
+
+        meta = (self._row_meta[row]
+                if 0 <= row < len(self._row_meta) else (None, None, None, None))
+        dev_id, cause_id, cons_id, sg_id = meta
+
+        if item is not None and col == self._C_UTR:
+            # This column is normally hidden in Worksheet but visible in
+            # HAZOP Scenario. Resolve its deviation-owned equipment link
+            # live so it follows the same no-stale-object rule as ORS/KON/SG.
+            deviation = self.db.get_deviation(dev_id) if dev_id else None
+            equipment = (self.db.get_equipment_by_id(deviation.get('equipment_id'))
+                         if deviation and deviation.get('equipment_id') else None)
+            if equipment:
+                text = (f"{equipment.get('tag') or ''} — "
+                        f"{equipment.get('equipment_type') or ''}").strip(' —')
+        elif item is not None and col == self._C_ORS:
+            cause = dict(self.db.get_cause(cause_id)) if cause_id else {}
+            group_ids = self._group_equipment_ids(cause) if cause else []
+            number = item.data(Qt.ItemDataRole.UserRole + 10)
+            if len(group_ids) >= 2:
+                group_tags = []
+                for equipment_id in group_ids:
+                    equipment = self.db.get_equipment_by_id(equipment_id)
+                    tag = str((equipment or {}).get('tag') or '').strip()
+                    if tag:
+                        group_tags.append(tag)
+                # Keep legacy groups readable too, but only when a current
+                # equipment link did not provide the live tag list.
+                if len(group_tags) < 2:
+                    group_tags = list(item.data(Qt.ItemDataRole.UserRole + 9) or [])
                 tags = list(group_tags)
-                lines = str(text or '').splitlines() or ['']
+                lines = (self.db.group_cause_description_lines(cause, group_ids)
+                         if cause else str(text or '').splitlines())
                 operators = self._group_operators(item)
                 rebuilt = []
                 for idx, tag in enumerate(tags):
-                    prefix = str(tag)
+                    prefix = f'{number}.  {tag}' if idx == 0 and number else str(tag)
                     if idx:
                         op = operators[idx] if idx < len(operators) else 'OR'
                         prefix = f'{op} {prefix}'
                     rebuilt.append(f'{prefix} {lines[idx] if idx < len(lines) else ""}'.rstrip())
                 text = '\n'.join(rebuilt)
-            elif obj_data and obj_data[1]:
-                tags = [obj_data[1]]
-                # The tag in an ORS cell is painted outside item.text().
-                # Include it in an external copy so the hierarchy remains
-                # meaningful after pasting to Word or Excel.
-                if str(obj_data[1]).casefold() not in str(text).casefold():
-                    text = f'{obj_data[1]} {text}'.rstrip()
-            frequency = item.data(Qt.ItemDataRole.UserRole + 3)
+            else:
+                _type, tag = self._cause_tag_display(cause) if cause else ('', '')
+                description = str(cause.get('description') or text or '').strip()
+                if tag:
+                    tags = [tag]
+                    text = tag if not description else f'{tag}, {description}'
+                else:
+                    text = description
+                if number:
+                    text = f'{number}.  {text}'.rstrip()
+            frequency = (self.db.cause_frequency_level(cause)
+                         if cause and item.data(Qt.ItemDataRole.UserRole + 3) is not None
+                         else None)
             if frequency is not None:
-                text = f'{text}\n{freq_axis_label(frequency)}'.strip()
+                text = f'{text}\n{self._ors_freq_label(frequency, cause.get("base_frequency"))}'.strip()
         elif item is not None and col == self._C_KON:
-            obj_data = item.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
-            refs = item.data(Qt.ItemDataRole.UserRole + 8) or []
-            tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + list(refs)
-        elif item is not None and col == self._C_SG:
-            obj_data = item.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
-            refs = item.data(Qt.ItemDataRole.UserRole + 7) or []
-            tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + list(refs)
+            consequence = dict(self.db.get_consequence(cons_id)) if cons_id else {}
+            text = str(consequence.get('description') or text or '')
             number = item.data(Qt.ItemDataRole.UserRole + 10)
             if number:
                 text = f'{number}.  {text}'.rstrip()
-            rrf = item.data(Qt.ItemDataRole.UserRole + 1)
+            refs = parse_tag_refs(consequence.get('tagged_refs') or '')
+            tags = (self._active_tag_refs_in_text(refs, text) +
+                    self._matching_pid_tags(text))
+        elif item is not None and col == self._C_SG:
+            safeguard = dict(self.db.get_safeguard(sg_id)) if sg_id else {}
+            text = str(safeguard.get('description') or text or '')
+            refs = parse_tag_refs(safeguard.get('tagged_refs') or '')
+            tags = (self._active_tag_refs_in_text(refs, text) +
+                    self._matching_pid_tags(text))
+            number = item.data(Qt.ItemDataRole.UserRole + 10)
+            if number:
+                text = f'{number}.  {text}'.rstrip()
+            rrf = safeguard.get('rrf') if safeguard else item.data(Qt.ItemDataRole.UserRole + 1)
             if rrf is not None:
                 text = f'{text}\nRRF {rrf}'.strip()
 
+        if col == self._C_LOPA and cons_id:
+            active_factors = [dict(factor) for factor in self.db.reduction_factors(cons_id)
+                              if factor['active']]
+            total_rrf = 1.0
+            for factor in active_factors:
+                try:
+                    total_rrf *= max(1.0, float(factor.get('rrf') or 1))
+                except (TypeError, ValueError):
+                    continue
+            text = f'{len(active_factors)} ({_LopaWidget._format_rrf(total_rrf)})'
+        elif item is not None and col == self._C_REK:
+            recommendation_id = (self._row_recommendation_ids[row]
+                                 if row < len(self._row_recommendation_ids) else None)
+            recommendation = (self.db.get_recommendation(recommendation_id)
+                              if recommendation_id else None)
+            if recommendation:
+                text = (f"{int(recommendation['display_number']):03d}. "
+                        f"{(recommendation.get('description') or '').strip()}")
+            tags = self._matching_pid_tags(text)
+
         widget = table.cellWidget(row, col)
-        if widget is not None:
+        # Enabler data was just calculated from the consequence's persisted
+        # factors above. Do not overwrite it with a potentially stale button
+        # label from the old widget instance.
+        if widget is not None and col != self._C_LOPA:
             # The enabler widget has one explicit summary button.  Prefer it
             # to generic child enumeration so internal/hidden controls never
             # leak into an Office export.
@@ -9443,6 +9509,18 @@ class ScenarioTablePanel(QWidget):
             return (list(range(table.rowCount())),
                     [col for col in range(table.columnCount())
                      if not table.isColumnHidden(col)], None)
+        # A normal mouse/Shift selection is one Qt range. Preserve that
+        # exact rectangle even though selectedIndexes() omits coordinates
+        # covered by a rowspan. This is the common Office-copy workflow and
+        # prevents a covered child cell from being interpreted as a separate
+        # source object.
+        if len(selected_ranges) == 1:
+            selection = selected_ranges[0]
+            rows = list(range(selection.topRow(), selection.bottomRow() + 1))
+            columns = [col for col in range(selection.leftColumn(),
+                                             selection.rightColumn() + 1)
+                       if not table.isColumnHidden(col)]
+            return rows, columns, {(row, col) for row in rows for col in columns}
         # QTableWidget deliberately omits coordinates covered by a rowspan
         # from selectedIndexes().  That is correct for editing, but not for
         # an external clipboard: selecting a cause plus two consequence rows

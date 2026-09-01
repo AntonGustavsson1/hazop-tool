@@ -4331,6 +4331,31 @@ individuella RRF-värden och en sammanslagen cell, samt hela
 `git diff --check`. Ingen manuell inklistring i Word/Excel är ännu visuellt
 verifierad.
 
+### Office-kopiering läser rätt post i varje kolumn (2026-09-01)
+
+Office-kopieringen använder nu den sparade HAZOP-posten som källa för varje
+objektberoende kolumn, i stället för tillfälliga `QTableWidgetItem`-roller
+eller knapptexter. Det gäller orsaksobjekt och frekvens, konsekvensobjekt,
+barriärobjekt och RRF, enablers/RRF, rekommendationstext samt den synliga
+utrustningskolumnen i HAZOP Scenario. Därmed kan ett tidigare cellobjekt,
+en gammal RRF-badge eller en gammal enablerknapp aldrig blandas in när en
+annan post kopieras.
+
+En vanlig mus-/Shift-markering använder åter den exakta sammanhängande
+cellrektangeln från Qt. Sammanfogade celler beräknas enbart som visuella
+ankare inom den rektangeln, vilket hindrar att underliggande rader tolkas som
+egna objekt. Flera Ctrl-markeringar behåller fortsatt sin sparsamma
+begränsningsyta.
+
+Två nya regressionstester förfalskar medvetet gamla objekt-, RRF-,
+enabler- och rekommendationsvärden i UI:t och kontrollerar att både HTML och
+TSV ändå tar rätt data från databasen. Testerna omfattar även
+utrustningskolumnen i HAZOP Scenario. `tests.test_smoke`,
+`tests.test_worksheet`, `tests.test_worksheet_export` och `py_compile`
+passerar. `tests.test_scenario_panel` har en fristående befintlig
+testfixturmiss: den försöker lägga in en redan seedad
+`standard_deviations.description` och får SQLite `UNIQUE constraint failed`.
+
 ## Konsekvens, scroll och Escape i Scenario/Worksheet (2026-09-01)
 
 En tom konsekvensplats på en befintlig orsak är nu symmetrisk med en tom
