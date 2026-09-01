@@ -659,47 +659,6 @@ class MatrixAgainstMatrix(_AxisMappingCanvas):
         return group
 
 
-class CategoryMappingChip(QPushButton):
-    """Legacy category chip retained for import compatibility."""
-
-    def __init__(self, panel, role, key, name, color):
-        super().__init__(name, panel)
-        self.panel, self.role, self.key = panel, role, key
-        self.color = color or '#64748b'
-        self._pressed = False
-        self.setCursor(Qt.CursorShape.OpenHandCursor if role == 'source'
-                       else Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(28)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._pressed = True
-            self.panel.category_pressed(self, event.globalPosition().toPoint())
-            event.accept(); return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._pressed and event.buttons() & Qt.MouseButton.LeftButton:
-            self.panel.category_moved(self, event.globalPosition().toPoint())
-            event.accept(); return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if self._pressed and event.button() == Qt.MouseButton.LeftButton:
-            self._pressed = False
-            self.panel.category_released(self, event.globalPosition().toPoint())
-            event.accept(); return
-        super().mouseReleaseEvent(event)
-
-    def set_state(self, armed=False, mapped=False, over=False):
-        background = '#dbeafe' if armed else ('#eef4ff' if mapped else '#ffffff')
-        border = '#1d2d3d' if armed or over else self.color
-        self.setStyleSheet(
-            f"QPushButton{{background:{background}; border:1px solid {border}; "
-            "border-radius:0px; padding:3px 6px; text-align:left; font-size:10px;}"
-            "QPushButton:hover{background:#eef2f7;}")
-
-
 class _CategoryMappingCanvas(_AxisMappingCanvas):
     """Category mapping view using the same link-field interaction as axes."""
 
@@ -731,46 +690,16 @@ class _CategoryMappingCanvas(_AxisMappingCanvas):
 
 
 class CategoryMappingPanel(QWidget):
-    """Collapsible category and per-category severity conversion editor."""
+    """Category links plus optional per-category severity conversion."""
 
     def __init__(self, dialog, parent=None):
         super().__init__(parent)
         self.dialog = dialog
         self.source_chips, self.target_chips = {}, {}
         self._mapping_canvas = None
-        self.drag_chip = self.drag_over = None
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(5)
-
-    def _chip_at(self, global_pos):
-        widget = QApplication.widgetAt(global_pos)
-        while widget is not None and not isinstance(widget, CategoryMappingChip):
-            widget = widget.parentWidget()
-        return widget
-
-    def category_pressed(self, chip, _global_pos):
-        if chip.role == 'source':
-            self.drag_chip = chip
-            self.dialog.activate_source_category(chip.key)
-        else:
-            self.dialog.activate_target_category(chip.key)
-        self.sync_state()
-
-    def category_moved(self, chip, global_pos):
-        if chip is not self.drag_chip:
-            return
-        target = self._chip_at(global_pos)
-        self.drag_over = target if target and target.role == 'target' else None
-        self.sync_state()
-
-    def category_released(self, chip, global_pos):
-        if chip is self.drag_chip:
-            target = self._chip_at(global_pos)
-            if target and target.role == 'target':
-                self.dialog.set_category_mapping(chip.key, target.key)
-        self.drag_chip = self.drag_over = None
-        self.sync_state()
 
     def rebuild(self):
         while self._layout.count():
@@ -781,34 +710,7 @@ class CategoryMappingPanel(QWidget):
         title = QLabel("Koppla varje befintlig kategori till en kategori i den nya mallen.")
         title.setStyleSheet("color:#4b5563; font-size:10px;")
         self._layout.addWidget(title)
-        links = QWidget(); grid = QGridLayout(links)
-        grid.setContentsMargins(0, 0, 0, 0); grid.setHorizontalSpacing(12); grid.setVerticalSpacing(4)
-        source_header = QLabel("BEFINTLIG KATEGORI")
-        target_header = QLabel("NY MALLKATEGORI")
-        for header in (source_header, target_header):
-            header.setStyleSheet("color:#374151; font-size:9px; font-weight:bold;")
-        grid.addWidget(source_header, 0, 0)
-        grid.addWidget(target_header, 0, 2)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(2, 1)
         source_categories = self.dialog.plan.get('source_categories', [])
-        target_categories = self.dialog.plan.get('target_categories', [])
-        for row, category in enumerate(source_categories, start=1):
-            chip = CategoryMappingChip(self, 'source', str(category['source_id']),
-                                       category['name'], category.get('color'))
-            self.source_chips[chip.key] = chip; grid.addWidget(chip, row, 0)
-            arrow = QLabel("→")
-            arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            arrow.setStyleSheet("color:#4b5563; font-size:14px; font-weight:bold;")
-            grid.addWidget(arrow, row, 1)
-        for row, category in enumerate(target_categories, start=1):
-            chip = CategoryMappingChip(self, 'target', category['key'],
-                                       category['name'], category.get('color'))
-            self.target_chips[chip.key] = chip; grid.addWidget(chip, row, 2)
-        # Replace the old category-only grid with the shared axis-style
-        # mapping canvas.  It provides the same visible links, target counts,
-        # drag/drop and click-click interaction as frequency/consequence.
-        links.deleteLater()
         self._mapping_canvas = _CategoryMappingCanvas(self.dialog, self)
         self._mapping_canvas.rebuild()
         self._layout.addWidget(self._mapping_canvas, 1)
