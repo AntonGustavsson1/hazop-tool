@@ -2206,11 +2206,17 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
             # Sample near the top-left corner, inside the fillRect'd
             # background but before the 2px-inset drawText region — never
             # touched by a text glyph regardless of the risk label's length.
-            sampled = pixmap.toImage().pixelColor(1, 1)
+            # The risk value is rendered as a rounded bar inset from the
+            # table cell; sample its top interior rather than the old cell
+            # corner.
+            sampled = pixmap.toImage().pixelColor(pixmap.width() // 2, 2)
 
             _, expected_bg, _ = risk_info(5, 5)
             self.assertEqual(sampled, QColor(expected_bg),
                 "the actual painted pixel must match the risk matrix color, not white")
+            self.assertNotEqual(
+                pixmap.toImage().pixelColor(0, 0), QColor(expected_bg),
+                "the matrix colour must be inset in a bar, not fill the cell")
             self.assertNotEqual(sampled, QColor('white'))
             self.assertNotEqual(sampled, QColor('#ffffff'))
         finally:
@@ -2234,8 +2240,41 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
 
             _, expected_bg, _ = risk_info(0, 1)
             pixmap = self._paint_cell_to_pixmap(panel, row, panel._C_SLUT)
-            sampled = pixmap.toImage().pixelColor(1, 1)
+            sampled = pixmap.toImage().pixelColor(pixmap.width() // 2, 2)
             self.assertEqual(sampled, QColor(expected_bg))
+        finally:
+            panel.deleteLater()
+
+    def test_selected_scenario_fields_use_the_same_flat_gray_overlay(self):
+        from hazop import ScenarioTablePanel
+        from scenario_panel import _SCENARIO_SELECTION_BG
+        from PyQt6.QtGui import QColor
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.update_cause(cause_id, likelihood=3)
+            cons_id = self.db.add_consequence(cause_id)
+            self.db.update_consequence(cons_id, 'Ny konsekvens', 3, '')
+            category = self.db.consequence_categories()[0]
+            self.db.set_consequence_severity(cons_id, category['id'], 3)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+
+            for column in (panel._C_ORS, panel._C_KON, panel._C_RFORE,
+                           panel._C_LOPA, panel._C_SLUT):
+                panel._table.setCurrentCell(row, column)
+                if column == panel._C_LOPA:
+                    self.assertIn(
+                        _SCENARIO_SELECTION_BG,
+                        panel._table.cellWidget(
+                            row, panel._C_LOPA)._extra_btn.styleSheet())
+                pixmap = self._paint_cell_to_pixmap(panel, row, column)
+                self.assertEqual(
+                    pixmap.toImage().pixelColor(1, 1),
+                    QColor(_SCENARIO_SELECTION_BG),
+                    f"selected column {column} should use the shared gray overlay")
         finally:
             panel.deleteLater()
 

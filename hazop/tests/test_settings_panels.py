@@ -1397,8 +1397,12 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         # exercised without opening its warning dialog.
         for category in list(self.db.consequence_categories()):
             self.db.delete_category(category['id'])
-        self.db.add_category('Person')
+        person_id = self.db.add_category('Person')
         self.db.add_category('Tillgångar')
+        for level, text in enumerate(['$10k', '$100k', '$1m'], start=1):
+            self.db.set_severity_definition(level, person_id, text)
+        target['consequence_categories'][0]['descriptions'] = [
+            '$10k', '1 MSEK', '10 MSEK', '100 MSEK']
         self.db.set_risk_matrix(source)
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
@@ -1407,6 +1411,9 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             dialog._select_category_scope(source_id)
             self.assertFalse(dialog._category_scope_stack.isHidden())
             self.assertTrue(dialog._tabs.isHidden())
+            category_field = dialog._category_scope_fields[source_id]
+            self.assertIn('$100k', category_field.old_chips[('severity', 2)].text())
+            self.assertIn('1 MSEK', category_field.target_chips[('severity', 2)].text())
             dialog._select_global_scope()
             self.assertFalse(dialog._tabs.isHidden())
 

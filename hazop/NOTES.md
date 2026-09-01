@@ -5184,3 +5184,20 @@ Layouten växlar tillbaka till global frekvens-/konsekvenskoppling när
 
 Verifierat med riktade migreringstester, `tests.test_smoke`, offscreen-
 rendering av kategoriläget, `py_compile` och `git diff --check`.
+
+## Enhetlig grå markering och riskbarer i HAZOP Scenario (2026-09-01)
+
+Vald cell i HAZOP Scenario använder nu samma platta, neutrala grå overlay i
+alla specialmålade vägar: orsak, konsekvens, safeguard, enabler,
+rekommendation samt risk före/slutkonsekvens. Den tidigare blå accentlisten och den
+Qt-blå specialmarkeringen är borttagna från denna tabell; redigerings- och
+datakopplingar är oförändrade.
+
+Risk före barriär och slutkonsekvens målas fortfarande med exakt färg och
+textvärde från den aktiva riskmatrisen, men visas som en kompakt rektangulär
+bar med mjukt rundade hörn, i samma höjdklass som enabler-knappen. En tom
+riskcell får ingen färgbar.
+
+Verifierat med faktisk Qt-rendering under programmets stylesheet, test av
+grå markering i orsak/konsekvens/riskceller, `py_compile` och
+`git diff --check`.

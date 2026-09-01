@@ -40,6 +40,21 @@ from ui_helpers import (
 )
 
 MAX_GROUP_OBJECTS = 20
+
+# Scenario mixes ordinary QTableWidget items with custom-painted cells. Keep
+# the selected-cell treatment explicit so every one of those paths uses the
+# same neutral, flat overlay instead of the application-wide blue accent.
+_SCENARIO_SELECTION_BG = '#D9DBD8'
+_SCENARIO_SELECTION_FG = '#17191C'
+
+# Risk values are rendered as compact colour bars, matching the visual
+# footprint of the enabler summary button. The colour still comes from the
+# configured risk matrix; only the presentation changes.
+_RISK_BAR_HEIGHT = 22
+_RISK_BAR_MARGIN_X = 2
+_RISK_BAR_MARGIN_Y = 1
+_RISK_BAR_RADIUS = 5
+
 from tree_panel import CauseTagPopup, RRFPopup, FrequencyPickerPopup
 
 
@@ -2485,10 +2500,11 @@ class _ScenarioDelegate(QStyledItemDelegate):
             painter.save()
             sel = bool(option.state & QStyle.StateFlag.State_Selected)
             if sel:
-                painter.fillRect(r, QColor('#E6ECFA'))
-                painter.fillRect(QRect(r.left(), r.top(), 3, r.height()),
-                                 QColor('#2F6FED'))
-                tc = QColor('#17191C')
+                # Keep REK flat and consistent with every other selected
+                # Scenario field. The old blue accent strip was a second,
+                # visually different selection treatment.
+                painter.fillRect(r, QColor(_SCENARIO_SELECTION_BG))
+                tc = QColor(_SCENARIO_SELECTION_FG)
             else:
                 bg = index.data(Qt.ItemDataRole.BackgroundRole)
                 painter.fillRect(r, bg if bg is not None else (
@@ -2524,25 +2540,51 @@ class _ScenarioDelegate(QStyledItemDelegate):
         r = option.rect
         painter.save()
         if sel:
-            painter.fillRect(r, option.palette.highlight())
+            painter.fillRect(r, QColor(_SCENARIO_SELECTION_BG))
         else:
             bg = index.data(Qt.ItemDataRole.BackgroundRole)
-            painter.fillRect(r, bg if bg is not None else (
+            # Keep the table's neutral background around the risk token;
+            # the matrix colour is drawn as a compact rounded bar below.
+            painter.fillRect(r, (
                 option.palette.alternateBase() if index.row() % 2 == 1
                 else option.palette.base()))
+            risk_color = (bg.color() if isinstance(bg, QBrush)
+                          else QColor('#FFFFFF'))
+            bar_height = max(1, min(
+                _RISK_BAR_HEIGHT, r.height() - 2 * _RISK_BAR_MARGIN_Y))
+            bar = QRect(
+                r.left() + _RISK_BAR_MARGIN_X,
+                r.top() + _RISK_BAR_MARGIN_Y,
+                max(1, r.width() - 2 * _RISK_BAR_MARGIN_X),
+                bar_height)
+            if index.data(Qt.ItemDataRole.DisplayRole):
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(risk_color))
+                painter.drawRoundedRect(bar, _RISK_BAR_RADIUS,
+                                        _RISK_BAR_RADIUS)
         if sel:
-            tc = option.palette.highlightedText().color()
+            tc = QColor(_SCENARIO_SELECTION_FG)
         else:
             fg = index.data(Qt.ItemDataRole.ForegroundRole)
             tc = fg.color() if fg is not None else option.palette.text().color()
         painter.setPen(tc)
         font = index.data(Qt.ItemDataRole.FontRole)
         painter.setFont(font if font is not None else option.font)
-        # Risk cells no longer contain a pin/icon strip.  Use the whole
-        # compact cell and center the short `Per F1 C1` value.
-        text_rect = r
+        # Put the short risk value inside the bar. A selected cell uses the
+        # full cell as its neutral overlay, so it remains visually uniform.
+        if sel:
+            text_rect = r
+        else:
+            bar_height = max(1, min(
+                _RISK_BAR_HEIGHT, r.height() - 2 * _RISK_BAR_MARGIN_Y))
+            text_rect = QRect(
+                r.left() + _RISK_BAR_MARGIN_X,
+                r.top() + _RISK_BAR_MARGIN_Y,
+                max(1, r.width() - 2 * _RISK_BAR_MARGIN_X),
+                bar_height)
         painter.drawText(text_rect.adjusted(2, 2, -2, -2),
-                         Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
+                         Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
                          index.data(Qt.ItemDataRole.DisplayRole) or '')
         painter.restore()
 
@@ -3183,7 +3225,7 @@ class _PidDelegate(_ScenarioDelegate):
                 painter.save()
                 # Background
                 if sel:
-                    painter.fillRect(r, option.palette.highlight())
+                    painter.fillRect(r, QColor(_SCENARIO_SELECTION_BG))
                 elif row % 2 == 1:
                     painter.fillRect(r, option.palette.alternateBase())
                 else:
@@ -3209,7 +3251,7 @@ class _PidDelegate(_ScenarioDelegate):
                 _num = index.data(Qt.ItemDataRole.UserRole + 10)
                 if _num:
                     desc = f"{_num}.  {desc}"
-                tc = (option.palette.highlightedText().color() if sel
+                tc = (QColor(_SCENARIO_SELECTION_FG) if sel
                       else option.palette.text().color())
                 tagged_refs = self._panel._active_tag_refs_in_text(
                     index.data(Qt.ItemDataRole.UserRole + 7) or [], desc)
@@ -3231,9 +3273,11 @@ class _PidDelegate(_ScenarioDelegate):
                         tagged_refs, option.font, tc, word_wrap=True)
 
                 # RRF badge (right column)
-                badge_bg = QColor('#2F5FD0') if sel else QColor('#F5F5F3')
+                badge_bg = (QColor(_SCENARIO_SELECTION_BG) if sel
+                            else QColor('#F5F5F3'))
                 painter.fillRect(rrf_rect, badge_bg)
-                badge_tc = QColor('#ffffff') if sel else QColor('#17191C')
+                badge_tc = (QColor(_SCENARIO_SELECTION_FG) if sel
+                            else QColor('#17191C'))
                 painter.setPen(badge_tc)
                 badge_font = QFont(option.font)
                 badge_font.setBold(True)
@@ -3301,7 +3345,7 @@ class _PidDelegate(_ScenarioDelegate):
 
                 # Cell background
                 if sel:
-                    painter.fillRect(r, option.palette.highlight())
+                    painter.fillRect(r, QColor(_SCENARIO_SELECTION_BG))
                 elif row % 2 == 1:
                     painter.fillRect(r, option.palette.alternateBase())
                 else:
@@ -3317,7 +3361,7 @@ class _PidDelegate(_ScenarioDelegate):
                 # dropped tags inside KON/SG descriptions — reused here
                 # instead of a bespoke layout implementation, given this
                 # file's own documented history of paint/geometry bugs.
-                tc = (option.palette.highlightedText().color() if sel
+                tc = (QColor(_SCENARIO_SELECTION_FG) if sel
                       else option.palette.text().color())
                 tags = list(index.data(Qt.ItemDataRole.UserRole + 9) or [])
                 if not tags:
@@ -3428,10 +3472,11 @@ class _PidDelegate(_ScenarioDelegate):
                     # visibly drift downward when the description wraps.
                     chip_rect = QRect(freq_zone_x, r.top(), freq_zone_w,
                                       min(_ORS_FIRST_LINE_H, r.height()))
-                    chip_bg = QColor('#2F5FD0') if sel else QColor('#F5F5F3')
+                    chip_bg = (QColor(_SCENARIO_SELECTION_BG) if sel
+                               else QColor('#F5F5F3'))
                     painter.fillRect(chip_rect, chip_bg)
                     painter.setFont(ff)
-                    f_tc = (option.palette.highlightedText().color() if sel
+                    f_tc = (QColor(_SCENARIO_SELECTION_FG) if sel
                             else QColor('#17191C'))
                     painter.setPen(f_tc)
                     painter.drawText(chip_rect.adjusted(1, 0, -1, 0),
@@ -3468,7 +3513,7 @@ class _PidDelegate(_ScenarioDelegate):
                 r = option.rect
                 painter.save()
                 if sel:
-                    painter.fillRect(r, option.palette.highlight())
+                    painter.fillRect(r, QColor(_SCENARIO_SELECTION_BG))
                 elif row % 2 == 1:
                     painter.fillRect(r, option.palette.alternateBase())
                 else:
@@ -3482,7 +3527,7 @@ class _PidDelegate(_ScenarioDelegate):
                 _num = index.data(Qt.ItemDataRole.UserRole + 10)
                 if _num:
                     display = f"{_num}.  {display}"
-                tc = (option.palette.highlightedText().color() if sel
+                tc = (QColor(_SCENARIO_SELECTION_FG) if sel
                       else option.palette.text().color())
                 tagged_refs = self._panel._active_tag_refs_in_text(
                     index.data(Qt.ItemDataRole.UserRole + 8) or [], display)
@@ -4206,14 +4251,29 @@ class _LopaWidget(QWidget):
         self._extra_btn = QPushButton()
         self._extra_btn.setObjectName('enablerSummaryButton')
         self._extra_btn.setFixedHeight(22)
+        self._selected = False
         self._extra_btn.setToolTip('Klicka för att välja enablers och deras RRF.')
-        self._extra_btn.setStyleSheet(
-            'QPushButton#enablerSummaryButton{background:#F5F5F3;color:#17191C;'
-            'border:none;font-size:9px;font-weight:bold;padding:2px 4px;}'
-            'QPushButton#enablerSummaryButton:hover{background:#E8E9E6;}')
         lay.addWidget(self._extra_btn)
         self.setFixedHeight(24)
+        self._apply_button_style()
         self.update_summary(n_active, total_rrf)
+
+    def _apply_button_style(self):
+        background = (_SCENARIO_SELECTION_BG if self._selected
+                      else '#F5F5F3')
+        hover = ('#C8CCC8' if self._selected else '#E8E9E6')
+        self._extra_btn.setStyleSheet(
+            f'QPushButton#enablerSummaryButton{{background:{background};'
+            'color:#17191C;border:none;font-size:9px;font-weight:bold;'
+            f'padding:2px 4px;}}'
+            f'QPushButton#enablerSummaryButton:hover{{background:{hover};}}')
+
+    def set_selected(self, selected):
+        selected = bool(selected)
+        if self._selected == selected:
+            return
+        self._selected = selected
+        self._apply_button_style()
 
     @staticmethod
     def _format_rrf(value):
@@ -4388,12 +4448,14 @@ class ScenarioTablePanel(QWidget):
         self._table.setStyleSheet(
             "QTableWidget{border-radius:0px;}"
             "QTableWidget::item{padding:2px 3px;border:none;}"
-            "QTableWidget::item:selected{background:#E6ECFA;color:#17191C;}"
+            f"QTableWidget::item:selected{{background:{_SCENARIO_SELECTION_BG};"
+            f"color:{_SCENARIO_SELECTION_FG};border:none;}}"
             "QHeaderView::section{background:#F5F5F3;color:#8D9299;"
             "font-weight:600;padding:3px;border-radius:0px;}")
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.cellClicked.connect(self._on_cell_clicked)
         self._table.itemDoubleClicked.connect(self._on_cell_double_clicked)
+        self._table.currentCellChanged.connect(self._on_current_cell_changed)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_context_menu)
         self._table.setAcceptDrops(True)
@@ -4479,6 +4541,17 @@ class ScenarioTablePanel(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         QTimer.singleShot(0, self._fill_width_once)
+
+    def _on_current_cell_changed(self, current_row, current_col,
+                                 previous_row, previous_col):
+        """Mirror Scenario's flat selection on the embedded enabler bar."""
+        for row in {previous_row, current_row}:
+            if row is None or row < 0:
+                continue
+            widget = self._table.cellWidget(row, self._C_LOPA)
+            if isinstance(widget, _LopaWidget):
+                widget.set_selected(
+                    row == current_row and current_col == self._C_LOPA)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -6144,6 +6217,11 @@ class ScenarioTablePanel(QWidget):
             except (TypeError, ValueError):
                 continue
         lopa_w = _LopaWidget(cid, len(active_rfs), enabler_rrf)
+        lopa_w.set_selected(
+            self._table.currentRow() == r and
+            self._table.currentColumn() == self._C_LOPA)
+        lopa_w._extra_btn.pressed.connect(
+            lambda row=r: self._table.setCurrentCell(row, self._C_LOPA))
         lopa_w._extra_btn.clicked.connect(partial(self._edit_extra, cid))
         self._table.setCellWidget(r, self._C_LOPA, lopa_w)
 

@@ -654,13 +654,19 @@ class CategorySeverityLinkField(_AxisMappingCanvas):
         self._layout.setColumnStretch(1, 1)
         self._layout.setColumnStretch(2, 1)
         self._layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        source_category = self.dialog.source_category(self.source_id)
+        target_category = self.dialog.target_category(self.source_id)
+        source_title = (source_category or {}).get('name', 'BEFINTLIG KATEGORI')
+        target_title = (target_category or {}).get('name', 'NY KATEGORI')
         self._layout.addWidget(
-            self._section_label('KONSEKVENS'), 0, 0, 1, 3)
-        self._layout.addWidget(self._section_label('GLOBAL GRUND'), 1, 0)
-        self._layout.addWidget(self._section_label('KATEGORI'), 1, 2)
+            self._section_label('KONSEKVENSNIVÅER'), 0, 0, 1, 3)
+        self._layout.addWidget(self._section_label(source_title.upper()), 1, 0)
+        self._layout.addWidget(self._section_label(target_title.upper()), 1, 2)
 
-        source_levels = self.dialog.axis_levels('source', 'severity')
-        target_levels = self.dialog.axis_levels('target', 'severity')
+        source_levels = self.dialog.category_severity_levels(
+            self.source_id, 'source')
+        target_levels = self.dialog.category_severity_levels(
+            self.source_id, 'target')
         for row, (value, code, description) in enumerate(source_levels, start=2):
             self.add_chip('old', 'severity', value, code, description,
                           row, 0)
@@ -1193,11 +1199,59 @@ class RiskMatrixMigrationDialog(QDialog):
         return next((category for category in self.plan.get('target_categories', [])
                      if category.get('key') == key), None)
 
+    def source_category(self, source_id):
+        source_id = str(source_id)
+        return next((category for category in self.plan.get('source_categories', [])
+                     if str(category.get('source_id')) == source_id), None)
+
     def category_mapped(self, source_id):
         return str(source_id) in self._category_mapping
 
     def category_target_count(self, target_key):
         return sum(1 for key in self._category_mapping.values() if key == target_key)
+
+    def category_severity_levels(self, source_id, side):
+        """Return consequence steps with the selected category's text.
+
+        The ordinal and short axis code stay stable for migration purposes,
+        while the visible description comes from the actual source category
+        or the mapped target template category.  This is what lets an
+        economic level such as ``$100k`` map to ``1 MSEK`` instead of showing
+        the generic consequence-axis text for every category.
+        """
+        levels = self.axis_levels(side, 'severity')
+        if side == 'source':
+            source_id = str(source_id)
+            descriptions = {}
+            for record in self.plan.get('definition_records', []):
+                if str(record.get('category_id')) != source_id:
+                    continue
+                descriptions.setdefault(
+                    str(record.get('source')),
+                    str(record.get('description') or ''))
+            category = self.source_category(source_id) or {}
+            profiles = self.plan.get('source_matrix', {}).get(
+                'consequence_categories', [])
+            profile = next((item for item in profiles
+                            if str(item.get('key')) == str(category.get('key'))
+                            or str(item.get('name')).casefold() ==
+                            str(category.get('name')).casefold()), {})
+        else:
+            category = self.target_category(source_id) or {}
+            descriptions = {
+                str(index + 1): str(text or '')
+                for index, text in enumerate(category.get('descriptions') or [])}
+            profile = category
+        profile_descriptions = {
+            str(index + 1): str(text or '')
+            for index, text in enumerate(profile.get('descriptions') or [])}
+        for value, text in profile_descriptions.items():
+            if not descriptions.get(value):
+                descriptions[value] = text
+        return [
+            (value, code, descriptions.get(str(value), axis_description))
+            for value, code, axis_description in levels
+        ]
 
     def category_severity_mappings(self, source_id):
         return dict(self._category_severity_maps.get(str(source_id), {}))
