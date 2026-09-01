@@ -4861,6 +4861,63 @@ class CellObjectReferenceEditTests(unittest.TestCase):
         self.assertNotIn(stale_text, painted_text)
         self.assertTrue(any('PV-101, ' in text for text in painted_text))
 
+    def _assert_active_editor_hides_saved_description(self, col, stale_text):
+        """The live KON/SG editor must be the only painter of its prose."""
+        from scenario_panel import _BoldTagTextEdit
+        if col == self.panel._C_KON:
+            self.db.update_consequence(
+                self.cons_id, stale_text, 3,
+                comp_tag='PV-101', comp_type='Ventil', tagged_refs='PV-101')
+        else:
+            self.db.update_safeguard(
+                self.sg_id, description=stale_text, tagged_refs='PV-101')
+            self.db.set_safeguard_tag(self.sg_id, 'PV-101', 'Ventil')
+
+        self.panel.load_node(self.node_id)
+        self.panel.resize(900, 400)
+        self.panel.show()
+        self.app.processEvents()
+        row = next(row for row, meta in enumerate(self.panel._row_meta)
+                   if meta[2] == self.cons_id)
+        index = self.panel._table.model().index(row, col)
+        self.panel._table.edit(index)
+        self.app.processEvents()
+        self.assertTrue(any(
+            editor.isVisible() and editor.property('editing_row') == row and
+            editor.property('editing_col') == col
+            for editor in self.panel._table.findChildren(_BoldTagTextEdit)))
+
+        painted_text = []
+        def record_text(_painter, _rect, text, *_args, **_kwargs):
+            painted_text.append(text)
+
+        from PyQt6.QtGui import QPainter
+        from PyQt6.QtCore import QRect
+        from PyQt6.QtWidgets import QStyleOptionViewItem
+        option = QStyleOptionViewItem()
+        option.rect = QRect(0, 0, 320, 60)
+        option.font = self.panel._table.font()
+        pixmap = QPixmap(option.rect.size())
+        painter = QPainter(pixmap)
+        try:
+            with unittest.mock.patch('scenario_panel._draw_text_with_bold_tags',
+                                     side_effect=record_text):
+                self.panel._pid_delegate.paint(painter, option, index)
+        finally:
+            painter.end()
+
+        self.assertNotIn(stale_text, painted_text)
+
+    def test_active_consequence_editor_does_not_paint_saved_description_underneath(self):
+        self._assert_active_editor_hides_saved_description(
+            self.panel._C_KON,
+            'Sparad konsekvenstext som inte får ligga bakom editorn')
+
+    def test_active_safeguard_editor_does_not_paint_saved_description_underneath(self):
+        self._assert_active_editor_hides_saved_description(
+            self.panel._C_SG,
+            'Sparad safeguardtext som inte får ligga bakom editorn')
+
     def test_group_object_switch_updates_only_the_clicked_group_member(self):
         fi_id = self.db.add_equipment_item('FI-1', 'FI-1', 'FI', 1,
                                            'Flödesgivare', '', 0)

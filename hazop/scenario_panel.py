@@ -3214,9 +3214,21 @@ class _PidDelegate(_ScenarioDelegate):
                 tagged_refs = self._panel._active_tag_refs_in_text(
                     index.data(Qt.ItemDataRole.UserRole + 7) or [], desc)
                 tagged_refs += self._panel._matching_pid_tags(desc)
-                _draw_text_with_bold_tags(
-                    painter, desc_rect.adjusted(2, 1, -2, -1), desc,
-                    tagged_refs, option.font, tc, word_wrap=True)
+                active_editor = self._active_inline_editor(index)
+                if active_editor is not None:
+                    # The live editor paints the description itself.  Do not
+                    # paint the saved description underneath it: on wrapped
+                    # rows the editor does not cover the complete cell and
+                    # the old value otherwise appears as ghost text.
+                    prefix = f"{_num}.  " if _num else ''
+                    if prefix:
+                        _draw_text_with_bold_tags(
+                            painter, desc_rect.adjusted(2, 1, -2, -1),
+                            prefix, [], option.font, tc, word_wrap=False)
+                else:
+                    _draw_text_with_bold_tags(
+                        painter, desc_rect.adjusted(2, 1, -2, -1), desc,
+                        tagged_refs, option.font, tc, word_wrap=True)
 
                 # RRF badge (right column)
                 badge_bg = QColor('#2F5FD0') if sel else QColor('#F5F5F3')
@@ -3475,9 +3487,21 @@ class _PidDelegate(_ScenarioDelegate):
                 tagged_refs = self._panel._active_tag_refs_in_text(
                     index.data(Qt.ItemDataRole.UserRole + 8) or [], display)
                 tagged_refs += self._panel._matching_pid_tags(display)
-                _draw_text_with_bold_tags(
-                    painter, txt_rect.adjusted(2, 2, -2, -2), display,
-                    tagged_refs, option.font, tc, word_wrap=True)
+                active_editor = self._active_inline_editor(index)
+                if active_editor is not None:
+                    # The live editor paints the description itself.  Keep
+                    # only the structural consequence number here; otherwise
+                    # the saved description remains visible underneath the
+                    # editor as ghost text on tall/wrapped rows.
+                    prefix = f"{_num}.  " if _num else ''
+                    if prefix:
+                        _draw_text_with_bold_tags(
+                            painter, txt_rect.adjusted(2, 2, -2, -2),
+                            prefix, [], option.font, tc, word_wrap=False)
+                else:
+                    _draw_text_with_bold_tags(
+                        painter, txt_rect.adjusted(2, 2, -2, -2), display,
+                        tagged_refs, option.font, tc, word_wrap=True)
 
                 painter.restore()
                 return

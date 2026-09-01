@@ -1958,33 +1958,76 @@ class PIDGraphicsView(QGraphicsView):
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     def _place_label(self, text: str, x_pdf: float, y_pdf: float,
-                     r: float, color: QColor, marker_type: str):
-        """Add a text label to the right of a marker circle with white background
-        and automatic vertical offset when multiple markers share the same position."""
+                     r: float, color: QColor, marker_type: str,
+                     badges=None):
+        """Place an equipment tag and its counters in one compact label.
+
+        The counters deliberately follow the tag instead of sitting on the
+        equipment polygon's corners.  A single rounded black backing keeps
+        the white tag and all counter bubbles legible against the P&ID.
+        """
         center = self.pdf_to_scene(x_pdf, y_pdf)
         slot_key = (round(x_pdf * 5), round(y_pdf * 5))
         slot = self._label_slots.get(slot_key, 0)
         self._label_slots[slot_key] = slot + 1
-        ROW_H = 17.0
+        ROW_H = 22.0
         x0 = center.x() + r + 3
-        y0 = center.y() - 8 + slot * ROW_H
+        y0 = center.y() - 9 + slot * ROW_H
 
-        txt = QGraphicsSimpleTextItem(text[:35])
-        f = QFont(); f.setPointSize(8)
+        label_text = text[:35]
+        txt = QGraphicsSimpleTextItem(label_text)
+        f = QFont(); f.setPointSize(8); f.setBold(True)
         txt.setFont(f)
-        txt.setBrush(QBrush(color))
+        txt.setBrush(QBrush(QColor('#FFFFFF')))
         txt.setPos(x0, y0)
         txt.setZValue(Z_OVERLAY + 2)
 
         br = txt.boundingRect()
-        pad = 2.0
-        bg = QGraphicsRectItem(x0 - pad, y0 - pad, br.width() + 2 * pad, br.height() + 2 * pad)
+        pad = 4.0
+        gap = 5.0
+        badge_r = 8.0
+        badge_specs = list(badges or [])
+        cursor_x = x0 + br.width() + (gap if label_text else 0)
+        badge_y = y0 + br.height() / 2.0
+        right = x0 + br.width()
+        if badge_specs:
+            right = cursor_x + len(badge_specs) * (2 * badge_r) \
+                    + max(0, len(badge_specs) - 1) * 3.0
+
+        # Use a path rather than QGraphicsRectItem so the backing has real
+        # rounded corners while keeping one background item around tag +
+        # bubbles.  It is intentionally below every foreground item.
+        bg_rect = QRectF(x0 - pad, y0 - pad,
+                         max(br.width(), right - x0) + 2 * pad,
+                         max(br.height(), 2 * badge_r) + 2 * pad)
+        path = QPainterPath()
+        path.addRoundedRect(bg_rect, 4.0, 4.0)
+        bg = QGraphicsPathItem(path)
         bg.setPen(QPen(Qt.PenStyle.NoPen))
-        bg.setBrush(QBrush(QColor(255, 255, 255, 230)))
+        bg.setBrush(QBrush(QColor('#000000')))
         bg.setZValue(Z_OVERLAY + 1)
 
         self._add_tracked(bg, marker_type)
         self._add_tracked(txt, marker_type)
+
+        for i, (count, fill, outline, text_color) in enumerate(badge_specs):
+            bx = cursor_x + badge_r + i * (2 * badge_r + 3.0)
+            badge = QGraphicsEllipseItem(
+                bx - badge_r, badge_y - badge_r, 2 * badge_r, 2 * badge_r)
+            badge.setPen(QPen(outline, 1))
+            badge.setBrush(QBrush(fill))
+            badge.setZValue(Z_OVERLAY + 2)
+            self._add_tracked(badge, marker_type)
+
+            count_txt = QGraphicsSimpleTextItem(str(count))
+            count_font = QFont(); count_font.setPointSize(8); count_font.setBold(True)
+            count_txt.setFont(count_font)
+            count_txt.setBrush(QBrush(text_color))
+            tb = count_txt.boundingRect()
+            count_txt.setPos(bx - tb.width() / 2,
+                             badge_y - tb.height() / 2)
+            count_txt.setZValue(Z_OVERLAY + 3)
+            self._add_tracked(count_txt, marker_type)
 
     def add_equipment_marker(self, marker_id, x_pdf, y_pdf, comp_type, tag='',
                              confidence=0.0, outline_pdf=None, deviation_count=0,
@@ -2052,7 +2095,7 @@ class PIDGraphicsView(QGraphicsView):
         item.setCursor(Qt.CursorShape.PointingHandCursor)   # matches cause/consequence/safeguard markers
         self._add_tracked(item, 'equipment')
 
-        def _draw_corner_badge(bx, by, count, link_type, fallback):
+        def _badge_spec(count, link_type, fallback):
             # Use the same configurable colours as the three visibility
             # buttons above the HAZOP tree.  These badges represent the
             # corresponding cause/consequence/safeguard counts, so hardcoded
@@ -2066,39 +2109,22 @@ class PIDGraphicsView(QGraphicsView):
             luminance = (0.299 * fill.red() + 0.587 * fill.green()
                          + 0.114 * fill.blue())
             text_color = QColor('#111111' if luminance > 155 else '#ffffff')
-            badge_r = 8.0
-            badge = QGraphicsEllipseItem(bx - badge_r, by - badge_r, 2 * badge_r, 2 * badge_r)
-            badge.setPen(QPen(outline, 1))
-            badge.setBrush(QBrush(fill))
-            badge.setZValue(Z_OVERLAY + 1)
-            badge.setToolTip(tip)
-            badge.setCursor(Qt.CursorShape.PointingHandCursor)
-            self._add_tracked(badge, 'equipment')
-            count_txt = QGraphicsSimpleTextItem(str(count))
-            f = QFont(); f.setPointSize(8); f.setBold(True)
-            count_txt.setFont(f)
-            count_txt.setBrush(QBrush(text_color))
-            tb = count_txt.boundingRect()
-            count_txt.setPos(bx - tb.width() / 2, by - tb.height() / 2)
-            count_txt.setZValue(Z_OVERLAY + 2)
-            self._add_tracked(count_txt, 'equipment')
+            return count, fill, outline, text_color
 
-        poly_rect = QPolygonF(points).boundingRect()
+        badge_specs = []
         # Three corners, one counter each — colours distinct from the
         # The three counters use the matching configurable cause,
         # consequence and safeguard colours from the HAZOP tree buttons.
         if has_deviations:
-            _draw_corner_badge(poly_rect.right(), poly_rect.top(),
-                               deviation_count, 'cause', '#e74c3c')
+            badge_specs.append(_badge_spec(deviation_count, 'cause', '#e74c3c'))
         if consequence_count > 0:
-            _draw_corner_badge(poly_rect.right(), poly_rect.bottom(),
-                               consequence_count, 'consequence', '#e67e22')
+            badge_specs.append(_badge_spec(consequence_count, 'consequence', '#e67e22'))
         if safeguard_count > 0:
-            _draw_corner_badge(poly_rect.left(), poly_rect.bottom(),
-                               safeguard_count, 'safeguard', '#27ae60')
+            badge_specs.append(_badge_spec(safeguard_count, 'safeguard', '#27ae60'))
 
-        if tag:
-            self._place_label(tag, x_pdf, y_pdf, r, QColor(140, 0, 0), 'equipment')
+        if tag or badge_specs:
+            self._place_label(tag, x_pdf, y_pdf, r, QColor('#FFFFFF'),
+                              'equipment', badges=badge_specs)
 
     def _extract_tag_from_rect(self, pdf_rect: QRectF) -> str:
         """Thin wrapper around equipment_detection.extract_tag_from_rect

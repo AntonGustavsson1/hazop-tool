@@ -5022,6 +5022,23 @@ gränser`, så X/Y-växlingar skriver inte oönskad text.
 Verifierat med 13 riktade riskmatris-/kategoritester, inklusive verkligt
 Ctrl+V-event för fem Excel-rader, spara-runda till databasen, `py_compile` och
 `git diff --check`. Ingen manuell visuell GUI-verifiering är gjord.
+## Inline-editor: ingen spoktext i konsekvens och safeguard (2026-09-01)
+
+Nar inline-editorn oppnas i konsekvens- eller safeguardkolumnen malas inte
+den sparade beskrivningen langre under editorn. Endast det strukturella
+numret och safeguardens RRF-badge ligger kvar som kontext. Det forhindrar att
+gammal text syns dubbelt pa hoga eller radbrutna celler.
+
+Verifierat med regressionstester for konsekvens, safeguard och orsak,
+`tests.test_smoke`, `py_compile` och `git diff --check`. Ingen manuell visuell
+GUI-verifiering ar gjord.
+
+## P&ID-etikett med tagg och gummibandsraknare (2026-09-01)
+
+Objekttaggen och de tre gummibandsraknarna visas nu som en samlad etikett.
+Taggtexten ar vit, raknarna ligger direkt efter taggen och hela gruppen
+ligger pa en svart bakgrund med rundade horn.
+
 ## Worksheet-copy-layout (2026-09-01)
 
 Whole-table Word/Excel copy now follows the worksheet reference layout with

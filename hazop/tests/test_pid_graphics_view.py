@@ -686,6 +686,34 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
         self.assertIn("1 konsekvens", tip)
         self.assertIn("3 safeguard", tip)
 
+    def test_tag_and_counters_share_black_rounded_backing(self):
+        from pid_viewer import PIDGraphicsView
+        from PyQt6.QtWidgets import (QGraphicsEllipseItem,
+                                     QGraphicsPathItem,
+                                     QGraphicsSimpleTextItem)
+        from PyQt6.QtGui import QColor
+
+        view = PIDGraphicsView()
+        view.add_equipment_marker(
+            1, 0, 0, "Ventil", tag="V-101", deviation_count=2,
+            consequence_count=1, safeguard_count=3)
+        items = view._type_items['equipment']
+        tag_item = next(item for item in items
+                        if isinstance(item, QGraphicsSimpleTextItem)
+                        and item.text() == 'V-101')
+        backing = next(item for item in items
+                       if isinstance(item, QGraphicsPathItem))
+        badges = [item for item in items if isinstance(item, QGraphicsEllipseItem)]
+
+        self.assertEqual(tag_item.brush().color(), QColor('#FFFFFF'))
+        self.assertEqual(backing.brush().color(), QColor('#000000'))
+        self.assertGreater(backing.path().elementCount(), 4)
+        tag_right = tag_item.sceneBoundingRect().right()
+        self.assertTrue(all(badge.sceneBoundingRect().left() > tag_right
+                            for badge in badges))
+        self.assertTrue(all(backing.path().contains(
+            badge.sceneBoundingRect().center()) for badge in badges))
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # Adaptive re-rasterization on zoom (2026-08-12) — "P&ID blir suddig vid
