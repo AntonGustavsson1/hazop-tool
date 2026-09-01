@@ -1,5 +1,23 @@
 # NOTES.md — Beslut och kontext
 
+## Office-kopiering: stabil mergning och delurval (2026-09-01)
+
+Heltabellskopiering från HAZOP Scenario eller Worksheet använder nu den
+kanoniska worksheet-radmotorn med stabila ID-baserade cellnycklar. Nod,
+avvikelse, orsak, konsekvens, riskkategori, barriär/RRF, enabler och
+rekommendation kan därför få riktiga vertikala HTML-mergningar utan att
+barriärer upprepas. Även kopiering i enskilt nodläge använder samma
+ankarsökning.
+
+Vid Ctrl-markerade separata celler exporteras endast de fysiska rader som
+faktiskt ingår i markeringen. Mellanliggande orsaker eller konsekvenser dras
+inte längre med, och ej markerade celler lämnas blanka. Den interna HAZOP-
+kopieringen och Office-kopieringen behåller därmed sina separata roller.
+
+Verifierat med `tests.test_worksheet` (28 tester), riktade export-, smoke-,
+drag- och standardorsakspopup-tester (28 tester), `py_compile` och
+`git diff --check`. Testningen är headless.
+
 ## Orsakspopup stängs efter upprepade klick (2026-09-01)
 
 ScenarioTablePanel använder nu en gemensam avslutningsväg för aktiv inline-

@@ -9727,28 +9727,48 @@ class ScenarioTablePanel(QWidget):
                                     1 + len(line) // max(12, width // 7))
             return min(180, max(24, 15 * max_lines + 8))
 
-        # The saved worksheet exporter merges only the hierarchy columns.
-        # HTML clipboard data cannot safely use nested rowspans in Excel, so
-        # we reproduce the same visual result with one stable cell per column
-        # and blank continuation cells.  This is both readable and immune to
-        # Excel moving a later barrier/recommendation left or right.
-        hierarchy_keys = {0: 0, 1: 1, 2: 2, 3: 2, 4: 3}
-        previous_keys = {}
+        # Use the canonical row motor's stable per-column identities.  This
+        # gives Excel/Word real vertical merges for hierarchy cells, risk
+        # category cells and safeguards, while keeping separate barriers and
+        # categories independent when their database IDs differ.
         html_rows = []
         tsv_rows = []
+        canonical_keys = [tuple(row.get('office_merge_keys') or ())
+                          for row in rows]
+
+        def _canonical_span(row_index, column):
+            key = (canonical_keys[row_index][column]
+                   if column < len(canonical_keys[row_index]) else None)
+            value = (rows[row_index].get('values') or [''] * len(headers))[column]
+            if key is None or not value:
+                return 1
+            span = 1
+            while row_index + span < len(rows):
+                next_values = rows[row_index + span].get('values') or []
+                next_keys = canonical_keys[row_index + span]
+                next_key = next_keys[column] if column < len(next_keys) else None
+                if next_key != key or not (next_values[column] if column < len(next_values) else ''):
+                    break
+                span += 1
+            return span
+
         for row_index, row in enumerate(rows):
             values = list(row.get('values') or [''] * len(headers))
-            merge_key = tuple(row.get('merge_key') or ())
-            for column, key_index in hierarchy_keys.items():
-                key = merge_key[key_index] if key_index < len(merge_key) else None
-                if (column in previous_keys and previous_keys[column] == key
-                        and values[column]):
-                    values[column] = ''
-                previous_keys[column] = key
 
             html_cells = []
             tsv_values = []
             for column, value in enumerate(values):
+                key = (canonical_keys[row_index][column]
+                       if column < len(canonical_keys[row_index]) else None)
+                has_value = bool(value)
+                is_continuation = (
+                    key is not None and row_index > 0 and
+                    canonical_keys[row_index - 1][column] == key and
+                    has_value)
+                if is_continuation:
+                    # HTML rowspan was emitted by the previous physical row.
+                    tsv_values.append('')
+                    continue
                 text = str(value or '')
                 tags = self._matching_pid_tags(text)
                 background = '#FFFFFF' if row_index % 2 == 0 else '#F7F7F5'
@@ -9769,8 +9789,10 @@ class ScenarioTablePanel(QWidget):
                     'vertical-align:top;text-align:left;white-space:normal;'
                     f'font-family:Arial;font-size:9pt;font-weight:'
                     f'{700 if bold else 400};')
+                row_span = _canonical_span(row_index, column)
+                rowspan = f' rowspan="{row_span}"' if row_span > 1 else ''
                 html_cells.append(
-                    f'<td style="{style}">{self._clipboard_rich_text(text, tags)}</td>')
+                    f'<td{rowspan} style="{style}">{self._clipboard_rich_text(text, tags)}</td>')
                 tsv_values.append(text.replace('\t', ' ').replace('\n', ' / '))
             html_rows.append(
                 f'<tr style="height:{_row_height(values)}px;">'
@@ -9795,9 +9817,9 @@ class ScenarioTablePanel(QWidget):
 
         A normal Shift/drag selection is rectangular and keeps merged cells
         intact. Ctrl-selected disjoint cells cannot be one native Excel
-        clipboard range, so they are represented faithfully in their bounding
-        grid with unselected positions left blank (never filled with data the
-        user did not select).
+        clipboard range, so they are represented faithfully in the selected
+        physical rows with unselected positions left blank (never filled with
+        data the user did not select).
         """
         table = self._table
         selected_ranges = table.selectedRanges()
@@ -9843,6 +9865,15 @@ class ScenarioTablePanel(QWidget):
             columns = sorted(selected_columns)
             return rows, columns, range_cells, True
 
+        # For other Ctrl-selections, preserve only the physical rows the user
+        # actually selected.  The old bounding rectangle inserted every row
+        # between two selected causes/consequences; those unrelated rows then
+        # looked like the copied operation had picked the wrong objects.
+        rows = sorted({row for row, _col in range_cells})
+        columns = sorted(selected_columns)
+        if range_cells and rows and columns:
+            return rows, columns, range_cells, False
+
         # QTableWidget deliberately omits coordinates covered by a rowspan
         # from selectedIndexes().  That is correct for editing, but not for
         # an external clipboard: selecting a cause plus two consequence rows
@@ -9869,6 +9900,62 @@ class ScenarioTablePanel(QWidget):
         columns = [col for col in range(col_min, col_max + 1)
                    if not table.isColumnHidden(col)]
         return rows, columns, selected, False
+
+    def _office_cell_merge_key(self, row, col):
+        """Stable identity for the visible Office-copy cell at (row, col).
+
+        Qt's ``rowSpan`` is a painting detail and is not reliable for a
+        covered coordinate after a mixed selection.  The worksheet itself is
+        hierarchical, so use the row metadata and persisted IDs to find the
+        actual cell anchor.  In particular, a repeated safeguard ID means
+        one barrier cell across category rows, while different consequences
+        and different safeguards can never be merged accidentally.
+        """
+        if row < 0 or row >= len(self._row_meta):
+            return None
+        dev_id, cause_id, cons_id, sg_id = self._row_meta[row]
+        item = self._table.item(row, col)
+        if col == self._C_NOD:
+            value = item.data(Qt.ItemDataRole.UserRole) if item else None
+            return ('node', value) if value is not None else None
+        if col == self._C_UTR:
+            value = item.data(Qt.ItemDataRole.UserRole) if item else None
+            return ('equipment', value) if value is not None else None
+        if col == self._C_DEV:
+            return ('deviation', dev_id) if dev_id is not None else None
+        if col in (self._C_ORS,):
+            return ('cause', cause_id) if cause_id is not None else None
+        if col == self._C_KON:
+            return ('consequence', cons_id) if cons_id is not None else None
+        if col in (self._C_RFORE, self._C_SLUT):
+            cat_info = (self._row_cat_info[row]
+                        if row < len(self._row_cat_info) else None)
+            if cat_info is not None:
+                return ('risk-category', cons_id, cat_info[1])
+            return ('risk', cons_id) if cons_id is not None else None
+        if col in (self._C_SG,):
+            return ('safeguard', sg_id) if sg_id is not None else None
+        if col == self._C_LOPA:
+            return ('enablers', cons_id) if cons_id is not None else None
+        if col == self._C_REK:
+            rec_id = (self._row_recommendation_ids[row]
+                      if row < len(self._row_recommendation_ids) else None)
+            return ('recommendation', rec_id) if rec_id is not None else None
+        return None
+
+    def _office_cell_anchor(self, row, col):
+        """Find the first physical row of one stable Office-copy cell."""
+        key = self._office_cell_merge_key(row, col)
+        if key is None:
+            return row, 1
+        anchor = row
+        while anchor > 0 and self._office_cell_merge_key(anchor - 1, col) == key:
+            anchor -= 1
+        span = 1
+        while (anchor + span < self._table.rowCount() and
+               self._office_cell_merge_key(anchor + span, col) == key):
+            span += 1
+        return anchor, span
 
     def _office_clipboard_payload(self, title='HAZOP Worksheet'):
         """Build HTML + TSV of a selected or complete visible worksheet grid.
@@ -9900,25 +9987,12 @@ class ScenarioTablePanel(QWidget):
             if reference_payload is not None:
                 return reference_payload
 
-        # Excel's HTML importer can honour the first large Nod/Avvikelse
-        # rowspan but lose track of later nested rowspans.  Once that happens
-        # a safeguard or recommendation is imported one or more columns too
-        # far to the left (the exact failure seen when copying the complete
-        # worksheet).  A complete-table copy therefore uses a strict
-        # rectangular grid: covered hierarchy cells are explicit blanks and
-        # no rowspan is emitted.  Smaller selections keep the richer merge
-        # representation, where the selected anchor and its span are clear.
         export_columns = [
             (col, table.horizontalHeaderItem(col).text()
              if table.horizontalHeaderItem(col) else '', 'native',
              max(40, table.columnWidth(col)))
             for col in columns
         ]
-        flat_office_grid = (
-            full_rectangle and not compact_hierarchy_rows and
-            rows == list(range(table.rowCount())) and
-            columns == visible_columns)
-
         def _anchor_for(row, col):
             if compact_hierarchy_rows:
                 # Each output row deliberately represents the exact
@@ -9926,15 +10000,13 @@ class ScenarioTablePanel(QWidget):
                 # neighbouring Qt rowspan claim that row; the table still
                 # stores a real item at every physical row during rebuild.
                 return row, 1
-            # Qt returns the span length even for a covered coordinate, so
-            # searching upwards from ``row`` would incorrectly name the
-            # covered row itself as a second anchor.  The first span that
-            # covers the coordinate is the real, visual anchor.
-            for candidate in range(0, row + 1):
-                span = table.rowSpan(candidate, col)
-                if span > 1 and candidate + span > row:
-                    return candidate, span
-            return row, 1
+            # Resolve the anchor from persisted entity identity, not from
+            # QTableWidget.rowSpan().  Qt can report a covered coordinate as
+            # a fresh cell during a mixed Ctrl-selection, which was the
+            # source of copied causes/consequences borrowing a neighbour's
+            # object.  The stable key also lets a repeated safeguard merge
+            # correctly in a partial rectangular selection.
+            return self._office_cell_anchor(row, col)
 
         header_cells = []
         col_defs = []
@@ -9964,16 +10036,7 @@ class ScenarioTablePanel(QWidget):
                         '<td style="background:#FFFFFF;border:1px solid #D1D5DB;'
                         'padding:3px 5px;"></td>')
                     continue
-                if flat_office_grid:
-                    # Keep every rendered row rectangular for Excel.  The
-                    # physical QTableWidget contains repeated item text even
-                    # where the UI paints a rowspan, so covered positions
-                    # must be cleared explicitly rather than copied again.
-                    item = table.item(row, col) if anchor == row else None
-                    text, tags = (self._clipboard_cell_content(row, col)
-                                  if anchor == row else ('', []))
-                    export_row_span = 1
-                elif full_rectangle:
+                if full_rectangle:
                     span_start = max(anchor, row_min)
                     span_end = min(anchor + row_span, row_max + 1)
                     if row != span_start:

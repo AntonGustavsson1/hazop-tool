@@ -263,10 +263,10 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertIn('PV-101', html)
             self.assertIn('PV-101</strong>,', html)
             self.assertIn('<strong>PV-101</strong>', html)
-            self.assertNotIn('rowspan="', html)
-            # Excel must receive a rectangular HTML grid for a whole-table
-            # copy; otherwise a later barrier/recommendation can slide into
-            # the preceding consequence/risk column when Excel imports it.
+            # The complete copy now uses stable per-column rowspans.  This
+            # keeps the worksheet hierarchy visible in Word/Excel without
+            # repeating a cause or consequence in every physical row.
+            self.assertIn('rowspan="', html)
             from html.parser import HTMLParser
             class _OfficeTableParser(HTMLParser):
                 def __init__(self):
@@ -307,7 +307,7 @@ class HAZOPWorksheetTests(unittest.TestCase):
                 ['Nod', 'Avvikelse', 'Orsak', 'Frekvens', 'Konsekvens',
                  'Riskklass före barriärer', 'Barriär', 'RRF', 'Enablers',
                  'Riskklass efter barriärer', 'Rekommendation'])
-            self.assertTrue(all(len(row) == len(visible_columns) + 2
+            self.assertTrue(all(1 <= len(row) <= len(visible_columns) + 2
                                 for row in data_rows))
             barrier_row = next(row for row in data_rows
                                if 'LSHH stoppar' in ''.join(row))
@@ -375,6 +375,99 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertTrue(mime.hasHtml())
             self.assertNotIn('Vald del', mime.html())
             self.assertNotIn('Nod A', mime.html())
+        finally:
+            ws.deleteLater()
+
+    def test_office_copy_merges_a_repeated_safeguard(self):
+        """One barrier shared by category rows must be emitted once."""
+        from hazop import HAZOPWorksheet
+
+        ids = self._make_full_chain(node_name='Nod A')
+        self.db.update_safeguard(ids['sg_id'], description='Barriär A', rrf=10)
+        categories = self.db.consequence_categories()
+        self.assertGreaterEqual(len(categories), 2)
+        for category, severity in zip(categories[:2], (3, 4)):
+            self.db.set_consequence_severity(ids['cons_id'], category['id'], severity)
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()
+            html, plain_text = ws._table_panel._office_clipboard_payload()
+            self.assertEqual(html.count('Barriär A'), 1)
+            barrier_pos = html.index('Barriär A')
+            cell_start = html.rfind('<td', 0, barrier_pos)
+            self.assertIn('rowspan="2"', html[cell_start:barrier_pos])
+            # TSV has no merge primitive, so its continuation row is blank.
+            self.assertEqual(plain_text.count('Barriär A'), 1)
+        finally:
+            ws.deleteLater()
+
+    def test_office_copy_merges_barrier_in_single_node_view(self):
+        """The filtered worksheet path must keep the same barrier merge."""
+        from hazop import HAZOPWorksheet
+
+        ids = self._make_full_chain(node_name='Nod A')
+        self.db.update_safeguard(ids['sg_id'], description='Barriär A', rrf=10)
+        categories = self.db.consequence_categories()
+        for category, severity in zip(categories[:2], (3, 4)):
+            self.db.set_consequence_severity(ids['cons_id'], category['id'], severity)
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()
+            ws._all_nodes_cb.setChecked(False)
+            panel = ws._table_panel
+            html, plain_text = panel._office_clipboard_payload()
+            self.assertEqual(html.count('Barriär A'), 1)
+            barrier_pos = html.index('Barriär A')
+            cell_start = html.rfind('<td', 0, barrier_pos)
+            self.assertIn('rowspan="2"', html[cell_start:barrier_pos])
+            self.assertEqual(plain_text.count('Barriär A'), 1)
+        finally:
+            ws.deleteLater()
+
+    def test_office_copy_disjoint_cause_and_consequence_uses_selected_rows(self):
+        """Ctrl-selected cells must not pull in an intermediate hierarchy row."""
+        from hazop import HAZOPWorksheet, ScenarioTablePanel
+
+        first = self._make_full_chain(node_name='Nod A')
+        second_cause = self.db.add_cause(first['deviation_id'])
+        second_cons = self.db.add_consequence(second_cause)
+        self.db.add_consequence(first['cause_id'])  # creates an intermediate row
+        self.db.update_cause(first['cause_id'], description='Orsak A')
+        self.db.update_consequence(first['cons_id'], 'Konsekvens A', 3)
+        self.db.update_consequence(second_cons, 'Konsekvens C', 3)
+        self.db.update_cause(second_cause, description='Orsak C')
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()
+            panel = ws._table_panel
+            table = panel._table
+            first_row = next(row for row, meta in enumerate(panel._row_meta)
+                             if meta[1] == first['cause_id'] and
+                             meta[2] == first['cons_id'])
+            second_row = next(row for row, meta in enumerate(panel._row_meta)
+                              if meta[2] == second_cons)
+            selection_model = table.selectionModel()
+            selection_model.select(
+                QItemSelection(
+                    table.model().index(first_row, ScenarioTablePanel._C_ORS),
+                    table.model().index(first_row, ScenarioTablePanel._C_ORS)),
+                QItemSelectionModel.SelectionFlag.ClearAndSelect)
+            selection_model.select(
+                QItemSelection(
+                    table.model().index(second_row, ScenarioTablePanel._C_KON),
+                    table.model().index(second_row, ScenarioTablePanel._C_KON)),
+                QItemSelectionModel.SelectionFlag.Select)
+
+            html, _plain_text = panel._office_clipboard_payload()
+            self.assertIn('Orsak A', html)
+            self.assertIn('Konsekvens C', html)
+            self.assertNotIn('Konsekvens A', html)
+            # The unselected intermediate consequence must not be copied just
+            # because it lies between two Ctrl-selected visual rows.
+            self.assertEqual(html.count('<tr '), 2)
         finally:
             ws.deleteLater()
 

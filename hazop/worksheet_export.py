@@ -195,6 +195,9 @@ def _worksheet_rows(db):
                 yield _row(
                     node_label, deviation_label, '', '', '', None, '', '', '', None, '',
                     (node['id'], deviation['id'], None, None),
+                    office_merge_keys=(
+                        ('node', node['id']), ('deviation', deviation['id']),
+                        None, None, None, None, None, None, None, None, None),
                 )
                 continue
 
@@ -211,6 +214,10 @@ def _worksheet_rows(db):
                         node_label, deviation_label, cause_label, frequency_label, '',
                         None, '', '', '', None, '',
                         (node['id'], deviation['id'], cause['id'], None),
+                        office_merge_keys=(
+                            ('node', node['id']), ('deviation', deviation['id']),
+                            ('cause', cause['id']), ('frequency', cause['id']),
+                            None, None, None, None, None, None, None),
                     )
                     continue
 
@@ -314,6 +321,26 @@ def _worksheet_rows(db):
                             f"{(recommendation.get('description') or '').strip()}"
                             if recommendation else '')
 
+                        # The visible table has a shared physical row grid:
+                        # one consequence may occupy several rows because of
+                        # categories, safeguards or recommendations.  Keep
+                        # the stable identity of every rendered column here;
+                        # Office copy can then merge by entity ID instead of
+                        # guessing from repeated display text.
+                        risk_key = (
+                            ('risk', consequence_id,
+                             category.get('id') if category else None)
+                            if risk_before else None)
+                        safeguard_key = (
+                            ('safeguard', safeguard['id'])
+                            if safeguard else None)
+                        enabler_key = (
+                            ('enablers', consequence_id)
+                            if enablers_label else None)
+                        recommendation_key = (
+                            ('recommendation', recommendation['id'])
+                            if recommendation else None)
+
                         yield _row(
                             node_label, deviation_label, cause_label, frequency_label,
                             consequence_label,
@@ -323,11 +350,25 @@ def _worksheet_rows(db):
                             if risk_after else None,
                             recommendation_label,
                             (node['id'], deviation['id'], cause['id'], consequence_id),
+                            office_merge_keys=(
+                                ('node', node['id']),
+                                ('deviation', deviation['id']),
+                                ('cause', cause['id']),
+                                ('frequency', cause['id']),
+                                ('consequence', consequence_id),
+                                risk_key,
+                                safeguard_key,
+                                safeguard_key,
+                                enabler_key,
+                                risk_key,
+                                recommendation_key,
+                            ),
                         )
 
 
 def _row(node, deviation, cause, frequency, consequence, risk_before,
-         safeguard, rrf, enablers, risk_after, recommendation, merge_key):
+         safeguard, rrf, enablers, risk_after, recommendation, merge_key,
+         office_merge_keys=None):
     return {
         'values': [node, deviation, cause, frequency, consequence,
                    risk_before[0] if risk_before else '', safeguard, rrf,
@@ -335,6 +376,7 @@ def _row(node, deviation, cause, frequency, consequence, risk_before,
         'risk_before': risk_before,
         'risk_after': risk_after,
         'merge_key': merge_key,
+        'office_merge_keys': tuple(office_merge_keys or ()),
     }
 
 
