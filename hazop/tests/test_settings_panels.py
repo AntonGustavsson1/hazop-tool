@@ -846,6 +846,11 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             buttons = [button for button in panel.findChildren(QPushButton)
                        if button.text() == 'Min processmall']
             self.assertTrue(buttons, "the custom template must be shown below standard templates")
+            with unittest.mock.patch.object(
+                    QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes):
+                panel._delete_custom_matrix_template('Min processmall')
+            self.assertEqual(self.db.get_custom_risk_matrix_templates(), [])
+            self.assertFalse(panel._custom_matrix_templates_widget.isVisible())
         finally:
             panel.deleteLater()
 

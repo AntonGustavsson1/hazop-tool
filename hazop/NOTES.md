@@ -1,5 +1,14 @@
 # NOTES.md — Beslut och kontext
 
+## Ta bort egna riskmatrismallar (2026-09-01)
+
+Varje egen, projektlokal riskmatrismall har ett litet × bredvid sitt namn.
+En bekräftelse krävs för borttagning. Endast den sparade egna mallen tas bort;
+den riskmatris som är aktiv i projektet ändras inte.
+
+Verifierat med 19 riktade riskmatris-/inställningstester, `tests.test_smoke`
+(12 tester), `py_compile` och `git diff --check`. Testningen är headless.
+
 ## En gemensam sparaåtgärd och egna riskmatrismallar (2026-09-01)
 
 Riskmatris och Axlar delar nu en enda knapp: `Spara ändringar som mall…`.

@@ -3336,7 +3336,27 @@ class HAZOPPreparationPanel(QWidget):
                 lambda _checked=False, t=template: self._request_matrix_template(
                     t['matrix'], t['name']))
             layout.addWidget(button)
+            delete_button = QToolButton()
+            delete_button.setText("×")
+            delete_button.setToolTip(f"Ta bort egna mallen '{template['name']}'")
+            delete_button.setAutoRaise(True)
+            delete_button.setFixedWidth(20)
+            delete_button.clicked.connect(
+                lambda _checked=False, name=template['name']:
+                self._delete_custom_matrix_template(name))
+            layout.addWidget(delete_button)
         layout.addStretch()
+
+    def _delete_custom_matrix_template(self, name):
+        answer = QMessageBox.question(
+            self, "Ta bort egen riskmatrismall",
+            f"Vill du ta bort mallen '{name}'? Den aktiva riskmatrisen ändras inte.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if self.db.delete_custom_risk_matrix_template(name):
+            self._reload_custom_matrix_templates()
 
     def _ask_custom_matrix_template_name(self):
         return QInputDialog.getText(

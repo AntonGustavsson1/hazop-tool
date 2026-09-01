@@ -2334,6 +2334,16 @@ class Database:
         self.set_config('custom_risk_matrix_templates', json.dumps(templates))
         return templates
 
+    def delete_custom_risk_matrix_template(self, name):
+        """Delete one named project-local matrix template, if it exists."""
+        key = str(name or '').strip().casefold()
+        templates = self.get_custom_risk_matrix_templates()
+        remaining = [item for item in templates if item['name'].casefold() != key]
+        if len(remaining) == len(templates):
+            return False
+        self.set_config('custom_risk_matrix_templates', json.dumps(remaining))
+        return True
+
     @staticmethod
     def _template_category_key(value, fallback='category'):
         text = str(value or fallback).strip().casefold()
