@@ -5135,3 +5135,10 @@ nivåöversättningsdelen är borttagen från vyn och layouten använder en komp
 fast höjd för kategoriraderna. Verifierat med renderkontroll, riktade
 migreringstester, `tests.test_smoke`, `py_compile` och `git diff --check`.
 Ingen manuell visuell GUI-verifiering är gjord.
+## Kategorifliken förankrad upptill (2026-09-01)
+
+Den fasta kategorikopplingscanvasen centrerades tidigare vertikalt av Qt när
+den inte fick expandera. Både flikens layout och canvasens grid är nu
+förankrade upptill och canvasen får bara den höjd som behövs för kategorierna.
+Ett regressionstest säkerställer att kopplingsfältet inte hamnar långt ned på
+sidan.

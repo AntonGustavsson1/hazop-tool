@@ -711,6 +711,7 @@ class CategoryMappingPanel(QWidget):
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(5)
+        self._layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
     def rebuild(self):
         while self._layout.count():

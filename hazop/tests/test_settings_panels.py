@@ -1298,6 +1298,7 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             self.assertIn('person', dialog._category_panel.target_chips)
             self.assertIs(canvas.old_chips[('category', source_id)],
                           dialog._category_panel.source_chips[source_id])
+            self.assertLess(dialog._category_panel._mapping_canvas.geometry().y(), 50)
             self.assertIn('konsekvenskategorier mappade.', dialog._progress.text())
 
             dialog.clear_mappings()
