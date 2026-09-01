@@ -1223,8 +1223,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
-    def test_template_migration_has_category_step_then_two_shared_matrix_views(self):
-        """Both migration views use actual codes, descriptions and colours."""
+    def test_template_migration_exposes_only_the_two_matrix_mapping_views(self):
+        """Category matching is automatic and is not an editable popup step."""
         from hazop_preparation_panel import RiskMatrixMigrationDialog
         source = {
             'rows': 2, 'cols': 2, 'x_axis': 'frequency', 'y_reversed': True,
@@ -1248,9 +1248,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
             self.assertEqual([dialog._tabs.tabText(i) for i in range(dialog._tabs.count())],
-                             ['1. Konsekvenskategorier', '2. Kopplingsfält',
-                              '3. Matris mot matris'])
-            self.assertIs(dialog._tabs.currentWidget(), dialog._category_panel)
+                             ['1. Kopplingsfält', '2. Matris mot matris'])
+            self.assertFalse(hasattr(dialog, '_category_panel'))
             source_chip = dialog._link_field.old_chips[('frequency', -1)]
             target_chip = dialog._link_field.target_chips[('frequency', -1)]
             self.assertEqual(source_chip.code, 'A')
@@ -1265,13 +1264,13 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             self.assertEqual(dialog._mapping[('frequency', -1)], 0)
             self.assertTrue(dialog._link_field.old_chips[('frequency', -1)].isEnabled())
             self.assertTrue(dialog._matrix_against_matrix.old_chips[('frequency', -1)].isEnabled())
-            self.assertEqual(dialog._progress.text(),
-                             '1 av 4 gamla steg och 0 av 5 kategorier mappade. '
-                             'Inget sparas förrän du genomför migreringen.')
+            self.assertIn('1 av 4 gamla steg mappade.', dialog._progress.text())
+            self.assertIn('Konsekvenskategorier kopplas automatiskt.',
+                          dialog._progress.text())
         finally:
             dialog.deleteLater()
 
-    def test_template_migration_category_step_maps_categories_and_levels(self):
+    def test_template_migration_keeps_automatic_category_mapping_internal(self):
         from hazop_preparation_panel import RiskMatrixMigrationDialog
         source = {'rows': 3, 'cols': 2, 'x_labels': ['A', 'B'],
                   'y_labels': ['1', '2', '3'], 'freq_boundaries': [0.1]}
@@ -1290,24 +1289,18 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         self.db.set_risk_matrix(source)
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
-            self.assertEqual(dialog._tabs.tabText(0), '1. Konsekvenskategorier')
-            self.assertIs(dialog._tabs.widget(0), dialog._category_panel)
+            self.assertEqual(dialog._tabs.count(), 2)
+            self.assertFalse(any('kategori' in dialog._tabs.tabText(i).lower()
+                                 for i in range(dialog._tabs.count())))
             source_id = str(dialog.plan['source_categories'][0]['source_id'])
-            self.assertIn(source_id, dialog._category_panel.source_chips)
-            dialog.clear_mappings()
-            dialog.activate_source_category(source_id)
-            dialog.activate_target_category('person')
             self.assertEqual(dialog.plan['category_map'][source_id], 'person')
-            dialog.set_category_level_mapping(source_id, 2, 4)
-            self.assertEqual(dialog.plan['category_severity_maps'][source_id]['2'], 4)
-            self.assertIn('1 av 5 kategorier mappade', dialog._progress.text())
+            self.assertIn('Konsekvenskategorier kopplas automatiskt.',
+                          dialog._progress.text())
         finally:
             dialog.deleteLater()
 
-    def test_category_mapping_uses_the_shared_link_field_interface(self):
-        from hazop_preparation_panel import (RiskMatrixMigrationDialog,
-                                              AxisMappingChip,
-                                              _CategoryMappingCanvas)
+    def test_category_matching_field_is_not_constructed(self):
+        from hazop_preparation_panel import RiskMatrixMigrationDialog
         source = {
             'rows': 2, 'cols': 2, 'x_labels': ['A', 'B'],
             'y_labels': ['1', '2'], 'freq_boundaries': [0.1],
@@ -1327,26 +1320,10 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         self.db.set_risk_matrix(source)
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
-            canvas = dialog._category_panel._mapping_canvas
-            self.assertIsInstance(canvas, _CategoryMappingCanvas)
-            first_source_key = next(iter(canvas.old_chips))[1]
-            self.assertIsInstance(
-                canvas.old_chips[('category', first_source_key)], AxisMappingChip)
-            self.assertIsInstance(canvas.target_chips[('category', 'new-person')],
-                                  AxisMappingChip)
-
-            dialog.clear_mappings()
-            canvas = dialog._category_panel._mapping_canvas
-            first_source_key = next(iter(canvas.old_chips))[1]
-            source_id = first_source_key
-            dialog.activate_source_category(source_id)
-            dialog.activate_target_category('new-person')
-            self.assertEqual(dialog._category_mapping[source_id], 'new-person')
-            canvas = dialog._category_panel._mapping_canvas
-            self.assertEqual(canvas.iter_mappings(),
-                             [(('category', source_id), 'new-person')])
-            self.assertTrue(canvas.old_chips[('category', source_id)].text() == 'Person')
-            self.assertIn('(1)', canvas.target_chips[('category', 'new-person')].text())
+            self.assertFalse(hasattr(dialog, '_category_panel'))
+            self.assertNotIn('Konsekvenskategorier',
+                             [dialog._tabs.tabText(i)
+                              for i in range(dialog._tabs.count())])
         finally:
             dialog.deleteLater()
 
