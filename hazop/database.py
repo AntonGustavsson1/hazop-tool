@@ -5137,8 +5137,23 @@ class Database:
                     add_link(eq_id, 'cause')
 
         def collect_consequence_or_safeguard(row, link_type):
+            if not isinstance(row, dict):
+                row = dict(row)
             for tag in self._tags_for_row(row):
                 add_link(self._equipment_id_for_tag(tag, tag_cache), link_type)
+
+        def collect_recommendation(row):
+            if not isinstance(row, dict):
+                row = dict(row)
+            # Recommendations are catalogue text, not tag-bearing HAZOP
+            # rows: they have no comp_tag/tagged_refs columns.  Match the
+            # visible recommendation text against the equipment catalogue,
+            # exactly like equipment_recommendation_count does.
+            for equipment in self.conn.execute(
+                    "SELECT id, tag FROM equipment_catalog "
+                    "WHERE tag IS NOT NULL AND tag!=''").fetchall():
+                if self._equipment_tag_in_description(row, equipment['tag']):
+                    add_link(equipment['id'], 'recommendation')
 
         dev_rows = cause_rows = cons_rows = sg_rows = None
 
@@ -5189,6 +5204,11 @@ class Database:
                 collect_consequence_or_safeguard(cons, 'consequence')
             sgs_by_cons = self.safeguards_for_consequences([k['id'] for k in cons_rows])
             sg_rows = [dict(s) for sgs in sgs_by_cons.values() for s in sgs]
+            recommendations_by_cons = self.recommendations_for_consequences(
+                [k['id'] for k in cons_rows])
+            for recommendations in recommendations_by_cons.values():
+                for recommendation in recommendations:
+                    collect_recommendation(recommendation)
 
         if sg_rows is not None:
             for sg in sg_rows:

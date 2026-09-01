@@ -501,7 +501,7 @@ class TreeContextHighlightTests(unittest.TestCase):
             items[marker_id] = item
         return view, items
 
-    def test_set_tree_context_highlights_colors_existing_marker(self):
+    def test_set_tree_context_highlights_keeps_existing_marker_neutral(self):
         from PyQt6.QtCore import QPointF
         from PyQt6.QtGui import QColor
         view, items = self._make_view_with_markers({7: QPointF(50, 50)})
@@ -510,7 +510,7 @@ class TreeContextHighlightTests(unittest.TestCase):
         view.set_tree_context_highlights({7: color})
 
         self.assertEqual(view._tree_context_highlights, {7: color})
-        self.assertEqual(items[7].pen().color(), color)
+        self.assertEqual(items[7].pen().color(), QColor(120, 120, 120))
         self.assertFalse(hasattr(view, '_tree_context_highlight_overlays'))
 
     def test_set_tree_context_highlights_replaces_previous_set(self):
@@ -525,12 +525,12 @@ class TreeContextHighlightTests(unittest.TestCase):
         color = QColor(0, 200, 0)
 
         view.set_tree_context_highlights({1: color})
-        self.assertEqual(items[1].pen().color(), color)
+        self.assertEqual(items[1].pen().color(), QColor(120, 120, 120))
 
         view.set_tree_context_highlights({2: color})
         self.assertEqual(items[1].pen().color(), QColor(120, 120, 120),
             "marker 1 must return to neutral grey once it's out of scope")
-        self.assertEqual(items[2].pen().color(), color)
+        self.assertEqual(items[2].pen().color(), QColor(120, 120, 120))
 
     def test_tree_context_highlight_coexists_with_multiselect_visually_distinct(self):
         from PyQt6.QtCore import QPointF
@@ -541,7 +541,7 @@ class TreeContextHighlightTests(unittest.TestCase):
         view.set_tree_context_highlights({7: QColor(0, 200, 0)})
 
         self.assertIn(7, view._equip_selection_overlays)
-        self.assertEqual(items[7].pen().color(), QColor(0, 200, 0))
+        self.assertEqual(items[7].pen().color(), QColor(120, 120, 120))
         self.assertGreater(view._equip_selection_overlays[7].zValue(),
                            items[7].zValue())
 
@@ -564,7 +564,7 @@ class TreeContextHighlightTests(unittest.TestCase):
         view._reapply_tree_context_highlights()
 
         self.assertEqual(view._tree_context_highlights, {7: color})
-        self.assertEqual(new_item.pen().color(), color)
+        self.assertEqual(new_item.pen().color(), QColor(120, 120, 120))
 
     def test_reapply_tree_context_highlights_drops_deleted_markers(self):
         from PyQt6.QtCore import QPointF
@@ -640,6 +640,37 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
                                   deviation_count=0, consequence_count=5, safeguard_count=0)
         self.assertEqual(self._badge_count(view), 1)
 
+    def test_tree_context_lights_only_roles_in_the_selected_tree_scope(self):
+        from pid_viewer import (PIDGraphicsView, TREE_CONTEXT_LINK_COLORS,
+                                set_tree_context_link_color)
+        from PyQt6.QtGui import QColor
+        from PyQt6.QtWidgets import QGraphicsEllipseItem
+
+        original = {key: QColor(value)
+                    for key, value in TREE_CONTEXT_LINK_COLORS.items()}
+        try:
+            for key, value in {
+                    'cause': '#2457a6', 'consequence': '#d97706',
+                    'safeguard': '#16a34a', 'recommendation': '#7c3aed'}.items():
+                set_tree_context_link_color(key, value)
+            view = PIDGraphicsView()
+            view.add_equipment_marker(
+                1, 0, 0, "Ventil", tag="V-101", deviation_count=2,
+                consequence_count=1, safeguard_count=3, recommendation_count=4)
+            view.set_tree_context_highlights(
+                {1: QColor(0, 200, 0)}, {1: {'cause', 'recommendation'}})
+
+            badges = [item for item in view._type_items['equipment']
+                      if isinstance(item, QGraphicsEllipseItem)]
+            by_role = {item.data(view._DATA_BADGE_ROLE): item for item in badges}
+            self.assertEqual(by_role['cause'].brush().color().name(), '#2457a6')
+            self.assertEqual(by_role['recommendation'].brush().color().name(), '#7c3aed')
+            self.assertEqual(by_role['consequence'].brush().color(), QColor(180, 180, 180))
+            self.assertEqual(by_role['safeguard'].brush().color(), QColor(180, 180, 180))
+        finally:
+            for key, value in original.items():
+                set_tree_context_link_color(key, value)
+
     def test_badges_use_the_tree_visibility_button_colours(self):
         from pid_viewer import (PIDGraphicsView, TREE_CONTEXT_LINK_COLORS,
                                 set_tree_context_link_color)
@@ -660,6 +691,9 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
             view.add_equipment_marker(
                 1, 0, 0, "Ventil", tag="V-101", deviation_count=2,
                 consequence_count=1, safeguard_count=3)
+            view.set_tree_context_highlights(
+                {1: QColor(0, 200, 0)},
+                {1: {'cause', 'consequence', 'safeguard'}})
             badges = [item for item in view._type_items['equipment']
                       if item.__class__.__name__ == 'QGraphicsEllipseItem']
             self.assertEqual({badge.brush().color().name() for badge in badges},
@@ -717,6 +751,7 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
     def test_recommendation_badge_is_last_and_respects_visibility(self):
         from pid_viewer import PIDGraphicsView
         from PyQt6.QtWidgets import QGraphicsEllipseItem
+        from PyQt6.QtGui import QColor
 
         view = PIDGraphicsView()
         view.add_equipment_marker(
@@ -724,6 +759,8 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
             consequence_count=3, safeguard_count=4, recommendation_count=5,
             show_cause=False, show_consequence=False, show_safeguard=False,
             show_recommendation=True)
+        view.set_tree_context_highlights(
+            {1: QColor(0, 200, 0)}, {1: {'recommendation'}})
         badges = [item for item in view._type_items['equipment']
                   if isinstance(item, QGraphicsEllipseItem)]
         self.assertEqual(len(badges), 1)

@@ -786,7 +786,8 @@ TREE_CONTEXT_HIGHLIGHT_DISABLED = QColor(128, 128, 128)
 # unobservable (every link type maps to the same green above), ordered
 # "most specific protective role first" so it's a sane default the
 # moment colors actually diverge.
-TREE_CONTEXT_LINK_PRIORITY = ('safeguard', 'consequence', 'cause', 'deviation')
+TREE_CONTEXT_LINK_PRIORITY = (
+    'safeguard', 'recommendation', 'consequence', 'cause', 'deviation')
 
 
 def set_tree_context_link_color(link_type, color):

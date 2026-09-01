@@ -1404,6 +1404,7 @@ class PIDPanel(QWidget):
         self._tree_scope_type             = None
         self._tree_scope_id               = None
         self._tree_scope_colors: dict     = {}
+        self._tree_scope_link_types: dict = {}
         # Visibility of the three tree-context role layers.  This is separate
         # from the viewer's marker-layer visibility: an unchecked role keeps
         # its linked equipment visible, but colours it grey.
@@ -3975,8 +3976,13 @@ class PIDPanel(QWidget):
         self._tree_scope_type, self._tree_scope_id = type_, id_
         if id_ is None:
             self._tree_scope_colors = {}
+            self._tree_scope_link_types = {}
         else:
             link_types_by_equipment = self.db.equipment_link_types_in_scope(type_, id_)
+            self._tree_scope_link_types = {
+                eq_id: set(link_types)
+                for eq_id, link_types in link_types_by_equipment.items()
+            }
             disabled = {
                 role for role, visible in self._tree_context_layer_visibility.items()
                 if not visible
@@ -4015,13 +4021,17 @@ class PIDPanel(QWidget):
         source of truth for which marker belongs to which object (no
         separate id-mapping index to keep in sync)."""
         marker_color_map = {}
+        marker_badge_roles = {}
         if self._tree_scope_colors:
             for page in self.viewer._all_page_items.keys():
                 for m in self.db.equipment_markers_for_page(page):
                     eq_id = m['equipment_id']
                     if eq_id in self._tree_scope_colors:
                         marker_color_map[m['id']] = self._tree_scope_colors[eq_id]
-        self.viewer.set_tree_context_highlights(marker_color_map)
+                        marker_badge_roles[m['id']] = self._tree_scope_link_types.get(
+                            eq_id, set())
+        self.viewer.set_tree_context_highlights(marker_color_map,
+                                                marker_badge_roles)
 
     # Maps Excel category strings → component_type keys used in the app
     _CAT_TO_COMP = {

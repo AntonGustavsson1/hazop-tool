@@ -80,6 +80,11 @@ class PIDGraphicsView(QGraphicsView):
     _DATA_SYMBOL_W   = 6   # float PDF-unit width stored on symbol items
     _DATA_SYMBOL_H   = 7   # float PDF-unit height stored on symbol items
     _DATA_SYMBOL_ROT = 8   # float rotation degrees stored on symbol items
+    _DATA_BADGE_ROLE = 9   # tree-context role represented by a counter bubble
+    _DATA_BADGE_MARKER_ID = 10
+    _DATA_BADGE_FILL = 11
+    _DATA_BADGE_OUTLINE = 12
+    _DATA_BADGE_TEXT = 13
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -131,6 +136,7 @@ class PIDGraphicsView(QGraphicsView):
         # set_tree_context_highlights()'s docstring for the visual
         # layering that keeps the two unambiguous).
         self._tree_context_highlights: dict = {}          # marker_id -> QColor
+        self._tree_context_badge_roles: dict = {}         # marker_id -> set[str]
         self._ctrl_rband_start_scene  = None
         self._ctrl_rband_dragging     = False
         self._ctrl_rband_preview_item = None
@@ -1808,7 +1814,8 @@ class PIDGraphicsView(QGraphicsView):
 
     # ── Tree-context equipment highlight (2026-08-27, see NOTES.md
     # "Dynamisk färgmarkering av objekt på P&ID") ──────────────────────────
-    def set_tree_context_highlights(self, marker_color_map: dict):
+    def set_tree_context_highlights(self, marker_color_map: dict,
+                                    marker_badge_roles: dict | None = None):
         """Replace the WHOLE tree-context highlight set in one call — the
         caller (PIDPanel._apply_tree_context_highlight) always recomputes
         the full marker_id->QColor map from scratch on every tree
@@ -1817,51 +1824,89 @@ class PIDGraphicsView(QGraphicsView):
         incremental adds/removes across arbitrary tree navigation, and it
         naturally satisfies "objekt som inte längre tillhör aktuell
         kontext ska återgå till sin normala färg" — anything not in the
-        new map just never gets redrawn.
+        new map receives inactive counter bubbles.
 
-        Tree context now colors the EXISTING equipment/rubber-band polygon;
-        it no longer draws a separate circular halo. Anything leaving the
-        context is reset to the one neutral grey base style. The dashed-blue
-        multi-selection rectangle remains a separate overlay and can coexist
-        with the context-colored polygon."""
+        The tree context lights only the role-specific counter bubbles beside
+        the tag. The equipment/rubber-band polygon remains neutral; the
+        dashed-blue multi-selection rectangle remains a separate overlay."""
         previous_ids = set(self._tree_context_highlights)
         self._tree_context_highlights = dict(marker_color_map)
-        for marker_id in previous_ids - set(self._tree_context_highlights):
-            self._apply_tree_context_color(marker_id, None)
-        for marker_id, color in self._tree_context_highlights.items():
-            self._apply_tree_context_color(marker_id, color)
+        if marker_badge_roles is None:
+            # Preserve the direct-view API: a caller that only supplies the
+            # old highlight map means that all existing counter roles are in
+            # the selected context.
+            all_roles = {'deviation', 'cause', 'consequence',
+                         'safeguard', 'recommendation'}
+            marker_badge_roles = {
+                marker_id: all_roles for marker_id in marker_color_map
+            }
+        self._tree_context_badge_roles = {
+            marker_id: set(roles or ())
+            for marker_id, roles in marker_badge_roles.items()
+        }
 
-    def _apply_tree_context_color(self, marker_id, color=None):
+        # The tree-context colour used to be painted on the equipment polygon
+        # itself (including objects created with the P&ID rubber-band).  The
+        # counter bubbles are now the context indicator, so reset polygons to
+        # their neutral base and update only the role-specific bubbles.
+        for marker_id in previous_ids | set(self._tree_context_highlights):
+            self._reset_equipment_marker_color(marker_id)
+        self._apply_tree_context_badges()
+
+    def _apply_tree_context_badges(self):
+        """Light only the counter bubbles belonging to the tree selection."""
+        aliases = {
+            'cause': {'cause', 'deviation'},
+            'consequence': {'consequence'},
+            'safeguard': {'safeguard'},
+            'recommendation': {'recommendation'},
+        }
+        for item in self._type_items.get('equipment', []):
+            role = item.data(self._DATA_BADGE_ROLE)
+            marker_id = item.data(self._DATA_BADGE_MARKER_ID)
+            if not role or marker_id is None:
+                continue
+            active_roles = self._tree_context_badge_roles.get(marker_id, set())
+            active = bool(active_roles & aliases.get(role, {role}))
+            if isinstance(item, QGraphicsEllipseItem):
+                fill = QColor(item.data(self._DATA_BADGE_FILL)) if active else QColor(180, 180, 180)
+                outline = QColor(item.data(self._DATA_BADGE_OUTLINE)) if active else QColor(115, 115, 115)
+                item.setBrush(QBrush(fill))
+                item.setPen(QPen(outline, 1))
+            elif isinstance(item, QGraphicsSimpleTextItem):
+                text_color = QColor(item.data(self._DATA_BADGE_TEXT)) if active else QColor(90, 90, 90)
+                item.setBrush(QBrush(text_color))
+
+    def _reset_equipment_marker_color(self, marker_id):
         item = self._find_equipment_item(marker_id)
         if item is None:
             return
-        if color is None:
-            pen_color = QColor(120, 120, 120)
-            fill = QColor(150, 150, 150, 90)
-            width = 1.5
-        else:
-            pen_color = QColor(color)
-            fill = QColor(color)
-            fill.setAlpha(100)
-            width = 3.0
-        pen = QPen(pen_color, width)
+        pen = QPen(QColor(120, 120, 120), 1.5)
         pen.setCosmetic(True)
         item.setPen(pen)
-        item.setBrush(QBrush(fill))
+        item.setBrush(QBrush(QColor(150, 150, 150, 90)))
 
     def clear_tree_context_highlights(self):
         for marker_id in list(self._tree_context_highlights):
-            self._apply_tree_context_color(marker_id, None)
+            self._reset_equipment_marker_color(marker_id)
         self._tree_context_highlights = {}
+        self._tree_context_badge_roles = {}
+        self._apply_tree_context_badges()
 
     def _reapply_tree_context_highlights(self):
         """Reapply cached context colors after equipment marker rebuild."""
         saved = dict(self._tree_context_highlights)
+        saved_roles = dict(self._tree_context_badge_roles)
         self._tree_context_highlights = {}
+        self._tree_context_badge_roles = {}
         for marker_id, color in saved.items():
             if self._find_equipment_item(marker_id) is not None:
                 self._tree_context_highlights[marker_id] = color
-                self._apply_tree_context_color(marker_id, color)
+                self._tree_context_badge_roles[marker_id] = set(
+                    saved_roles.get(marker_id, ()))
+        for marker_id in saved:
+            self._reset_equipment_marker_color(marker_id)
+        self._apply_tree_context_badges()
 
     def _equipment_markers_in_rect(self, band_rect):
         """Return equipment_markers.id values whose scene bounding rect
@@ -1959,7 +2004,7 @@ class PIDGraphicsView(QGraphicsView):
 
     def _place_label(self, text: str, x_pdf: float, y_pdf: float,
                      r: float, color: QColor, marker_type: str,
-                     badges=None):
+                     badges=None, marker_id=None):
         """Place an equipment tag and its counters in one compact label.
 
         The counters deliberately follow the tag instead of sitting on the
@@ -2010,12 +2055,19 @@ class PIDGraphicsView(QGraphicsView):
         self._add_tracked(bg, marker_type)
         self._add_tracked(txt, marker_type)
 
-        for i, (count, fill, outline, text_color) in enumerate(badge_specs):
+        for i, spec in enumerate(badge_specs):
+            count, fill, outline, text_color = spec[:4]
+            badge_role = spec[4] if len(spec) > 4 else None
             bx = cursor_x + badge_r + i * (2 * badge_r + 3.0)
             badge = QGraphicsEllipseItem(
                 bx - badge_r, badge_y - badge_r, 2 * badge_r, 2 * badge_r)
             badge.setPen(QPen(outline, 1))
             badge.setBrush(QBrush(fill))
+            if badge_role:
+                badge.setData(self._DATA_BADGE_ROLE, badge_role)
+                badge.setData(self._DATA_BADGE_MARKER_ID, marker_id)
+                badge.setData(self._DATA_BADGE_FILL, QColor(fill))
+                badge.setData(self._DATA_BADGE_OUTLINE, QColor(outline))
             badge.setZValue(Z_OVERLAY + 2)
             self._add_tracked(badge, marker_type)
 
@@ -2023,6 +2075,10 @@ class PIDGraphicsView(QGraphicsView):
             count_font = QFont(); count_font.setPointSize(8); count_font.setBold(True)
             count_txt.setFont(count_font)
             count_txt.setBrush(QBrush(text_color))
+            if badge_role:
+                count_txt.setData(self._DATA_BADGE_ROLE, badge_role)
+                count_txt.setData(self._DATA_BADGE_MARKER_ID, marker_id)
+                count_txt.setData(self._DATA_BADGE_TEXT, QColor(text_color))
             tb = count_txt.boundingRect()
             count_txt.setPos(bx - tb.width() / 2,
                              badge_y - tb.height() / 2)
@@ -2114,7 +2170,7 @@ class PIDGraphicsView(QGraphicsView):
             luminance = (0.299 * fill.red() + 0.587 * fill.green()
                          + 0.114 * fill.blue())
             text_color = QColor('#111111' if luminance > 155 else '#ffffff')
-            return count, fill, outline, text_color
+            return count, fill, outline, text_color, link_type
 
         badge_specs = []
         # Three corners, one counter each — colours distinct from the
@@ -2132,7 +2188,9 @@ class PIDGraphicsView(QGraphicsView):
 
         if tag or badge_specs:
             self._place_label(tag, x_pdf, y_pdf, r, QColor('#FFFFFF'),
-                              'equipment', badges=badge_specs)
+                              'equipment', badges=badge_specs,
+                              marker_id=marker_id)
+            self._apply_tree_context_badges()
 
     def _extract_tag_from_rect(self, pdf_rect: QRectF) -> str:
         """Thin wrapper around equipment_detection.extract_tag_from_rect

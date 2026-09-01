@@ -1549,8 +1549,8 @@ class TreeContextHighlightPanelTests(unittest.TestCase):
         dev_id = self.db.deviations(node_id)[0]['id']
         eq_id = self.db.add_equipment_item(tag, tag, tag[0], 0, 'Ventil', '', 0)
         cause_id = self.db.add_cause(dev_id)
-        self.db.conn.execute("UPDATE causes SET equipment_id=? WHERE id=?", (eq_id, cause_id))
-        self.db.commit()
+        self.db.update_cause(cause_id, description=tag, comp_tag=tag,
+                             comp_type='Ventil', equipment_id=eq_id)
         return node_id, cause_id, eq_id
 
     def test_set_tree_context_maps_equipment_id_to_correct_marker_ids(self):
@@ -1567,6 +1567,29 @@ class TreeContextHighlightPanelTests(unittest.TestCase):
             _fake_pdf_loaded(panel)
             panel.set_tree_context(CAUSE_T, cause_id)
             self.assertEqual(set(panel.viewer._tree_context_highlights.keys()), {m1, m2})
+        finally:
+            panel.deleteLater()
+
+    def test_set_tree_context_passes_recommendation_role_to_badges(self):
+        from pid_viewer import PIDPanel
+        _node_id, cause_id, eq_id = self._make_cause_with_equipment()
+        consequence_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(
+            consequence_id, 'V-1 consequence', 1, comp_tag='V-1',
+            comp_type='Ventil')
+        recommendation_id = self.db.add_recommendation('V-1 rekommenderas')
+        self.db.link_recommendation_to_consequence(
+            recommendation_id, consequence_id)
+        marker_id = self.db.add_equipment_marker(
+            eq_id, 'V-1', 0, 10.0, 10.0, 'Ventil')
+
+        panel = PIDPanel(self.db)
+        try:
+            _fake_pdf_loaded(panel)
+            panel.set_tree_context(CAUSE_T, cause_id)
+            self.assertEqual(
+                panel.viewer._tree_context_badge_roles[marker_id],
+                {'cause', 'consequence', 'recommendation'})
         finally:
             panel.deleteLater()
 

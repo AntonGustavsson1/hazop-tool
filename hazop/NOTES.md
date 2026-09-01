@@ -5102,3 +5102,12 @@ hörn. Orsaks-, konsekvens-, safeguard- och rekommendationsräknarna ligger
 direkt efter taggen; rekommendationsräknaren ligger sist. Varje räknare visas
 bara när motsvarande knapp ovanför HAZOP-trädet är aktiverad, och färgbyte via
 knapparnas färgval ritas om direkt på P&ID.
+
+## Trädkontext tänder rätt räknarboll (2026-09-01)
+
+P&ID-markörens räknarbollar får nu den aktiva/inaktiva statusen från det
+markerade objektets länkroller i HAZOP-trädet. Bara bollar för orsak,
+konsekvens, safeguard eller rekommendation som hör till aktuell trädkontext
+visas aktiva; övriga blir neutrala. Rekommendationer matchas mot synlig tagg i
+den länkade rekommendationstexten. Den tidigare färgningen av själva
+gummibands-/utrustningspolygonen från trädkontexten är borttagen.
