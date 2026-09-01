@@ -3141,8 +3141,8 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
             row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
             before = panel._table.item(row, panel._C_RFORE)
             final = panel._table.item(row, panel._C_SLUT)
-            self.assertIn('C3', before.text())
-            self.assertIn('C5', final.text())
+            self.assertIn('3', before.text())
+            self.assertIn('5', final.text())
             self.assertEqual(before.data(Qt.ItemDataRole.UserRole)[-1], 3)
             self.assertEqual(final.data(Qt.ItemDataRole.UserRole)[-1], 5)
         finally:

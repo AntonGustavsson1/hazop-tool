@@ -1,5 +1,18 @@
 # NOTES.md — Beslut och kontext
 
+## Riskpopup visar aktuella axelkoder (2026-09-01)
+
+Risk fore barrier och Slutkonsekvens visar nu popupens aktuella risk som
+konfigurerad frekvenskod/konsekvenskod foljt av beskrivning, exempelvis
+`A - Aldrig` och `1 - Liten`. Popupens knappverktygstips anvander samma
+aktuella mallvarden. Konsekvensens korta varde hamtas fran `y_codes`, pa
+samma satt som frekvensens fran `x_codes`, sa numeriska och bokstavsbaserade
+mallar fungerar likadant.
+
+Verifierat med riktade riskpopup-/axelkodstester (21 tester),
+`tests.test_worksheet` (25 tester), `tests.test_smoke` (12 tester),
+`py_compile` och `git diff --check`. Testningen ar headless.
+
 ## Office-kopiering av barriarer (2026-09-01)
 
 Kopiering fran HAZOP Scenario eller Worksheet till Word/Excel skriver varje

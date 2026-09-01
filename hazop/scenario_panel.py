@@ -31,7 +31,8 @@ from constants import CAUSE_T, CONS_T, SG_T, SG_TYPES, CONFIG
 from database import Database, DEFAULT_MATRIX, get_matrix, risk_info, parse_tag_refs
 from pid_viewer import _icon, FREQ_LABELS, freq_to_idx, MODE_PICK_REF_TAG
 from ui_helpers import (
-    freq_axis_label, cons_axis_label, _lookup_comp_type_for_tag,
+    freq_axis_label, freq_axis_label_full, cons_axis_label, cons_axis_label_full,
+    _lookup_comp_type_for_tag,
     _draw_text_with_bold_tags, standard_cause_options,
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
     find_bold_tag_at_position, _equipment_type_options,
@@ -647,6 +648,7 @@ class RiskMatrixPopup(QDialog):
         self._category_mode = db is not None and cons_id is not None
         self._final_consequence_mode = bool(final_consequence and self._category_mode)
         self._current_freq = current_freq
+        self._current_cons = current_cons
         self._n_cons      = n_cons
         self._freq_on_x   = freq_on_x
         self._x_rev       = x_rev
@@ -664,6 +666,21 @@ class RiskMatrixPopup(QDialog):
         hdr = QLabel(hdr_text)
         hdr.setStyleSheet("font-weight:bold; font-size:11px; padding:2px;")
         outer.addWidget(hdr)
+
+        # Keep the actual configured axis value visible when the popup is
+        # opened. The table stores numeric F/C ordinals, while the user may
+        # have configured arbitrary short codes (for example A..E or 1..5).
+        # Showing both code and description makes the current cell
+        # unambiguous when the matrix is rotated or used for Slutkonsekvens.
+        self._current_value_label = QLabel(
+            f"Aktuellt: {freq_axis_label_full(current_freq)}  ·  "
+            f"{cons_axis_label_full(current_cons)}")
+        self._current_value_label.setObjectName('currentRiskValue')
+        self._current_value_label.setStyleSheet(
+            "font-size:9px; color:#4B5563; padding:1px 2px;")
+        self._current_value_label.setToolTip(
+            "Numeriskt/konfigurerat värde för den markerade riskcellen")
+        outer.addWidget(self._current_value_label)
 
         grid = QGridLayout()
         grid.setSpacing(0)
@@ -748,7 +765,9 @@ class RiskMatrixPopup(QDialog):
 
                 btn = QPushButton(lbl)
                 btn.setFixedSize(cell_width, 32)
-                btn.setToolTip(f"F={freq_val}  C={cons_val}  →  {lbl}")
+                btn.setToolTip(
+                    f"{freq_axis_label_full(freq_val)}  ·  "
+                    f"{cons_axis_label_full(cons_val)}  →  {lbl}")
                 # Qt auto-assigns one pushbutton in a QDialog as the
                 # "default"/initially-focused button (normally the first
                 # one created) — the app's global stylesheet then paints

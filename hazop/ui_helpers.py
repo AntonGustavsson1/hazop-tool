@@ -109,13 +109,29 @@ def freq_axis_label_full(f_val: int) -> str:
 
 
 def cons_axis_label(c_val: int) -> str:
-    """Short configured label for a consequence value (1..5). y_labels always stores cons labels."""
+    """Configured consequence code for compact table and risk-cell displays."""
     cfg  = get_matrix()
     rows = cfg.get('rows', 5)
     idx  = max(0, min(int(c_val) - 1, rows - 1))
+    codes = cfg.get('y_codes', [])
+    code = str(codes[idx]).strip() if idx < len(codes) else ''
+    if code:
+        return code
     lbls = cfg.get('y_labels', [])
     full = lbls[idx] if idx < len(lbls) else f'C={c_val}'
     return full.split()[0] if full.strip() else f'C={c_val}'
+
+
+def cons_axis_label_full(c_val: int) -> str:
+    """Configured consequence code followed by its description."""
+    cfg  = get_matrix()
+    rows = cfg.get('rows', 5)
+    idx = max(0, min(int(c_val) - 1, rows - 1))
+    codes = cfg.get('y_codes', [])
+    labels = cfg.get('y_labels', [])
+    code = str(codes[idx]).strip() if idx < len(codes) else f'C={c_val}'
+    description = str(labels[idx]).strip() if idx < len(labels) else ''
+    return f"{code} — {description}" if description else code
 
 
 _EQ_TYPE_ITEMS = [''] + sorted(COMPONENT_TYPES.keys()) + ['Rörledning', 'Övrigt / Okänd']

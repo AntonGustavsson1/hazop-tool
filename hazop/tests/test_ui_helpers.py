@@ -111,9 +111,12 @@ class FrequencyCodePresentationTests(unittest.TestCase):
     def test_frequency_code_is_compact_in_risk_cells_and_expanded_in_pickers(self):
         from hazop import RiskMatrixPopup, ScenarioTablePanel
         from tree_panel import FrequencyPickerPopup
-        from ui_helpers import freq_axis_label, freq_axis_label_full
+        from ui_helpers import (freq_axis_label, freq_axis_label_full,
+                                cons_axis_label, cons_axis_label_full)
 
         self.assertEqual(freq_axis_label(-1), 'A')
+        self.assertEqual(cons_axis_label(1), '1')
+        self.assertEqual(cons_axis_label_full(1), '1 — Liten')
         self.assertEqual(freq_axis_label_full(-1), 'A \u2014 Aldrig')
 
         node_id = self.db.add_node()
@@ -133,6 +136,8 @@ class FrequencyCodePresentationTests(unittest.TestCase):
                        if meta[1] == cause_id)
             self.assertIn('A', panel._table.item(row, panel._C_RFORE).text())
             self.assertIn('A', panel._table.item(row, panel._C_SLUT).text())
+            self.assertIn('Aktuellt: A', risk_popup._current_value_label.text())
+            self.assertIn('1 — Liten', risk_popup._current_value_label.text())
             self.assertEqual(frequency_popup._preset_items[-1].text(), 'A \u2014 Aldrig')
             header = next(label for label in risk_popup.findChildren(QLabel)
                           if label.text() == 'A')
