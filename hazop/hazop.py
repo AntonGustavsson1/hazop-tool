@@ -1571,6 +1571,10 @@ class MainWindow(QMainWindow):
         self.settings_panel.matrix_changed.connect(self._on_matrix_changed)
         self.settings_panel.pid_render_settings_changed.connect(
             self.pid_panel.refresh_pdf_rendering)
+        self.settings_panel.scenario_render_settings_changed.connect(
+            self.scenario_panel.refresh_visual_settings)
+        self.settings_panel.scenario_render_settings_changed.connect(
+            self.worksheet._table_panel.refresh_visual_settings)
         self.hazop_prep_panel.matrix_changed.connect(self._on_matrix_changed)
         self.view_stack.addWidget(self.settings_panel)
 

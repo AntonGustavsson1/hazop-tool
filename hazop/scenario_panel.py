@@ -54,6 +54,7 @@ _RISK_BAR_HEIGHT = 22
 _RISK_BAR_MARGIN_X = 2
 _RISK_BAR_MARGIN_Y = 1
 _RISK_BAR_RADIUS = 5
+_RISK_COLUMN_DEFAULT_WIDTH = 52
 
 from tree_panel import CauseTagPopup, RRFPopup, FrequencyPickerPopup
 
@@ -674,7 +675,7 @@ class RiskMatrixPopup(QDialog):
         outer.setContentsMargins(6, 6, 6, 6)
         outer.setSpacing(4)
 
-        hdr_text = ("Slutkonsekvens: välj egen nivå per kategori "
+        hdr_text = ("Risker efter barriärer: välj egen nivå per kategori "
                     "(standard = Risk före barriär)"
                     if self._final_consequence_mode else
                     "Klicka på en cell för att sätta risknivå")
@@ -686,7 +687,7 @@ class RiskMatrixPopup(QDialog):
         # opened. The table stores numeric F/C ordinals, while the user may
         # have configured arbitrary short codes (for example A..E or 1..5).
         # Showing both code and description makes the current cell
-        # unambiguous when the matrix is rotated or used for Slutkonsekvens.
+        # unambiguous when the matrix is rotated or used for the final risk.
         self._current_value_label = QLabel(
             f"Aktuellt: {freq_axis_label_full(current_freq)}  ·  "
             f"{cons_axis_label_full(current_cons)}")
@@ -2539,30 +2540,39 @@ class _ScenarioDelegate(QStyledItemDelegate):
         sel = bool(option.state & QStyle.StateFlag.State_Selected)
         r = option.rect
         painter.save()
+        has_risk = bool(index.data(Qt.ItemDataRole.DisplayRole))
         if sel:
             painter.fillRect(r, QColor(_SCENARIO_SELECTION_BG))
         else:
             bg = index.data(Qt.ItemDataRole.BackgroundRole)
-            # Keep the table's neutral background around the risk token;
-            # the matrix colour is drawn as a compact rounded bar below.
-            painter.fillRect(r, (
-                option.palette.alternateBase() if index.row() % 2 == 1
-                else option.palette.base()))
             risk_color = (bg.color() if isinstance(bg, QBrush)
                           else QColor('#FFFFFF'))
-            bar_height = max(1, min(
-                _RISK_BAR_HEIGHT, r.height() - 2 * _RISK_BAR_MARGIN_Y))
-            bar = QRect(
-                r.left() + _RISK_BAR_MARGIN_X,
-                r.top() + _RISK_BAR_MARGIN_Y,
-                max(1, r.width() - 2 * _RISK_BAR_MARGIN_X),
-                bar_height)
-            if index.data(Qt.ItemDataRole.DisplayRole):
+            if self._panel._risk_bars_enabled and has_risk:
+                # Keep the table's neutral background around the risk token;
+                # the matrix colour is drawn as a compact rounded bar below.
+                painter.fillRect(r, (
+                    option.palette.alternateBase() if index.row() % 2 == 1
+                    else option.palette.base()))
+                bar_height = max(1, min(
+                    _RISK_BAR_HEIGHT, r.height() - 2 * _RISK_BAR_MARGIN_Y))
+                bar = QRect(
+                    r.left() + _RISK_BAR_MARGIN_X,
+                    r.top() + _RISK_BAR_MARGIN_Y,
+                    max(1, r.width() - 2 * _RISK_BAR_MARGIN_X),
+                    bar_height)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(risk_color))
                 painter.drawRoundedRect(bar, _RISK_BAR_RADIUS,
                                         _RISK_BAR_RADIUS)
+            elif has_risk:
+                # Accessibility/legacy option: use the risk-matrix colour as
+                # the complete cell background rather than an inset bar.
+                painter.fillRect(r, QBrush(risk_color))
+            else:
+                painter.fillRect(r, (
+                    option.palette.alternateBase() if index.row() % 2 == 1
+                    else option.palette.base()))
         if sel:
             tc = QColor(_SCENARIO_SELECTION_FG)
         else:
@@ -2573,7 +2583,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
         painter.setFont(font if font is not None else option.font)
         # Put the short risk value inside the bar. A selected cell uses the
         # full cell as its neutral overlay, so it remains visually uniform.
-        if sel:
+        if sel or not self._panel._risk_bars_enabled or not has_risk:
             text_rect = r
         else:
             bar_height = max(1, min(
@@ -4310,13 +4320,18 @@ class ScenarioTablePanel(QWidget):
         'Risk före barriär',
         'Barriärer (RRF)',
         'Enablers',
-        'Slutkonsekvens',
+        'Risker efter barriärer',
         'Rekommendation',
     ]
 
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
+        # Scenario and Worksheet share this table implementation.  Bars are
+        # the default presentation; Settings can switch both risk columns to
+        # fully filled matrix-colour cells without changing their values.
+        self._risk_bars_enabled = (
+            self.db.get_config('scenario_risk_bars_enabled', '1') == '1')
         self.cause_id = None
         self._node_id = None
         self._deviation_id = None
@@ -4419,10 +4434,12 @@ class ScenarioTablePanel(QWidget):
             self._C_DEV:   (QHeaderView.ResizeMode.Interactive, 120),
             self._C_ORS:   (QHeaderView.ResizeMode.Interactive, 180),
             self._C_KON:   (QHeaderView.ResizeMode.Interactive, 180),
-            self._C_RFORE: (QHeaderView.ResizeMode.Interactive,  58),
+            self._C_RFORE: (QHeaderView.ResizeMode.Interactive,
+                            _RISK_COLUMN_DEFAULT_WIDTH),
             self._C_SG:    (QHeaderView.ResizeMode.Interactive, 130),
             self._C_LOPA:  (QHeaderView.ResizeMode.Interactive, 130),
-            self._C_SLUT:  (QHeaderView.ResizeMode.Interactive,  58),
+            self._C_SLUT:  (QHeaderView.ResizeMode.Interactive,
+                            _RISK_COLUMN_DEFAULT_WIDTH),
             self._C_REK:   (QHeaderView.ResizeMode.Interactive, 140),
         }
         for col, (mode, width) in resize_modes.items():
@@ -6225,7 +6242,7 @@ class ScenarioTablePanel(QWidget):
         lopa_w._extra_btn.clicked.connect(partial(self._edit_extra, cid))
         self._table.setCellWidget(r, self._C_LOPA, lopa_w)
 
-        # ── Col SLUT: Slutkonsekvens ──────────────────────────────────────────
+        # ── Col SLUT: Risker efter barriärer ───────────────────────────────────
         # Shown for every row now (2026-08-09, see NOTES.md) — same fallback
         # rationale as RFORE above; final_f/sev/bg_s/fg_s are already
         # computed unconditionally regardless of cat_info.
@@ -6239,13 +6256,13 @@ class ScenarioTablePanel(QWidget):
         rs.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
         rs.setToolTip(
-            "Klicka för att ändra konsekvensnivå per kategori\n"
+            "Klicka för att ändra risknivå per kategori\n"
             f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(final_sev)}  "
             f"(−{total_steps} steg totalt)")
         rs.setBackground(QBrush(QColor(bg_s)))
         rs.setForeground(QBrush(QColor(fg_s)))
         rs.setFont(QFont("Consolas", 9))
-        # Slutkonsekvens uses the same category-aware popup as Risk före,
+        # Risker efter barriärer uses the same category-aware popup as Risk före,
         # but its displayed matrix position must use the post-barrier
         # frequency. The popup does not save anything on opening; category
         # levels change only when the user explicitly clicks a choice there.
@@ -6581,7 +6598,7 @@ class ScenarioTablePanel(QWidget):
                 if rs:
                     rs.setText(slut_text)
                     rs.setToolTip(
-                        "Klicka för att ändra konsekvensnivå per kategori\n"
+                        "Klicka för att ändra risknivå per kategori\n"
                         f"{level_s} — {freq_axis_label(final_f)}  "
                         f"{cons_axis_label(final_sev)}  (−{total_steps} steg totalt)")
                     rs.setBackground(QBrush(QColor(bg_s)))
@@ -6716,6 +6733,22 @@ class ScenarioTablePanel(QWidget):
         (2026-08-13, see NOTES.md: the P&ID canvas is now
         object-placement-only, so cause/consequence/safeguard rows have no
         "placed on P&ID" concept anymore)."""
+        self._table.viewport().update()
+
+    def refresh_visual_settings(self):
+        """Reload table-only visual preferences and repaint immediately.
+
+        Scenario and Worksheet share the project database and this table
+        implementation.  Repainting here keeps a live settings toggle from
+        rebuilding rows or touching any risk calculation.
+        """
+        self._risk_bars_enabled = (
+            self.db.get_config('scenario_risk_bars_enabled', '1') == '1')
+        self._table.viewport().update()
+
+    def set_risk_bars_enabled(self, enabled):
+        """Set the risk-cell presentation without rebuilding table data."""
+        self._risk_bars_enabled = bool(enabled)
         self._table.viewport().update()
 
     def select_cause(self, cause_id: int):

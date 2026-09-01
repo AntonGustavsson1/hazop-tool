@@ -46,6 +46,7 @@ class SettingsPanel(QWidget):
 
     matrix_changed = pyqtSignal()
     pid_render_settings_changed = pyqtSignal()
+    scenario_render_settings_changed = pyqtSignal()
 
     def __init__(self, db: Database):
         super().__init__()
@@ -238,6 +239,29 @@ class SettingsPanel(QWidget):
         tabs.addTab(pid_tab, "P&ID-inställningar")
 
         # ── Tab: Tagdatabas ───────────────────────────────────────────────────
+        hazop_tab = QWidget()
+        hazop_l = QVBoxLayout(hazop_tab)
+        hazop_l.setContentsMargins(16, 16, 16, 16)
+        hazop_l.setSpacing(12)
+
+        risk_view_grp = QGroupBox("Riskfält i HAZOP Scenario och Worksheet")
+        risk_view_gl = QVBoxLayout(risk_view_grp)
+        risk_view_gl.setSpacing(6)
+        risk_view_lbl = QLabel(
+            "Välj hur Risk före barriär och Risker efter barriärer ska visas "
+            "i tabellerna.")
+        risk_view_lbl.setWordWrap(True)
+        risk_view_gl.addWidget(risk_view_lbl)
+        self._risk_bars_chk = QCheckBox("Visa riskfält som staplar")
+        self._risk_bars_chk.setToolTip(
+            "Ikryssad: riskmatrisens färg visas i en kompakt stapel.\n"
+            "Avmarkerad: hela cellen fylls med riskmatrisens färg.")
+        self._risk_bars_chk.toggled.connect(self._on_risk_bar_setting_changed)
+        risk_view_gl.addWidget(self._risk_bars_chk)
+        hazop_l.addWidget(risk_view_grp)
+        hazop_l.addStretch()
+        tabs.addTab(hazop_tab, "HAZOP-inställningar")
+
         self._tag_db_panel = TagDatabasePanel(self.db)
         self._tag_db_panel.settings_changed.connect(self.matrix_changed.emit)
         tabs.addTab(self._tag_db_panel, "Tagdatabas")
@@ -272,6 +296,8 @@ class SettingsPanel(QWidget):
             width = 1
         self._min_pid_lines_spin.setValue(max(1, min(4, width)))
         self._min_pid_lines_spin.setEnabled(self._min_pid_lines_chk.isChecked())
+        self._risk_bars_chk.setChecked(
+            self.db.get_config('scenario_risk_bars_enabled', '1') == '1')
 
     def _add_replacement_row(self, source='', target=''):
         row = QWidget()
@@ -396,6 +422,10 @@ class SettingsPanel(QWidget):
         self.db.set_config('pid_min_line_width_enabled', '1' if enabled else '0')
         self.db.set_config('pid_min_line_width', str(self._min_pid_lines_spin.value()))
         self.pid_render_settings_changed.emit()
+
+    def _on_risk_bar_setting_changed(self, enabled):
+        self.db.set_config('scenario_risk_bars_enabled', '1' if enabled else '0')
+        self.scenario_render_settings_changed.emit()
 
     def refresh_tag_memory(self):
         """Refresh the Smart igenkänning tab so newly learned tags show up."""

@@ -5201,3 +5201,18 @@ riskcell får ingen färgbar.
 Verifierat med faktisk Qt-rendering under programmets stylesheet, test av
 grå markering i orsak/konsekvens/riskceller, `py_compile` och
 `git diff --check`.
+
+## Kompaktare riskfält och valbar stapelvisning (2026-09-01)
+
+Kolumnerna för Risk före barriär och Risker efter barriärer får nu en smalare
+standardbredd på 52 px. Användarens egna sparade kolumnbredder påverkas inte.
+Den tidigare rubriken Slutkonsekvens heter nu Risker efter barriärer i HAZOP
+Scenario och Worksheet.
+
+Under Inställningar → HAZOP-inställningar kan användaren välja mellan
+kompakta färgade staplar (standard) och helt fyllda riskrutor. Inställningen
+delas av Scenario och Worksheet, uppdateras direkt och ändrar endast
+presentationen – inte riskvärden eller riskmatrisens beräkning.
+
+Verifierat med riktade tester för inställning, kolumnbredd och faktisk Qt-
+rendering i båda visningslägena, `py_compile` och `git diff --check`.

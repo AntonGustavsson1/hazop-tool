@@ -2189,6 +2189,23 @@ class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_risk_bar_setting_persists_and_reloads(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            self.assertTrue(panel._risk_bars_chk.isChecked())
+            panel._risk_bars_chk.setChecked(False)
+            self.assertEqual(
+                self.db.get_config('scenario_risk_bars_enabled'), '0')
+        finally:
+            panel.deleteLater()
+
+        panel2 = SettingsPanel(self.db)
+        try:
+            self.assertFalse(panel2._risk_bars_chk.isChecked())
+        finally:
+            panel2.deleteLater()
+
     def test_tag_strip_spaces_checkbox_still_works(self):
         from hazop import SettingsPanel
         panel = SettingsPanel(self.db)

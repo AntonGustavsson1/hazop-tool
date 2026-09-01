@@ -2016,7 +2016,8 @@ class RiskCellColorTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             self.assertFalse(hasattr(panel, '_C_REFT'))
-            self.assertNotIn('Risk efter barriärer', panel._COLS)
+            self.assertIn('Risker efter barriärer', panel._COLS)
+            self.assertNotIn('Slutkonsekvens', panel._COLS)
         finally:
             panel.deleteLater()
 
@@ -2275,6 +2276,32 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
                     pixmap.toImage().pixelColor(1, 1),
                     QColor(_SCENARIO_SELECTION_BG),
                     f"selected column {column} should use the shared gray overlay")
+        finally:
+            panel.deleteLater()
+
+
+    def test_filled_risk_cells_use_the_matrix_colour_when_bars_are_disabled(self):
+        from hazop import ScenarioTablePanel, risk_info
+        from PyQt6.QtGui import QColor
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.update_cause(cause_id, likelihood=5)
+            cons_id = self.db.add_consequence(cause_id)
+            self.db.update_consequence(cons_id, 'Ny konsekvens', 5, '')
+            category = self.db.consequence_categories()[0]
+            self.db.set_consequence_severity(cons_id, category['id'], 5)
+            panel.load_node(node_id)
+            panel.set_risk_bars_enabled(False)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+
+            pixmap = self._paint_cell_to_pixmap(panel, row, panel._C_RFORE)
+            _, expected_bg, _ = risk_info(5, 5)
+            self.assertEqual(
+                pixmap.toImage().pixelColor(0, 0), QColor(expected_bg),
+                'disabled bars should fill the complete risk cell')
         finally:
             panel.deleteLater()
 
@@ -2607,6 +2634,15 @@ class ScenarioColumnWidthPersistenceTests(unittest.TestCase):
         except Exception:
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_fresh_risk_columns_use_compact_default_width(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            self.assertEqual(panel._table.columnWidth(panel._C_RFORE), 52)
+            self.assertEqual(panel._table.columnWidth(panel._C_SLUT), 52)
+        finally:
+            panel.deleteLater()
 
     def test_resizing_a_column_persists_its_width(self):
         import json
