@@ -176,6 +176,18 @@ CREATE TABLE IF NOT EXISTS app_config (
     value TEXT
 );
 
+-- A risk-matrix template can change the semantic meaning of every stored
+-- frequency/consequence level.  Keep an auditable record of each deliberate
+-- conversion, separate from the editable current matrix configuration.
+CREATE TABLE IF NOT EXISTS risk_matrix_migrations (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    source_matrix  TEXT NOT NULL,
+    target_matrix  TEXT NOT NULL,
+    mapping_json   TEXT NOT NULL,
+    backup_path    TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS consequence_categories (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL,
@@ -2192,6 +2204,308 @@ class Database:
         """
         self.set_config('risk_matrix', json.dumps(cfg))
         _risk_matrix_cache.load(self)
+
+    # ── Risk-matrix template migration ──────────────────────────────────────
+    @staticmethod
+    def _risk_matrix_copy(cfg):
+        """Return an independent, normalised matrix working copy."""
+        return _normalise_matrix(json.loads(json.dumps(cfg or DEFAULT_MATRIX)))
+
+    @staticmethod
+    def _risk_level_label(cfg, kind, value):
+        """Human-readable label for the application's stored ordinal value."""
+        if kind == 'frequency':
+            index = int(value) + 1       # stored F=-1 maps to matrix index 0
+            labels = cfg.get('x_labels', [])
+            prefix = f"F={value}"
+        else:
+            index = int(value) - 1       # stored C=1 maps to matrix index 0
+            labels = cfg.get('y_labels', [])
+            prefix = f"C={value}"
+        text = labels[index] if 0 <= index < len(labels) else ''
+        return f"{prefix} — {text}" if text else prefix
+
+    @staticmethod
+    def _rank_level_map(source_count, target_count, source_offset, target_offset):
+        """Give every source ordinal a visible, reviewable first suggestion.
+
+        This is intentionally only a rank-based proposal.  The caller must
+        let the user review/override it; labels are not trusted as evidence of
+        equivalent process-safety meaning.
+        """
+        result = {}
+        if source_count <= 0 or target_count <= 0:
+            return result
+        for source_index in range(source_count):
+            if source_count == 1:
+                target_index = 0
+            else:
+                target_index = round(source_index * (target_count - 1) /
+                                     (source_count - 1))
+            result[str(source_index + source_offset)] = target_index + target_offset
+        return result
+
+    def risk_matrix_migration_preview(self, source_cfg, target_cfg):
+        """Build a pure-data, editable template-conversion plan.
+
+        No database state is changed here.  The dialog can safely alter the
+        mapping/record targets in the returned dict and later hand that exact
+        reviewed plan to :meth:`apply_risk_matrix_migration`.
+        """
+        source = self._risk_matrix_copy(source_cfg)
+        target = self._risk_matrix_copy(target_cfg)
+        source_freq_count, target_freq_count = source['cols'], target['cols']
+        source_cons_count, target_cons_count = source['rows'], target['rows']
+        frequency_map = self._rank_level_map(
+            source_freq_count, target_freq_count, -1, -1)
+        severity_map = self._rank_level_map(
+            source_cons_count, target_cons_count, 1, 1)
+
+        frequency_records = []
+        cause_rows = self.conn.execute("""
+            SELECT c.id AS cause_id, c.description AS cause_description,
+                   c.likelihood, c.base_frequency, c.frequency_cleared,
+                   sc.frequency AS standard_frequency,
+                   n.name AS node_name, d.description AS deviation_description
+            FROM causes c
+            LEFT JOIN standard_causes sc ON sc.id=c.standard_cause_id
+            LEFT JOIN deviations d ON d.id=c.deviation_id
+            LEFT JOIN nodes n ON n.id=c.node_id
+            ORDER BY n.sort_order, n.name, d.sort_order, d.description, c.sort_order, c.id
+        """).fetchall()
+        for row in cause_rows:
+            r = dict(row)
+            if r.get('frequency_cleared'):
+                continue
+            numeric = (r.get('base_frequency') if r.get('base_frequency') is not None
+                       else r.get('standard_frequency'))
+            if numeric is not None and float(numeric) > 0:
+                source_value = freq_to_f_level(float(numeric), source.get('freq_boundaries'))
+                target_value = freq_to_f_level(float(numeric), target.get('freq_boundaries'))
+                source_kind = 'numeric'
+            else:
+                source_value = int(r.get('likelihood') if r.get('likelihood') is not None else 0)
+                target_value = frequency_map.get(str(source_value), -1)
+                source_kind = 'manual'
+            frequency_records.append({
+                'key': f"cause:{r['cause_id']}", 'cause_id': r['cause_id'],
+                'node': r.get('node_name') or '',
+                'deviation': r.get('deviation_description') or '',
+                'cause': r.get('cause_description') or '',
+                'source': source_value, 'target': target_value,
+                'source_kind': source_kind, 'numeric_frequency': numeric,
+                'expected_likelihood': r.get('likelihood'),
+            })
+
+        severity_records = []
+        base_rows = self.conn.execute("""
+            SELECT co.id AS consequence_id, co.severity, co.description AS consequence_description,
+                   ca.description AS cause_description, n.name AS node_name,
+                   d.description AS deviation_description
+            FROM consequences co
+            JOIN causes ca ON ca.id=co.cause_id
+            LEFT JOIN deviations d ON d.id=ca.deviation_id
+            LEFT JOIN nodes n ON n.id=ca.node_id
+            ORDER BY n.sort_order, n.name, d.sort_order, ca.sort_order, co.sort_order, co.id
+        """).fetchall()
+        for row in base_rows:
+            r = dict(row); source_value = int(r['severity'])
+            severity_records.append({
+                'key': f"base:{r['consequence_id']}", 'kind': 'base',
+                'consequence_id': r['consequence_id'], 'category_id': None,
+                'node': r.get('node_name') or '', 'deviation': r.get('deviation_description') or '',
+                'cause': r.get('cause_description') or '',
+                'consequence': r.get('consequence_description') or '', 'category': '',
+                'source': source_value, 'target': severity_map.get(str(source_value), 1),
+                'expected_severity': source_value,
+            })
+        category_rows = self.conn.execute("""
+            SELECT cs.id AS severity_id, cs.consequence_id, cs.category_id, cs.severity,
+                   cc.name AS category_name, co.description AS consequence_description,
+                   ca.description AS cause_description, n.name AS node_name,
+                   d.description AS deviation_description
+            FROM consequence_severities cs
+            JOIN consequence_categories cc ON cc.id=cs.category_id
+            JOIN consequences co ON co.id=cs.consequence_id
+            JOIN causes ca ON ca.id=co.cause_id
+            LEFT JOIN deviations d ON d.id=ca.deviation_id
+            LEFT JOIN nodes n ON n.id=ca.node_id
+            ORDER BY n.sort_order, n.name, d.sort_order, ca.sort_order, co.sort_order, cc.sort_order, cs.id
+        """).fetchall()
+        for row in category_rows:
+            r = dict(row); source_value = int(r['severity'])
+            severity_records.append({
+                'key': f"category:{r['severity_id']}", 'kind': 'category',
+                'severity_id': r['severity_id'], 'consequence_id': r['consequence_id'],
+                'category_id': r['category_id'], 'node': r.get('node_name') or '',
+                'deviation': r.get('deviation_description') or '',
+                'cause': r.get('cause_description') or '',
+                'consequence': r.get('consequence_description') or '',
+                'category': r.get('category_name') or '',
+                'source': source_value, 'target': severity_map.get(str(source_value), 1),
+                'expected_severity': source_value,
+            })
+        final_rows = self.conn.execute("""
+            SELECT cfs.consequence_id, cfs.category_id, cfs.severity,
+                   cc.name AS category_name, co.description AS consequence_description,
+                   ca.description AS cause_description, n.name AS node_name,
+                   d.description AS deviation_description
+            FROM consequence_final_severities cfs
+            JOIN consequence_categories cc ON cc.id=cfs.category_id
+            JOIN consequences co ON co.id=cfs.consequence_id
+            JOIN causes ca ON ca.id=co.cause_id
+            LEFT JOIN deviations d ON d.id=ca.deviation_id
+            LEFT JOIN nodes n ON n.id=ca.node_id
+            ORDER BY n.sort_order, n.name, d.sort_order, ca.sort_order, co.sort_order, cc.sort_order
+        """).fetchall()
+        for row in final_rows:
+            r = dict(row); source_value = int(r['severity'])
+            severity_records.append({
+                'key': f"final:{r['consequence_id']}:{r['category_id']}", 'kind': 'final',
+                'consequence_id': r['consequence_id'], 'category_id': r['category_id'],
+                'node': r.get('node_name') or '', 'deviation': r.get('deviation_description') or '',
+                'cause': r.get('cause_description') or '',
+                'consequence': r.get('consequence_description') or '',
+                'category': r.get('category_name') or '',
+                'source': source_value, 'target': severity_map.get(str(source_value), 1),
+                'expected_severity': source_value,
+            })
+
+        definition_records = []
+        for row in self.conn.execute("""
+            SELECT sd.id, sd.severity_level, sd.category_id, sd.description,
+                   cc.name AS category_name
+            FROM severity_definitions sd
+            JOIN consequence_categories cc ON cc.id=sd.category_id
+            ORDER BY cc.sort_order, sd.severity_level, sd.id
+        """):
+            r = dict(row); source_value = int(r['severity_level'])
+            definition_records.append({
+                'definition_id': r['id'], 'category_id': r['category_id'],
+                'category': r.get('category_name') or '',
+                'description': r.get('description') or '', 'source': source_value,
+                'target': severity_map.get(str(source_value), 1),
+            })
+
+        return {
+            'version': 1, 'source_matrix': source, 'target_matrix': target,
+            'frequency_map': frequency_map, 'severity_map': severity_map,
+            'frequency_records': frequency_records,
+            'severity_records': severity_records,
+            'definition_records': definition_records,
+        }
+
+    def apply_risk_matrix_migration(self, plan):
+        """Apply one reviewed matrix migration atomically, with hard backup.
+
+        Raises ``ValueError`` for incomplete/conflicting plans and propagates
+        database failures after rolling the complete transaction back.
+        """
+        if not isinstance(plan, dict) or plan.get('version') != 1:
+            raise ValueError("Ogiltig migreringsplan för riskmatris.")
+        source = self._risk_matrix_copy(plan.get('source_matrix'))
+        target = self._risk_matrix_copy(plan.get('target_matrix'))
+        current = self._risk_matrix_copy(self.get_risk_matrix())
+        if json.dumps(current, sort_keys=True) != json.dumps(source, sort_keys=True):
+            raise RuntimeError(
+                "Riskmatrisen ändrades medan migreringen granskades. Öppna förhandsgranskningen igen.")
+        freq_min, freq_max = -1, target['cols'] - 2
+        sev_min, sev_max = 1, target['rows']
+
+        def _target(record, low, high, label):
+            try:
+                value = int(record['target'])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError(f"{label} saknar en mål-nivå.")
+            if not low <= value <= high:
+                raise ValueError(f"{label} har mål-nivå utanför den nya matrisen.")
+            return value
+
+        # Moving several written category descriptions onto one target level
+        # would overwrite text. Stop rather than guess or concatenate it.
+        definitions = {}
+        for record in plan.get('definition_records', []):
+            target_value = _target(record, sev_min, sev_max, "Konsekvensbeskrivning")
+            key = (record.get('category_id'), target_value)
+            text = (record.get('description') or '').strip()
+            existing = definitions.get(key)
+            if existing is not None and text and existing and text != existing:
+                raise ValueError(
+                    "Två olika konsekvensbeskrivningar skulle hamna på samma "
+                    "nivå. Ändra kartläggningen innan du genomför bytet.")
+            definitions[key] = text or existing or ''
+
+        backup = self._write_backup(startup=True)
+        if backup is None or not Path(backup).exists() or Path(backup).stat().st_size == 0:
+            raise RuntimeError("Kunde inte skapa en verifierad backup före mallbytet.")
+
+        try:
+            self.conn.execute('BEGIN IMMEDIATE')
+            # Existing projects normally receive this from SCHEMA at startup,
+            # but keep the operation self-contained for a long-running app
+            # that has just been upgraded without a restart.
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS risk_matrix_migrations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    source_matrix TEXT NOT NULL, target_matrix TEXT NOT NULL,
+                    mapping_json TEXT NOT NULL, backup_path TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            for record in plan.get('frequency_records', []):
+                target_value = _target(record, freq_min, freq_max, "Frekvens")
+                cur = self.conn.execute(
+                    "UPDATE causes SET likelihood=? WHERE id=? AND likelihood=?",
+                    (target_value, record['cause_id'], record.get('expected_likelihood')))
+                if cur.rowcount != 1:
+                    raise RuntimeError("En orsak ändrades medan migreringen granskades.")
+            for record in plan.get('severity_records', []):
+                target_value = _target(record, sev_min, sev_max, "Konsekvens")
+                kind = record.get('kind')
+                if kind == 'base':
+                    cur = self.conn.execute(
+                        "UPDATE consequences SET severity=? WHERE id=? AND severity=?",
+                        (target_value, record['consequence_id'], record.get('expected_severity')))
+                elif kind == 'category':
+                    cur = self.conn.execute(
+                        "UPDATE consequence_severities SET severity=? WHERE id=? AND severity=?",
+                        (target_value, record['severity_id'], record.get('expected_severity')))
+                elif kind == 'final':
+                    cur = self.conn.execute(
+                        "UPDATE consequence_final_severities SET severity=? "
+                        "WHERE consequence_id=? AND category_id=? AND severity=?",
+                        (target_value, record['consequence_id'], record['category_id'],
+                         record.get('expected_severity')))
+                else:
+                    raise ValueError("Okänd konsekvenstyp i migreringsplanen.")
+                if cur.rowcount != 1:
+                    raise RuntimeError("En konsekvens ändrades medan migreringen granskades.")
+
+            # Definition row ids are not referenced elsewhere. Rebuild the
+            # compact set so a many-to-one mapping cannot violate its unique
+            # (severity_level, category_id) key.
+            self.conn.execute("DELETE FROM severity_definitions")
+            for (category_id, severity), text in definitions.items():
+                self.conn.execute(
+                    "INSERT INTO severity_definitions(severity_level,category_id,description) "
+                    "VALUES (?,?,?)", (severity, category_id, text))
+
+            self.conn.execute(
+                "INSERT INTO app_config(key,value) VALUES('risk_matrix',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (json.dumps(target),))
+            self.conn.execute("""
+                INSERT INTO risk_matrix_migrations(source_matrix,target_matrix,mapping_json,backup_path)
+                VALUES (?,?,?,?)
+            """, (json.dumps(source), json.dumps(target), json.dumps(plan), str(backup)))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        _risk_matrix_cache.load(self)
+        return {'backup_path': str(backup),
+                'frequency_count': len(plan.get('frequency_records', [])),
+                'severity_count': len(plan.get('severity_records', []))}
 
     # ── Tag database ──────────────────────────────────────────────────────────
     def tag_database_entries(self, standard=None):

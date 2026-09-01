@@ -1063,6 +1063,46 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_template_migration_dialog_keeps_drag_mapping_separate_from_row_override(self):
+        from hazop_preparation_panel import RiskMatrixMigrationDialog
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.update_cause(cause_id, description='P-101 felar', likelihood=0)
+        self.db.update_consequence(cons_id, 'Trycket ökar', 2)
+        source = {'rows': 3, 'cols': 3,
+                  'x_labels': ['A', 'B', 'C'], 'y_labels': ['Låg', 'Mellan', 'Hög'],
+                  'freq_boundaries': [0.01, 1.0]}
+        target = {'rows': 4, 'cols': 2,
+                  'x_labels': ['1', '2'], 'y_labels': ['1', '2', '3', '4'],
+                  'freq_boundaries': [0.1]}
+        self.db.set_risk_matrix(source)
+        dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
+        try:
+            # This is the same slot used by dropping source frequency A/F=-1
+            # on a target level. It changes the global map, not data in DB.
+            dialog._on_level_dropped('frequency', 0, -1)
+            self.assertEqual(dialog.plan['frequency_map']['0'], -1)
+            record = next(row for row in dialog.plan['frequency_records']
+                          if row['cause_id'] == cause_id)
+            self.assertEqual(record['target'], -1)
+
+            # A user can split the same source level through a row-specific
+            # decision without changing the drag/drop default for others.
+            row_index = dialog.plan['frequency_records'].index(record)
+            dialog._set_record_mapping('frequency_records', row_index, 0)
+            self.assertEqual(record['target'], 0)
+            self.assertTrue(record['override'])
+            self.assertEqual(dialog.plan['frequency_map']['0'], -1)
+
+            before = dialog.plan['frequency_map'].copy()
+            dialog._swap_target_axes()
+            self.assertEqual(dialog.plan['frequency_map'], before,
+                             'axis swap must only change visual presentation')
+        finally:
+            dialog.deleteLater()
+
     def test_deleting_category_refreshes_matrix_cell_buttons(self):
         """'När jag lägger till eller tar bort en konsekvenskategori skall
         detta synas i riskmatrisen direkt.' (2026-08-11) — _cat_add already

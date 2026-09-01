@@ -1,5 +1,26 @@
 # NOTES.md — Beslut och kontext
 
+## Säker migrering när riskmatrismall byts (2026-09-01)
+
+Byte till ST1 eller en annan frekvensskala med befintliga HAZOP-bedömningar
+öppnar nu en migrationsdialog i stället för att skriva över data direkt.
+Dialogen visar berörda orsaker, konsekvenser, kategoribeskrivningar och den
+föreslagna översättningen från gammal till ny skala. Frekvenser med ett faktiskt
+numeriskt värde klassificeras automatiskt enligt den nya mallens gränser;
+manuellt satta nivåer får en tydlig ordinal standardmappning som kan justeras.
+
+Nivåerna kan dras från den gamla skalan till den nya, varje berörd rad kan få
+ett individuellt undantag och X/Y-axeln kan vändas innan sparning. Migrations-
+utförandet är transaktionellt, kontrollerar att källdatan inte ändrats under
+granskningen, tar en projektbackup och sparar en granskningspost. Motstridiga
+kategoribeskrivningar stoppar migreringen innan någon ändring skrivs.
+
+Verifierat med 17 riktade databas- och dialogtester, `tests.test_smoke`
+(12 tester), `py_compile` och `git diff --check`. Hela `tests.test_database`
+har sedan tidigare 2 fel och 7 felande tester i äldre utrustningslänk-tester;
+de nya migreringstesterna passerar. Ingen manuell visuell GUI-verifiering är
+gjord.
+
 ## Tomma riskcelltexter och drag mellan riskceller (2026-08-30)
 
 `Ändra text…` godtar nu en bekräftad tom text och lämnar då riskrutan blank.

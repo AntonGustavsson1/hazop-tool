@@ -1784,5 +1784,82 @@ class ScopedHazopCopyTests(unittest.TestCase):
         self.assertEqual(self.db.recommendations_for_consequence(copied_cons), [])
 
 
+class RiskMatrixTemplateMigrationTests(unittest.TestCase):
+    """A template switch must map reviewed HAZOP values atomically."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='hazop_matrix_migration_')
+        self.db = Database(path=os.path.join(self.tmpdir, 'project.db'))
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.cause_id = self.db.add_cause(self.dev_id)
+        self.cons_id = self.db.add_consequence(self.cause_id)
+        self.db.update_cause(self.cause_id, description='Pump P-101 felar', likelihood=0)
+        self.db.update_consequence(self.cons_id, 'Övertryck i behållare', 2)
+        self.category_id = self.db.consequence_categories()[0]['id']
+        self.db.set_consequence_severity(self.cons_id, self.category_id, 3)
+        self.db.set_final_consequence_severity(self.cons_id, self.category_id, 2)
+        self.db.set_severity_definition(2, self.category_id, 'Måttlig personskada')
+        self.source = {
+            'rows': 3, 'cols': 3,
+            'x_labels': ['A', 'B', 'C'], 'y_labels': ['Låg', 'Mellan', 'Hög'],
+            'freq_boundaries': [0.01, 1.0],
+        }
+        self.target = {
+            'rows': 4, 'cols': 2,
+            'x_labels': ['1', '2'], 'y_labels': ['1', '2', '3', '4'],
+            'freq_boundaries': [0.1],
+        }
+        self.db.set_risk_matrix(self.source)
+
+    def tearDown(self):
+        self.db.conn.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_preview_keeps_manual_and_numeric_frequency_separate(self):
+        numeric_id = self.db.add_cause(self.dev_id)
+        self.db.update_cause(numeric_id, description='Numerisk frekvens',
+                             likelihood=1, base_frequency=0.5)
+        preview = self.db.risk_matrix_migration_preview(self.source, self.target)
+        records = {row['cause_id']: row for row in preview['frequency_records']}
+        self.assertEqual(records[self.cause_id]['source_kind'], 'manual')
+        self.assertEqual(records[self.cause_id]['source'], 0)
+        self.assertEqual(records[numeric_id]['source_kind'], 'numeric')
+        self.assertEqual(records[numeric_id]['target'], 0,
+                         '0.5/år must be classified using the target boundary 0.1/år')
+
+    def test_apply_migration_updates_all_severity_forms_and_writes_audit(self):
+        plan = self.db.risk_matrix_migration_preview(self.source, self.target)
+        for row in plan['frequency_records']:
+            row['target'] = 0
+        expected = {'base': 3, 'category': 4, 'final': 2}
+        for row in plan['severity_records']:
+            row['target'] = expected[row['kind']]
+        for row in plan['definition_records']:
+            row['target'] = 3
+
+        result = self.db.apply_risk_matrix_migration(plan)
+        self.assertTrue(Path(result['backup_path']).is_file())
+        self.assertEqual(self.db.get_cause(self.cause_id)['likelihood'], 0)
+        self.assertEqual(self.db.get_consequence(self.cons_id)['severity'], 3)
+        self.assertEqual(self.db.get_consequence_severities(self.cons_id)[0]['severity'], 4)
+        self.assertEqual(self.db.get_final_consequence_severities(self.cons_id)[0]['severity'], 2)
+        self.assertEqual(self.db.get_severity_definitions()[3][self.category_id],
+                         'Måttlig personskada')
+        self.assertEqual(self.db.get_risk_matrix()['rows'], 4)
+        self.assertEqual(self.db.conn.execute(
+            'SELECT COUNT(*) FROM risk_matrix_migrations').fetchone()[0], 1)
+
+    def test_conflicting_category_descriptions_abort_without_changes(self):
+        self.db.set_severity_definition(1, self.category_id, 'Liten skada')
+        plan = self.db.risk_matrix_migration_preview(self.source, self.target)
+        for row in plan['definition_records']:
+            row['target'] = 1
+        with self.assertRaisesRegex(ValueError, 'Två olika konsekvensbeskrivningar'):
+            self.db.apply_risk_matrix_migration(plan)
+        self.assertEqual(self.db.get_consequence(self.cons_id)['severity'], 2)
+        self.assertEqual(self.db.get_risk_matrix()['rows'], 3)
+
+
 if __name__ == "__main__":
     unittest.main()
