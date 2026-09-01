@@ -298,16 +298,24 @@ class HAZOPWorksheetTests(unittest.TestCase):
                                if not panel._table.isColumnHidden(col)]
             data_rows = [row for row in parser.rows if row]
             self.assertTrue(data_rows)
-            self.assertTrue(all(len(row) == len(visible_columns)
+            # The complete Worksheet copy expands the compact in-app
+            # frequency/RRF badges into their own columns, matching the
+            # worksheet layout used by the user as the reference image.
+            self.assertEqual(
+                plain_text.splitlines()[0].split('\t'),
+                ['Nod', 'Avvikelse', 'Orsak', 'Frekvens', 'Konsekvens',
+                 'Risk före barriär', 'Barriär', 'RRF', 'Enablers',
+                 'Slutkonsekvens', 'Rekommendation'])
+            self.assertTrue(all(len(row) == len(visible_columns) + 2
                                 for row in data_rows))
             barrier_row = next(row for row in data_rows
                                if 'LSHH stoppar' in ''.join(row))
-            self.assertEqual(barrier_row[visible_columns.index(panel._C_SG)],
-                             '1. LSHH stoppar (RRF: 100)')
+            self.assertEqual(barrier_row[6], '1. LSHH stoppar')
+            self.assertEqual(barrier_row[7], '100')
             self.assertIn('background:', html)
             self.assertIn('Nod\tAvvikelse', plain_text)
             self.assertIn('LSHH stoppar', plain_text)
-            self.assertIn('(RRF: 100)', plain_text)
+            self.assertIn('\t100\t', plain_text)
 
             self.assertTrue(panel.copy_visible_table_to_office_clipboard())
             mime = QApplication.clipboard().mimeData()

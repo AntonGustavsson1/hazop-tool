@@ -4968,3 +4968,12 @@ gränser`, så X/Y-växlingar skriver inte oönskad text.
 Verifierat med 13 riktade riskmatris-/kategoritester, inklusive verkligt
 Ctrl+V-event för fem Excel-rader, spara-runda till databasen, `py_compile` och
 `git diff --check`. Ingen manuell visuell GUI-verifiering är gjord.
+## Worksheet-copy-layout (2026-09-01)
+
+Whole-table Word/Excel copy now follows the worksheet reference layout with
+separate columns for Nod, Avvikelse, Orsak, Frekvens, Konsekvens, Risk before
+barrier, Barrier, RRF, Enablers, Slutkonsekvens and Recommendation. Every
+physical row has one explicit export cell per column; covered hierarchy
+positions are blank so Excel cannot shift later barrier or recommendation
+values into another column. Smaller marked selections keep their prior exact
+selection layout.
