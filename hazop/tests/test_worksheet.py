@@ -207,6 +207,29 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             ws.deleteLater()
 
+    def test_single_click_cause_selects_without_opening_inline_editor(self):
+        """A cause click is selection; editing requires a deliberate action."""
+        from hazop import HAZOPWorksheet, ScenarioTablePanel
+
+        ids = self._make_full_chain(node_name='Nod A')
+        ws = HAZOPWorksheet(self.db)
+        selected = []
+        try:
+            ws.refresh()
+            panel = ws._table_panel
+            row = next(row for row, meta in enumerate(panel._row_meta)
+                       if meta[1] == ids['cause_id'])
+            panel.item_selected.connect(
+                lambda kind, item_id: selected.append((kind, item_id)))
+
+            with unittest.mock.patch.object(panel, '_try_start_edit') as edit:
+                panel._on_cell_clicked(row, ScenarioTablePanel._C_ORS)
+
+            self.assertEqual(selected, [(CAUSE_T, ids['cause_id'])])
+            edit.assert_not_called()
+        finally:
+            ws.deleteLater()
+
     def test_office_copy_contains_visible_hierarchy_spans_and_formatting(self):
         """Word/Excel clipboard data must be a faithful rich worksheet table."""
         from hazop import HAZOPWorksheet

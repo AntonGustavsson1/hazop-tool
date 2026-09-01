@@ -4356,6 +4356,17 @@ passerar. `tests.test_scenario_panel` har en fristående befintlig
 testfixturmiss: den försöker lägga in en redan seedad
 `standard_deviations.description` och får SQLite `UNIQUE constraint failed`.
 
+### Enkelklick på orsak markerar utan att redigera (2026-09-01)
+
+Ett enkelklick i Orsak markerar nu bara orsaken och uppdaterar vald post.
+Det startar varken inline-redigeraren eller den gamla fördröjda editvägen för
+en tom orsaksplats. Redigering är fortsatt uttrycklig via dubbelklick, `F2`
+eller högerklicksmenyn. Klick på en synlig objekttagg behåller sin separata
+objekt-popup.
+
+Verifierat med en ny Worksheet-regression som kontrollerar både
+`item_selected`-signalen och att `_try_start_edit()` inte anropas.
+
 ## Konsekvens, scroll och Escape i Scenario/Worksheet (2026-09-01)
 
 En tom konsekvensplats på en befintlig orsak är nu symmetrisk med en tom
