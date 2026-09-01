@@ -9358,7 +9358,14 @@ class ScenarioTablePanel(QWidget):
         return ''.join(result).replace('\n', '<br>')
 
     def _clipboard_cell_content(self, row, col):
-        """Return display text and tag identities for a rendered table cell."""
+        """Return all visible text and tag identities for a rendered cell.
+
+        Some of the compact worksheet information is painted by the delegate
+        instead of living in ``QTableWidgetItem.text()``: the cause frequency
+        chip and the safeguard RRF badge are the two important examples.
+        Office copy must materialise those values, otherwise a copied table
+        loses information compared with the Excel worksheet export.
+        """
         table = self._table
         item = table.item(row, col)
         text = item.text() if item is not None else ''
@@ -9385,6 +9392,9 @@ class ScenarioTablePanel(QWidget):
                 # meaningful after pasting to Word or Excel.
                 if str(obj_data[1]).casefold() not in str(text).casefold():
                     text = f'{obj_data[1]} {text}'.rstrip()
+            frequency = item.data(Qt.ItemDataRole.UserRole + 3)
+            if frequency is not None:
+                text = f'{text}\n{freq_axis_label(frequency)}'.strip()
         elif item is not None and col == self._C_KON:
             obj_data = item.data(Qt.ItemDataRole.UserRole + 7) or ('', '')
             refs = item.data(Qt.ItemDataRole.UserRole + 8) or []
@@ -9393,14 +9403,27 @@ class ScenarioTablePanel(QWidget):
             obj_data = item.data(Qt.ItemDataRole.UserRole + 6) or ('', '')
             refs = item.data(Qt.ItemDataRole.UserRole + 7) or []
             tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + list(refs)
+            number = item.data(Qt.ItemDataRole.UserRole + 10)
+            if number:
+                text = f'{number}.  {text}'.rstrip()
+            rrf = item.data(Qt.ItemDataRole.UserRole + 1)
+            if rrf is not None:
+                text = f'{text}\nRRF {rrf}'.strip()
 
         widget = table.cellWidget(row, col)
         if widget is not None:
-            labels = [button.text().strip() for button in widget.findChildren(QPushButton)
-                      if button.text().strip()]
+            # The enabler widget has one explicit summary button.  Prefer it
+            # to generic child enumeration so internal/hidden controls never
+            # leak into an Office export.
+            summary = widget.findChild(QPushButton, 'enablerSummaryButton')
+            labels = ([summary.text().strip()]
+                      if summary is not None and summary.text().strip() else [])
+            if not labels:
+                labels = [button.text().strip() for button in widget.findChildren(QPushButton)
+                          if button.isVisible() and button.text().strip()]
             if not labels:
                 labels = [label.text().strip() for label in widget.findChildren(QLabel)
-                          if label.text().strip()]
+                          if label.isVisible() and label.text().strip()]
             if labels:
                 text = '\n'.join(labels)
         return str(text or ''), tags
@@ -9420,24 +9443,24 @@ class ScenarioTablePanel(QWidget):
             return (list(range(table.rowCount())),
                     [col for col in range(table.columnCount())
                      if not table.isColumnHidden(col)], None)
-        # A single QTableWidget selection range is the ordinary Shift/drag
-        # workflow. selectedIndexes() is unreliable for cells covered by a
-        # visual rowspan, so deliberately rebuild the complete rectangle.
-        if len(selected_ranges) == 1:
-            selection = selected_ranges[0]
-            rows = list(range(selection.topRow(), selection.bottomRow() + 1))
-            columns = [col for col in range(selection.leftColumn(),
-                                             selection.rightColumn() + 1)
-                       if not table.isColumnHidden(col)]
-            selected = {(row, col) for row in rows for col in columns}
-            return rows, columns, selected
-
-        # Several Ctrl selections do not map to one native Office range.
-        # Keep the occupied cells as a sparse bounding grid instead.
+        # QTableWidget deliberately omits coordinates covered by a rowspan
+        # from selectedIndexes().  That is correct for editing, but not for
+        # an external clipboard: selecting a cause plus two consequence rows
+        # must mean that the single visual cause cell is selected across both
+        # rows. Expand those covered coordinates before deciding whether this
+        # is one rectangular selection or genuinely disjoint Ctrl selection.
         selected = {(index.row(), index.column()) for index in table.selectedIndexes()
                     if not table.isColumnHidden(index.column())}
         if not selected:
             return [], [], set()
+
+        expanded = set(selected)
+        for row, col in list(selected):
+            span = table.rowSpan(row, col)
+            if span > 1:
+                expanded.update((covered_row, col)
+                                for covered_row in range(row, row + span))
+        selected = expanded
         row_min = min(row for row, _col in selected)
         row_max = max(row for row, _col in selected)
         col_min = min(col for _row, col in selected)
@@ -9463,7 +9486,11 @@ class ScenarioTablePanel(QWidget):
             (row, col) in selected_cells for row in rows for col in columns))
 
         def _anchor_for(row, col):
-            for candidate in range(row, -1, -1):
+            # Qt returns the span length even for a covered coordinate, so
+            # searching upwards from ``row`` would incorrectly name the
+            # covered row itself as a second anchor.  The first span that
+            # covers the coordinate is the real, visual anchor.
+            for candidate in range(0, row + 1):
                 span = table.rowSpan(candidate, col)
                 if span > 1 and candidate + span > row:
                     return candidate, span
@@ -9528,24 +9555,27 @@ class ScenarioTablePanel(QWidget):
                            if export_row_span > 1 else '')
                 html_cells.append(
                     f'<td{rowspan} style="{style}">{self._clipboard_rich_text(text, tags)}</td>')
-            # TSV cannot express rowspans, so repeat the displayed hierarchy
-            # values on every physical row. This is the most useful Excel
-            # fallback for filtering and sorting if rich HTML is unavailable.
+            # TSV cannot express rowspans. Keep covered hierarchy positions
+            # empty rather than duplicating their anchor value: this mirrors
+            # the visual hierarchy for clients that fall back to plain text.
             if full_rectangle and len(tsv_cells) < len(columns):
-                # Covered cells were skipped above. Fill the plain-text row
-                # separately so it always has one value per visible column.
-                tsv_cells = [self._clipboard_cell_content(row, col)[0]
-                             .replace('\t', ' ').replace('\n', ' / ')
-                             for col in columns]
+                rebuilt_tsv = []
+                for col in columns:
+                    anchor, _row_span = _anchor_for(row, col)
+                    if anchor != row:
+                        rebuilt_tsv.append('')
+                    else:
+                        rebuilt_tsv.append(
+                            self._clipboard_cell_content(anchor, col)[0]
+                            .replace('\t', ' ').replace('\n', ' / '))
+                tsv_cells = rebuilt_tsv
             tsv_rows.append('\t'.join(tsv_cells))
             html_rows.append(
                 f'<tr style="height:{max(18, table.rowHeight(row))}px;">' +
                 ''.join(html_cells) + '</tr>')
 
-        title_html = _html_escape(title)
         html = (
             '<html><head><meta charset="utf-8"></head><body>'
-            f'<p style="font-family:Arial;font-size:11pt;font-weight:700;">{title_html}</p>'
             '<table style="border-collapse:collapse;border-spacing:0;">'
             f'<colgroup>{"".join(col_defs)}</colgroup>'
             f'<thead><tr>{"".join(header_cells)}</tr></thead>'

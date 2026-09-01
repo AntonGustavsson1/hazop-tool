@@ -4310,6 +4310,27 @@ flerkolumnsmarkering, det verkliga Ctrl+C-händelseflödet, intern Ctrl+Alt+C
 + Ctrl+V, `py_compile` och riktade paneltester. Ingen manuell Office-
 inklistring är ännu visuellt verifierad.
 
+### Office-kopiering behåller sammanslagen orsak och synliga nyckelvärden (2026-09-01)
+
+Kopiering till Word/Excel normaliserar nu Qt:s markering av sammanslagna
+celler. En orsak med två eller fler konsekvenser blir därmed en enda
+vertikalt sammanslagen orsaksruta i HTML-tabellen, i stället för att orsaken
+skrevs ut en gång per konsekvensrad. Samma regel används även vid kopiering
+av hela den synliga Worksheeten. Tab-separerad fallback lämnar de visuellt
+täckta hierarkicellerna tomma, eftersom TSV saknar sammanslagna celler.
+
+Kopieringen materialiserar dessutom värden som annars bara målas av
+gränssnittet: orsaksfrekvens, barriärernas RRF och enabler-sammanfattningen.
+Det gör resultatet närmare Worksheetens Excel-export. Den fristående
+rubriken `HAZOP Worksheet` har tagits bort från Urklipp; inklistringen börjar
+direkt med tabellens kolumnrubriker.
+
+Verifierat med ny headless-regression för en orsak med två konsekvenser,
+individuella RRF-värden och en sammanslagen cell, samt hela
+`tests.test_worksheet`, `tests.test_worksheet_export`, `py_compile` och
+`git diff --check`. Ingen manuell inklistring i Word/Excel är ännu visuellt
+verifierad.
+
 ## Konsekvens, scroll och Escape i Scenario/Worksheet (2026-09-01)
 
 En tom konsekvensplats på en befintlig orsak är nu symmetrisk med en tom

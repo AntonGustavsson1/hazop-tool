@@ -232,6 +232,8 @@ class HAZOPWorksheetTests(unittest.TestCase):
             html, plain_text = panel._office_clipboard_payload('HAZOP Worksheet')
             self.assertIn('<table', html)
             self.assertIn('<th', html)
+            self.assertNotIn('<p ', html)
+            self.assertNotIn('HAZOP Worksheet', html)
             self.assertIn('Nod', html)
             self.assertIn('Nod A', html)
             self.assertIn('Felar stängd', html)
@@ -241,11 +243,12 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertIn('background:', html)
             self.assertIn('Nod\tAvvikelse', plain_text)
             self.assertIn('LSHH stoppar', plain_text)
+            self.assertIn('RRF 100', plain_text)
 
             self.assertTrue(panel.copy_visible_table_to_office_clipboard())
             mime = QApplication.clipboard().mimeData()
             self.assertTrue(mime.hasHtml())
-            self.assertIn('HAZOP Worksheet', mime.html())
+            self.assertNotIn('HAZOP Worksheet', mime.html())
             with unittest.mock.patch('worksheet.QTimer.singleShot') as delayed:
                 ws._office_copy_btn.click()
             self.assertEqual(ws._office_copy_btn.text(), 'Markering kopierad')
@@ -289,12 +292,61 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertIn('rowspan="2"', html)
             self.assertTrue(plain_text.startswith('Orsak (frekvens)\tKonsekvens'))
             self.assertEqual(len(plain_text.splitlines()), 3)
+            self.assertNotIn('Vald del', html)
 
             self.assertTrue(panel.copy_visible_table_to_office_clipboard('Vald del'))
             mime = QApplication.clipboard().mimeData()
             self.assertTrue(mime.hasHtml())
-            self.assertIn('Vald del', mime.html())
+            self.assertNotIn('Vald del', mime.html())
             self.assertNotIn('Nod A', mime.html())
+        finally:
+            ws.deleteLater()
+
+    def test_office_copy_merges_one_cause_across_two_consequences(self):
+        """A visual cause span must not become duplicate Office cells."""
+        from hazop import HAZOPWorksheet, ScenarioTablePanel
+        from ui_helpers import freq_axis_label
+
+        ids = self._make_full_chain(node_name='Nod A')
+        second_cons_id = self.db.add_consequence(ids['cause_id'])
+        second_sg_id = self.db.add_safeguard(second_cons_id)
+        self.db.update_cause(ids['cause_id'], description='Orsak A')
+        self.db.update_consequence(ids['cons_id'], 'Konsekvens 1', 3)
+        self.db.update_consequence(second_cons_id, 'Konsekvens 2', 4)
+        self.db.update_safeguard(ids['sg_id'], description='Barriär 1', rrf=10)
+        self.db.update_safeguard(second_sg_id, description='Barriär 2', rrf=100)
+        category_id = self.db.consequence_categories()[0]['id']
+        self.db.set_consequence_severity(ids['cons_id'], category_id, 3)
+        self.db.set_consequence_severity(second_cons_id, category_id, 4)
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()
+            panel = ws._table_panel
+            table = panel._table
+            rows = [row for row, meta in enumerate(panel._row_meta)
+                    if meta[1] == ids['cause_id']]
+            self.assertEqual(len(rows), 2)
+            selection = QItemSelection(
+                table.model().index(rows[0], ScenarioTablePanel._C_ORS),
+                table.model().index(rows[-1], ScenarioTablePanel._C_SG))
+            table.selectionModel().select(
+                selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+
+            html, plain_text = panel._office_clipboard_payload()
+            frequency = table.item(rows[0], ScenarioTablePanel._C_ORS).data(
+                Qt.ItemDataRole.UserRole + 3)
+
+            self.assertEqual(html.count('Orsak A'), 1)
+            self.assertEqual(html.count('rowspan="2"'), 1)
+            self.assertIn('Konsekvens 1', html)
+            self.assertIn('Konsekvens 2', html)
+            self.assertIn(freq_axis_label(frequency), html)
+            self.assertIn('RRF 10', html)
+            self.assertIn('RRF 100', html)
+            # The TSV fallback has no merge primitive, so its covered cause
+            # position stays blank rather than duplicating the cause text.
+            self.assertEqual(plain_text.count('Orsak A'), 1)
         finally:
             ws.deleteLater()
 
