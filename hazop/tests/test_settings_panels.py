@@ -1393,10 +1393,23 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
                 {'key': 'new-assets', 'name': 'Assets', 'color': '#7c3aed'},
             ],
         }
+        # Match the active category count so the real Next validation can be
+        # exercised without opening its warning dialog.
+        for category in list(self.db.consequence_categories()):
+            self.db.delete_category(category['id'])
+        self.db.add_category('Person')
+        self.db.add_category('Tillgångar')
         self.db.set_risk_matrix(source)
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
             source_id = str(dialog.plan['source_categories'][0]['source_id'])
+            dialog._show_axis_page()
+            dialog._select_category_scope(source_id)
+            self.assertFalse(dialog._category_scope_stack.isHidden())
+            self.assertTrue(dialog._tabs.isHidden())
+            dialog._select_global_scope()
+            self.assertFalse(dialog._tabs.isHidden())
+
             dialog.set_axis_mapping('severity', 1, 4)
             self.assertEqual(dialog.category_level_target(source_id, 1), 4)
             dialog.remove_axis_mapping('severity', 1)

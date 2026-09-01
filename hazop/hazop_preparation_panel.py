@@ -889,6 +889,9 @@ class RiskMatrixMigrationDialog(QDialog):
 
         self._progress = QLabel()
         self._progress.setStyleSheet("background:#f3f4f6; border:1px solid #9ca3af; padding:5px 7px;")
+        self._progress.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                     QSizePolicy.Policy.Fixed)
+        self._progress.setFixedHeight(28)
         outer.addWidget(self._progress)
 
         self._tabs = QTabWidget()
@@ -915,6 +918,7 @@ class RiskMatrixMigrationDialog(QDialog):
         back_button.clicked.connect(self._show_category_page)
         axis_page = QWidget()
         axis_layout = QVBoxLayout(axis_page)
+        self._axis_layout = axis_layout
         axis_layout.setContentsMargins(0, 0, 0, 0)
         while outer.count():
             item = outer.takeAt(0)
@@ -930,6 +934,9 @@ class RiskMatrixMigrationDialog(QDialog):
                 axis_layout.addItem(item)
         axis_title = QLabel("2. Koppla frekvens och konsekvens")
         axis_title.setStyleSheet("font-size:12px; font-weight:bold; color:#1f2937;")
+        axis_title.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                 QSizePolicy.Policy.Fixed)
+        axis_title.setFixedHeight(20)
         axis_layout.insertWidget(0, axis_title)
 
         category_page = QWidget()
@@ -1051,6 +1058,8 @@ class RiskMatrixMigrationDialog(QDialog):
             index = self._category_scope_stack.addWidget(page)
             self._category_scope_indices[source_id] = index
             self._category_scope_fields[source_id] = field
+        self._category_scope_stack.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._category_scope_stack.setVisible(False)
         outer.addWidget(self._category_scope_stack)
 
@@ -1067,6 +1076,15 @@ class RiskMatrixMigrationDialog(QDialog):
         for button in self._category_scope_buttons.values():
             button.setChecked(False)
         self._category_scope_stack.setVisible(False)
+        self._category_scope_stack.setMinimumHeight(0)
+        self._category_scope_stack.setMaximumHeight(16777215)
+        self._tabs.setVisible(True)
+        self._tabs.setMinimumHeight(0)
+        self._tabs.setMaximumHeight(16777215)
+        tabs_index = self._axis_layout.indexOf(self._tabs)
+        if tabs_index >= 0:
+            self._axis_layout.setStretch(tabs_index, 1)
+        self._axis_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._refresh_visuals()
 
     def _select_category_scope(self, source_id):
@@ -1081,7 +1099,19 @@ class RiskMatrixMigrationDialog(QDialog):
             button.setChecked(sid == source_id)
         self._category_scope_stack.setCurrentIndex(
             self._category_scope_indices[source_id])
+        scope_height = self._category_scope_stack.sizeHint().height()
+        self._category_scope_stack.setMinimumHeight(scope_height)
+        self._category_scope_stack.setMaximumHeight(scope_height)
         self._category_scope_stack.setVisible(True)
+        # A category override concerns consequence only.  Keep the global
+        # frequency controls out of this view so the scope is unambiguous.
+        self._tabs.setMinimumHeight(0)
+        self._tabs.setMaximumHeight(0)
+        self._tabs.setVisible(False)
+        tabs_index = self._axis_layout.indexOf(self._tabs)
+        if tabs_index >= 0:
+            self._axis_layout.setStretch(tabs_index, 0)
+        self._axis_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._category_scope_fields[source_id].sync_state()
 
     def _show_axis_page(self):

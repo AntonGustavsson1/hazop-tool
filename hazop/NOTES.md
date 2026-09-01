@@ -5173,3 +5173,14 @@ matrisvyerna, och `Tillbaka` återställer den kompakta höjden.
 
 Verifierat med offscreen-rendering och regressionstest för sidornas
 storleksväxling.
+
+## Kategorikalibrering visar endast konsekvens (2026-09-01)
+
+När en specifik konsekvenskategori väljs i migreringssteg två visas nu bara
+den kategoriens konsekvenskoppling. Den globala fliken, som även innehåller
+frekvens, döljs helt och lämnar inte längre kvar ett osynligt höjdutrymme.
+Layouten växlar tillbaka till global frekvens-/konsekvenskoppling när
+`Globalt` väljs.
+
+Verifierat med riktade migreringstester, `tests.test_smoke`, offscreen-
+rendering av kategoriläget, `py_compile` och `git diff --check`.
