@@ -267,6 +267,11 @@ DEFAULT_MATRIX = {
     'rows': 5,   # consequence rows, index 0 = C1 (lowest)
     'cols': 7,   # frequency columns, index 0 = F-1 (lowest)
     'x_axis': 'frequency',
+    # Short, editable level identifiers shown directly on the matrix.  The
+    # longer explanatory text stays in x_labels/y_labels and is shown in the
+    # Axlar editor and tooltips.
+    'x_codes': ['F-1', 'F0', 'F1', 'F2', 'F3', 'F4', 'F5'],
+    'y_codes': ['1', '2', '3', '4', '5'],
     'x_labels': [
         'F-1 – Otänkbar (<1/100 000 år)',
         'F0 – Extremt sällan (1/100 000 år)',
@@ -345,7 +350,7 @@ _risk_matrix_cache = _RiskMatrixCache()
 def _normalise_matrix(cfg: dict) -> dict:
     """Ensure a stored matrix config is internally consistent.
 
-    Pads x_labels / y_labels and cell arrays to match rows/cols.
+    Pads level codes, x_labels / y_labels and cell arrays to match rows/cols.
     Used once on load so the rest of the code can trust the structure.
     """
     rows = int(cfg.get('rows', 5))
@@ -362,6 +367,35 @@ def _normalise_matrix(cfg: dict) -> dict:
     while len(y) < rows:
         y.append(f'C{len(y) + 1}')
     cfg['y_labels'] = y[:rows]
+
+    # `x_codes`/`y_codes` were added after projects already contained the
+    # complete label text. Derive a conservative code from that text when
+    # loading an older project, then store the code separately from its
+    # description from here on.
+    def _code_from_label(label, fallback):
+        text = str(label or '').strip()
+        if not text:
+            return fallback
+        for separator in (' – ', ' — ', ' - '):
+            if separator in text:
+                return text.split(separator, 1)[0].strip() or fallback
+        return text.split()[0] if text.split() else fallback
+
+    x_codes = list(cfg.get('x_codes', []))
+    while len(x_codes) < cols:
+        index = len(x_codes)
+        x_codes.append(_code_from_label(
+            cfg['x_labels'][index] if index < len(cfg['x_labels']) else '',
+            f'F{index - 1}'))
+    cfg['x_codes'] = [str(code) for code in x_codes[:cols]]
+
+    y_codes = list(cfg.get('y_codes', []))
+    while len(y_codes) < rows:
+        index = len(y_codes)
+        y_codes.append(_code_from_label(
+            cfg['y_labels'][index] if index < len(cfg['y_labels']) else '',
+            str(index + 1)))
+    cfg['y_codes'] = [str(code) for code in y_codes[:rows]]
 
     # Pad or trim cell_colors / cell_labels
     def _pad_grid(grid, default_val):
@@ -2217,13 +2251,17 @@ class Database:
         if kind == 'frequency':
             index = int(value) + 1       # stored F=-1 maps to matrix index 0
             labels = cfg.get('x_labels', [])
+            codes = cfg.get('x_codes', [])
             prefix = f"F={value}"
         else:
             index = int(value) - 1       # stored C=1 maps to matrix index 0
             labels = cfg.get('y_labels', [])
+            codes = cfg.get('y_codes', [])
             prefix = f"C={value}"
         text = labels[index] if 0 <= index < len(labels) else ''
-        return f"{prefix} — {text}" if text else prefix
+        code = codes[index] if 0 <= index < len(codes) else prefix
+        visible = f"{code} — {text}" if text else str(code)
+        return f"{prefix} — {visible}"
 
     @staticmethod
     def _rank_level_map(source_count, target_count, source_offset, target_offset):

@@ -631,6 +631,8 @@ class RiskMatrixPopup(QDialog):
         cfg       = get_matrix()
         n_cons    = cfg.get('rows', 5)
         n_freq    = cfg.get('cols', 7)
+        x_codes   = cfg.get('x_codes', [f'F{c-1}' for c in range(n_freq)])
+        y_codes   = cfg.get('y_codes', [str(r+1) for r in range(n_cons)])
         x_lbls    = cfg.get('x_labels', [f'F{c-1}' for c in range(n_freq)])
         y_lbls    = cfg.get('y_labels', [f'C{r+1}' for r in range(n_cons)])
         colors         = cfg.get('cell_colors', [])
@@ -674,10 +676,12 @@ class RiskMatrixPopup(QDialog):
         # Determine display dimensions
         if freq_on_x:
             n_dcols, n_drows = n_freq, n_cons
+            col_codes, row_codes = x_codes, y_codes
             col_lbls, row_lbls = x_lbls, y_lbls
             corner_txt = "C \\ F"
         else:
             n_dcols, n_drows = n_cons, n_freq
+            col_codes, row_codes = y_codes, x_codes
             col_lbls, row_lbls = y_lbls, x_lbls
             corner_txt = "F \\ C"
 
@@ -691,10 +695,9 @@ class RiskMatrixPopup(QDialog):
         # Column headers — respect x_rev
         for c in range(n_dcols):
             data_c = (n_dcols - 1 - c) if x_rev else c
-            full   = col_lbls[data_c] if data_c < len(col_lbls) else str(data_c)
-            # Short label: take first token (e.g. "F3" from "F3 – Möjlig | 10-100 år")
-            short  = full.split()[0] if full.strip() else str(data_c)
-            lbl = QLabel(short)
+            full   = col_lbls[data_c] if data_c < len(col_lbls) else ''
+            code   = col_codes[data_c] if data_c < len(col_codes) else str(data_c)
+            lbl = QLabel(code)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setFixedWidth(cell_width)
             lbl.setStyleSheet("font-size:9px; font-weight:bold; padding:1px;")
@@ -709,9 +712,9 @@ class RiskMatrixPopup(QDialog):
                 disp_r = n_drows - 1 - r
 
             # Row header
-            full_r = row_lbls[disp_r] if disp_r < len(row_lbls) else str(disp_r)
-            short_r = full_r.split()[0] if full_r.strip() else str(disp_r)
-            rl = QLabel(short_r)
+            full_r = row_lbls[disp_r] if disp_r < len(row_lbls) else ''
+            code_r = row_codes[disp_r] if disp_r < len(row_codes) else str(disp_r)
+            rl = QLabel(code_r)
             rl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             rl.setStyleSheet("font-size:9px; font-weight:bold; padding-right:4px;")
             rl.setToolTip(full_r)

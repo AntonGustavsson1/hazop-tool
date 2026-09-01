@@ -50,6 +50,8 @@ ST1_RISK_MATRIX_PRESET = {
     'x_axis': 'frequency',
     'x_reversed': False,
     'y_reversed': True,
+    'x_codes': ['A', 'B', 'C', 'D', 'E'],
+    'y_codes': ['0', '1', '2', '3', '4', '5'],
     'x_labels': [
         'A – Aldrig hört talas om inom industrin',
         'B – Har inträffat inom industrin',
@@ -380,11 +382,15 @@ class RiskMatrixMigrationDialog(QDialog):
     @staticmethod
     def _levels(cfg, kind):
         if kind == 'frequency':
-            return [(index - 1, cfg.get('x_labels', [])[index]
-                     if index < len(cfg.get('x_labels', [])) else f"F={index - 1}")
+            codes, labels = cfg.get('x_codes', []), cfg.get('x_labels', [])
+            return [(index - 1, (f"{codes[index]} — {labels[index]}"
+                                 if index < len(codes) and index < len(labels) and labels[index]
+                                 else (codes[index] if index < len(codes) else f"F={index - 1}")))
                     for index in range(cfg.get('cols', 0))]
-        return [(index + 1, cfg.get('y_labels', [])[index]
-                 if index < len(cfg.get('y_labels', [])) else f"C={index + 1}")
+        codes, labels = cfg.get('y_codes', []), cfg.get('y_labels', [])
+        return [(index + 1, (f"{codes[index]} — {labels[index]}"
+                             if index < len(codes) and index < len(labels) and labels[index]
+                             else (codes[index] if index < len(codes) else f"C={index + 1}")))
                 for index in range(cfg.get('rows', 0))]
 
     @staticmethod
@@ -438,8 +444,8 @@ class RiskMatrixMigrationDialog(QDialog):
         x_rev, y_rev = cfg.get('x_reversed', False), cfg.get('y_reversed', False)
         n_freq, n_cons = cfg['cols'], cfg['rows']
         cols, rows = (n_freq, n_cons) if freq_on_x else (n_cons, n_freq)
-        col_labels = cfg['x_labels'] if freq_on_x else cfg['y_labels']
-        row_labels = cfg['y_labels'] if freq_on_x else cfg['x_labels']
+        col_labels = cfg['x_codes'] if freq_on_x else cfg['y_codes']
+        row_labels = cfg['y_codes'] if freq_on_x else cfg['x_codes']
         table.clear(); table.setRowCount(rows); table.setColumnCount(cols)
         table.setHorizontalHeaderLabels([
             col_labels[(cols - 1 - col) if x_rev else col] for col in range(cols)])
@@ -1754,7 +1760,7 @@ class HAZOPPreparationPanel(QWidget):
         freq_lay = QVBoxLayout(freq_box)
         self._frequency_axis_table = QTableWidget(0, 3)
         self._frequency_axis_table.setHorizontalHeaderLabels(
-            ["Nivå", "Etikett", "Övre gräns (/år)"])
+            ["Tecken", "Beskrivning", "Övre gräns (/år)"])
         self._configure_axes_table(self._frequency_axis_table)
         self._frequency_axis_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch)
@@ -1769,7 +1775,7 @@ class HAZOPPreparationPanel(QWidget):
         cons_box = QGroupBox("Konsekvensaxel")
         cons_lay = QVBoxLayout(cons_box)
         self._consequence_axis_table = QTableWidget(0, 2)
-        self._consequence_axis_table.setHorizontalHeaderLabels(["Nivå", "Etikett"])
+        self._consequence_axis_table.setHorizontalHeaderLabels(["Tecken", "Beskrivning"])
         self._configure_axes_table(self._consequence_axis_table)
         self._consequence_axis_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch)
@@ -1852,6 +1858,8 @@ class HAZOPPreparationPanel(QWidget):
         n_cons = int(cfg.get('rows', 5))
         freq_labels = list(cfg.get('x_labels', []))
         cons_labels = list(cfg.get('y_labels', []))
+        freq_codes = list(cfg.get('x_codes', []))
+        cons_codes = list(cfg.get('y_codes', []))
         boundaries = list(cfg.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES))
         cats = self.db.consequence_categories()
         definitions = self.db.get_severity_definitions()
@@ -1861,9 +1869,10 @@ class HAZOPPreparationPanel(QWidget):
             self._frequency_axis_table.setRowCount(n_freq)
             for row in range(n_freq):
                 label = freq_labels[row] if row < len(freq_labels) else ''
+                code = freq_codes[row] if row < len(freq_codes) else f"F{row - 1}"
                 bound = '' if row >= n_freq - 1 else (
                     f"{float(boundaries[row]):.8g}" if row < len(boundaries) else '')
-                self._frequency_axis_table.setItem(row, 0, self._axes_item(f"F{row + 1}", False))
+                self._frequency_axis_table.setItem(row, 0, self._axes_item(code))
                 self._frequency_axis_table.setItem(row, 1, self._axes_item(label))
                 self._frequency_axis_table.setItem(
                     row, 2, self._axes_item(bound if row < n_freq - 1 else "—", row < n_freq - 1))
@@ -1871,7 +1880,8 @@ class HAZOPPreparationPanel(QWidget):
             self._consequence_axis_table.setRowCount(n_cons)
             for row in range(n_cons):
                 label = cons_labels[row] if row < len(cons_labels) else ''
-                self._consequence_axis_table.setItem(row, 0, self._axes_item(f"C{row + 1}", False))
+                code = cons_codes[row] if row < len(cons_codes) else str(row + 1)
+                self._consequence_axis_table.setItem(row, 0, self._axes_item(code))
                 self._consequence_axis_table.setItem(row, 1, self._axes_item(label))
 
             table = self._category_definition_table
@@ -1880,7 +1890,8 @@ class HAZOPPreparationPanel(QWidget):
             table.setHorizontalHeaderLabels(
                 ["Konsekvensnivå"] + [cat['name'] for cat in cats])
             for row in range(n_cons):
-                table.setItem(row, 0, self._axes_item(f"C{row + 1}", False))
+                code = cons_codes[row] if row < len(cons_codes) else str(row + 1)
+                table.setItem(row, 0, self._axes_item(code, False))
                 for cat_col, cat in enumerate(cats, start=1):
                     text = definitions.get(row + 1, {}).get(cat['id'], '')
                     item = self._axes_item(text)
@@ -2023,6 +2034,10 @@ class HAZOPPreparationPanel(QWidget):
             getattr(self, '_last_built_cfg', None) or self.db.get_risk_matrix() or DEFAULT_MATRIX))
         n_freq, n_cons = self._frequency_axis_table.rowCount(), self._consequence_axis_table.rowCount()
         cfg['cols'], cfg['rows'] = n_freq, n_cons
+        cfg['x_codes'] = [self._frequency_axis_table.item(row, 0).text().strip()
+                          for row in range(n_freq)]
+        cfg['y_codes'] = [self._consequence_axis_table.item(row, 0).text().strip()
+                          for row in range(n_cons)]
         cfg['x_labels'] = [self._frequency_axis_table.item(row, 1).text().strip()
                            for row in range(n_freq)]
         cfg['y_labels'] = [self._consequence_axis_table.item(row, 1).text().strip()
@@ -2173,25 +2188,28 @@ class HAZOPPreparationPanel(QWidget):
         disp_x_rev    = disp.get('x_reversed', False)
         disp_y_rev    = disp.get('y_reversed', False)
 
+        freq_codes = list(disp.get('x_codes', old.get(
+            'x_codes', [f'F{i - 1}' for i in range(n_freq)])))
+        cons_codes = list(disp.get('y_codes', old.get(
+            'y_codes', [str(i + 1) for i in range(n_cons)])))
+        # Descriptions belong to Axlar. They must not be reconstructed from
+        # matrix header widgets when X/Y is changed.
         freq_lbls = list(disp.get('x_labels', old.get('x_labels', FREQ_LABELS[:n_freq])))
         cons_lbls = list(disp.get('y_labels', old.get('y_labels', SEV_LABELS[:n_cons])))
 
-        # Apply any manual text edits from display widgets by mapping each
+        # Apply any manual level-code edits from display widgets by mapping each
         # widget directly to its data index (no reversal ambiguity).
         if self._x_label_edits:
             nc = len(self._x_label_edits)
             for c, e in enumerate(self._x_label_edits):
                 data_c = (nc - 1 - c) if disp_x_rev else c
-                # A deliberate blank label must survive an X/Y rebuild. The
-                # earlier fallback silently restored an older label and made
-                # the direction controls look as though they wrote text.
                 txt = e.text().strip()
                 if disp_freq_on_x:
-                    if data_c < len(freq_lbls):
-                        freq_lbls[data_c] = txt
+                    if data_c < len(freq_codes):
+                        freq_codes[data_c] = txt
                 else:
-                    if data_c < len(cons_lbls):
-                        cons_lbls[data_c] = txt
+                    if data_c < len(cons_codes):
+                        cons_codes[data_c] = txt
 
         if self._y_label_edits:
             nr = len(self._y_label_edits)
@@ -2199,17 +2217,23 @@ class HAZOPPreparationPanel(QWidget):
                 data_r = r if disp_y_rev else (nr - 1 - r)
                 txt = e.text().strip()
                 if disp_freq_on_x:
-                    if data_r < len(cons_lbls):
-                        cons_lbls[data_r] = txt
+                    if data_r < len(cons_codes):
+                        cons_codes[data_r] = txt
                 else:
-                    if data_r < len(freq_lbls):
-                        freq_lbls[data_r] = txt
+                    if data_r < len(freq_codes):
+                        freq_codes[data_r] = txt
 
         # Pad/trim to new dimensions
+        while len(freq_codes) < n_freq:
+            freq_codes.append(f'F{len(freq_codes)-1}')
+        while len(cons_codes) < n_cons:
+            cons_codes.append(str(len(cons_codes)+1))
         while len(freq_lbls) < n_freq:
-            freq_lbls.append(f'F{len(freq_lbls)-1}')
+            freq_lbls.append('')
         while len(cons_lbls) < n_cons:
-            cons_lbls.append(f'C{len(cons_lbls)+1}')
+            cons_lbls.append('')
+        freq_codes = freq_codes[:n_freq]
+        cons_codes = cons_codes[:n_cons]
         freq_lbls = freq_lbls[:n_freq]
         cons_lbls = cons_lbls[:n_cons]
 
@@ -2225,7 +2249,7 @@ class HAZOPPreparationPanel(QWidget):
             for fi in range(n_freq):
                 try:    colors[ci][fi]    = old_c[ci][fi]  or '#27ae60'
                 except: colors[ci][fi]    = '#27ae60'
-                try:    lbl2d[ci][fi]     = old_l[ci][fi]  or 'Låg'
+                try:    lbl2d[ci][fi]     = old_l[ci][fi]
                 except: lbl2d[ci][fi]     = 'Låg'
                 try:    fg_colors[ci][fi] = old_fg[ci][fi] or '#ffffff'
                 except: fg_colors[ci][fi] = '#ffffff'
@@ -2235,7 +2259,9 @@ class HAZOPPreparationPanel(QWidget):
                 ci, fi = btn.row, btn.col
                 if ci < n_cons and fi < n_freq:
                     if btn.color():    colors[ci][fi]    = btn.color()
-                    if btn.label():    lbl2d[ci][fi]     = btn.label()
+                    # An intentionally blank cell label is real data, not a
+                    # missing value that an axis rebuild may replace.
+                    lbl2d[ci][fi]     = btn.label()
                     if btn.fg_color(): fg_colors[ci][fi] = btn.fg_color()
 
         new_cfg = {
@@ -2243,6 +2269,8 @@ class HAZOPPreparationPanel(QWidget):
             'x_axis':         new_xaxis,
             'x_reversed':     x_rev,
             'y_reversed':     y_rev,
+            'x_codes':        freq_codes,
+            'y_codes':        cons_codes,
             'x_labels':       freq_lbls,   # ALWAYS stores frequency labels
             'y_labels':       cons_lbls,   # ALWAYS stores consequence labels
             'cell_colors':    colors,
@@ -2283,8 +2311,10 @@ class HAZOPPreparationPanel(QWidget):
         # Data always stored as [consequence_idx][frequency_idx]
         n_cons = cfg.get('rows', 5)    # consequence levels
         n_freq = cfg.get('cols', 7)    # frequency levels
-        freq_labels = cfg.get('x_labels', [f'F{c-1}' for c in range(n_freq)])
-        cons_labels = cfg.get('y_labels', [f'C{r+1}' for r in range(n_cons)])
+        freq_codes = cfg.get('x_codes', [f'F{c-1}' for c in range(n_freq)])
+        cons_codes = cfg.get('y_codes', [str(r+1) for r in range(n_cons)])
+        freq_labels = cfg.get('x_labels', ['' for _ in range(n_freq)])
+        cons_labels = cfg.get('y_labels', ['' for _ in range(n_cons)])
         colors          = cfg.get('cell_colors',    [['#27ae60'] * n_freq] * n_cons)
         cell_labels     = cfg.get('cell_labels',    [['Låg']     * n_freq] * n_cons)
         cell_fg_colors  = cfg.get('cell_fg_colors', [['#ffffff'] * n_freq] * n_cons)
@@ -2298,13 +2328,15 @@ class HAZOPPreparationPanel(QWidget):
         # Determine display dimensions
         if freq_on_x:
             n_dcols, n_drows = n_freq, n_cons   # cols=freq, rows=cons
-            col_lbls, row_lbls = freq_labels, cons_labels
+            col_codes, row_codes = freq_codes, cons_codes
+            col_descs, row_descs = freq_labels, cons_labels
             corner_txt = "C \\ F"
             col_tip = "Frekvensetikett (X-axel)\nExempel: F3 – Möjlig | 10-100 år"
             row_tip = "Konsekvensnivå (Y-axel)\nExempel: C4 – Allvarlig"
         else:
             n_dcols, n_drows = n_cons, n_freq   # cols=cons, rows=freq
-            col_lbls, row_lbls = cons_labels, freq_labels
+            col_codes, row_codes = cons_codes, freq_codes
+            col_descs, row_descs = cons_labels, freq_labels
             corner_txt = "F \\ C"
             col_tip = "Konsekvensnivå (X-axel)\nExempel: C4 – Allvarlig"
             row_tip = "Frekvensetikett (Y-axel)\nExempel: F3 – Möjlig | 10-100 år"
@@ -2330,13 +2362,15 @@ class HAZOPPreparationPanel(QWidget):
         # Column headers — apply x_rev: if reversed, col 0 shows the highest value
         for c in range(n_dcols):
             data_c = (n_dcols - 1 - c) if x_rev else c
-            txt = col_lbls[data_c] if data_c < len(col_lbls) else str(data_c)
+            txt = col_codes[data_c] if data_c < len(col_codes) else str(data_c)
             e = QLineEdit(txt)
             e.setFixedHeight(28)
             e.setMinimumWidth(30)
             e.setAlignment(Qt.AlignmentFlag.AlignCenter)
             e.setStyleSheet(_hdr_style)
-            e.setToolTip(col_tip + "\nÄndra etiketter i vyn Axlar.")
+            desc = col_descs[data_c] if data_c < len(col_descs) else ''
+            e.setToolTip((f"{txt} — {desc}" if desc else txt) +
+                         "\nÄndra tecken eller beskrivning i vyn Axlar.")
             # QLineEdit.setText() leaves the cursor at the END of the text —
             # for a label wider than the fixed 80px field (e.g. "< 0.1/år"
             # at 8px font measures ~96px, see NOTES.md "'<'-tecknet syns
@@ -2355,13 +2389,15 @@ class HAZOPPreparationPanel(QWidget):
                 disp_r = n_drows - 1 - r  # high at top (default)
 
             # Row header
-            txt = row_lbls[disp_r] if disp_r < len(row_lbls) else str(disp_r)
+            txt = row_codes[disp_r] if disp_r < len(row_codes) else str(disp_r)
             ey = QLineEdit(txt)
             ey.setFixedHeight(40)
             ey.setMinimumWidth(30)
             ey.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             ey.setStyleSheet(_hdr_style)
-            ey.setToolTip(row_tip)
+            desc = row_descs[disp_r] if disp_r < len(row_descs) else ''
+            ey.setToolTip((f"{txt} — {desc}" if desc else txt) +
+                          "\nÄndra tecken eller beskrivning i vyn Axlar.")
             ey.setCursorPosition(0)   # see column-header comment above
             self._matrix_grid.addWidget(ey, r + 1, 0)
             self._y_label_edits.append(ey)   # index 0 = top row
@@ -2615,46 +2651,18 @@ class HAZOPPreparationPanel(QWidget):
                 edit.setFixedHeight(needed)
 
     def _sync_freq_label_from_boundary(self, boundary_edit, col_idx: int):
-        """Auto-update the frequency axis label(s) adjacent to the changed boundary."""
+        """Validate a boundary edit without changing level codes/descriptions.
+
+        Codes (such as ST1 A--E) and descriptions are deliberately separate
+        user input.  Earlier versions regenerated the visible header here,
+        which made a boundary edit look as though it had overwritten an axis.
+        """
         try:
             val = float(boundary_edit.text().strip())
         except ValueError:
             return
         if val <= 0:
             return
-
-        def _fmt(v):
-            if v >= 1:       return f"{v:.3g}/år"
-            if v >= 0.001:   return f"{v:.3g}/år"
-            return f"{v:.2e}/år"
-
-        # Collect all boundary values to compute ranges
-        bvals = []
-        for e in self._freq_boundary_edits:
-            try:
-                bvals.append(float(e.text()))
-            except ValueError:
-                bvals.append(None)
-
-        def _label_for_col(c):
-            """Return an auto-generated interval label for display column c."""
-            left  = bvals[c-1] if c > 0 and c-1 < len(bvals) else None
-            right = bvals[c]   if c < len(bvals) else None
-            if left is None and right is not None:
-                return f"< {_fmt(right)}"
-            if left is not None and right is None:
-                return f"≥ {_fmt(left)}"
-            if left is not None and right is not None:
-                return f"{_fmt(left)} – {_fmt(right)}"
-            return ""
-
-        # Update the two adjacent column labels (col_idx and col_idx+1)
-        for affected_c in (col_idx, col_idx + 1):
-            if 0 <= affected_c < len(self._x_label_edits):
-                new_lbl = _label_for_col(affected_c)
-                if new_lbl:
-                    self._x_label_edits[affected_c].setText(new_lbl)
-                    self._x_label_edits[affected_c].setCursorPosition(0)
 
     def _cell_edit_menu(self, btn):
         """Build the explicit left-click menu for one risk-matrix cell."""
@@ -2719,43 +2727,50 @@ class HAZOPPreparationPanel(QWidget):
                     labels[cons_i][freq_i]    = btn.label()
                     fg_colors[cons_i][freq_i] = btn.fg_color()
 
-        # Axis labels are held in display order. Map them back to semantic
+        # Level codes are held in display order. Map them back to semantic
         # data indices: either axis can carry frequency/consequence and both
         # display directions can be reversed.
         raw_col = [e.text().strip() for e in self._x_label_edits]
         raw_row = [e.text().strip() for e in self._y_label_edits]
 
-        def _semantic_labels(display_labels, count, reversed_display):
-            labels = ['' for _ in range(count)]
-            for display_index, text in enumerate(display_labels):
+        def _semantic_codes(display_codes, count, reversed_display):
+            codes = ['' for _ in range(count)]
+            for display_index, text in enumerate(display_codes):
                 data_index = (count - 1 - display_index
                               if reversed_display else display_index)
                 if 0 <= data_index < count:
-                    labels[data_index] = text
-            return labels
+                    codes[data_index] = text
+            return codes
 
         if freq_on_x:
             # X=freq columns, Y=cons rows
-            x_labels = _semantic_labels(raw_col, n_freq, self._x_rev_chk.isChecked())
-            y_labels = _semantic_labels(raw_row, n_cons,
+            x_codes = _semantic_codes(raw_col, n_freq, self._x_rev_chk.isChecked())
+            y_codes = _semantic_codes(raw_row, n_cons,
                                         not self._y_rev_chk.isChecked())
         else:
             # X=cons columns, Y=freq rows
-            y_labels = _semantic_labels(raw_col, n_cons, self._x_rev_chk.isChecked())
-            x_labels = _semantic_labels(raw_row, n_freq,
+            y_codes = _semantic_codes(raw_col, n_cons, self._x_rev_chk.isChecked())
+            x_codes = _semantic_codes(raw_row, n_freq,
                                         not self._y_rev_chk.isChecked())
 
         # Pad/trim to correct lengths
-        while len(x_labels) < n_freq: x_labels.append(f'F{len(x_labels)-1}')
-        while len(y_labels) < n_cons: y_labels.append(f'C{len(y_labels)+1}')
-        x_labels = x_labels[:n_freq]
-        y_labels = y_labels[:n_cons]
+        while len(x_codes) < n_freq: x_codes.append(f'F{len(x_codes)-1}')
+        while len(y_codes) < n_cons: y_codes.append(str(len(y_codes)+1))
+        x_codes = x_codes[:n_freq]
+        y_codes = y_codes[:n_cons]
+        working = getattr(self, '_last_built_cfg', None) or self.db.get_risk_matrix() or DEFAULT_MATRIX
+        x_labels = list(working.get('x_labels', []))[:n_freq]
+        y_labels = list(working.get('y_labels', []))[:n_cons]
+        x_labels.extend([''] * (n_freq - len(x_labels)))
+        y_labels.extend([''] * (n_cons - len(y_labels)))
 
         cfg = {
             'rows': n_cons, 'cols': n_freq,
             'x_axis':      x_axis,
             'x_reversed':  self._x_rev_chk.isChecked(),
             'y_reversed':  self._y_rev_chk.isChecked(),
+            'x_codes':     x_codes,
+            'y_codes':     y_codes,
             'x_labels':    x_labels,
             'y_labels':    y_labels,
             'cell_colors':    colors,

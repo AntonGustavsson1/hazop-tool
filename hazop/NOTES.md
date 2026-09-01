@@ -1,5 +1,25 @@
 # NOTES.md — Beslut och kontext
 
+## Riskmatris: separata nivåtecken och värdebevarande axelbyte (2026-09-01)
+
+Frekvens- och konsekvensnivåerna har nu egna sparade tecken (`x_codes` och
+`y_codes`) skilda från sina längre beskrivningar. I `Axlar` redigeras därför
+`Tecken` och `Beskrivning` var för sig, medan själva riskmatrisen och dess
+popup visar endast de korta tecknen. Äldre projekt får tecknet försiktigt
+utläst från den tidigare etikettens första del.
+
+ST1 använder nu A–E för frekvens och 0–5 för konsekvens både i Axlar och i
+den synliga matrisen. Tecknen kan ändras direkt i Axlar eller i matrishuvudet.
+Ändringar av frekvensgränser genererar inte längre text i rubrikerna.
+
+Axelbyte bevarar nu också uttryckligen en blank eller blankstegsfylld
+beskrivning och en tom riskcelltext. Tidigare behandlades tom riskcelltext
+som saknad data och återställdes felaktigt till `Låg` vid omritning.
+
+Verifierat med 16 riktade riskmatris-/Axlar-tester, tre test för
+mallmigrering, `tests.test_smoke` (12 tester), `py_compile` och
+`git diff --check`. Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Säker migrering när riskmatrismall byts (2026-09-01)
 
 Byte till ST1 eller en annan frekvensskala med befintliga HAZOP-bedömningar

@@ -875,8 +875,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_saved_axis_text_and_popup_cache_follow_current_matrix(self):
-        """Edited consequence/frequency labels must reach the risk popup.
+    def test_saved_axis_codes_and_popup_cache_follow_current_matrix(self):
+        """Edited consequence/frequency codes must reach the risk popup.
 
         Exercise both reversed display directions and deliberately prime the
         global cache with another project first.  This is the exact route
@@ -907,12 +907,12 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
                 panel._save_matrix()
 
             cfg = self.db.get_risk_matrix()
-            self.assertEqual(cfg['x_labels'], [
+            self.assertEqual(cfg['x_codes'], [
                 f'F-visible-{i}' for i in reversed(range(len(panel._x_label_edits)))])
-            self.assertEqual(cfg['y_labels'], [
+            self.assertEqual(cfg['y_codes'], [
                 f'C-visible-{i}' for i in range(len(panel._y_label_edits))])
-            self.assertEqual(get_matrix()['x_labels'], cfg['x_labels'])
-            self.assertEqual(get_matrix()['y_labels'], cfg['y_labels'])
+            self.assertEqual(get_matrix()['x_codes'], cfg['x_codes'])
+            self.assertEqual(get_matrix()['y_codes'], cfg['y_codes'])
 
             # Swap axes too: consequence now uses the X mapping and
             # frequency uses the Y mapping, so both label families remain
@@ -929,12 +929,12 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
                 panel._save_matrix()
 
             cfg = self.db.get_risk_matrix()
-            self.assertEqual(cfg['y_labels'], [
+            self.assertEqual(cfg['y_codes'], [
                 f'C2-visible-{i}' for i in reversed(range(len(panel._x_label_edits)))])
-            self.assertEqual(cfg['x_labels'], [
+            self.assertEqual(cfg['x_codes'], [
                 f'F2-visible-{i}' for i in reversed(range(len(panel._y_label_edits)))])
-            self.assertEqual(get_matrix()['x_labels'], cfg['x_labels'])
-            self.assertEqual(get_matrix()['y_labels'], cfg['y_labels'])
+            self.assertEqual(get_matrix()['x_codes'], cfg['x_codes'])
+            self.assertEqual(get_matrix()['y_codes'], cfg['y_codes'])
         finally:
             panel.deleteLater()
             other_db.conn.close()
@@ -950,8 +950,10 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             self.assertTrue(panel._y_rev_chk.isChecked())
             self.assertEqual(len(panel._cell_buttons), 6)
             self.assertEqual(len(panel._cell_buttons[0][1]), 5)
-            self.assertEqual(panel._last_built_cfg['x_labels'][0][0], 'A')
-            self.assertEqual(panel._last_built_cfg['y_labels'][0][0], '0')
+            self.assertEqual(panel._last_built_cfg['x_codes'], ['A', 'B', 'C', 'D', 'E'])
+            self.assertEqual(panel._last_built_cfg['y_codes'], ['0', '1', '2', '3', '4', '5'])
+            self.assertEqual([edit.text() for edit in panel._x_label_edits],
+                             ['A', 'B', 'C', 'D', 'E'])
             self.assertEqual(self.db.get_risk_matrix(), before,
                              'choosing a preset must not save before Spara riskmatris')
         finally:
@@ -982,7 +984,7 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_long_frequency_boundary_label_shows_from_the_start(self):
+    def test_boundary_edit_does_not_overwrite_frequency_code(self):
         """"Visa '<'-tecknet korrekt i gränsvärden (t.ex. '< 0.1')"
         (2026-08-17). Root cause: the axis-label QLineEdit is a fixed 80px
         wide, and QLineEdit.setText() leaves the cursor at the END of the
@@ -1001,10 +1003,57 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             # Editing a boundary regenerates the two adjacent labels — must
             # also reset to the start, even though the new text is longer
             # than the 80px field.
+            panel._x_label_edits[0].setText("A")
             panel._freq_boundary_edits[0].setText("0.1")
             panel._sync_freq_label_from_boundary(panel._freq_boundary_edits[0], 0)
-            self.assertEqual(panel._x_label_edits[0].cursorPosition(), 0)
-            self.assertTrue(panel._x_label_edits[0].text().startswith("<"))
+            self.assertEqual(panel._x_label_edits[0].text(), "A")
+        finally:
+            panel.deleteLater()
+
+    def test_blank_cell_and_space_description_survive_axis_swap(self):
+        """Changing presentation must preserve deliberately blank data."""
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            blank = panel._cell_buttons[0][1][0]
+            blank.set_cell(blank.color(), '', blank.fg_color())
+            blank_row, blank_col = blank.row, blank.col
+            panel._last_built_cfg['x_labels'][0] = '   '
+            panel._axis_combo.setCurrentIndex(
+                panel._axis_combo.findData('consequence'))
+            rebuilt = next(
+                btn for _row, buttons in panel._cell_buttons for btn in buttons
+                if btn.row == blank_row and btn.col == blank_col)
+            self.assertEqual(rebuilt.label(), '')
+            self.assertEqual(panel._last_built_cfg['x_labels'][0], '   ')
+        finally:
+            panel.deleteLater()
+
+    def test_axes_save_editable_codes_used_by_matrix_popup(self):
+        """Codes and descriptions are separate editable fields in Axlar."""
+        from hazop import HAZOPPreparationPanel, RiskMatrixPopup
+        from PyQt6.QtWidgets import QLabel
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            panel._set_risk_subview(1)
+            panel._frequency_axis_table.item(0, 0).setText('A')
+            panel._frequency_axis_table.item(0, 1).setText('Aldrig')
+            panel._consequence_axis_table.item(0, 0).setText('0')
+            panel._consequence_axis_table.item(0, 1).setText('Ingen skada')
+            with unittest.mock.patch.object(QMessageBox, 'information'):
+                panel._save_axes_and_categories()
+            cfg = self.db.get_risk_matrix()
+            self.assertEqual(cfg['x_codes'][0], 'A')
+            self.assertEqual(cfg['x_labels'][0], 'Aldrig')
+            self.assertEqual(cfg['y_codes'][0], '0')
+            self.assertEqual(cfg['y_labels'][0], 'Ingen skada')
+            popup = RiskMatrixPopup(-1, 1)
+            try:
+                visible = [label.text() for label in popup.findChildren(QLabel)]
+                self.assertIn('A', visible)
+                self.assertIn('0', visible)
+            finally:
+                popup.close()
         finally:
             panel.deleteLater()
 
