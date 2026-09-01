@@ -1248,7 +1248,10 @@ class GlobalSearchDialog(QDialog):
                 changes.append({'table': hit['table'], 'field': hit['field'],
                                 'id': hit['id'], 'old': old, 'new': new,
                                 'occurrences': occurrences})
-            conn.commit()
+            # Route the transaction through Database so global replacement
+            # participates in the same Ctrl+Z/Ctrl+Y history as all other
+            # writes. The explicit BEGIN above keeps the replacement atomic.
+            self._db.commit()
         except Exception as exc:
             conn.rollback()
             QMessageBox.critical(self, "ErsÃ¤ttning misslyckades", str(exc))
@@ -1628,10 +1631,20 @@ class MainWindow(QMainWindow):
         self.equipment_panel._create_btn.hide()
         self.equipment_panel._autodetect_btn.hide()
 
-        # ── Undo shortcut (Ctrl+Z) — only active during markup editing ────────
+        # ── Application undo/redo ───────────────────────────────────────────
+        # Database history is broader than the old markup-only stack: all
+        # committed HAZOP/P&ID/settings writes use the same SQLite state
+        # history.  ApplicationShortcut keeps the commands available from
+        # every page, while the normal editor can still consume an uncommitted
+        # text-edit undo before the database action is committed.
         self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self._undo_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._undo_shortcut.setEnabled(True)
-        self._undo_shortcut.activated.connect(self._undo_last_markup)
+        self._undo_shortcut.activated.connect(self._undo_last_change)
+        self._redo_shortcut = QShortcut(QKeySequence("Ctrl+Y"), self)
+        self._redo_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._redo_shortcut.setEnabled(True)
+        self._redo_shortcut.activated.connect(self._redo_last_change)
 
         # ── Global search state (the Fil-menu QAction owns Ctrl+F) ───────────
         self._search_dialog = None
@@ -1886,6 +1899,55 @@ class MainWindow(QMainWindow):
         """Reflect catalog deletion in both live HAZOP table instances."""
         self.scenario_panel.schedule_rebuild()
         self.worksheet.refresh()
+
+    def _update_history_actions(self):
+        """Keep shortcut state in sync without making history UI-dependent."""
+        # QShortcut has no useful disabled visual state and must stay enabled
+        # across all pages.  The properties are intentionally read here so a
+        # future menu/toolbar can bind to the same single source of truth.
+        self._can_undo = bool(getattr(self.db, 'can_undo', False))
+        self._can_redo = bool(getattr(self.db, 'can_redo', False))
+
+    def _refresh_after_history_change(self, message):
+        """Rebuild all views after an exact database snapshot restore."""
+        # Matrix colours/labels are cached at module level.  Database.undo()
+        # already reloads it, but doing this explicitly also keeps this method
+        # correct for a future history backend.
+        load_matrix(self.db)
+
+        refreshes = (
+            (self.tree_panel, 'refresh'),
+            (self.scenario_panel, 'refresh'),
+            (self.worksheet, 'refresh'),
+            (self.recommendations_panel, 'refresh'),
+            (self.equipment_panel, 'refresh'),
+            (self.admin_panel, 'refresh'),
+            (self.hazop_prep_panel, 'refresh_nodes'),
+            (self.hazop_prep_panel, 'refresh_sheets'),
+            (self.settings_panel, 'refresh_tag_memory'),
+        )
+        for panel, method_name in refreshes:
+            try:
+                getattr(panel, method_name)()
+            except Exception:
+                # A hidden/optional page must not prevent the remaining
+                # visible panels from reflecting the restored state.
+                logging.debug("History refresh failed for %s.%s",
+                              type(panel).__name__, method_name,
+                              exc_info=True)
+        try:
+            self.pid_panel.reload_overlays()
+        except Exception:
+            logging.debug("History refresh failed for P&ID overlays", exc_info=True)
+        try:
+            if self.markup_table_panel.isVisible():
+                self.markup_table_panel.refresh()
+        except Exception:
+            logging.debug("History refresh failed for markup table", exc_info=True)
+
+        self._update_history_actions()
+        self.status_bar.showMessage(
+            f"{message} (Ctrl+Z ångrar, Ctrl+Y gör om)", 3000)
 
     def _switch_view(self, page):
         prev = self.view_stack.currentIndex()
@@ -2611,6 +2673,7 @@ class MainWindow(QMainWindow):
         self.pid_panel.enter_markup_edit(node_id)
         self._markup_undo_stack.clear()
         self._undo_shortcut.setEnabled(True)
+        self._redo_shortcut.setEnabled(True)
 
     def _on_markup_navigate_node_requested(self, node_id):
         """props_ribbon's prev/next-node (⬆/⬇) buttons — syncs the tree's
@@ -2675,7 +2738,10 @@ class MainWindow(QMainWindow):
         self._v_splitter.setSizes([220, 0])
         self._outer_splitter.setSizes([640, 220])
         self._markup_undo_stack.clear()
-        self._undo_shortcut.setEnabled(False)
+        # Undo/redo is application-wide; leaving markup mode must not disable
+        # it for HAZOP fields and other pages.
+        self._undo_shortcut.setEnabled(True)
+        self._redo_shortcut.setEnabled(True)
 
     def _on_place_symbol_requested(self):
         """PropertiesRibbon's "Lägg ut P&ID-symbol" button (2026-08-19,
@@ -2899,20 +2965,29 @@ class MainWindow(QMainWindow):
         self.markup_table_panel.refresh()
         self.markup_table_panel.select_markup(new_id)
 
+    def _undo_last_change(self):
+        """Undo the latest committed change and refresh every affected view."""
+        if not self.db.undo():
+            self.status_bar.showMessage("Inget att ångra", 2200)
+            self._update_history_actions()
+            return False
+        self._refresh_after_history_change("Ångrade")
+        return True
+
+    def _redo_last_change(self):
+        """Redo the latest undone change and refresh every affected view."""
+        if not self.db.redo():
+            self.status_bar.showMessage("Inget att göra om", 2200)
+            self._update_history_actions()
+            return False
+        self._refresh_after_history_change("Gjorde om")
+        return True
+
+    # Kept as a compatibility entry point for older markup code/tests.  The
+    # database snapshot now includes markups, so the old per-markup inverse
+    # stack must not compete with the central history.
     def _undo_last_markup(self):
-        if not self._markup_undo_stack:
-            if getattr(self, 'scenario_panel', None) and self.scenario_panel.undo_last_text_edit():
-                self.status_bar.showMessage("Senaste HAZOP-ändring ångrades", 2500)
-            return
-        entry = self._markup_undo_stack.pop()
-        if entry['op'] == 'draw':
-            self.db.delete_node_markup(entry['mu_id'])
-            self.pid_panel.refresh_markup_overlays()
-            self.markup_table_panel.refresh()
-        elif entry['op'] == 'move':
-            self.db.update_node_markup(entry['mu_id'], points=entry['old_pts'])
-            self.pid_panel.refresh_markup_overlays()
-            self.markup_table_panel.refresh()
+        return self._undo_last_change()
 
     def _on_matrix_changed(self):
         self.tree_panel.refresh()
@@ -3268,7 +3343,10 @@ class MainWindow(QMainWindow):
 
     def _register_global_replace_undo(self, changes):
         """Register one atomic replace operation for one-step undo."""
-        self._global_replace_undo_stack.append(list(changes))
+        self._global_replace_undo_stack.append({
+            'changes': list(changes),
+            'history_count': getattr(self.db, 'undo_count', None),
+        })
         self.status_bar.showMessage(
             f"{sum(c.get('occurrences', 1) for c in changes)} fÃ¶rekomster ersattes", 4000)
 
@@ -3277,9 +3355,23 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Ã…ngra ersÃ¤ttning",
                                     "Det finns ingen global ersÃ¤ttning att Ã¥ngra.")
             return False
-        changes = self._global_replace_undo_stack.pop()
+        entry = self._global_replace_undo_stack.pop()
+        if isinstance(entry, dict):
+            changes = entry.get('changes', [])
+            history_count = entry.get('history_count')
+        else:
+            # Compatibility with a dialog that was opened by an older build.
+            changes = entry
+            history_count = None
+        if (history_count is not None and
+                getattr(self.db, 'undo_count', history_count) != history_count):
+            self._global_replace_undo_stack.append(entry)
+            QMessageBox.information(
+                self, "Angra ersattning",
+                "En annan andring har gjorts efter ersattningen. "
+                "Angra den forst och forsok sedan igen.")
+            return False
         try:
-            self.db.conn.execute('BEGIN')
             for change in changes:
                 current = self.db.conn.execute(
                     f'SELECT "{change["field"]}" FROM "{change["table"]}" WHERE id=?',
@@ -3287,14 +3379,13 @@ class MainWindow(QMainWindow):
                 if not current or str(current[0] or '') != change['new']:
                     raise RuntimeError(
                         "En post har Ã¤ndrats efter ersÃ¤ttningen. Ã…ngra avbrÃ¶ts utan Ã¤ndringar.")
-            for change in changes:
-                self.db.conn.execute(
-                    f'UPDATE "{change["table"]}" SET "{change["field"]}"=? WHERE id=?',
-                    (change['old'], change['id']))
-            self.db.conn.commit()
+            # Validation above preserves stale-search protection.  Restore
+            # the complete atomic snapshot through the shared history layer.
+            if not self.db.undo():
+                raise RuntimeError("Ersattningen ar inte langre senaste andringen.")
         except Exception as exc:
             self.db.conn.rollback()
-            self._global_replace_undo_stack.append(changes)
+            self._global_replace_undo_stack.append(entry)
             QMessageBox.critical(self, "Ã…ngra misslyckades", str(exc))
             return False
         self._refresh_after_global_replace()

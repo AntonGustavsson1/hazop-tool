@@ -5232,3 +5232,29 @@ kategori-toggle som klick i popupen.
 Verifierat med 12 riktade riskmatris-popup-tester, inklusive numeriska och
 bokstavsbaserade snabbval, `tests.test_smoke`, `py_compile` och
 `git diff --check`.
+
+## Central undo/redo – del 1 (2026-09-01)
+
+HAZOP-programmet har nu en central sessionshistorik i `Database`. Alla normala
+databasändringar som går via `Database.commit()` får ett exakt före-/efterläge
+och kan ångras med Ctrl+Z samt göras om med Ctrl+Y. Detta omfattar därmed redan
+textfält, tillägg, borttagning, kaskader, objektkopplingar, ordningsändringar,
+P&ID-markup och riskmatrisändringar utan att varje tabell behöver en egen
+inverse-operation. Historiken sparas i minnet för aktuell session; befintliga
+diskbackuper är fortsatt återställning mellan sessioner.
+
+Historiken har 100 steg, rensar redo-grenen efter en ny ändring och stöder
+`Database.history_group()` för att samla flera interna skrivningar till ett
+användarsteg. SQLite WAL hanteras genom en konsistent SQL-snapshot och säker
+temporär filåterställning; databasen återöppnas på samma `Database`-objekt så
+panelernas databasreferenser består. Global ersättning använder samma atomiska
+historik och behåller sin separata validering.
+
+Verifierat med fem nya databasregressionstester, ett MainWindow-test för
+Ctrl+Z/Ctrl+Y-vägen, två global-ersättningstester, `tests.test_smoke` (12) och
+`py_compile`. Den bredare `tests.test_database`-körningen passerar de nya
+historiktesterna och visar kvarvarande tidigare fel i utrustningsrensning samt
+utrustningsscope; ingen manuell visuell GUI-verifiering är gjord. Nästa
+delmoment är att gruppera sammansatta användaråtgärder och ersätta kvarvarande
+äldre text-/markup-specifika undo-stackar, därefter komplettera UI- och
+projektbytesscenarier.

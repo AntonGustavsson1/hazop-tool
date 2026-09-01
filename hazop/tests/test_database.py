@@ -303,6 +303,78 @@ class DatabaseLayerTests(unittest.TestCase):
 # 1b. Backup system tests (stability improvement #5)
 # ══════════════════════════════════════════════════════════════════════════
 
+class DatabaseUndoRedoTests(unittest.TestCase):
+    """The database history must cover every normal write path safely."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_undo_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "project.db"))
+
+    def tearDown(self):
+        try:
+            self.db.conn.close()
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _first_deviation_id(self):
+        node = self.db.nodes()[0]
+        return self.db.deviations(node['id'])[0]['id']
+
+    def test_constructor_starts_at_clean_baseline(self):
+        self.assertFalse(self.db.can_undo)
+        self.assertFalse(self.db.can_redo)
+        self.assertEqual(self.db.undo_count, 0)
+
+    def test_add_undo_redo_restores_exact_row(self):
+        deviation_id = self._first_deviation_id()
+        cause_id = self.db.add_cause(deviation_id)
+        self.assertIsNotNone(self.db.get_cause(cause_id))
+        self.assertTrue(self.db.undo())
+        self.assertIsNone(self.db.get_cause(cause_id))
+        self.assertTrue(self.db.redo())
+        self.assertIsNotNone(self.db.get_cause(cause_id))
+
+    def test_text_update_undo_redo_and_new_edit_clears_redo(self):
+        cause_id = self.db.add_cause(self._first_deviation_id())
+        self.db.update_cause(cause_id, description='Första texten')
+        self.assertEqual(self.db.get_cause(cause_id)['description'], 'Första texten')
+        self.assertTrue(self.db.undo())
+        self.assertEqual(self.db.get_cause(cause_id)['description'], 'Ny orsak')
+        self.assertTrue(self.db.redo())
+        self.assertEqual(self.db.get_cause(cause_id)['description'], 'Första texten')
+        self.db.update_cause(cause_id, description='Ny text')
+        self.assertFalse(self.db.can_redo)
+
+    def test_delete_parent_undo_restores_cascade_children(self):
+        deviation_id = self._first_deviation_id()
+        cause_id = self.db.add_cause(deviation_id)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.db.clear_undo_history()
+
+        self.db.delete_cause(cause_id)
+        self.assertIsNone(self.db.get_cause(cause_id))
+        self.assertIsNone(self.db.get_consequence(cons_id))
+        self.assertIsNone(self.db.get_safeguard(sg_id))
+        self.assertTrue(self.db.undo())
+        self.assertIsNotNone(self.db.get_cause(cause_id))
+        self.assertIsNotNone(self.db.get_consequence(cons_id))
+        self.assertIsNotNone(self.db.get_safeguard(sg_id))
+
+    def test_history_group_coalesces_multiple_commits(self):
+        before = len(self.db.nodes())
+        with self.db.history_group():
+            self.db.add_node()
+            self.db.add_node()
+        self.assertEqual(len(self.db.nodes()), before + 2)
+        self.assertEqual(self.db.undo_count, 1)
+        self.assertTrue(self.db.undo())
+        self.assertEqual(len(self.db.nodes()), before)
+        self.assertTrue(self.db.redo())
+        self.assertEqual(len(self.db.nodes()), before + 2)
+
+
 class BackupSystemTests(unittest.TestCase):
     """Exercise Database._write_backup()/_prune_backups() directly, plus the
     forced backup call sites (pre-migration in __init__, pre-delete in

@@ -202,6 +202,25 @@ class GlobalSearchDialogTests(unittest.TestCase):
 #    silently close the whole application
 # ══════════════════════════════════════════════════════════════════════════
 
+class MainWindowUndoRedoTests(unittest.TestCase):
+    """MainWindow routes the global shortcuts to the database history."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_main_window_undo_redo_restores_change_and_refreshes_views(self):
+        with _TempDbMainWindow() as win:
+            deviation_id = win.db.deviations(win.db.nodes()[0]['id'])[0]['id']
+            cause_id = win.db.add_cause(deviation_id)
+            self.assertEqual(win._undo_shortcut.key().toString(), 'Ctrl+Z')
+            self.assertEqual(win._redo_shortcut.key().toString(), 'Ctrl+Y')
+
+            self.assertTrue(win._undo_last_change())
+            self.assertIsNone(win.db.get_cause(cause_id))
+            self.assertTrue(win._redo_last_change())
+            self.assertIsNotNone(win.db.get_cause(cause_id))
+
 class GlobalExceptHookTests(unittest.TestCase):
     """In PyQt5.5+/PyQt6, an exception raised inside a signal/slot callback
     (button click, tree selection, etc.) propagates to sys.excepthook. With

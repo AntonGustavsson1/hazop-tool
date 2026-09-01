@@ -9,6 +9,9 @@ import sqlite3
 import datetime
 import re
 import html
+import os
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from constants import (
@@ -999,7 +1002,24 @@ _sync_cause_likelihoods_from_frequency = _sync_f_levels_from_base_frequency
 
 
 class Database:
+    # The undo history deliberately lives outside the project schema.  It is
+    # an in-memory session history: saving/opening a project starts a new
+    # baseline, while the existing timestamped backups remain the recovery
+    # mechanism across application restarts.
+    _HISTORY_LIMIT = 100
+
     def __init__(self, path=DB_PATH):
+        # These flags must exist before the first schema/migration commit.
+        # Startup seeding and migrations establish the initial baseline, not
+        # user-visible undo entries.
+        self._history_initialized = False
+        self._history_restoring = False
+        self._history_snapshot = None
+        self._undo_stack = []
+        self._redo_stack = []
+        self._history_group_depth = 0
+        self._history_group_before = None
+        self._history_group_changed = False
         self.path = Path(path)
         # A pre-existing, non-empty DB file means _migrate() below may run real
         # ALTER TABLE/CREATE TABLE statements against live user data. Snapshot
@@ -1042,6 +1062,11 @@ class Database:
             # start with a lone, ungrouped node.
             system_id = self.add_system()
             self.add_node(system_id=system_id)
+
+        # Everything above is database setup (including the default node),
+        # not a user action.  Establish the first undo baseline only after
+        # the constructor has finished all migrations and seed writes.
+        self._reset_history_baseline()
 
     def __del__(self):
         """Clean up database connection on object destruction.
@@ -2400,7 +2425,7 @@ class Database:
                 "INSERT INTO app_config(key,value) VALUES('risk_matrix',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (json.dumps(cfg),))
-            self.conn.commit()
+            self._commit_with_history()
         except Exception:
             self.conn.rollback()
             raise
@@ -2818,7 +2843,7 @@ class Database:
                 INSERT INTO risk_matrix_migrations(source_matrix,target_matrix,mapping_json,backup_path)
                 VALUES (?,?,?,?)
             """, (json.dumps(source), json.dumps(target), json.dumps(plan), str(backup)))
-            self.conn.commit()
+            self._commit_with_history()
         except Exception:
             self.conn.rollback()
             raise
@@ -5746,13 +5771,243 @@ class Database:
             except Exception:
                 pass
 
-    def commit(self):
-        """Write-through commit: flush DB, then write a throttled backup."""
+    # ── Session undo/redo ───────────────────────────────────────────────────
+    #
+    # The application has a large number of write paths.  Keeping inverse
+    # operations next to every INSERT/UPDATE/DELETE would be both incomplete
+    # and especially fragile for cascades and hierarchy moves.  SQLite can
+    # provide an exact, consistent database image after each write instead.
+    # The images are kept in memory for the current session; the existing
+    # on-disk backups remain the long-term recovery mechanism.
+
+    def _capture_history_snapshot(self):
+        """Return a consistent SQL dump of the committed database."""
+        # serialize()/deserialize() detaches WAL-backed file connections on
+        # this Python/SQLite build.  iterdump() is SQLite's own consistent
+        # committed export and can be restored into both file and memory DBs.
+        return '\n'.join(self.conn.iterdump())
+
+    def _reset_history_baseline(self):
+        """Start a fresh history after construction or project replacement."""
         try:
             self.conn.commit()
-            self._write_backup()
+            self._history_snapshot = self._capture_history_snapshot()
         except Exception:
-            pass
+            # History must never prevent a project from opening.  A later
+            # successful commit can establish the first usable baseline.
+            logging.warning("Could not initialise database undo history", exc_info=True)
+            self._history_snapshot = None
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._history_group_depth = 0
+        self._history_group_before = None
+        self._history_group_changed = False
+        self._history_initialized = self._history_snapshot is not None
+
+    def _push_history_entry(self, before, after):
+        if before is None or before == after:
+            return
+        self._undo_stack.append((before, after))
+        if len(self._undo_stack) > self._HISTORY_LIMIT:
+            del self._undo_stack[:-self._HISTORY_LIMIT]
+        # Any new edit after an undo starts a new branch.
+        self._redo_stack.clear()
+
+    def _record_committed_state(self):
+        """Record the state reached by the most recent successful commit."""
+        if not self._history_initialized or self._history_restoring:
+            return
+        try:
+            after = self._capture_history_snapshot()
+        except Exception:
+            logging.warning("Could not capture database undo snapshot", exc_info=True)
+            return
+        before = self._history_snapshot
+        self._history_snapshot = after
+        if before is None or before == after:
+            return
+        if self._history_group_depth:
+            self._history_group_changed = True
+            return
+        self._push_history_entry(before, after)
+
+    @contextmanager
+    def history_group(self):
+        """Coalesce several commits into one undo step.
+
+        Existing write methods intentionally commit immediately.  UI code can
+        wrap a multi-write user action in this context as it is brought into
+        the new history model; direct callers remain safe because each normal
+        commit is still independently undoable.
+        """
+        if not self._history_initialized:
+            yield
+            return
+        outermost = self._history_group_depth == 0
+        if outermost:
+            self._history_group_before = self._history_snapshot
+            self._history_group_changed = False
+        self._history_group_depth += 1
+        try:
+            yield
+        finally:
+            self._history_group_depth -= 1
+            if self._history_group_depth == 0:
+                before = self._history_group_before
+                try:
+                    # This also catches a legacy raw ``conn.commit()`` inside
+                    # a group which did not go through Database.commit().
+                    after = self._capture_history_snapshot()
+                except Exception:
+                    after = self._history_snapshot
+                self._history_snapshot = after
+                if self._history_group_changed or before != after:
+                    self._push_history_entry(before, after)
+                self._history_group_before = None
+                self._history_group_changed = False
+
+    @property
+    def can_undo(self):
+        return bool(self._undo_stack)
+
+    @property
+    def can_redo(self):
+        return bool(self._redo_stack)
+
+    @property
+    def undo_count(self):
+        return len(self._undo_stack)
+
+    @property
+    def redo_count(self):
+        return len(self._redo_stack)
+
+    def clear_undo_history(self):
+        """Keep the current data but forget the session's undo/redo chain."""
+        self._reset_history_baseline()
+
+    def _restore_history_snapshot(self, snapshot):
+        """Restore an image without producing a second history entry."""
+        self._history_restoring = True
+        try:
+            if str(self.path) == ':memory:':
+                # Build a replacement first so a failed dump does not leave
+                # the live in-memory connection half-restored.
+                replacement = sqlite3.connect(':memory:', timeout=30.0)
+                try:
+                    replacement.row_factory = sqlite3.Row
+                    replacement.execute("PRAGMA foreign_keys = ON")
+                    replacement.executescript(snapshot)
+                    replacement.commit()
+                except Exception:
+                    replacement.close()
+                    raise
+                self.conn.close()
+                self.conn = replacement
+            else:
+                # Materialise the snapshot next to the project first, then
+                # reopen the same Database connection object on that file.
+                # Panels retain their Database reference, so changing only
+                # ``self.conn`` is safe and avoids leaving a detached in-
+                # memory database behind.
+                tmp_path = None
+                try:
+                    fd, tmp_path = tempfile.mkstemp(
+                        prefix='.hazop_undo_', suffix='.db',
+                        dir=str(self.path.parent))
+                    os.close(fd)
+                    file_conn = sqlite3.connect(tmp_path, timeout=30.0)
+                    try:
+                        file_conn.executescript(snapshot)
+                        file_conn.commit()
+                    finally:
+                        file_conn.close()
+                    try:
+                        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    except Exception:
+                        pass
+                    self.conn.close()
+                    for suffix in ('-wal', '-shm'):
+                        sidecar = Path(str(self.path) + suffix)
+                        try:
+                            sidecar.unlink()
+                        except FileNotFoundError:
+                            pass
+                    os.replace(tmp_path, self.path)
+                    tmp_path = None
+                    self.conn = sqlite3.connect(str(self.path), timeout=30.0)
+                    self.conn.row_factory = sqlite3.Row
+                    self.conn.execute("PRAGMA foreign_keys = ON")
+                    self.conn.execute("PRAGMA journal_mode = WAL")
+                finally:
+                    if tmp_path:
+                        try:
+                            os.unlink(tmp_path)
+                        except FileNotFoundError:
+                            pass
+        finally:
+            self._history_restoring = False
+        # Risk information is cached at module level and is otherwise stale
+        # after undoing a risk-matrix/settings change.
+        _risk_matrix_cache.load(self)
+
+    def undo(self):
+        """Undo the latest committed database change, if it is still current."""
+        if not self._undo_stack:
+            return False
+        before, after = self._undo_stack[-1]
+        try:
+            current = self._capture_history_snapshot()
+        except Exception:
+            return False
+        if current != after:
+            # A legacy/raw writer changed the DB behind the history layer.
+            # Do not restore an unsafe image over that external change.
+            logging.warning("Database changed outside undo history; resetting baseline")
+            self._reset_history_baseline()
+            return False
+        self._restore_history_snapshot(before)
+        self._undo_stack.pop()
+        self._redo_stack.append((before, after))
+        self._history_snapshot = before
+        return True
+
+    def redo(self):
+        """Redo the latest undone database change, if it is still current."""
+        if not self._redo_stack:
+            return False
+        before, after = self._redo_stack[-1]
+        try:
+            current = self._capture_history_snapshot()
+        except Exception:
+            return False
+        if current != before:
+            logging.warning("Database changed outside redo history; resetting baseline")
+            self._reset_history_baseline()
+            return False
+        self._restore_history_snapshot(after)
+        self._redo_stack.pop()
+        self._undo_stack.append((before, after))
+        if len(self._undo_stack) > self._HISTORY_LIMIT:
+            del self._undo_stack[:-self._HISTORY_LIMIT]
+        self._history_snapshot = after
+        return True
+
+    def _commit_with_history(self):
+        """Commit and record one state transition, preserving old semantics."""
+        self.conn.commit()
+        self._record_committed_state()
+        self._write_backup()
+
+    def commit(self):
+        """Write-through commit: history snapshot, then throttled backup."""
+        try:
+            self._commit_with_history()
+        except Exception:
+            # Preserve the established non-fatal backup/commit behaviour.  A
+            # history failure must not turn an otherwise valid UI edit into a
+            # crash; diagnostics are still useful during development.
+            logging.debug("Database write-through commit failed", exc_info=True)
 
     def touch_node(self, node_id):
         """Update updated_at/updated_by on node (feature 20)."""
