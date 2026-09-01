@@ -346,14 +346,14 @@ class RiskMatrixMigrationDialog(QDialog):
         self.template_name = template_name
         self.plan = db.risk_matrix_migration_preview(source_cfg, target_cfg)
         self.setWindowTitle(f"Byt riskmatris till {template_name}")
-        self.setMinimumSize(1060, 720)
-        self.resize(1220, 820)
+        self.setMinimumSize(980, 640)
+        self.resize(1100, 700)
 
         outer = QVBoxLayout(self)
         intro = QLabel(
-            "Mallen ändrar hur sparade frekvens- och konsekvensnivåer tolkas. "
-            "Granska kartläggningen innan något sparas. Dra en nivå från vänster "
-            "till en mål-nivå till höger, eller välj i respektive lista.")
+            "Jämför den nuvarande matrisen med den nya. Axelns korta tecken "
+            "kartläggs nedan, exempelvis A → 1. Texten i färgade rutor är "
+            "riskklass/celltext; hovra över ett axeltecken för dess beskrivning.")
         intro.setWordWrap(True)
         intro.setStyleSheet("font-size:11px; color:#1f2937; padding:4px;")
         outer.addWidget(intro)
@@ -363,12 +363,8 @@ class RiskMatrixMigrationDialog(QDialog):
             "background:#fff8db; border:1px solid #d6b656; padding:5px 7px; color:#3d3210;")
         outer.addWidget(self._summary)
 
-        self._tabs = QTabWidget()
         self._build_overview_tab()
-        self._build_mapping_tab()
-        self._build_records_tab()
-        self._build_definitions_tab()
-        outer.addWidget(self._tabs, 1)
+        outer.addWidget(self._overview, 1)
 
         buttons = QDialogButtonBox()
         apply_button = buttons.addButton("Genomför migrering", QDialogButtonBox.ButtonRole.AcceptRole)
@@ -401,9 +397,9 @@ class RiskMatrixMigrationDialog(QDialog):
         return f"{('F' if kind == 'frequency' else 'C')}={value}"
 
     def _build_overview_tab(self):
-        page = QWidget(); layout = QVBoxLayout(page)
+        self._overview = QWidget(); layout = QVBoxLayout(self._overview)
         row = QHBoxLayout()
-        source_box = QGroupBox("Nuvarande sparade matris")
+        source_box = QGroupBox("Nuvarande matris")
         source_lay = QVBoxLayout(source_box)
         self._source_preview = QTableWidget()
         self._configure_preview(self._source_preview)
@@ -424,12 +420,34 @@ class RiskMatrixMigrationDialog(QDialog):
         target_lay.addLayout(axis_row)
         row.addWidget(target_box, 1)
         layout.addLayout(row, 1)
+        mapping = QGroupBox("Kartlägg axelnivåer")
+        mapping_lay = QHBoxLayout(mapping)
+        mapping_lay.setContentsMargins(8, 7, 8, 7)
+        self._simple_mapping_tables = {}
+        for kind, title in (('frequency', 'Frekvens (X)'),
+                            ('severity', 'Konsekvens (Y)')):
+            box = QGroupBox(title)
+            box_lay = QVBoxLayout(box)
+            hint = QLabel("Välj vilken nivå i den nya mallen som ersätter varje nivå.")
+            hint.setWordWrap(True); hint.setStyleSheet("font-size:10px; color:#555;")
+            box_lay.addWidget(hint)
+            table = QTableWidget(0, 3)
+            table.setHorizontalHeaderLabels(["Nu", "→", "Ny nivå"])
+            table.verticalHeader().setVisible(False)
+            table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+            box_lay.addWidget(table)
+            mapping_lay.addWidget(box, 1)
+            self._simple_mapping_tables[kind] = table
+        layout.addWidget(mapping)
         note = QLabel(
-            "Visningen kan vändas utan att data flyttas. Endast kartläggningen "
-            "på nästa flik avgör hur en befintlig HAZOP-rad migreras.")
+            "Numeriska orsaksfrekvenser placeras automatiskt enligt den nya "
+            "frekvensskalan. Denna kartläggning gäller manuellt valda nivåer.")
         note.setWordWrap(True); note.setStyleSheet("color:#555; font-size:10px;")
         layout.addWidget(note)
-        self._tabs.addTab(page, "1. Förhandsgranska")
 
     @staticmethod
     def _configure_preview(table):
@@ -439,18 +457,44 @@ class RiskMatrixMigrationDialog(QDialog):
         table.verticalHeader().setVisible(True)
         table.horizontalHeader().setStretchLastSection(False)
 
+    @staticmethod
+    def _axis_levels(cfg, kind):
+        """Return stored ordinal, short code and optional hover description."""
+        if kind == 'frequency':
+            codes, descriptions, start = cfg.get('x_codes', []), cfg.get('x_labels', []), -1
+            count = cfg.get('cols', 0)
+        else:
+            codes, descriptions, start = cfg.get('y_codes', []), cfg.get('y_labels', []), 1
+            count = cfg.get('rows', 0)
+        result = []
+        for index in range(count):
+            fallback = f"F{index - 1}" if kind == 'frequency' else str(index + 1)
+            result.append((index + start,
+                           str(codes[index]) if index < len(codes) else fallback,
+                           str(descriptions[index]) if index < len(descriptions) else ''))
+        return result
+
     def _fill_preview(self, table, cfg):
         freq_on_x = cfg.get('x_axis', 'frequency') == 'frequency'
         x_rev, y_rev = cfg.get('x_reversed', False), cfg.get('y_reversed', False)
         n_freq, n_cons = cfg['cols'], cfg['rows']
         cols, rows = (n_freq, n_cons) if freq_on_x else (n_cons, n_freq)
-        col_labels = cfg['x_codes'] if freq_on_x else cfg['y_codes']
-        row_labels = cfg['y_codes'] if freq_on_x else cfg['x_codes']
+        col_kind, row_kind = ('frequency', 'severity') if freq_on_x else ('severity', 'frequency')
+        col_levels = self._axis_levels(cfg, col_kind)
+        row_levels = self._axis_levels(cfg, row_kind)
         table.clear(); table.setRowCount(rows); table.setColumnCount(cols)
-        table.setHorizontalHeaderLabels([
-            col_labels[(cols - 1 - col) if x_rev else col] for col in range(cols)])
-        table.setVerticalHeaderLabels([
-            row_labels[row if y_rev else (rows - 1 - row)] for row in range(rows)])
+        for col in range(cols):
+            index = (cols - 1 - col) if x_rev else col
+            _value, code, description = col_levels[index]
+            header = QTableWidgetItem(code)
+            header.setToolTip(description or code)
+            table.setHorizontalHeaderItem(col, header)
+        for row in range(rows):
+            index = row if y_rev else (rows - 1 - row)
+            _value, code, description = row_levels[index]
+            header = QTableWidgetItem(code)
+            header.setToolTip(description or code)
+            table.setVerticalHeaderItem(row, header)
         colors, labels = cfg.get('cell_colors', []), cfg.get('cell_labels', [])
         for row in range(rows):
             drow = row if y_rev else rows - 1 - row
@@ -466,9 +510,39 @@ class RiskMatrixMigrationDialog(QDialog):
                 item = QTableWidgetItem(label)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 item.setBackground(QBrush(QColor(color)))
+                item.setToolTip(f"Celltext: {label}" if label else "Tom celltext")
                 table.setItem(row, col, item)
                 table.setColumnWidth(col, 82)
             table.setRowHeight(row, 38)
+
+    def _refresh_simple_mapping(self, kind):
+        table = self._simple_mapping_tables[kind]
+        source = self.plan['source_matrix']
+        target = self.plan['target_matrix']
+        map_key = 'frequency_map' if kind == 'frequency' else 'severity_map'
+        mapping = self.plan[map_key]
+        source_levels = self._axis_levels(source, kind)
+        target_levels = self._axis_levels(target, kind)
+        table.setRowCount(len(source_levels))
+        for row, (value, code, description) in enumerate(source_levels):
+            current = QTableWidgetItem(code)
+            current.setToolTip(description or code)
+            current.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(row, 0, current)
+            arrow = QTableWidgetItem("→")
+            arrow.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(row, 1, arrow)
+            combo = QComboBox()
+            for target_value, target_code, target_description in target_levels:
+                combo.addItem(target_code, target_value)
+                combo.setItemData(combo.count() - 1, target_description or target_code,
+                                  Qt.ItemDataRole.ToolTipRole)
+            combo.setCurrentIndex(max(0, combo.findData(mapping.get(str(value)))) )
+            combo.currentIndexChanged.connect(
+                lambda _index, k=kind, s=value, c=combo:
+                self._set_global_mapping(k, s, c.currentData()))
+            table.setCellWidget(row, 2, combo)
+        table.resizeRowsToContents()
 
     def _build_mapping_tab(self):
         page = QWidget(); layout = QHBoxLayout(page)
@@ -560,7 +634,6 @@ class RiskMatrixMigrationDialog(QDialog):
         self.plan[records_key][index]['target'] = value
         self.plan[records_key][index]['override'] = True
         self._refresh_summary()
-        self._refresh_definitions()
 
     def _refresh_mapping(self, kind):
         source_list, target_list, table = self._mapping_widgets[kind]
@@ -656,25 +729,22 @@ class RiskMatrixMigrationDialog(QDialog):
                       if row.get('source_kind') == 'numeric')
         severity = len(self.plan['severity_records'])
         self._summary.setText(
-            f"Berör: {frequency} orsaksfrekvenser ({numeric} numeriska, "
-            f"klassas från nya gränsvärden), {severity} konsekvensbedömningar "
-            f"och {len(self.plan['definition_records'])} kategoribeskrivningar. "
-            "Inget sparas förrän ‘Genomför migrering’ bekräftas.")
+            f"{frequency} orsaksfrekvenser och {severity} konsekvensbedömningar "
+            f"följer kartläggningen. {numeric} numeriska frekvenser placeras "
+            "automatiskt enligt den nya skalan. Inget sparas förrän du bekräftar.")
 
     def _refresh_all(self):
         self._fill_preview(self._source_preview, self.plan['source_matrix'])
         self._fill_preview(self._target_preview, self.plan['target_matrix'])
-        self._refresh_mapping('frequency')
-        self._refresh_mapping('severity')
-        self._refresh_records()
-        self._refresh_definitions()
+        self._refresh_simple_mapping('frequency')
+        self._refresh_simple_mapping('severity')
         self._refresh_summary()
 
     def _confirm_accept(self):
         answer = QMessageBox.question(
             self, "Genomför mallbyte",
-            "En verifierad backup skapas och därefter migreras de granskade "
-            "nivåerna i ett odelbart steg. Vill du genomföra bytet?",
+            "En backup skapas. Därefter används kartläggningen för att byta "
+            "riskmatris. Vill du genomföra bytet?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if answer == QMessageBox.StandardButton.Yes:

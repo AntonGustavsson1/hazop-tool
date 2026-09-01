@@ -1,5 +1,24 @@
 # NOTES.md — Beslut och kontext
 
+## Förenklad riskmatrismigrering (2026-09-01)
+
+Migrationsdialogen visar nu en enda arbetsyta i stället för fyra täta flikar.
+Den jämför nuvarande och ny riskmatris sida vid sida med respektive malls
+färger och celltexter. Axelns korta tecken visas direkt, exempelvis `A → 1`
+och `0 → 1`; den längre axelbeskrivningen visas vid hover.
+
+Det skiljer tydligt mellan axelnivå och cell: axeltecknet anger frekvens- eller
+konsekvensnivå, medan texten i den färgade rutan är matrisens celltext. Bara
+de manuellt valda axelnivåerna kartläggs i listorna. Numeriska frekvenser
+placeras fortsatt automatiskt enligt den nya frekvensskalan.
+
+ST1-mallen har verifierats med kompletta A–E-/0–5-tecken, beskrivningar,
+6×5 färgceller och celltexter i den visuella förhandsgranskningen.
+
+Verifierat med 17 riktade riskmatris-/migrationsdialogtester, tre
+datalagertester för migrering, `tests.test_smoke` (12 tester), `py_compile`
+och `git diff --check`. Ingen manuell visuell GUI-verifiering är gjord.
+
 ## Riskmatris: separata nivåtecken och värdebevarande axelbyte (2026-09-01)
 
 Frekvens- och konsekvensnivåerna har nu egna sparade tecken (`x_codes` och

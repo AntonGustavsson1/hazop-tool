@@ -954,6 +954,11 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             self.assertEqual(panel._last_built_cfg['y_codes'], ['0', '1', '2', '3', '4', '5'])
             self.assertEqual([edit.text() for edit in panel._x_label_edits],
                              ['A', 'B', 'C', 'D', 'E'])
+            self.assertTrue(all(panel._last_built_cfg['x_labels']))
+            self.assertTrue(all(panel._last_built_cfg['y_labels']))
+            self.assertEqual(len(panel._last_built_cfg['cell_colors']), 6)
+            self.assertTrue(all(len(row) == 5
+                                for row in panel._last_built_cfg['cell_colors']))
             self.assertEqual(self.db.get_risk_matrix(), before,
                              'choosing a preset must not save before Spara riskmatris')
         finally:
@@ -1149,6 +1154,44 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             dialog._swap_target_axes()
             self.assertEqual(dialog.plan['frequency_map'], before,
                              'axis swap must only change visual presentation')
+        finally:
+            dialog.deleteLater()
+
+    def test_template_migration_overview_is_coloured_and_code_focused(self):
+        """The first migration view explains A -> 1 without raw row detail."""
+        from hazop_preparation_panel import RiskMatrixMigrationDialog
+        source = {
+            'rows': 2, 'cols': 2, 'x_axis': 'frequency', 'y_reversed': True,
+            'x_codes': ['A', 'B'], 'y_codes': ['0', '1'],
+            'x_labels': ['Sällsynt händelse', 'Har inträffat'],
+            'y_labels': ['Ingen skada', 'Mindre skada'],
+            'cell_colors': [['#123456', '#234567'], ['#345678', '#456789']],
+            'cell_labels': [['Låg', 'Mellan'], ['Mellan', 'Hög']],
+            'freq_boundaries': [0.1],
+        }
+        target = {
+            'rows': 2, 'cols': 2, 'x_axis': 'frequency', 'y_reversed': True,
+            'x_codes': ['1', '2'], 'y_codes': ['1', '2'],
+            'x_labels': ['Låg sannolikhet', 'Hög sannolikhet'],
+            'y_labels': ['Liten konsekvens', 'Stor konsekvens'],
+            'cell_colors': [['#abcdef', '#bcdef0'], ['#cdef01', '#def012']],
+            'cell_labels': [['Låg', 'Mellan'], ['Mellan', 'Hög']],
+            'freq_boundaries': [0.1],
+        }
+        self.db.set_risk_matrix(source)
+        dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
+        try:
+            self.assertEqual(dialog._source_preview.horizontalHeaderItem(0).text(), 'A')
+            self.assertEqual(dialog._source_preview.horizontalHeaderItem(0).toolTip(),
+                             'Sällsynt händelse')
+            self.assertEqual(dialog._source_preview.item(0, 0).background().color().name(),
+                             '#123456')
+            self.assertEqual(dialog._target_preview.item(0, 0).background().color().name(),
+                             '#abcdef')
+            mapping = dialog._simple_mapping_tables['frequency']
+            self.assertEqual(mapping.item(0, 0).text(), 'A')
+            self.assertEqual(mapping.item(0, 1).text(), '→')
+            self.assertEqual(mapping.cellWidget(0, 2).currentText(), '1')
         finally:
             dialog.deleteLater()
 
