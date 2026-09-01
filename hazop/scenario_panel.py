@@ -7063,16 +7063,37 @@ class ScenarioTablePanel(QWidget):
                     if cons_id is not None:
                         self._quick_add_safeguard(cons_id)
                 return
-            if col == self._C_ORS and group_line is not None and group_line >= 0:
-                self._group_edit_line = (row, group_line)
-            else:
-                self._group_edit_line = None
-            self._table.edit(self._table.model().index(row, col))
             click = self._double_click_edit
             self._double_click_edit = None
-            if click and click[0] == row and click[1] == col:
-                QTimer.singleShot(0, lambda r=row, c=col, p=click[2]:
-                                  self._place_editor_caret(r, c, p))
+            # A second double-click can arrive before Qt has completed the
+            # previous delegate close sequence (especially when a grouped
+            # cause also has its standard-cause popup open).  QTableWidget
+            # then still considers the index to be in EditingState and
+            # silently refuses the new edit, making the group editor appear
+            # stuck.  Close the old editor first and defer the new edit until
+            # Qt has processed that close signal.
+            if self._inline_editor_widgets():
+                self._finish_inline_editor_for_external_click(self._table)
+                QTimer.singleShot(
+                    0, lambda r=row, c=col, gl=group_line, p=click:
+                    self._open_inline_editor_after_close(r, c, gl, p))
+                return
+            self._open_inline_editor_after_close(row, col, group_line, click)
+
+    def _open_inline_editor_after_close(self, row, col, group_line, click):
+        """Open one cell after any previous QTableWidget editor is closed."""
+        if col == self._C_ORS and group_line is not None and group_line >= 0:
+            self._group_edit_line = (row, group_line)
+        else:
+            self._group_edit_line = None
+        opened = self._table.edit(self._table.model().index(row, col))
+        if not opened and not self._inline_editor_widgets():
+            # Do not let a rejected edit request leak its row marker into the
+            # next ordinary cause edit.
+            self._group_edit_line = None
+        if click and click[0] == row and click[1] == col:
+            QTimer.singleShot(0, lambda r=row, c=col, p=click[2]:
+                              self._place_editor_caret(r, c, p))
 
     def _show_rrf_popup(self, row, sg_id):
         """Called from context menu — centre on the cell."""
@@ -8915,7 +8936,32 @@ class ScenarioTablePanel(QWidget):
             if event.key() == Qt.Key.Key_Delete:
                 self._delete_current_item()
                 return True
-            # F2 or any printable key → start inline edit on ORS/SG cells (feature 7)
+            # Do not let QTableWidget's built-in type-ahead search move the
+            # selection from a blank cell to the first matching row in the
+            # same column.  For an editable blank cell, open its inline
+            # editor and place the typed character there.  Non-editable blank
+            # cells simply consume the key.
+            modifiers = event.modifiers()
+            typed = event.text()
+            if (typed and typed.isprintable() and not
+                    modifiers & (Qt.KeyboardModifier.ControlModifier |
+                                 Qt.KeyboardModifier.AltModifier |
+                                 Qt.KeyboardModifier.MetaModifier)):
+                row = self._table.currentRow()
+                col = self._table.currentColumn()
+                item = (self._table.item(row, col)
+                        if row >= 0 and col >= 0 else None)
+                if item is None or not item.text().strip():
+                    if (item is not None and
+                            item.data(Qt.ItemDataRole.UserRole) and
+                            bool(item.flags() & Qt.ItemFlag.ItemIsEditable)):
+                        opened = self._try_start_edit(row, col)
+                        if opened:
+                            QTimer.singleShot(
+                                0, lambda r=row, c=col, value=typed:
+                                self._insert_first_typed_character(r, c, value))
+                    return True
+            # F2 starts an inline edit on the selected editable cell.
             if event.key() == Qt.Key.Key_F2:
                 row = self._table.currentRow()
                 col = self._table.currentColumn()
@@ -9495,7 +9541,7 @@ class ScenarioTablePanel(QWidget):
         # _C_REK added 2026-08-26 (see NOTES.md "Redigera
         # rekommendationer direkt i HAZOP Scenario").
         if row < 0 or col not in (self._C_ORS, self._C_SG, self._C_KON, self._C_REK):
-            return
+            return False
         item = self._table.item(row, col)
         # A grouped cause has two distinct visual edit targets. Never open
         # the generic full-cell editor from F2, a context-menu action, or a
@@ -9503,10 +9549,34 @@ class ScenarioTablePanel(QWidget):
         if col == self._C_ORS and item is not None:
             group_tags = item.data(Qt.ItemDataRole.UserRole + 9) or []
             if len(group_tags) >= 2:
-                return
+                return False
         if item and bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
             self._table.setFocus()
-            self._table.edit(self._table.model().index(row, col))
+            return bool(self._table.edit(self._table.model().index(row, col)))
+        return False
+
+    def _insert_first_typed_character(self, row, col, text):
+        """Insert a character consumed from a blank table cell.
+
+        Qt opens the delegate editor asynchronously.  This deferred hand-off
+        prevents the character from being interpreted as table type-ahead
+        while still making a blank editable cell feel natural.  It is limited
+        to the matching row and column, so a stale group editor can never
+        receive the character.
+        """
+        for editor in self._inline_editor_widgets():
+            if (editor.property('editing_row') != row or
+                    editor.property('editing_col') != col):
+                continue
+            try:
+                editor.selectAll()
+                if isinstance(editor, _BoldTagTextEdit):
+                    editor.insertPlainText(text)
+                elif isinstance(editor, QLineEdit):
+                    editor.insert(text)
+            except RuntimeError:
+                pass
+            return
 
     # ── Copy and paste ───────────────────────────────────────────────────────
     # Kept as an application MIME rather than serialising database objects into

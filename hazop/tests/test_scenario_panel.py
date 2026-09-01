@@ -4619,6 +4619,43 @@ class ScenarioScrollPreservationTests(unittest.TestCase):
             self.assertGreater(panel._table.verticalScrollBar().value(), 0)
 
 
+class BlankCellKeyboardNavigationTests(unittest.TestCase):
+    """Blank cells must not invoke QTableWidget's type-ahead navigation."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_letter_on_blank_consequence_cell_does_not_jump_to_matching_row(self):
+        from PyQt6.QtTest import QTest
+
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            first_cause = win.db.add_cause(dev_id)
+            first_cons = win.db.add_consequence(first_cause)
+            win.db.update_consequence(first_cons, 'Alarm', 3)
+            second_cause = win.db.add_cause(dev_id)
+
+            panel = win.scenario_panel
+            panel.load_node(node_id)
+            panel.show()
+            self.app.processEvents()
+            blank_row = next(row for row, meta in enumerate(panel._row_meta)
+                             if meta[1] == second_cause)
+            panel._table.setCurrentCell(blank_row, panel._C_KON)
+            panel._table.setFocus()
+            self.app.processEvents()
+
+            QTest.keyClick(panel._table, Qt.Key.Key_A)
+            self.app.processEvents()
+
+            self.assertEqual(panel._table.currentRow(), blank_row)
+            self.assertEqual(panel._table.currentColumn(), panel._C_KON)
+            self.assertNotEqual(panel._table.state(),
+                                QAbstractItemView.State.EditingState)
+
+
 class InlineIdentityEditTests(unittest.TestCase):
     """Prompt 2: tag edits in KON/SG are guarded before persistence."""
 

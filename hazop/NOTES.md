@@ -5040,3 +5040,22 @@ samma fordelning av kategorier, barriarer, RRF, enablers och rekommendationer.
 Objekttaggar i orsaker foljer med, riskvarden visar konfigurerade axelkoder
 och enablerkolumnen ar blank nar inga enablers ar aktiva. Den tidigare
 Qt-baserade aterskapningen av dessa rader anvands inte langre for heltabellen.
+
+## Tom cell: bokstav får inte flytta markering och gruppeditor ska kunna bytas (2026-09-01)
+
+En bokstavstangent på en tom cell lämnas inte längre till QTableWidgets
+inbyggda type-ahead-sökning. Därmed hoppar inte markeringen till översta raden
+med samma bokstav. Om den tomma cellen har en riktig redigerbar post öppnas
+inline-editorn och den första bokstaven skrivs in där; rena platshållarceller
+förblir bara markerade.
+
+Vid dubbelklick på en grupporsaks primär-, sekundär- eller tertiärrad stängs
+en eventuell tidigare inline-editor först. Den nya editorn öppnas på nästa
+event-loop-varv, efter att QTableWidget har släppt sin gamla EditingState.
+Det förhindrar att Qt avvisar nästa edit med `editing failed` och att
+`_group_edit_line` blir kvar som en felaktig radmarkör.
+
+Verifierat med regressionstest för bokstav på tom konsekvenscell, test för
+snabba byten mellan grupporsakens sekundär/primärrad, berörda grupporsaks- och
+inline-editor-tester, `py_compile` och `git diff --check`. Ingen manuell
+visuell GUI-verifiering är gjord.

@@ -5353,6 +5353,58 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
                               'clicking right of the tag must not open the object picker')
             close_editors()
 
+    def test_group_double_click_closes_previous_editor_before_switching_line(self):
+        """Repeated group clicks must not leave Qt in a stale edit state."""
+        from scenario_panel import _BoldTagTextEdit, _ORS_FIRST_LINE_H
+        from PyQt6.QtGui import QFontMetrics
+
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.get_or_create_deviation(node_id, 'High flow')
+            primary_id = win.db.add_equipment_item(
+                'FI-1', 'FI-1', 'FI', 0, 'Instrument', '', 0)
+            secondary_id = win.db.add_equipment_item(
+                'FV-1', 'FV-1', 'FV', 0, 'Reglerventil', '', 0)
+            cause_id = win.db.add_cause(dev_id)
+            win.db.update_cause(
+                cause_id, comp_type='Instrument', comp_tag='FI-1 + FV-1',
+                equipment_id=primary_id, secondary_equipment_id=secondary_id,
+                description='FI-1 primary text\nFV-1 secondary text',
+                group_choices_set=3)
+            panel = win.scenario_panel
+            panel.load_node(node_id)
+            panel.show()
+            win.show()
+            QApplication.processEvents()
+            table = panel._table
+            row = next(r for r, meta in enumerate(panel._row_meta)
+                       if meta[1] == cause_id)
+            item = table.item(row, panel._C_ORS)
+            rect = table.visualRect(table.model().index(row, panel._C_ORS))
+            line_h = max(_ORS_FIRST_LINE_H,
+                         QFontMetrics(table.font()).height() + 4)
+
+            def open_line(line_no):
+                pos = QPoint(rect.left() + rect.width() - 10,
+                             rect.top() + 2 + line_no * line_h + line_h // 2)
+                panel._double_click_edit = (row, panel._C_ORS, pos)
+                panel._on_cell_double_clicked(item)
+                QApplication.processEvents()
+                return [editor for editor in table.viewport().findChildren(
+                    _BoldTagTextEdit) if editor.isVisible()]
+
+            first = open_line(1)
+            self.assertTrue(first)
+            self.assertEqual(first[-1].property('group_line'), 1)
+            first[-1].setText('secondary changed')
+
+            second = open_line(0)
+            self.assertTrue(second)
+            self.assertEqual(second[-1].property('group_line'), 0)
+            self.assertEqual(second[-1].toPlainText(), 'primary text')
+            self.assertEqual(len(second), 1,
+                             'the previous group editor must be closed')
+
     def test_group_popup_uses_secondary_object_and_free_text_preserves_both_rows(self):
         with _TempDbMainWindow() as win:
             node_id = win.db.add_node()
