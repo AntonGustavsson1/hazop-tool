@@ -8,13 +8,13 @@ axelbeskrivningar, samt konsekvenskategorier med stabil nyckel, visningsnamn,
 kategorifärg och beskrivning per konsekvensnivå. ST1, NORSOK- och F-skale-
 mallarna bygger därmed inte längre på den öppna studiens lokala kategorier.
 
-Vid byte av mall finns en utfällbar sektion `Konsekvenskategorier och
-nivåöversättning`. Där kopplas befintlig kategori till mallkategori med
-klick eller drag, exempelvis `Anläggning → Tillgångar`. För varje sådan
-koppling finns en egen utfällbar nivåtabell: varje gammal konsekvensnivå kan
-väljas till en specifik ny nivå. Grundkonsekvens använder den vanliga
-axelmappningen, medan kategori- och slutkonsekvensbedömningar använder sin
-egen kategoriöversättning.
+Vid byte av mall är första steget nu fliken `1. Konsekvenskategorier`.
+Där kopplas befintlig kategori till mallkategori med samma vänster-till-höger-
+logik som axelkopplingen, med klick eller drag, exempelvis `Anläggning →
+Tillgångar`. För varje sådan koppling finns en egen utfällbar nivåtabell:
+varje gammal konsekvensnivå kan väljas till en specifik ny nivå.
+Grundkonsekvens använder den vanliga axelmappningen, medan kategori- och
+slutkonsekvensbedömningar använder sin egen kategoriöversättning.
 
 Mallen är auktoritativ för kategori- och nivåbeskrivningar. Projektets gamla
 beskrivning används endast om mallen medvetet lämnar den målnivån tom.

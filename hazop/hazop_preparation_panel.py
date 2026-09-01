@@ -729,19 +729,29 @@ class CategoryMappingPanel(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         self.source_chips.clear(); self.target_chips.clear()
-        title = QLabel("Dra eller klicka en befintlig kategori till dess mallkategori.")
+        title = QLabel("Koppla varje befintlig kategori till en kategori i den nya mallen.")
         title.setStyleSheet("color:#4b5563; font-size:10px;")
         self._layout.addWidget(title)
         links = QWidget(); grid = QGridLayout(links)
-        grid.setContentsMargins(0, 0, 0, 0); grid.setHorizontalSpacing(58); grid.setVerticalSpacing(4)
-        grid.addWidget(QLabel("BEFINTLIG KATEGORI"), 0, 0)
-        grid.addWidget(QLabel("MALLKATEGORI"), 0, 2)
+        grid.setContentsMargins(0, 0, 0, 0); grid.setHorizontalSpacing(12); grid.setVerticalSpacing(4)
+        source_header = QLabel("BEFINTLIG KATEGORI")
+        target_header = QLabel("NY MALLKATEGORI")
+        for header in (source_header, target_header):
+            header.setStyleSheet("color:#374151; font-size:9px; font-weight:bold;")
+        grid.addWidget(source_header, 0, 0)
+        grid.addWidget(target_header, 0, 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(2, 1)
         source_categories = self.dialog.plan.get('source_categories', [])
         target_categories = self.dialog.plan.get('target_categories', [])
         for row, category in enumerate(source_categories, start=1):
             chip = CategoryMappingChip(self, 'source', str(category['source_id']),
                                        category['name'], category.get('color'))
             self.source_chips[chip.key] = chip; grid.addWidget(chip, row, 0)
+            arrow = QLabel("→")
+            arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            arrow.setStyleSheet("color:#4b5563; font-size:14px; font-weight:bold;")
+            grid.addWidget(arrow, row, 1)
         for row, category in enumerate(target_categories, start=1):
             chip = CategoryMappingChip(self, 'target', category['key'],
                                        category['name'], category.get('color'))
@@ -835,25 +845,13 @@ class RiskMatrixMigrationDialog(QDialog):
         outer.addWidget(self._progress)
 
         self._tabs = QTabWidget()
+        self._category_panel = CategoryMappingPanel(self)
         self._link_field = AxisLinkField(self)
         self._matrix_against_matrix = MatrixAgainstMatrix(self)
-        self._tabs.addTab(self._link_field, "Kopplingsfält")
-        self._tabs.addTab(self._matrix_against_matrix, "Matris mot matris")
+        self._tabs.addTab(self._category_panel, "1. Konsekvenskategorier")
+        self._tabs.addTab(self._link_field, "2. Kopplingsfält")
+        self._tabs.addTab(self._matrix_against_matrix, "3. Matris mot matris")
         outer.addWidget(self._tabs, 1)
-
-        self._category_toggle = QToolButton()
-        self._category_toggle.setCheckable(True)
-        self._category_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._category_toggle.setText("Konsekvenskategorier och nivåöversättning")
-        self._category_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        self._category_toggle.setStyleSheet("QToolButton{font-weight:bold; padding:4px 2px;}")
-        outer.addWidget(self._category_toggle)
-        self._category_panel = CategoryMappingPanel(self)
-        self._category_panel.setVisible(False)
-        self._category_toggle.toggled.connect(self._category_panel.setVisible)
-        self._category_toggle.toggled.connect(lambda checked: self._category_toggle.setArrowType(
-            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow))
-        outer.addWidget(self._category_panel)
 
         buttons = QDialogButtonBox()
         self._apply_button = buttons.addButton("Genomför migrering", QDialogButtonBox.ButtonRole.AcceptRole)

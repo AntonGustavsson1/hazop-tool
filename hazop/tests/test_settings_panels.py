@@ -1170,7 +1170,7 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
-    def test_template_migration_has_two_real_matrix_views_with_shared_state(self):
+    def test_template_migration_has_category_step_then_two_shared_matrix_views(self):
         """Both migration views use actual codes, descriptions and colours."""
         from hazop_preparation_panel import RiskMatrixMigrationDialog
         source = {
@@ -1195,7 +1195,9 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
             self.assertEqual([dialog._tabs.tabText(i) for i in range(dialog._tabs.count())],
-                             ['Kopplingsfält', 'Matris mot matris'])
+                             ['1. Konsekvenskategorier', '2. Kopplingsfält',
+                              '3. Matris mot matris'])
+            self.assertIs(dialog._tabs.currentWidget(), dialog._category_panel)
             source_chip = dialog._link_field.old_chips[('frequency', -1)]
             target_chip = dialog._link_field.target_chips[('frequency', -1)]
             self.assertEqual(source_chip.code, 'A')
@@ -1216,7 +1218,7 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             dialog.deleteLater()
 
-    def test_template_migration_category_drawer_maps_categories_and_levels(self):
+    def test_template_migration_category_step_maps_categories_and_levels(self):
         from hazop_preparation_panel import RiskMatrixMigrationDialog
         source = {'rows': 3, 'cols': 2, 'x_labels': ['A', 'B'],
                   'y_labels': ['1', '2', '3'], 'freq_boundaries': [0.1]}
@@ -1235,7 +1237,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         self.db.set_risk_matrix(source)
         dialog = RiskMatrixMigrationDialog(self.db, source, target, 'Testmall')
         try:
-            self.assertIn('Konsekvenskategorier', dialog._category_toggle.text())
+            self.assertEqual(dialog._tabs.tabText(0), '1. Konsekvenskategorier')
+            self.assertIs(dialog._tabs.widget(0), dialog._category_panel)
             source_id = str(dialog.plan['source_categories'][0]['source_id'])
             self.assertIn(source_id, dialog._category_panel.source_chips)
             dialog.clear_mappings()
