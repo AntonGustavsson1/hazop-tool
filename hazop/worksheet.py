@@ -62,6 +62,7 @@ class HAZOPWorksheet(QWidget):
         # so it should fill all available vertical space instead of leaving a
         # large blank gap below/around a height-capped table.
         self._table_panel = ScenarioTablePanel(db)
+        self._table_panel.set_office_clipboard_title('HAZOP Worksheet')
         self._table_panel.allow_full_height()
         # Avvikelse column should always be visible here — there's no separate
         # deviation-picker (only a node dropdown), and rows aren't distinguishable

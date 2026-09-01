@@ -4176,6 +4176,7 @@ class ScenarioTablePanel(QWidget):
         self._force_utr_column_hidden = False  # if True, Utrustning column stays hidden regardless of _all_nodes (set by hide_equipment_column)
         self._hide_unplaced_tag = False
         self._merge_node_labels = False
+        self._office_clipboard_title = 'HAZOP Scenario'
         # Kept as a compatibility attribute for hosts that used to opt out of
         # the empty-consequence chain popup. Double-click now always means
         # inline edit, in Scenario as well as Worksheet; the chain editor is
@@ -4390,6 +4391,10 @@ class ScenarioTablePanel(QWidget):
         to leave room for the canvas above it)."""
         self.setMaximumHeight(16777215)  # Qt's QWIDGETSIZE_MAX — effectively "no cap"
         self._table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def set_office_clipboard_title(self, title):
+        """Set the descriptive title used in rich Office clipboard output."""
+        self._office_clipboard_title = str(title or 'HAZOP Scenario')
 
     def set_show_empty_deviations(self, show: bool):
         """Toggle whether deviations with zero causes get their own placeholder
@@ -8642,9 +8647,21 @@ class ScenarioTablePanel(QWidget):
                 self._ctrl_enter(row, col)
                 return True
             if (event.key() == Qt.Key.Key_C and
-                    event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                    event.modifiers() & Qt.KeyboardModifier.ControlModifier and
+                    event.modifiers() & Qt.KeyboardModifier.AltModifier):
                 self._copy_row_to_clipboard(self._table.currentRow(),
                                             self._table.currentColumn())
+                return True
+            if (event.key() == Qt.Key.Key_C and
+                    event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                # Ctrl+C is the normal Office workflow: copy precisely the
+                # selected cell rectangle as rich HTML/TSV.  This retains
+                # hierarchy rowspans (for example one cause over several
+                # consequences) instead of flattening the current HAZOP row.
+                # The application-specific copy remains available from the
+                # context menu for copying entities within HAZOP.
+                self.copy_visible_table_to_office_clipboard(
+                    self._office_clipboard_title)
                 return True
             if (event.key() == Qt.Key.Key_V and
                     event.modifiers() & Qt.KeyboardModifier.ControlModifier):
@@ -9228,8 +9245,9 @@ class ScenarioTablePanel(QWidget):
 
     # ── Copy and paste ───────────────────────────────────────────────────────
     # Kept as an application MIME rather than serialising database objects into
-    # text.  This keeps Ctrl+C/Ctrl+V inside HAZOP precise while text/plain
-    # remains useful when pasting a table row into Excel or an e-mail.
+    # text. It is used by the explicit context-menu action for copying entities
+    # within HAZOP; ordinary Ctrl+C is reserved for the standard Office
+    # clipboard path below.
     _COPY_MIME = 'application/x-hazop-copy-items'
 
     @staticmethod
@@ -10035,8 +10053,12 @@ class ScenarioTablePanel(QWidget):
 
         menu = QMenu(self)
 
-        # ── Ctrl+C shortcut hint ────────────────────────────────────────
-        copy_row = menu.addAction(_icon('clipboard'), "Kopiera  (Ctrl+C)")
+        # ── Internal HAZOP copy ─────────────────────────────────────────
+        # Ordinary Ctrl+C exports the exact cell selection to Word/Excel.
+        # This action intentionally keeps the earlier entity/hierarchy copy
+        # path available when the target is another HAZOP cell.
+        copy_row = menu.addAction(_icon('clipboard'),
+                                   "Kopiera inom HAZOP (Ctrl+Alt+C)")
         copy_row.triggered.connect(
             lambda: self._copy_row_to_clipboard(row, col))
         menu.addSeparator()

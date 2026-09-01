@@ -69,7 +69,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
     QTableWidgetItem,
 )
-from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
+from PyQt6.QtGui import QPixmap, QFocusEvent, QKeyEvent  # noqa: E402
 from PyQt6.QtCore import (Qt, QPoint, QDate, QEvent, QThread, pyqtSignal,
                           QItemSelectionModel)  # noqa: E402
 from equipment_detection import COMPONENT_TYPES  # noqa: E402
@@ -1616,7 +1616,7 @@ class CompactScenarioDragGhostTests(unittest.TestCase):
             self.assertEqual(
                 drag_cls.return_value.exec.call_args.args[0], Qt.DropAction.CopyAction)
 
-    def test_ctrl_c_ctrl_v_uses_the_same_scoped_copy_path(self):
+    def test_ctrl_alt_c_ctrl_v_uses_the_same_scoped_copy_path(self):
         with _TempDbMainWindow() as win:
             panel = win.scenario_panel
             db = win.db
@@ -1637,7 +1637,12 @@ class CompactScenarioDragGhostTests(unittest.TestCase):
                 (target_dev, target_cause, target_cons, None),
             ]
             panel._row_recommendation_ids = [None, None]
-            panel._copy_row_to_clipboard(0, panel._C_KON)
+            panel._table.setCurrentCell(0, panel._C_KON)
+            copy_event = QKeyEvent(
+                QEvent.Type.KeyPress, Qt.Key.Key_C,
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)
+            self.assertTrue(panel.eventFilter(panel._table, copy_event))
+            self.assertTrue(QApplication.clipboard().mimeData().hasFormat(panel._COPY_MIME))
             with unittest.mock.patch.object(panel, '_ask_copy_scope',
                                             return_value='cell'), \
                     unittest.mock.patch.object(panel, '_schedule_rebuild'), \

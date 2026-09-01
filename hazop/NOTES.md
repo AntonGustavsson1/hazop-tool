@@ -4292,6 +4292,24 @@ Verifierat med en ny headless-regression som markerar två rader och flera
 kolumner över en sammanslagen barriärcell och kontrollerar HTML, TSV och
 Urklipp. `py_compile` och de riktade Office-kopieringstesterna passerar.
 
+### Ctrl+C följer cellmarkeringen vid Office-kopiering (2026-09-01)
+
+Vanliga `Ctrl+C` i HAZOP Scenario och Worksheet lägger nu den exakt markerade
+cellrektangeln på Office-urklippet. Därmed kan exempelvis en gemensam
+orsakscell och två konsekvensrader klistras in i Word eller Excel med den
+vertikalt sammanslagna orsaken bevarad. Det gamla flödet fångade `Ctrl+C`
+före Office-kopieringen och gjorde i stället en intern HAZOP-kopia av en hel
+rad, även när användaren hade markerat flera celler.
+
+Intern kopiering till en annan HAZOP-cell finns kvar som
+`Kopiera inom HAZOP (Ctrl+Alt+C)` i högerklicksmenyn och klistras sedan in med
+`Ctrl+V`. Rika HTML- och tab-separerade data används för Office, så Word och
+Excel kan tolka rubriker, radbrytningar, färger, fetstilta taggar och
+sammanslagna hierarkiceller. Verifierat med regression för en två-raders /
+flerkolumnsmarkering, det verkliga Ctrl+C-händelseflödet, intern Ctrl+Alt+C
++ Ctrl+V, `py_compile` och riktade paneltester. Ingen manuell Office-
+inklistring är ännu visuellt verifierad.
+
 ## Högerklicksplacering på P&ID borttagen (2026-08-28)
 
 Den manuella “Objekt”-åtgärden i P&ID-vyns högerklicksmeny är borttagen.

@@ -68,7 +68,7 @@ from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QCheckBox,
     QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
 )
-from PyQt6.QtGui import QPixmap, QFocusEvent  # noqa: E402
+from PyQt6.QtGui import QPixmap, QFocusEvent, QKeyEvent  # noqa: E402
 from PyQt6.QtCore import (  # noqa: E402
     Qt, QPoint, QDate, QEvent, QThread, pyqtSignal,
     QItemSelection, QItemSelectionModel,
@@ -294,6 +294,43 @@ class HAZOPWorksheetTests(unittest.TestCase):
             mime = QApplication.clipboard().mimeData()
             self.assertTrue(mime.hasHtml())
             self.assertIn('Vald del', mime.html())
+            self.assertNotIn('Nod A', mime.html())
+        finally:
+            ws.deleteLater()
+
+    def test_ctrl_c_copies_exact_selected_cells_to_office_clipboard(self):
+        """Ctrl+C must no longer replace a cell selection with one HAZOP row."""
+        from hazop import HAZOPWorksheet
+
+        ids = self._make_full_chain(node_name='Nod A')
+        self.db.update_cause(ids['cause_id'], description='Orsak A')
+        self.db.update_consequence(ids['cons_id'], 'Konsekvens A', 3)
+        self.db.update_safeguard(ids['sg_id'], description='Barriär A', rrf=100)
+        self.db.add_safeguard(ids['cons_id'])
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws.refresh()
+            panel = ws._table_panel
+            table = panel._table
+            cause_row = next(row for row, meta in enumerate(panel._row_meta)
+                             if meta[1] == ids['cause_id'])
+            selection = QItemSelection(
+                table.model().index(cause_row, panel._C_ORS),
+                table.model().index(cause_row + 1, panel._C_SG))
+            table.selectionModel().select(
+                selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+
+            event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_C,
+                              Qt.KeyboardModifier.ControlModifier)
+            self.assertTrue(panel.eventFilter(table, event))
+
+            mime = QApplication.clipboard().mimeData()
+            self.assertTrue(mime.hasHtml())
+            self.assertFalse(mime.hasFormat(panel._COPY_MIME))
+            self.assertIn('Orsak A', mime.html())
+            self.assertIn('Konsekvens A', mime.html())
+            self.assertIn('rowspan="2"', mime.html())
             self.assertNotIn('Nod A', mime.html())
         finally:
             ws.deleteLater()
