@@ -9494,7 +9494,7 @@ class ScenarioTablePanel(QWidget):
         if not selected_ranges:
             return (list(range(table.rowCount())),
                     [col for col in range(table.columnCount())
-                     if not table.isColumnHidden(col)], None)
+                     if not table.isColumnHidden(col)], None, False)
         # A normal mouse/Shift selection is one Qt range. Preserve that
         # exact rectangle even though selectedIndexes() omits coordinates
         # covered by a rowspan. This is the common Office-copy workflow and
@@ -9506,7 +9506,33 @@ class ScenarioTablePanel(QWidget):
             columns = [col for col in range(selection.leftColumn(),
                                              selection.rightColumn() + 1)
                        if not table.isColumnHidden(col)]
-            return rows, columns, {(row, col) for row in rows for col in columns}
+            return (rows, columns,
+                    {(row, col) for row in rows for col in columns}, False)
+
+        # A Ctrl-selection of individual Nod/Avvikelse cells is a selection
+        # of hierarchy *anchors*, not all of the physical consequence rows
+        # covered by their rowspans.  Expanding those spans turns two selected
+        # nodes into a long block of duplicate node labels and can hide the
+        # second deviation in Word/Excel.  Keep this narrow, explicit
+        # hierarchy-only selection compact: one exported row per selected
+        # visual hierarchy row.
+        hierarchy_columns = {self._C_NOD, self._C_UTR, self._C_DEV}
+        range_cells = {
+            (row, col)
+            for selection in selected_ranges
+            for row in range(selection.topRow(), selection.bottomRow() + 1)
+            for col in range(selection.leftColumn(), selection.rightColumn() + 1)
+            if not table.isColumnHidden(col)
+        }
+        selected_columns = {col for _row, col in range_cells}
+        if (range_cells and selected_columns and
+                selected_columns.issubset(hierarchy_columns) and
+                all(selection.topRow() == selection.bottomRow()
+                    for selection in selected_ranges)):
+            rows = sorted({row for row, _col in range_cells})
+            columns = sorted(selected_columns)
+            return rows, columns, range_cells, True
+
         # QTableWidget deliberately omits coordinates covered by a rowspan
         # from selectedIndexes().  That is correct for editing, but not for
         # an external clipboard: selecting a cause plus two consequence rows
@@ -9516,7 +9542,7 @@ class ScenarioTablePanel(QWidget):
         selected = {(index.row(), index.column()) for index in table.selectedIndexes()
                     if not table.isColumnHidden(index.column())}
         if not selected:
-            return [], [], set()
+            return [], [], set(), False
 
         expanded = set(selected)
         for row, col in list(selected):
@@ -9532,7 +9558,7 @@ class ScenarioTablePanel(QWidget):
         rows = list(range(row_min, row_max + 1))
         columns = [col for col in range(col_min, col_max + 1)
                    if not table.isColumnHidden(col)]
-        return rows, columns, selected
+        return rows, columns, selected, False
 
     def _office_clipboard_payload(self, title='HAZOP Worksheet'):
         """Build HTML + TSV of a selected or complete visible worksheet grid.
@@ -9542,14 +9568,23 @@ class ScenarioTablePanel(QWidget):
         accept plain text. Internal HAZOP copy data is deliberately separate.
         """
         table = self._table
-        rows, columns, selected_cells = self._office_copy_selection()
+        rows, columns, selected_cells, compact_hierarchy_rows = (
+            self._office_copy_selection())
         if not columns or not rows:
             return '', ''
 
-        full_rectangle = (selected_cells is None or all(
+        full_rectangle = (not compact_hierarchy_rows and
+                          (selected_cells is None or all(
             (row, col) in selected_cells for row in rows for col in columns))
+        )
 
         def _anchor_for(row, col):
+            if compact_hierarchy_rows:
+                # Each output row deliberately represents the exact
+                # hierarchy anchor the user Ctrl-selected.  Do not let a
+                # neighbouring Qt rowspan claim that row; the table still
+                # stores a real item at every physical row during rebuild.
+                return row, 1
             # Qt returns the span length even for a covered coordinate, so
             # searching upwards from ``row`` would incorrectly name the
             # covered row itself as a second anchor.  The first span that

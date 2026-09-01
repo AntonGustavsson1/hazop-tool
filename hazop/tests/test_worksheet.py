@@ -516,6 +516,53 @@ class HAZOPWorksheetTests(unittest.TestCase):
         finally:
             ws.deleteLater()
 
+    def test_office_copy_keeps_ctrl_selected_node_and_deviation_rows_compact(self):
+        """Separate Nod/Avvikelse selections must not expand rowspans.
+
+        A node and deviation can cover many physical scenario rows.  Ctrl
+        selecting the two hierarchy cells for two nodes should therefore
+        export two hierarchy rows, not a long run of duplicate node labels.
+        """
+        from hazop import HAZOPWorksheet, ScenarioTablePanel
+
+        first = self._make_full_chain(node_name='Nod A')
+        second = self._make_full_chain(node_name='Nod B')
+        self.db.conn.execute('UPDATE deviations SET description=? WHERE id=?',
+                             ('Avvikelse A', first['deviation_id']))
+        self.db.conn.execute('UPDATE deviations SET description=? WHERE id=?',
+                             ('Avvikelse B', second['deviation_id']))
+        self.db.commit()
+
+        ws = HAZOPWorksheet(self.db)
+        try:
+            ws._all_nodes_cb.setChecked(True)
+            ws.refresh()
+            panel = ws._table_panel
+            table = panel._table
+            first_row = next(row for row, meta in enumerate(panel._row_meta)
+                             if meta[1] == first['cause_id'])
+            second_row = next(row for row, meta in enumerate(panel._row_meta)
+                              if meta[1] == second['cause_id'])
+            selection_model = table.selectionModel()
+            for flags, row in (
+                    (QItemSelectionModel.SelectionFlag.ClearAndSelect, first_row),
+                    (QItemSelectionModel.SelectionFlag.Select, second_row)):
+                selection_model.select(
+                    QItemSelection(
+                        table.model().index(row, ScenarioTablePanel._C_NOD),
+                        table.model().index(row, ScenarioTablePanel._C_DEV)),
+                    flags)
+
+            html, plain_text = panel._office_clipboard_payload()
+
+            self.assertEqual(len(plain_text.splitlines()), 3)
+            self.assertEqual(html.count('Nod A'), 1)
+            self.assertEqual(html.count('Nod B'), 1)
+            self.assertEqual(html.count('Avvikelse A'), 1)
+            self.assertEqual(html.count('Avvikelse B'), 1)
+        finally:
+            ws.deleteLater()
+
     def test_refresh_after_creating_nodes_populates_and_loads(self):
         from hazop import HAZOPWorksheet
 

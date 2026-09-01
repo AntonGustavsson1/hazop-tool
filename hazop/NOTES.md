@@ -4261,6 +4261,19 @@ och som fallerar mot den gamla koden; `tests.test_smoke` och riktade
 `tests.test_integration`-tester passerar. Ingen visuell GUI-verifiering är
 gjord.
 
+## Office-kopiering: flera markerade Nod/Avvikelse-rader (2026-09-01)
+
+En Ctrl-markering av separata Nod- och Avvikelse-celler behandlas nu som
+markerade hierarkirader, inte som hela de sammanslagna cellernas underliggande
+konsekvensrader. Två markerade Nod/Avvikelse-par exporteras därför som två
+korrekta rader i Word/Excel utan upprepade nodnamn eller en avvikelse som
+hamnar på fel rad. Vanliga sammanhängande markeringar med sammanslagna
+orsaks-/konsekvensceller behåller sina befintliga rowspans.
+
+Verifierat med nytt regressionstest för två Ctrl-markerade Nod/Avvikelse-par,
+befintliga Office-kopieringstester, `tests.test_smoke` och `py_compile`.
+Ingen manuell inklistring i Word/Excel är gjord.
+
 ## Kopiera hela Worksheeten till Word eller Excel (2026-08-31)
 
 Worksheet har knappen `Kopiera till Word/Excel` och kortkommandot
