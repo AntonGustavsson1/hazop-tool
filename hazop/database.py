@@ -1362,6 +1362,11 @@ class Database:
             "ALTER TABLE equipment_markers ADD COLUMN medium_code_verified INTEGER DEFAULT 0",
             "ALTER TABLE equipment_markers ADD COLUMN nominal_size TEXT DEFAULT ''",
             "ALTER TABLE equipment_markers ADD COLUMN tag_status TEXT DEFAULT 'tagged'",
+            # The tag/counter strip has its own optional anchor.  NULL means
+            # automatic collision-free placement; non-NULL values are a user
+            # override set through P&ID -> right-click -> Flytta etikett.
+            "ALTER TABLE equipment_markers ADD COLUMN label_x REAL DEFAULT NULL",
+            "ALTER TABLE equipment_markers ADD COLUMN label_y REAL DEFAULT NULL",
             # Nod → Utrustning → Avvikelse (2026-08-07, se NOTES.md) — kopplar
             # en utrustning till en nod, och en avvikelse till en specifik
             # utrustning. Båda nullable: befintliga rader/avvikelser lämnas
@@ -1647,7 +1652,9 @@ class Database:
                 comp_type TEXT DEFAULT '',
                 shape_outline TEXT DEFAULT '',
                 confidence REAL DEFAULT 0,
-                link_method TEXT DEFAULT ''
+                link_method TEXT DEFAULT '',
+                label_x REAL DEFAULT NULL,
+                label_y REAL DEFAULT NULL
             );
             CREATE TABLE IF NOT EXISTS pid_revisions (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4495,6 +4502,17 @@ class Database:
             "shape_outline=? WHERE id=?",
             (int(page), float(x), float(y), str(shape_outline or ''),
              int(marker_id)))
+        self.commit()
+
+    def update_equipment_marker_label_position(self, marker_id, label_x, label_y):
+        """Persist only the visible tag/counter strip's PDF anchor.
+
+        This is intentionally separate from the equipment geometry update:
+        moving a label must never move or resize the detected P&ID object.
+        """
+        self.conn.execute(
+            "UPDATE equipment_markers SET label_x=?, label_y=? WHERE id=?",
+            (float(label_x), float(label_y), int(marker_id)))
         self.commit()
 
     def delete_equipment_marker(self, id_):

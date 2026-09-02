@@ -42,6 +42,7 @@ from pid_viewer import (
     MODE_PLACE_EQUIPMENT,
     MODE_EDIT_EQUIPMENT,
     MODE_RESIZE_EQUIPMENT,
+    MODE_EDIT_EQUIPMENT_LABEL,
     _icon, _get_red_symbol_svg, _PageRenderer, _apply_min_pdf_line_width,
     SimilarSymbolSearchDialog, TREE_CONTEXT_LINK_COLORS,
 )
@@ -72,6 +73,8 @@ class PIDGraphicsView(QGraphicsView):
     equipment_delete_requested = pyqtSignal(int)  # equipment_markers.id — right-click "Ta bort" (2026-08-25)
     equipment_reposition_requested = pyqtSignal(int)
     equipment_reposition_finished = pyqtSignal(int, object, int)
+    equipment_label_reposition_requested = pyqtSignal(int)
+    equipment_label_reposition_finished = pyqtSignal(int, object, int)
     equipment_resize_requested = pyqtSignal(int)
     equipment_resize_finished = pyqtSignal(int, object, int)
 
@@ -237,9 +240,14 @@ class PIDGraphicsView(QGraphicsView):
         self._equipment_resize_start_scene = None
         self._equipment_resize_preview_item = None
         self._equipment_resize_dragging = False
+        self._label_reposition_marker_id = None
 
         # Label slot tracker: (qx, qy) → next free row index (reset on clear_overlays)
         self._label_slots: dict = {}
+        # Scene-space label rectangles used by the current overlay rebuild.
+        # Automatic labels avoid these rectangles so nearby tags/counters do
+        # not hide each other.
+        self._label_occupied_rects: list[QRectF] = []
         self._pending_path_item = None
 
         # Markup overlay tracking: markup_id → list of QGraphicsItems
@@ -835,6 +843,9 @@ class PIDGraphicsView(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_RESIZE_EQUIPMENT:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        elif mode == MODE_EDIT_EQUIPMENT_LABEL:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_RED_MARKUP_SYMBOL:
@@ -1994,6 +2005,26 @@ class PIDGraphicsView(QGraphicsView):
             menu.exec(global_pos)
             return
 
+        # Labels are separate scene items from the equipment polygon.  Check
+        # them first so a right-click on the black tag backing edits the
+        # label, rather than accidentally opening the object's geometry menu.
+        hovered_label_id = None
+        for item in self._scene.items(sp):
+            if item.data(self._DATA_TYPE) == 'equipment-label':
+                label_id = item.data(self._DATA_ID)
+                if label_id is not None:
+                    hovered_label_id = int(label_id)
+                    break
+
+        if hovered_label_id is not None:
+            move_label_act = menu.addAction(_icon('move'), "Flytta etikett")
+            move_label_act.setToolTip(
+                "Klicka där etikettens övre vänstra hörn ska placeras")
+            move_label_act.triggered.connect(
+                partial(self.equipment_label_reposition_requested.emit,
+                        hovered_label_id))
+            menu.addSeparator()
+
         # If cursor is on an existing equipment marker, offer to edit it at the top
         hovered_type = hovered_id = None
         for item in self._scene.items(sp):
@@ -2002,7 +2033,7 @@ class PIDGraphicsView(QGraphicsView):
             if t == 'equipment' and i is not None:
                 hovered_type, hovered_id = t, int(i)
                 break
-        if hovered_type == 'equipment':
+        if hovered_type == 'equipment' and hovered_label_id is None:
             # Reported feedback: right-click an existing object to edit its
             # tag number and equipment type (2026-08-12, see NOTES.md) —
             # right-clicking it previously fell through to the generic
@@ -2039,27 +2070,18 @@ class PIDGraphicsView(QGraphicsView):
 
     def _place_label(self, text: str, x_pdf: float, y_pdf: float,
                      r: float, color: QColor, marker_type: str,
-                     badges=None, marker_id=None):
+                     badges=None, marker_id=None, label_pos_pdf=None):
         """Place an equipment tag and its counters in one compact label.
 
         The counters deliberately follow the tag instead of sitting on the
         equipment polygon's corners.  A single rounded black backing keeps
         the white tag and all counter bubbles legible against the P&ID.
         """
-        center = self.pdf_to_scene(x_pdf, y_pdf)
-        slot_key = (round(x_pdf * 5), round(y_pdf * 5))
-        slot = self._label_slots.get(slot_key, 0)
-        self._label_slots[slot_key] = slot + 1
-        ROW_H = 22.0
-        x0 = center.x() + r + 3
-        y0 = center.y() - 9 + slot * ROW_H
-
         label_text = text[:35]
         txt = QGraphicsSimpleTextItem(label_text)
         f = QFont(); f.setPointSize(8); f.setBold(True)
         txt.setFont(f)
         txt.setBrush(QBrush(QColor('#FFFFFF')))
-        txt.setPos(x0, y0)
         txt.setZValue(Z_OVERLAY + 2)
 
         br = txt.boundingRect()
@@ -2067,25 +2089,85 @@ class PIDGraphicsView(QGraphicsView):
         gap = 5.0
         badge_r = 8.0
         badge_specs = list(badges or [])
-        cursor_x = x0 + br.width() + (gap if label_text else 0)
+        badge_width = (len(badge_specs) * (2 * badge_r) +
+                       max(0, len(badge_specs) - 1) * 3.0)
+        content_width = max(
+            br.width(),
+            br.width() + (gap if label_text and badge_specs else 0) + badge_width)
+        content_height = max(br.height(), 2 * badge_r if badge_specs else 0)
+        bg_width = content_width + 2 * pad
+        bg_height = content_height + 2 * pad
+
+        center = self.pdf_to_scene(x_pdf, y_pdf)
+        ROW_H = 22.0
+        if label_pos_pdf is not None:
+            # A manually positioned label is deliberately honoured exactly;
+            # collision avoidance applies to automatic labels only.  This
+            # makes the context-menu action a real override, not a suggestion.
+            label_anchor = self.pdf_to_scene(
+                float(label_pos_pdf[0]), float(label_pos_pdf[1]))
+            x0, y0 = label_anchor.x(), label_anchor.y()
+        else:
+            slot_key = (self.current_page, round(x_pdf * 5), round(y_pdf * 5))
+            slot = self._label_slots.get(slot_key, 0)
+            self._label_slots[slot_key] = slot + 1
+            base_x = center.x() + r + 3
+            base_y = center.y() - 9 + slot * ROW_H
+
+            def _candidate_rect(cx, cy):
+                return QRectF(cx - pad, cy - pad, bg_width, bg_height)
+
+            # Try the natural position first, then nearby rows/columns. The
+            # deterministic order keeps labels stable after a reload while
+            # still making room for labels created at the same or a nearby
+            # P&ID position.
+            columns = (0, 1, -1, 2, -2, 3, -3)
+            rows = max(24, len(self._label_occupied_rects) * 3 + 8)
+            chosen = None
+            for row_no in range(rows):
+                for col_no in columns:
+                    cx = base_x + col_no * (bg_width + 10.0)
+                    cy = base_y + row_no * ROW_H
+                    candidate = _candidate_rect(cx, cy)
+                    if not any(candidate.adjusted(-2, -2, 2, 2).intersects(existing)
+                               for existing in self._label_occupied_rects):
+                        chosen = (cx, cy, candidate)
+                        break
+                if chosen is not None:
+                    break
+            if chosen is None:
+                # There are finite existing rectangles, so this fallback is
+                # only a guard for an unusually dense drawing.  It remains
+                # deterministic and will be clear of the last search row.
+                cx = base_x
+                cy = base_y + rows * ROW_H
+                chosen = (cx, cy, _candidate_rect(cx, cy))
+            x0, y0, bg_rect = chosen
+
+        cursor_x = x0 + br.width() + (gap if label_text and badge_specs else 0)
         badge_y = y0 + br.height() / 2.0
-        right = x0 + br.width()
-        if badge_specs:
-            right = cursor_x + len(badge_specs) * (2 * badge_r) \
-                    + max(0, len(badge_specs) - 1) * 3.0
+        if label_pos_pdf is not None:
+            bg_rect = QRectF(x0 - pad, y0 - pad, bg_width, bg_height)
+        self._label_occupied_rects.append(QRectF(bg_rect))
+        txt.setPos(x0, y0)
 
         # Use a path rather than QGraphicsRectItem so the backing has real
         # rounded corners while keeping one background item around tag +
         # bubbles.  It is intentionally below every foreground item.
-        bg_rect = QRectF(x0 - pad, y0 - pad,
-                         max(br.width(), right - x0) + 2 * pad,
-                         max(br.height(), 2 * badge_r) + 2 * pad)
         path = QPainterPath()
         path.addRoundedRect(bg_rect, 4.0, 4.0)
         bg = QGraphicsPathItem(path)
         bg.setPen(QPen(Qt.PenStyle.NoPen))
         bg.setBrush(QBrush(QColor(0, 0, 0, 204)))
         bg.setZValue(Z_OVERLAY + 1)
+
+        def _set_label_identity(item):
+            item.setData(self._DATA_TYPE, 'equipment-label')
+            if marker_id is not None:
+                item.setData(self._DATA_ID, int(marker_id))
+
+        _set_label_identity(bg)
+        _set_label_identity(txt)
 
         self._add_tracked(bg, marker_type)
         self._add_tracked(txt, marker_type)
@@ -2098,6 +2180,7 @@ class PIDGraphicsView(QGraphicsView):
                 bx - badge_r, badge_y - badge_r, 2 * badge_r, 2 * badge_r)
             badge.setPen(QPen(outline, 1))
             badge.setBrush(QBrush(fill))
+            _set_label_identity(badge)
             if badge_role:
                 badge.setData(self._DATA_BADGE_ROLE, badge_role)
                 badge.setData(self._DATA_BADGE_MARKER_ID, marker_id)
@@ -2111,6 +2194,7 @@ class PIDGraphicsView(QGraphicsView):
             count_font = QFont(); count_font.setPointSize(8); count_font.setBold(True)
             count_txt.setFont(count_font)
             count_txt.setBrush(QBrush(text_color))
+            _set_label_identity(count_txt)
             if badge_role:
                 count_txt.setData(self._DATA_BADGE_ROLE, badge_role)
                 count_txt.setData(self._DATA_BADGE_MARKER_ID, marker_id)
@@ -2127,7 +2211,7 @@ class PIDGraphicsView(QGraphicsView):
                              consequence_count=0, safeguard_count=0,
                              recommendation_count=0, show_cause=True,
                              show_consequence=True, show_safeguard=True,
-                             show_recommendation=True):
+                             show_recommendation=True, label_pos_pdf=None):
         """Draw an auto-detected equipment symbol marker: a semi-transparent
         shape tracing the detected symbol's outline (or a generic
         valve-bowtie icon if no outline was captured), linked to `tag` via
@@ -2240,7 +2324,8 @@ class PIDGraphicsView(QGraphicsView):
         if tag or badge_specs:
             self._place_label(tag, x_pdf, y_pdf, r, QColor('#FFFFFF'),
                               'equipment', badges=badge_specs,
-                              marker_id=marker_id)
+                              marker_id=marker_id,
+                              label_pos_pdf=label_pos_pdf)
             self._apply_tree_context_badges()
 
     def _equipment_drag_pixmap(self, marker_ids):
@@ -2629,6 +2714,7 @@ class PIDGraphicsView(QGraphicsView):
         for key in self._type_items:
             self._type_items[key] = []
         self._label_slots.clear()
+        self._label_occupied_rects.clear()
 
     def mousePressEvent(self, event):
         # Update current_page to whichever page was clicked
@@ -2682,14 +2768,25 @@ class PIDGraphicsView(QGraphicsView):
             self._place_rband_dragging = False
             event.accept(); return
 
-        if (self.mode in (MODE_EDIT_EQUIPMENT, MODE_RESIZE_EQUIPMENT) and
+        if (self.mode in (MODE_EDIT_EQUIPMENT, MODE_RESIZE_EQUIPMENT,
+                          MODE_EDIT_EQUIPMENT_LABEL) and
                 event.button() == Qt.MouseButton.RightButton):
-            # Both geometry-edit modes are explicitly armed from the marker's
-            # context menu. A right click is a predictable, non-destructive
-            # cancel path instead of falling through to the normal P&ID menu.
+            # Edit modes are explicitly armed from a context menu. A right
+            # click is a predictable, non-destructive cancel path instead of
+            # falling through to the normal P&ID menu.
             self._reposition_marker_id = None
             self._resize_marker_id = None
+            self._label_reposition_marker_id = None
             self.set_mode(MODE_NAV)
+            event.accept(); return
+
+        if self.mode == MODE_EDIT_EQUIPMENT_LABEL and event.button() == Qt.MouseButton.LeftButton:
+            marker_id = getattr(self, '_label_reposition_marker_id', None)
+            self._label_reposition_marker_id = None
+            self.set_mode(MODE_NAV)
+            if marker_id is not None:
+                self.equipment_label_reposition_finished.emit(
+                    int(marker_id), sp, self.current_page)
             event.accept(); return
 
         if self.mode == MODE_EDIT_EQUIPMENT and event.button() == Qt.MouseButton.LeftButton:
@@ -3321,6 +3418,17 @@ class PIDGraphicsView(QGraphicsView):
         self._schedule_lod_update()
 
     def keyPressEvent(self, event):
+        if (self.mode in (MODE_EDIT_EQUIPMENT, MODE_RESIZE_EQUIPMENT,
+                          MODE_EDIT_EQUIPMENT_LABEL) and
+                event.key() == Qt.Key.Key_Escape):
+            # Context-menu placement is a one-shot gesture.  Escape must
+            # cancel it without changing either the marker or its label.
+            self._reposition_marker_id = None
+            self._resize_marker_id = None
+            self._label_reposition_marker_id = None
+            self.set_mode(MODE_NAV)
+            event.accept()
+            return
         # Escape clears an active equipment multi-selection (2026-08-10,
         # see NOTES.md) — previously only placement modes/drawing had an
         # Escape handler; a Ctrl-click/Ctrl-drag selection had no keyboard

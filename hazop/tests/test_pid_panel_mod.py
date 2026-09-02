@@ -2322,6 +2322,70 @@ class ExportPdfMarkupTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class EquipmentLabelPanelTests(unittest.TestCase):
+    """The label position is persisted independently of marker geometry."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_equipment_label_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from pid_viewer import PIDPanel
+        self.panel = PIDPanel(self.db)
+        self.eq_id = self.db.add_equipment_item(
+            "V-1", "V-1", "V", 0, "Ventil", '', 0)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _marker(self):
+        import json
+        return self.db.add_equipment_marker(
+            self.eq_id, "V-1", 0, 10.0, 10.0, "Ventil",
+            shape_outline=json.dumps([[0, 0], [10, 0], [10, 10], [0, 10]]),
+            confidence=1.0, link_method='manual')
+
+    def test_label_move_persists_without_moving_equipment(self):
+        from PyQt6.QtCore import QPointF
+        marker_id = self._marker()
+        self.panel.viewer.scene_to_pdf = lambda _point: (60.0, 70.0)
+
+        self.panel._finish_equipment_label_reposition(
+            marker_id, QPointF(60, 70), 0)
+
+        row = dict(self.db.equipment_markers_for_page(0)[0])
+        self.assertEqual((row['x'], row['y']), (10.0, 10.0))
+        self.assertEqual((row['label_x'], row['label_y']), (60.0, 70.0))
+
+    def test_moving_marker_keeps_manual_label_offset(self):
+        from PyQt6.QtCore import QPointF
+        marker_id = self._marker()
+        self.db.update_equipment_marker_label_position(marker_id, 15.0, 16.0)
+        self.panel.viewer.scene_to_pdf = lambda _point: (30.0, 40.0)
+
+        self.panel._finish_equipment_reposition(
+            marker_id, QPointF(30, 40), 0)
+
+        row = dict(self.db.equipment_markers_for_page(0)[0])
+        self.assertEqual((row['x'], row['y']), (30.0, 40.0))
+        self.assertEqual((row['label_x'], row['label_y']), (35.0, 46.0))
+
+    def test_label_move_mode_has_its_own_one_shot_state(self):
+        marker_id = self._marker()
+
+        self.panel._begin_equipment_label_reposition(marker_id)
+
+        self.assertEqual(self.panel.viewer.mode, 21)
+        self.assertEqual(self.panel.viewer._label_reposition_marker_id, marker_id)
+
+
 class SmartPolylineRemovedTests(unittest.TestCase):
     """"Smart polylinje" (SmartPipeTracer-backed markup tool, informally
     reported by the user as "Smart Polygon") was torn out of the active

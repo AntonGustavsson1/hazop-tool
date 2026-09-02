@@ -848,6 +848,61 @@ class EquipmentMarkerFourBadgesTests(unittest.TestCase):
 # scene-units-per-pdf-point factor every coordinate transform assumes.
 # ══════════════════════════════════════════════════════════════════════════
 
+class EquipmentLabelPlacementTests(unittest.TestCase):
+    """Equipment tag/counter strips are collision-aware and independently
+    addressable from the equipment polygon (2026-09-02)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_automatic_labels_do_not_overlap_when_created_at_same_position(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.add_equipment_marker(1, 10.0, 10.0, 'Ventil', tag='V-101')
+        view.add_equipment_marker(2, 10.0, 10.0, 'Pump', tag='P-202')
+
+        self.assertEqual(len(view._label_occupied_rects), 2)
+        first, second = view._label_occupied_rects
+        self.assertFalse(first.adjusted(-2, -2, 2, 2).intersects(second))
+
+    def test_label_items_are_hit_testable_with_their_marker_id(self):
+        from pid_viewer import PIDGraphicsView
+        from PyQt6.QtWidgets import QGraphicsSimpleTextItem
+        view = PIDGraphicsView()
+        view.add_equipment_marker(7, 10.0, 10.0, 'Ventil', tag='V-7')
+
+        labels = [item for item in view._type_items['equipment']
+                  if isinstance(item, QGraphicsSimpleTextItem)
+                  and item.data(view._DATA_TYPE) == 'equipment-label']
+        self.assertTrue(labels)
+        self.assertTrue(all(item.data(view._DATA_ID) == 7 for item in labels))
+
+    def test_context_menu_offers_move_label_on_tag(self):
+        from pid_viewer import PIDGraphicsView
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QGraphicsSimpleTextItem, QMenu
+        view = PIDGraphicsView()
+        view.add_equipment_marker(7, 10.0, 10.0, 'Ventil', tag='V-7')
+        tag = next(item for item in view._type_items['equipment']
+                   if isinstance(item, QGraphicsSimpleTextItem) and item.text() == 'V-7')
+        texts = []
+        moved = []
+        view.equipment_label_reposition_requested.connect(moved.append)
+
+        def _fake_exec(menu_self, _pos=None):
+            texts.extend(action.text() for action in menu_self.actions())
+            next(action for action in menu_self.actions()
+                 if action.text() == 'Flytta etikett').trigger()
+            return None
+
+        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
+            view._show_context_menu(tag.sceneBoundingRect().center(), QPoint(0, 0))
+
+        self.assertIn('Flytta etikett', texts)
+        self.assertEqual(moved, [7])
+
+
 class AdaptiveRasterZoomTests(unittest.TestCase):
 
     @classmethod

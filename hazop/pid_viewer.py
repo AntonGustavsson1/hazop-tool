@@ -508,6 +508,7 @@ MODE_ANNOTATION     = 17  # click on board to place a sticky note
 MODE_PLACE_EQUIPMENT = 18 # one-shot click to place an equipment marker
 MODE_EDIT_EQUIPMENT = 19  # one-shot click to reposition an existing marker
 MODE_RESIZE_EQUIPMENT = 20  # drag a new bounding box for an existing marker
+MODE_EDIT_EQUIPMENT_LABEL = 21  # one-shot click to reposition only its label
 
 # ── Off-page connector analysis ───────────────────────────────────────────────
 _RE_TO_FROM = re.compile(

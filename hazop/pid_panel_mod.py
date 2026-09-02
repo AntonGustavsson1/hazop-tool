@@ -65,6 +65,7 @@ from pid_viewer import (
     MODE_PICK_REF_TAG, MODE_ANNOTATION, MODE_PLACE_EQUIPMENT,
     MODE_EDIT_EQUIPMENT,
     MODE_RESIZE_EQUIPMENT,
+    MODE_EDIT_EQUIPMENT_LABEL,
     _icon, _vline, _draw_pid_marker, _draw_pdf_equipment_marker,
     _hex_to_fitz_rgb, _sheet_ref_variants,
     _equip_prefix_from_tag, _obj_type_matches, ensure_ocr_available,
@@ -1616,6 +1617,10 @@ class PIDPanel(QWidget):
         self.viewer.equipment_edit_requested.connect(self.equipment_edit_requested.emit)
         self.viewer.equipment_reposition_requested.connect(self._begin_equipment_reposition)
         self.viewer.equipment_reposition_finished.connect(self._finish_equipment_reposition)
+        self.viewer.equipment_label_reposition_requested.connect(
+            self._begin_equipment_label_reposition)
+        self.viewer.equipment_label_reposition_finished.connect(
+            self._finish_equipment_label_reposition)
         self.viewer.equipment_resize_requested.connect(self._begin_equipment_resize)
         self.viewer.equipment_resize_finished.connect(self._finish_equipment_resize)
         self.viewer.equipment_delete_requested.connect(self._on_equipment_delete_requested)
@@ -3212,7 +3217,14 @@ class PIDPanel(QWidget):
                         float(m.get('symbol_w', 40)), float(m.get('symbol_h', 40)),
                         float(m.get('symbol_rot', 0)))
 
-            for m in self.db.equipment_markers_for_page(page):
+            marker_rows = list(self.db.equipment_markers_for_page(page))
+            # User-positioned labels are fixed obstacles.  Build them first
+            # so automatic labels can move around them regardless of marker
+            # insertion order; automatic-vs-automatic order remains stable.
+            marker_rows.sort(key=lambda row: (
+                dict(row).get('label_x') is None,
+                dict(row).get('id', 0)))
+            for m in marker_rows:
                 md = dict(m)
                 eq_id = md.get('equipment_id')
                 dev_count = self.db.equipment_deviation_count(eq_id) if eq_id else 0
@@ -3235,6 +3247,9 @@ class PIDPanel(QWidget):
                             if tag_val else 0)
                 rec_count = (self.db.equipment_recommendation_count(tag_val, comp_type_val)
                              if tag_val else 0)
+                label_pos = None
+                if md.get('label_x') is not None and md.get('label_y') is not None:
+                    label_pos = (float(md['label_x']), float(md['label_y']))
                 layer_visible = self._tree_context_layer_visibility
                 self.viewer.add_equipment_marker(
                     md['id'], md['x'], md['y'], comp_type_val,
@@ -3245,7 +3260,8 @@ class PIDPanel(QWidget):
                     show_cause=layer_visible.get('cause', True),
                     show_consequence=layer_visible.get('consequence', True),
                     show_safeguard=layer_visible.get('safeguard', True),
-                    show_recommendation=layer_visible.get('recommendation', True))
+                    show_recommendation=layer_visible.get('recommendation', True),
+                    label_pos_pdf=label_pos)
 
         # Feature 8: load sticky note annotations
         if hasattr(self.db, 'get_board_annotations'):
@@ -3911,7 +3927,7 @@ class PIDPanel(QWidget):
         try:
             x_pdf, y_pdf = self.viewer.scene_to_pdf(scene_pos)
             row = self.db.conn.execute(
-                "SELECT equipment_id, x, y, shape_outline "
+                "SELECT equipment_id, x, y, shape_outline, label_x, label_y "
                 "FROM equipment_markers WHERE id=?",
                 (int(marker_id),)).fetchone()
             if not row:
@@ -3933,6 +3949,8 @@ class PIDPanel(QWidget):
                 # A malformed/legacy outline must not block moving the
                 # marker centre. Keep its original value for a later repair.
                 translated = outline
+            dx = x_pdf - old_x
+            dy = y_pdf - old_y
             with self.db.history_group():
                 if translated != outline:
                     self.db.update_equipment_marker_geometry(
@@ -3940,8 +3958,49 @@ class PIDPanel(QWidget):
                 else:
                     self.db.update_equipment_marker_position(
                         marker_id, page, x_pdf, y_pdf)
+                # A manually placed label belongs to the marker, so preserve
+                # its relative offset when the marker itself is moved.  An
+                # automatic label stays NULL and will be laid out again by
+                # the collision solver on reload.
+                if row['label_x'] is not None and row['label_y'] is not None:
+                    self.db.update_equipment_marker_label_position(
+                        marker_id, float(row['label_x']) + dx,
+                        float(row['label_y']) + dy)
             self._load_overlays()
             if row and row['equipment_id'] is not None:
+                self.equipment_updated.emit(int(row['equipment_id']))
+        finally:
+            self.viewer.setToolTip('')
+
+    def _begin_equipment_label_reposition(self, marker_id):
+        """Arm a one-click move for only an equipment label."""
+        row = self.db.conn.execute(
+            "SELECT tag FROM equipment_markers WHERE id=?", (int(marker_id),)
+        ).fetchone()
+        if not row:
+            return
+        # set_mode() clears transient geometry gestures.  Store the label ID
+        # after it so this one-shot operation cannot be purged on entry.
+        self.viewer.set_mode(MODE_EDIT_EQUIPMENT_LABEL)
+        self.viewer._label_reposition_marker_id = int(marker_id)
+        self.viewer.setToolTip(
+            f"Klicka där etiketten för {row['tag'] or 'objektet'} ska placeras. "
+            "Högerklick avbryter.")
+
+    def _finish_equipment_label_reposition(self, marker_id, scene_pos, page):
+        """Persist a label anchor without changing the equipment geometry."""
+        try:
+            x_pdf, y_pdf = self.viewer.scene_to_pdf(scene_pos)
+            row = self.db.conn.execute(
+                "SELECT equipment_id FROM equipment_markers WHERE id=?",
+                (int(marker_id),)).fetchone()
+            if not row:
+                return
+            with self.db.history_group():
+                self.db.update_equipment_marker_label_position(
+                    marker_id, x_pdf, y_pdf)
+            self._load_overlays()
+            if row['equipment_id'] is not None:
                 self.equipment_updated.emit(int(row['equipment_id']))
         finally:
             self.viewer.setToolTip('')
@@ -3967,7 +4026,7 @@ class PIDPanel(QWidget):
             if rect.width() <= 0.5 or rect.height() <= 0.5:
                 return
             row = self.db.conn.execute(
-                "SELECT equipment_id, x, y, shape_outline "
+                "SELECT equipment_id, x, y, shape_outline, label_x, label_y "
                 "FROM equipment_markers WHERE id=?", (int(marker_id),)
             ).fetchone()
             if not row:
@@ -4012,9 +4071,16 @@ class PIDPanel(QWidget):
                 ]
             outline = json.dumps(new_points)
             center = rect.center()
+            old_center_x = float(row['x'] or 0.0)
+            old_center_y = float(row['y'] or 0.0)
             with self.db.history_group():
                 self.db.update_equipment_marker_geometry(
                     marker_id, page, center.x(), center.y(), outline)
+                if row['label_x'] is not None and row['label_y'] is not None:
+                    self.db.update_equipment_marker_label_position(
+                        marker_id,
+                        float(row['label_x']) + center.x() - old_center_x,
+                        float(row['label_y']) + center.y() - old_center_y)
             self._load_overlays()
             if row['equipment_id'] is not None:
                 self.equipment_updated.emit(int(row['equipment_id']))

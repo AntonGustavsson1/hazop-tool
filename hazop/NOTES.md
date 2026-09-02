@@ -5345,3 +5345,23 @@ Dragbildens hotspot ligger nu i vänsterkanten och etikettstacken har en
 transparent ledmarginal på 10 px. Etiketten följer därför fortfarande musen,
 men hamnar till höger om pekaren så att släppmålets pilspets inte täcks.
 Detta gäller lika för enstaka och staplade multi-dragetiketter.
+
+## Krockfria P&ID-etiketter och manuell etikettflytt (2026-09-02)
+
+Etikett-/räknarlisten bredvid ett P&ID-objekt får nu ett eget hit-test-ID.
+När etiketter skapas eller byggs om provar automatiken lediga rader och
+kolumner runt den naturliga placeringen, så två etiketter får inte samma
+svarta bakgrund och döljer varandra. Manuellt placerade etiketter behandlas
+som fasta hinder vid efterföljande omladdning.
+
+Högerklick på etiketten, dess svarta bakgrund eller en räknarboll visar
+`Flytta etikett`. Därefter placeras etiketten med ett klick och positionen
+sparas separat från objektets mittpunkt. Om objektet senare flyttas eller
+storleksändras följer en manuellt placerad etikett med relativt, medan
+automatiskt placerade etiketter fortsätter att krockundvikas vid omladdning.
+
+Verifierat med 64 riktade P&ID-/panel-/databastester, 112 äldre
+P&ID-viewertester samt `py_compile` och `git diff --check`. En separat körning
+av hela `tests.test_pid_panel_mod` är fortfarande inte grön: 6 befintliga
+EquipmentDeviationBar-fel och 1 fel i testets checklist-widget kvarstår i den
+nuvarande headless Qt-miljön; de berör inte etikettändringen.
