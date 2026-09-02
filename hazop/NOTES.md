@@ -5295,6 +5295,16 @@ placerings-, markeringsgransknings- och global-ersättningstester, inklusive
 ett faktiskt Qt-tangenttryck för Ctrl+Z/Ctrl+Y, samt `py_compile` och
 `git diff --check`. Ingen manuell visuell GUI-genomgång är gjord.
 
+## Fyra stabila gummibandsbollar (2026-09-02)
+
+De fyra P&ID-räknarna för orsak, konsekvens, safeguard och rekommendation
+visas nu alltid när motsvarande lager är aktiverat ovanför HAZOP-trädet.
+Även räknare med värdet 0 behåller sin plats och visas i neutral grå färg.
+När lagret stängs av tas motsvarande boll fortfarande bort.
+
+Badge-count sparas på grafikobjekten så att noll förblir grå även när aktuell
+trädmarkering annars skulle färga en aktiv badge.
+
 ## Omedelbar etikett efter gummibandsplacering (2026-09-02)
 
 Den förenklade popupen efter gummibandsdragning sparar tagg och objekttyp i

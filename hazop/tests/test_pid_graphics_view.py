@@ -591,13 +591,10 @@ class TreeContextHighlightTests(unittest.TestCase):
         self.assertEqual(items[1].pen().color(), QColor(120, 120, 120))
 
 
-class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
-    """PIDGraphicsView.add_equipment_marker draws one small numbered badge
-    per non-zero counter (deviation/consequence/safeguard) — see
-    EquipmentConsequenceSafeguardCountTests for the underlying Database
-    counters this feeds from. Counts QGraphicsEllipseItem badges added to
-    _type_items['equipment'] (the polygon marker itself is a
-    QGraphicsPolygonItem, so it's never mistaken for a badge)."""
+class EquipmentMarkerFourBadgesTests(unittest.TestCase):
+    """PIDGraphicsView.add_equipment_marker draws one stable numbered badge
+    per visible HAZOP layer. Zero-count badges remain visible in neutral grey
+    so changing counts or tree selection does not move the other badges."""
 
     @classmethod
     def setUpClass(cls):
@@ -608,11 +605,21 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
         return sum(1 for item in view._type_items.get('equipment', [])
                    if isinstance(item, QGraphicsEllipseItem))
 
-    def test_no_badges_when_all_counts_zero(self):
+    def test_all_visible_layers_keep_a_grey_zero_badge(self):
         from pid_viewer import PIDGraphicsView
+        from PyQt6.QtGui import QColor
         view = PIDGraphicsView()
         view.add_equipment_marker(1, 0, 0, "Ventil", tag="V-101")
-        self.assertEqual(self._badge_count(view), 0)
+        badges = [item for item in view._type_items['equipment']
+                  if item.__class__.__name__ == 'QGraphicsEllipseItem']
+        self.assertEqual(self._badge_count(view), 4)
+        self.assertEqual({badge.brush().color().name() for badge in badges},
+                         {QColor(180, 180, 180).name()})
+        self.assertEqual(
+            {item.text() for item in view._type_items['equipment']
+             if item.__class__.__name__ == 'QGraphicsSimpleTextItem'
+             and item.data(view._DATA_BADGE_ROLE)},
+            {'0'})
 
     def test_deviation_count_no_longer_changes_marker_from_grey_to_green(self):
         from pid_viewer import PIDGraphicsView
@@ -626,19 +633,34 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
         self.assertEqual(poly.pen().color(), QColor(120, 120, 120))
         self.assertEqual(poly.brush().color(), QColor(150, 150, 150, 90))
 
-    def test_one_badge_per_nonzero_counter(self):
+    def test_all_visible_layers_keep_their_positions_when_counts_differ(self):
         from pid_viewer import PIDGraphicsView
         view = PIDGraphicsView()
         view.add_equipment_marker(1, 0, 0, "Ventil", tag="V-101",
                                   deviation_count=2, consequence_count=1, safeguard_count=3)
-        self.assertEqual(self._badge_count(view), 3)
+        self.assertEqual(self._badge_count(view), 4)
 
-    def test_only_nonzero_counters_get_a_badge(self):
+    def test_zero_count_badges_are_grey_even_inside_selected_scope(self):
         from pid_viewer import PIDGraphicsView
+        from PyQt6.QtGui import QColor
+        from PyQt6.QtWidgets import QGraphicsEllipseItem
         view = PIDGraphicsView()
         view.add_equipment_marker(1, 0, 0, "Ventil", tag="V-101",
                                   deviation_count=0, consequence_count=5, safeguard_count=0)
-        self.assertEqual(self._badge_count(view), 1)
+        view.set_tree_context_highlights(
+            {1: QColor(0, 200, 0)},
+            {1: {'cause', 'consequence', 'safeguard', 'recommendation'}})
+        self.assertEqual(self._badge_count(view), 4)
+        by_role = {
+            item.data(view._DATA_BADGE_ROLE): item
+            for item in view._type_items['equipment']
+            if isinstance(item, QGraphicsEllipseItem)
+        }
+        self.assertEqual(by_role['cause'].brush().color(), QColor(180, 180, 180))
+        self.assertNotEqual(by_role['consequence'].brush().color(),
+                            QColor(180, 180, 180))
+        self.assertEqual(by_role['safeguard'].brush().color(), QColor(180, 180, 180))
+        self.assertEqual(by_role['recommendation'].brush().color(), QColor(180, 180, 180))
 
     def test_tree_context_lights_only_roles_in_the_selected_tree_scope(self):
         from pid_viewer import (PIDGraphicsView, TREE_CONTEXT_LINK_COLORS,
@@ -690,7 +712,8 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
             view = PIDGraphicsView()
             view.add_equipment_marker(
                 1, 0, 0, "Ventil", tag="V-101", deviation_count=2,
-                consequence_count=1, safeguard_count=3)
+                consequence_count=1, safeguard_count=3,
+                show_recommendation=False)
             view.set_tree_context_highlights(
                 {1: QColor(0, 200, 0)},
                 {1: {'cause', 'consequence', 'safeguard'}})
@@ -770,8 +793,12 @@ class EquipmentMarkerThreeBadgesTests(unittest.TestCase):
         view.add_equipment_marker(
             2, 0, 0, "Ventil", tag="V-102", recommendation_count=5,
             show_recommendation=False)
-        self.assertFalse(any(isinstance(item, QGraphicsEllipseItem)
-                             for item in view._type_items['equipment']))
+        badges = [item for item in view._type_items['equipment']
+                  if isinstance(item, QGraphicsEllipseItem)]
+        self.assertEqual(len(badges), 3)
+        self.assertFalse(any(
+            item.data(view._DATA_BADGE_ROLE) == 'recommendation'
+            for item in badges))
 
 
 # ══════════════════════════════════════════════════════════════════════════

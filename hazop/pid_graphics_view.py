@@ -85,6 +85,7 @@ class PIDGraphicsView(QGraphicsView):
     _DATA_BADGE_FILL = 11
     _DATA_BADGE_OUTLINE = 12
     _DATA_BADGE_TEXT = 13
+    _DATA_BADGE_COUNT = 14
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1868,13 +1869,21 @@ class PIDGraphicsView(QGraphicsView):
                 continue
             active_roles = self._tree_context_badge_roles.get(marker_id, set())
             active = bool(active_roles & aliases.get(role, {role}))
+            count = item.data(self._DATA_BADGE_COUNT)
+            zero_count = count is not None and int(count) <= 0
             if isinstance(item, QGraphicsEllipseItem):
-                fill = QColor(item.data(self._DATA_BADGE_FILL)) if active else QColor(180, 180, 180)
-                outline = QColor(item.data(self._DATA_BADGE_OUTLINE)) if active else QColor(115, 115, 115)
+                fill = (QColor(180, 180, 180) if zero_count else
+                        (QColor(item.data(self._DATA_BADGE_FILL)) if active
+                         else QColor(180, 180, 180)))
+                outline = (QColor(115, 115, 115) if zero_count else
+                           (QColor(item.data(self._DATA_BADGE_OUTLINE)) if active
+                            else QColor(115, 115, 115)))
                 item.setBrush(QBrush(fill))
                 item.setPen(QPen(outline, 1))
             elif isinstance(item, QGraphicsSimpleTextItem):
-                text_color = QColor(item.data(self._DATA_BADGE_TEXT)) if active else QColor(90, 90, 90)
+                text_color = (QColor(90, 90, 90) if zero_count else
+                              (QColor(item.data(self._DATA_BADGE_TEXT)) if active
+                               else QColor(90, 90, 90)))
                 item.setBrush(QBrush(text_color))
 
     def _reset_equipment_marker_color(self, marker_id):
@@ -2068,6 +2077,7 @@ class PIDGraphicsView(QGraphicsView):
                 badge.setData(self._DATA_BADGE_MARKER_ID, marker_id)
                 badge.setData(self._DATA_BADGE_FILL, QColor(fill))
                 badge.setData(self._DATA_BADGE_OUTLINE, QColor(outline))
+                badge.setData(self._DATA_BADGE_COUNT, int(count))
             badge.setZValue(Z_OVERLAY + 2)
             self._add_tracked(badge, marker_type)
 
@@ -2079,6 +2089,7 @@ class PIDGraphicsView(QGraphicsView):
                 count_txt.setData(self._DATA_BADGE_ROLE, badge_role)
                 count_txt.setData(self._DATA_BADGE_MARKER_ID, marker_id)
                 count_txt.setData(self._DATA_BADGE_TEXT, QColor(text_color))
+                count_txt.setData(self._DATA_BADGE_COUNT, int(count))
             tb = count_txt.boundingRect()
             count_txt.setPos(bx - tb.width() / 2,
                              badge_y - tb.height() / 2)
@@ -2102,10 +2113,13 @@ class PIDGraphicsView(QGraphicsView):
         the selected HAZOP tree scope. `deviation_count` only controls its
         numbered information badge and tooltip; it never controls color.
 
-        `consequence_count`/`safeguard_count` (2026-08-11, see NOTES.md
-        "Tre räknare på P&ID") — two further badges (bottom-right/
-        bottom-left), each only drawn when >0, counting how many times
-        this equipment's tag appears in consequences/safeguards
+        `consequence_count`/`safeguard_count`/`recommendation_count`
+        (2026-08-11, see NOTES.md "Fyra räknare på P&ID") — one badge per
+        visible HAZOP layer.  A visible layer is drawn even when its count is
+        zero, in neutral grey, so the four positions remain stable while the
+        user changes tree selection.  Counts greater than zero use the
+        corresponding tree-button colour and count how many times this
+        equipment's tag appears in consequences/safeguards/recommendations
         (Database.equipment_consequence_count/equipment_safeguard_count —
         tag+type match, since those tables have no equipment_id FK to
         join on the way deviations does)."""
@@ -2157,32 +2171,38 @@ class PIDGraphicsView(QGraphicsView):
         self._add_tracked(item, 'equipment')
 
         def _badge_spec(count, link_type, fallback):
-            # Use the same configurable colours as the three visibility
-            # buttons above the HAZOP tree.  These badges represent the
-            # corresponding cause/consequence/safeguard counts, so hardcoded
-            # green/orange/blue colours made the P&ID disagree with the
-            # user's selected tree palette.
-            fill = QColor(TREE_CONTEXT_LINK_COLORS.get(
-                link_type, QColor(fallback)))
-            if not fill.isValid():
-                fill = QColor(fallback)
-            outline = fill.darker(140)
-            luminance = (0.299 * fill.red() + 0.587 * fill.green()
-                         + 0.114 * fill.blue())
-            text_color = QColor('#111111' if luminance > 155 else '#ffffff')
+            # Use the same configurable colours as the visibility buttons
+            # above the HAZOP tree for non-zero counts.  A zero-count badge
+            # is intentionally neutral, even if its layer is in the current
+            # tree scope, so zero has a stable and readable visual meaning.
+            if int(count) <= 0:
+                fill = QColor(180, 180, 180)
+                outline = QColor(115, 115, 115)
+                text_color = QColor(90, 90, 90)
+            else:
+                fill = QColor(TREE_CONTEXT_LINK_COLORS.get(
+                    link_type, QColor(fallback)))
+                if not fill.isValid():
+                    fill = QColor(fallback)
+                outline = fill.darker(140)
+                luminance = (0.299 * fill.red() + 0.587 * fill.green()
+                             + 0.114 * fill.blue())
+                text_color = QColor('#111111' if luminance > 155 else '#ffffff')
             return count, fill, outline, text_color, link_type
 
         badge_specs = []
-        # Three corners, one counter each — colours distinct from the
-        # The three counters use the matching configurable cause,
-        # consequence and safeguard colours from the HAZOP tree buttons.
-        if has_deviations and show_cause:
+        # One counter per visible HAZOP layer.  Keep zero-count counters in
+        # the layout as grey placeholders so the four positions do not move
+        # when a count changes from zero to one (or when the tree selection
+        # changes).  The layer visibility toggles above the HAZOP tree still
+        # control whether a badge is included at all.
+        if show_cause:
             badge_specs.append(_badge_spec(deviation_count, 'cause', '#e74c3c'))
-        if consequence_count > 0 and show_consequence:
+        if show_consequence:
             badge_specs.append(_badge_spec(consequence_count, 'consequence', '#e67e22'))
-        if safeguard_count > 0 and show_safeguard:
+        if show_safeguard:
             badge_specs.append(_badge_spec(safeguard_count, 'safeguard', '#27ae60'))
-        if recommendation_count > 0 and show_recommendation:
+        if show_recommendation:
             badge_specs.append(_badge_spec(
                 recommendation_count, 'recommendation', '#8e44ad'))
 
