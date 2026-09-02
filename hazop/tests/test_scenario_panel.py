@@ -4795,6 +4795,35 @@ class ScenarioScrollPreservationTests(unittest.TestCase):
 
             self.assertGreater(panel._table.verticalScrollBar().value(), 0)
 
+    def test_clicking_enablers_preserves_protocol_scroll_position(self):
+        """Opening the embedded Enablers button must not jump the table to
+        the button's row just to update the current-cell highlight."""
+        with _TempDbMainWindow() as win:
+            db = win.db
+            node_id = db.add_node()
+            dev_id = db.deviations(node_id)[0]['id']
+            for number in range(28):
+                cause_id = db.add_cause(dev_id)
+                db.update_cause(cause_id, description=f'Orsak {number}')
+                cons_id = db.add_consequence(cause_id)
+                db.update_consequence(cons_id, f'Konsekvens {number}', 3)
+
+            panel = win.scenario_panel
+            panel.load_node(node_id)
+            panel.resize(900, 160)
+            panel.show()
+            self.app.processEvents()
+            bar = panel._table.verticalScrollBar()
+            self.assertGreater(bar.maximum(), 0)
+            before = max(1, bar.maximum() // 2)
+            bar.setValue(before)
+            self.app.processEvents()
+
+            panel._select_lopa_row_preserving_scroll(panel._table.rowCount() - 1)
+            self.app.processEvents()
+
+            self.assertEqual(panel._table.verticalScrollBar().value(), before)
+
 
 class BlankCellKeyboardNavigationTests(unittest.TestCase):
     """Blank cells must not invoke QTableWidget's type-ahead navigation."""

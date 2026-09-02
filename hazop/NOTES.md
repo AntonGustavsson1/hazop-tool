@@ -5365,3 +5365,10 @@ P&ID-viewertester samt `py_compile` och `git diff --check`. En separat körning
 av hela `tests.test_pid_panel_mod` är fortfarande inte grön: 6 befintliga
 EquipmentDeviationBar-fel och 1 fel i testets checklist-widget kvarstår i den
 nuvarande headless Qt-miljön; de berör inte etikettändringen.
+
+## Bevara protokollposition vid klick på Enablers (2026-09-02)
+
+Enablers-knappen i HAZOP Scenario tar inte längre fokus från tabellen. Vid
+markering sparas och återställs både vertikal och horisontell scrollposition,
+även efter popupens extra event-loop, så att protokollet inte hoppar till raden
+som klickades.

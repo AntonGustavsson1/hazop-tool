@@ -4401,6 +4401,11 @@ class _LopaWidget(QWidget):
         self._extra_btn = QPushButton()
         self._extra_btn.setObjectName('enablerSummaryButton')
         self._extra_btn.setFixedHeight(22)
+        # This is a cell action, not a keyboard-focus target.  Letting the
+        # embedded button take focus makes QTableWidget ensure its row is
+        # visible, which can make the surrounding HAZOP protocol jump when
+        # the user only wants to open the enabler popup.
+        self._extra_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._selected = False
         self._extra_btn.setToolTip('Klicka för att välja enablers och deras RRF.')
         lay.addWidget(self._extra_btn)
@@ -6376,7 +6381,7 @@ class ScenarioTablePanel(QWidget):
             self._table.currentRow() == r and
             self._table.currentColumn() == self._C_LOPA)
         lopa_w._extra_btn.pressed.connect(
-            lambda row=r: self._table.setCurrentCell(row, self._C_LOPA))
+            lambda row=r: self._select_lopa_row_preserving_scroll(row))
         lopa_w._extra_btn.clicked.connect(partial(self._edit_extra, cid))
         self._table.setCellWidget(r, self._C_LOPA, lopa_w)
 
@@ -6598,6 +6603,36 @@ class ScenarioTablePanel(QWidget):
             dlg.position_below(anchor)
         dlg.exec()
         self._schedule_rebuild()
+
+    def _select_lopa_row_preserving_scroll(self, row):
+        """Select an Enablers cell without letting Qt move the protocol.
+
+        The cell contains a real QPushButton, so changing the current cell
+        can trigger QTableWidget's automatic ensure-visible behaviour.  The
+        invoking button is already visible; preserve the exact table view
+        synchronously and once more on the next event-loop turn because the
+        clicked signal immediately opens a nested popup loop.
+        """
+        table = self._table
+        vbar = table.verticalScrollBar()
+        hbar = table.horizontalScrollBar()
+        v_value = vbar.value()
+        h_value = hbar.value()
+        table.setCurrentCell(row, self._C_LOPA)
+        vbar.setValue(v_value)
+        hbar.setValue(h_value)
+
+        def _restore():
+            try:
+                table.verticalScrollBar().setValue(v_value)
+                table.horizontalScrollBar().setValue(h_value)
+            except RuntimeError:
+                # The panel may have been closed while the popup's nested
+                # event loop was active; in that case there is no view left
+                # to restore and the queued callback is harmless.
+                return
+
+        QTimer.singleShot(0, _restore)
 
     # ── P&ID placement helpers ─────────────────────────────────────────────────
 
