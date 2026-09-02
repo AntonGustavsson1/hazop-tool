@@ -5338,3 +5338,10 @@ Verifierat med riktade riskrenderingstester, 48 P&ID-grafiktester, placerings-
 och geometritester samt py_compile. En befintlig testsvit har kvar två äldre
 förväntningsfel för tomma slutriskceller (den förväntar ett mojibake-tecken
 i stället för programmets avsiktliga tomma text); dessa berör inte ändringen.
+
+## Dragetikett med fri pilspets (2026-09-02)
+
+Dragbildens hotspot ligger nu i vänsterkanten och etikettstacken har en
+transparent ledmarginal på 10 px. Etiketten följer därför fortfarande musen,
+men hamnar till höger om pekaren så att släppmålets pilspets inte täcks.
+Detta gäller lika för enstaka och staplade multi-dragetiketter.

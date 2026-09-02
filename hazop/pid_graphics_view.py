@@ -2268,15 +2268,21 @@ class PIDGraphicsView(QGraphicsView):
         from PyQt6.QtGui import QFontMetrics
         fm = QFontMetrics(font)
         row_height = max(24, fm.height() + 10)
-        width = max(72, max(fm.horizontalAdvance(label) for label in labels) + 18)
+        # Keep the cursor/pointer clear of the label and, in particular, of
+        # the arrow tip at a worksheet drop target. The hotspot is anchored
+        # at the pixmap's left edge below, so this transparent lead-in is a
+        # deliberate visual offset rather than a hidden text correction.
+        lead_in = 10
+        width = max(72, lead_in +
+                    max(fm.horizontalAdvance(label) for label in labels) + 18)
         pixmap = QPixmap(width, row_height * len(labels) + 4)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setFont(font)
         for index, label in enumerate(labels):
-            rect = QRectF(1, 2 + index * row_height,
-                          width - 2, row_height - 2)
+            rect = QRectF(lead_in, 2 + index * row_height,
+                          width - lead_in - 1, row_height - 2)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(QColor(0, 0, 0, 204)))
             painter.drawRoundedRect(rect, 4, 4)
@@ -3107,7 +3113,10 @@ class PIDGraphicsView(QGraphicsView):
                 # releasing the mouse button.
                 drag_pixmap = self._equipment_drag_pixmap(drag_ids)
                 drag.setPixmap(drag_pixmap)
-                drag.setHotSpot(QPoint(drag_pixmap.width() // 2, 4))
+                # Anchor the native drag image at its transparent left edge:
+                # every label then starts to the right of the mouse pointer,
+                # leaving the target's arrow tip unobscured.
+                drag.setHotSpot(QPoint(0, 4))
                 drag.exec(Qt.DropAction.CopyAction)
                 # drag.exec() blocks until the drop is released; a native
                 # drag suppresses normal hover/leave events for widgets the

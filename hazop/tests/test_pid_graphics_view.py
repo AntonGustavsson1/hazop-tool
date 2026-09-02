@@ -227,6 +227,9 @@ class EquipmentMultiSelectTests(unittest.TestCase):
         drag_pixmap = mock_drag.setPixmap.call_args[0][0]
         self.assertGreater(drag_pixmap.height(), 24,
                            'a multi-marker drag should show stacked labels')
+        hotspot = mock_drag.setHotSpot.call_args[0][0]
+        self.assertEqual((hotspot.x(), hotspot.y()), (0, 4),
+                         'the drag image must start to the right of the pointer')
         # Selection is cleared once the group drag has actually started.
         self.assertEqual(view._selected_equipment_markers, set())
 
