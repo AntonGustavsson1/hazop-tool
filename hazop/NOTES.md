@@ -1,5 +1,37 @@
 # NOTES.md — Beslut och kontext
 
+## Komplett LOPA-arbetsyta, dokumentexport och HAZOP-granskning (2026-09-02)
+
+LOPA är nu en egen komplett arbetsyta med dokumenthuvud (LOPA-nr, separat
+SIF-nr/-namn, SIS, revision, datum, utförd/godkänd), HAZOP-källscenarier,
+givardel och manöverdel med separata MooN-grupper, scenario, konsekvenser,
+värsta representativa konsekvens per kategori, oberoende barriärer,
+eskalering, dimensionerande RRF/SIL, ytterligare åtgärder/krav,
+processäkerhetstid och tidsstämplade kommentarer.
+
+Alla dokumentfält, manöverdel och kommentarer är revisionsbundna. En ny
+revision kopierar analysens ingångsvärden och manöverdel men inte kommentarer,
+så att en kommentar alltid hör till den revision där den skrevs. HAZOP-källor
+kontrolleras läsande: ändringar flaggas som **HAZOP ändrad – granska** utan
+att den öppna LOPA-revisionen skrivs över. Den valda LOPA-källan kan navigera
+tillbaka till rätt HAZOP-orsak. SRS är fortsatt uttryckligen utanför denna
+etapp.
+
+Excel-exporten kan välja flera LOPA-revisioner. Arbetsboken får en
+sammanfattningsflik och ett revisionsbundet analysark per vald LOPA med
+källscenario, givardel, manöverdel, barriärer, eskalering, beräkning,
+dokumentuppgifter och kommentarer. Exporten läser revisionssnapshoten, inte
+dagens live-HAZOP, vilket bevarar låst historik.
+
+Verifierat med 10 LOPA-data-/beräkningstester, två Excel-strukturtester, 8
+designtester och den fulla 14-testers smoke-sviten inklusive LOPA-sidan i
+riktiga MainWindow. `py_compile` och `git diff --check` passerar. Visuell
+headless-kontroll gjordes mot de två referensbilderna; den headless Qt-miljön
+saknar dock installerade textfonter, så vanlig GUI-kontroll på skärm återstår
+som sista manuella acceptanskontroll. En bred historisk regressionskörning är
+inte grön på grund av befintliga fel i utrustnings-/scope-testspåret, utanför
+LOPA-filerna.
+
 ## LOPA grundmodul, HAZOP-koppling och revisionsspår (2026-09-02)
 
 Första användbara LOPA-etappen är införd som en egen sida i huvudnavigeringen.

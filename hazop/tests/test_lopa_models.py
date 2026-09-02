@@ -169,6 +169,62 @@ class LopaDatabaseTests(unittest.TestCase):
         self.assertEqual('1oo2', self.db.lopa_sensor_groups(created['revision_id'])[0]['voting'])
         self.assertFalse(self.db.lopa_sensor_groups(created['revision_id'])[0]['needs_voting_review'])
 
+    def test_lopa_detail_edits_are_revision_scoped_and_traceable(self):
+        _cause_id, sensor_sg, _other_sg, _equipment_id = self._hazop_chain()
+        created = self.db.create_lopa()
+        imported = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor_sg)
+        revision_id = created['revision_id']
+        source_id = imported['source_id']
+
+        self.db.update_lopa_revision_details(
+            revision_id, performed_by_text='Anton', approved_by_text='Granskare')
+        revision = self.db.get_lopa_revision(revision_id)
+        self.assertEqual('Anton', revision['performed_by_text'])
+        self.assertEqual('Granskare', revision['approved_by_text'])
+
+        self.db.set_lopa_source_scenario_text(source_id, 'Nivån stiger lokalt')
+        source = self.db.lopa_sources(revision_id)[0]
+        self.assertEqual('Nivån stiger lokalt', source['scenario_text'])
+        self.assertFalse(source['follows_hazop'])
+
+        consequence = self.db.lopa_source_consequences(source_id)[0]
+        self.db.set_lopa_consequence_active(consequence['id'], False)
+        self.assertFalse(self.db.lopa_source_consequences(source_id)[0]['active'])
+        self.db.update_lopa_consequence(consequence['id'], severity=2)
+        consequence = self.db.lopa_source_consequences(source_id)[0]
+        self.assertEqual(2, consequence['severity'])
+        self.assertFalse(consequence['follows_hazop'])
+
+        barrier = self.db.lopa_barriers(revision_id, source_id)[0]
+        self.db.set_lopa_barrier_active(barrier['id'], False)
+        self.assertFalse(self.db.lopa_barriers(revision_id, source_id)[0]['active'])
+        self.db.update_lopa_barrier(barrier['id'], rrf=25, sg_type='Mekanisk')
+        barrier = self.db.lopa_barriers(revision_id, source_id)[0]
+        self.assertEqual(25.0, barrier['rrf'])
+        self.assertFalse(barrier['follows_hazop'])
+        self.db.set_lopa_barrier_category_keys(barrier['id'], ['person'])
+        self.assertEqual(['person'], [row['category_key']
+                                      for row in self.db.lopa_barrier_categories(barrier['id'])])
+
+        self.assertEqual(1, len(self.db.lopa_escalation_rows(source_id)))
+        self.db.set_lopa_escalation_values(
+            source_id, 'person', {'antandning': 10, 'narvaro': 20, 'skada': 30},
+            reason='Endast vid uppstart')
+        result = self.db.lopa_source_calculation(source_id)
+        category = next(row for row in result['categories'] if row['category_key'] == 'person')
+        self.assertAlmostEqual(0.006, category['escalation_factor'])
+
+        added_equipment = self.db.add_equipment_item(
+            'LT-103', 'LT-103', 'LT', 0, 'Nivågivare', '', 0)
+        group = self.db.lopa_sensor_groups(revision_id)[0]
+        self.db.add_lopa_sensor_member(revision_id, added_equipment, 'HH', group_id=group['id'])
+        self.assertTrue(self.db.lopa_sensor_groups(revision_id)[0]['needs_voting_review'])
+        self.db.set_lopa_sensor_group_voting(group['id'], '1oo2')
+
+        self.db.lock_lopa_revision(revision_id)
+        with self.assertRaises(PermissionError):
+            self.db.set_lopa_source_active(source_id, False)
+
     def test_deleted_hazop_source_is_retained_and_flagged_for_lopa(self):
         _cause_id, sensor_sg, _other_sg, _equipment_id = self._hazop_chain()
         created = self.db.create_lopa()
@@ -177,3 +233,64 @@ class LopaDatabaseTests(unittest.TestCase):
         source = self.db.lopa_sources(created['revision_id'])[0]
         self.assertTrue(source['source_missing'])
         self.assertIsNone(source['origin_safeguard_id'])
+
+    def test_document_fields_final_element_and_revision_copy_are_traceable(self):
+        _cause_id, sensor_sg, _other_sg, equipment_id = self._hazop_chain()
+        created = self.db.create_lopa()
+        imported = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor_sg)
+        revision_id = created['revision_id']
+        source_id = imported['source_id']
+
+        self.db.update_lopa_revision_details(
+            revision_id, document_date='2026-09-02', performed_by_text='Anton',
+            approved_by_text='Granskare', additional_actions='Verifiera ventilläge',
+            additional_requirements='Separat SIF-krav', process_safety_time='12,5')
+        self.db.update_lopa_source_analysis_details(
+            source_id, control_frequency='Årligt provtest', assumption_percent=10,
+            assumption_reason='Endast under uppstart')
+        final_group = self.db.add_lopa_final_group(revision_id, '1oo1')
+        final_member = self.db.add_lopa_final_member(
+            revision_id, equipment_id=equipment_id, action_text='Stäng ventil', group_id=final_group)
+        self.db.update_lopa_final_member(final_member, action_text='Snabbstäng ventil')
+        self.db.add_lopa_comment(revision_id, 'Kontrollera oberoende mellan givare och ventil.', 'Anton')
+
+        revision = self.db.get_lopa_revision(revision_id)
+        self.assertEqual('2026-09-02', revision['document_date'])
+        self.assertEqual('Verifiera ventilläge', revision['additional_actions'])
+        self.assertAlmostEqual(12.5, revision['process_safety_time'])
+        source = self.db.lopa_sources(revision_id)[0]
+        self.assertEqual(10.0, source['assumption_percent'])
+        self.assertEqual('Årligt provtest', source['control_frequency'])
+        self.assertEqual('Snabbstäng ventil', self.db.lopa_final_members(final_group)[0]['action_text'])
+        self.assertEqual('Anton', self.db.lopa_comments(revision_id)[0]['author'])
+
+        copied_id = self.db.create_lopa_revision(created['lopa_id'], revision_id)
+        copied = self.db.get_lopa_revision(copied_id)
+        self.assertEqual('2026-09-02', copied['document_date'])
+        self.assertEqual('Separat SIF-krav', copied['additional_requirements'])
+        copied_group = self.db.lopa_final_groups(copied_id)[0]
+        self.assertEqual('1oo1', copied_group['voting'])
+        self.assertEqual('Snabbstäng ventil', self.db.lopa_final_members(copied_group['id'])[0]['action_text'])
+        self.assertEqual('Årligt provtest', self.db.lopa_sources(copied_id)[0]['control_frequency'])
+        # Comments are revision-specific evidence, not duplicated into a new draft.
+        self.assertEqual([], self.db.lopa_comments(copied_id))
+        self.db.update_lopa_revision_details(copied_id, process_safety_time='')
+        self.assertIsNone(self.db.get_lopa_revision(copied_id)['process_safety_time'])
+
+    def test_hazop_sync_check_warns_without_overwriting_revision_snapshot(self):
+        cause_id, sensor_sg, _other_sg, _equipment_id = self._hazop_chain()
+        created = self.db.create_lopa()
+        imported = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor_sg)
+        source_id = imported['source_id']
+        self.assertEqual('current', self.db.lopa_source_sync_state(source_id)['state'])
+
+        self.db.update_cause(cause_id, description='LT-101 HH uppdaterad', base_frequency=0.2)
+        state = self.db.lopa_source_sync_state(source_id)
+        self.assertEqual('changed', state['state'])
+        self.assertIn('orsakstext', state['messages'])
+        # Read-only sync detection does not silently alter the stored LOPA
+        # calculation basis; the analyst must choose a later reconciliation.
+        self.assertEqual('LT-101 HH', self.db.lopa_sources(created['revision_id'])[0]['cause_text'])
+
+        self.db.set_lopa_source_scenario_text(source_id, 'Lokal scenarioavvikelse')
+        self.assertEqual('detached', self.db.lopa_source_sync_state(source_id)['state'])

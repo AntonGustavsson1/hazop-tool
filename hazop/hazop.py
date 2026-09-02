@@ -1468,6 +1468,7 @@ class MainWindow(QMainWindow):
         # page numbers and navigation paths while its rail button sits next
         # to Worksheet where users naturally expect it.
         self.lopa_panel = LopaPanel(self.db)
+        self.lopa_panel.hazop_navigation_requested.connect(self._open_lopa_source_in_hazop)
         self.view_stack.addWidget(self.lopa_panel)
 
         # The tools are now available from Beta; keep the equipment register
@@ -1880,6 +1881,17 @@ class MainWindow(QMainWindow):
         """Open the exact LOPA revision created/updated from a HAZOP barrier."""
         self._switch_view(8)
         self.lopa_panel.activate_lopa(lopa_id, revision_id or None)
+
+    def _open_lopa_source_in_hazop(self, cause_id):
+        """Return from one LOPA source to its stored HAZOP cause reference."""
+        if not self.db.get_cause(cause_id):
+            QMessageBox.information(self, 'HAZOP-källa saknas',
+                                    'Orsaken finns inte längre i HAZOP.')
+            return
+        self._switch_view(1)
+        self.tree_panel.refresh(CAUSE_T, cause_id, emit_selection=False)
+        self._on_selected(CAUSE_T, cause_id)
+        self.scenario_panel.select_item(CAUSE_T, cause_id)
 
     def _on_props_changed(self):
         """PropertiesRibbon saved a field — refresh tree + scenario."""

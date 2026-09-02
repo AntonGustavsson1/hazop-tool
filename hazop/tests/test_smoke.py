@@ -153,6 +153,62 @@ class SmokeTests(unittest.TestCase):
         finally:
             p.deleteLater()
 
+    def test_lopa_panel_renders_imported_detail_sections(self):
+        """The detailed LOPA workspace must survive a real HAZOP import path."""
+        from lopa_panel import LopaPanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, description='LSHH test', base_frequency=0.2)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(cons_id, 'Överfyllnad', 3, '')
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(cons_id, category['id'], 3)
+        sensor_sg = self.db.add_safeguard(cons_id)
+        self.db.update_safeguard(sensor_sg, description='LSHH', rrf=100, sg_type='SIS')
+        other_sg = self.db.add_safeguard(cons_id)
+        self.db.update_safeguard(other_sg, description='PSV', rrf=10, sg_type='Mekanisk')
+        equipment_id = self.db.add_equipment_item('LSHH-SMOKE', 'LSHH-SMOKE', 'LS', 0, 'Nivågivare', '', 0)
+        self.db.add_safeguard_equipment_link(sensor_sg, equipment_id, 'HH')
+        created = self.db.create_lopa(sif_name='Detaljerad smoke')
+        imported = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor_sg)
+        self.db.update_lopa_source_analysis_details(
+            imported['source_id'], control_frequency='Årligt provtest',
+            assumption_percent=10, assumption_reason='Endast under uppstart')
+        final_group = self.db.add_lopa_final_group(created['revision_id'], '1oo1')
+        self.db.add_lopa_final_member(
+            created['revision_id'], equipment_id=equipment_id,
+            action_text='Stäng av flödet', group_id=final_group)
+        self.db.update_lopa_revision_details(
+            created['revision_id'], document_date='2026-09-02',
+            additional_actions='Verifiera ventilen',
+            additional_requirements='Definiera provtest', process_safety_time='10')
+        self.db.add_lopa_comment(created['revision_id'], 'Smoke-kommentar', 'Testare')
+        p = LopaPanel(self.db)
+        try:
+            p.activate_lopa(created['lopa_id'], created['revision_id'])
+            self.assertEqual(1, p._sources.rowCount())
+            self.assertEqual(1, p._consequences.rowCount())
+            self.assertEqual(1, p._sensor_members.rowCount())
+            self.assertEqual(1, p._barriers.rowCount())
+            self.assertGreaterEqual(p._escalation.rowCount(), 1)
+            self.assertIsNotNone(p._sensor_group.currentData())
+            self.assertEqual('1oo1', p._sensor_voting.currentText())
+            self.assertEqual(1, p._final_members.rowCount())
+            self.assertEqual('1oo1', p._final_voting.currentText())
+            self.assertEqual(1, p._barrier_matrix.rowCount())
+            self.assertIn('Återstående frekvens', p._barrier_summary.text())
+            self.assertIn('Dimensionerande kriterium', p._dimensioning_summary.text())
+            self.assertEqual('2026-09-02', p._document_date.text())
+            self.assertIn('Verifiera ventilen', p._additional_actions.toPlainText())
+            self.assertEqual(1, p._comments.rowCount())
+            navigated = []
+            p.hazop_navigation_requested.connect(navigated.append)
+            p._go_to_hazop()
+            self.assertEqual([cause_id], navigated)
+        finally:
+            p.deleteLater()
+
     def test_hazop_preparation_panel_constructs(self):
         from settings_panels import HAZOPPreparationPanel
         p = HAZOPPreparationPanel(self.db)

@@ -314,6 +314,32 @@ def lopa_status_stylesheet(status: str) -> str:
     )
 
 
+def lopa_title_stylesheet() -> str:
+    """Main LOPA page title, kept separate from document card headings."""
+    return f'font-size:20px;font-weight:700;color:{TEXT};'
+
+
+def lopa_section_title_stylesheet() -> str:
+    """Quiet document-section heading shared by all LOPA cards."""
+    return f'font-size:11px;font-weight:700;color:{TEXT};'
+
+
+def lopa_note_stylesheet() -> str:
+    """Small explanatory text for LOPA source, revision and review hints."""
+    return f'color:{SECONDARY_TEXT};font-size:9pt;'
+
+
+def lopa_table_stylesheet() -> str:
+    """Flat readable LOPA table with the application's neutral selection."""
+    return (
+        f'QTableWidget{{background:{SURFACE};border:1px solid {SEPARATOR};'
+        'border-radius:4px;gridline-color:#E1E3E5;}'
+        f'QTableWidget::item:selected{{background:{ACCENT_SELECTION};color:{TEXT};}}'
+        f'QHeaderView::section{{background:{SUBTLE_SURFACE};color:{TEXT};'
+        f'border:none;border-bottom:1px solid {SEPARATOR};padding:4px;font-weight:600;}}'
+    )
+
+
 def summary_badge_colors(selected: bool = False,
                          hovered: bool = False) -> tuple[str, str]:
     """Return ``(background, text)`` for painted summary badges."""

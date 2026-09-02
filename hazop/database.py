@@ -1114,12 +1114,23 @@ class Database:
                 "ALTER TABLE analysis_sessions ADD COLUMN location TEXT DEFAULT ''",
                 "ALTER TABLE analysis_sessions ADD COLUMN is_digital INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE analysis_sessions ADD COLUMN start_time TEXT DEFAULT ''",
-                "ALTER TABLE analysis_sessions ADD COLUMN end_time TEXT DEFAULT ''",
-                "ALTER TABLE participant_attendance ADD COLUMN note TEXT DEFAULT ''",
-                "ALTER TABLE pid_sheets ADD COLUMN drawing_number TEXT DEFAULT ''",
-                "ALTER TABLE pid_sheets ADD COLUMN drawing_name TEXT DEFAULT ''",
-                "ALTER TABLE pid_sheets ADD COLUMN drawing_revision TEXT DEFAULT ''",
-                "ALTER TABLE pid_sheets ADD COLUMN drawing_date TEXT DEFAULT ''"):
+            "ALTER TABLE analysis_sessions ADD COLUMN end_time TEXT DEFAULT ''",
+            "ALTER TABLE participant_attendance ADD COLUMN note TEXT DEFAULT ''",
+            "ALTER TABLE pid_sheets ADD COLUMN drawing_number TEXT DEFAULT ''",
+            "ALTER TABLE pid_sheets ADD COLUMN drawing_name TEXT DEFAULT ''",
+            "ALTER TABLE pid_sheets ADD COLUMN drawing_revision TEXT DEFAULT ''",
+            "ALTER TABLE pid_sheets ADD COLUMN drawing_date TEXT DEFAULT ''",
+            # LOPA document fields are stored on the revision so a locked
+            # revision is a complete historic record, not merely a snapshot
+            # of the calculation inputs.
+            "ALTER TABLE lopa_revisions ADD COLUMN document_date TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE lopa_revisions ADD COLUMN dimensioning_category_key TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE lopa_revisions ADD COLUMN additional_actions TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE lopa_revisions ADD COLUMN additional_requirements TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE lopa_revisions ADD COLUMN process_safety_time REAL DEFAULT NULL",
+            "ALTER TABLE lopa_source_scenarios ADD COLUMN control_frequency TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE lopa_source_scenarios ADD COLUMN assumption_reason TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE lopa_records ADD COLUMN sif_number TEXT NOT NULL DEFAULT ''"):
             try:
                 self.conn.execute(statement)
             except sqlite3.OperationalError:
@@ -2015,6 +2026,22 @@ class Database:
                 active                INTEGER NOT NULL DEFAULT 1,
                 sort_order            INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS lopa_final_groups (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                revision_id           INTEGER NOT NULL REFERENCES lopa_revisions(id) ON DELETE CASCADE,
+                voting                TEXT NOT NULL DEFAULT '1oo1',
+                sort_order            INTEGER NOT NULL DEFAULT 0,
+                needs_voting_review   INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS lopa_final_members (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id              INTEGER NOT NULL REFERENCES lopa_final_groups(id) ON DELETE CASCADE,
+                equipment_id          INTEGER REFERENCES equipment_catalog(id) ON DELETE SET NULL,
+                name_snapshot         TEXT NOT NULL DEFAULT '',
+                action_text           TEXT NOT NULL DEFAULT '',
+                active                INTEGER NOT NULL DEFAULT 1,
+                sort_order            INTEGER NOT NULL DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS lopa_barriers (
                 id                    INTEGER PRIMARY KEY AUTOINCREMENT,
                 revision_id           INTEGER NOT NULL REFERENCES lopa_revisions(id) ON DELETE CASCADE,
@@ -2058,6 +2085,13 @@ class Database:
                 detail                TEXT NOT NULL DEFAULT '',
                 created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 actor                 TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS lopa_comments (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                revision_id           INTEGER NOT NULL REFERENCES lopa_revisions(id) ON DELETE CASCADE,
+                author                TEXT NOT NULL DEFAULT '',
+                body                  TEXT NOT NULL DEFAULT '',
+                created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
         """)
 
@@ -2580,7 +2614,7 @@ class Database:
             raw = self._lopa_matrix_snapshot()
         return self._risk_matrix_copy(raw)
 
-    def create_lopa(self, display_number=None, sif_name='', sis_name='',
+    def create_lopa(self, display_number=None, sif_number='', sif_name='', sis_name='',
                     created_by='', notes='', allow_archived_reuse=False):
         """Create an empty, editable LOPA with revision ``00``.
 
@@ -2606,8 +2640,8 @@ class Database:
             try:
                 self.conn.execute('BEGIN')
                 cur = self.conn.execute(
-                    "INSERT INTO lopa_records(display_number,sif_name,sis_name) VALUES (?,?,?)",
-                    (display_number, str(sif_name or ''), str(sis_name or '')))
+                    "INSERT INTO lopa_records(display_number,sif_number,sif_name,sis_name) VALUES (?,?,?,?)",
+                    (display_number, str(sif_number or ''), str(sif_name or ''), str(sis_name or '')))
                 lopa_id = cur.lastrowid
                 revision_id = self.conn.execute(
                     "INSERT INTO lopa_revisions(lopa_id,label,status,created_by,matrix_snapshot_json,notes) "
@@ -2621,7 +2655,8 @@ class Database:
                 raise
         return {'lopa_id': lopa_id, 'revision_id': revision_id}
 
-    def update_lopa_record(self, lopa_id, display_number=None, sif_name=None, sis_name=None):
+    def update_lopa_record(self, lopa_id, display_number=None, sif_number=None,
+                           sif_name=None, sis_name=None):
         row = self.get_lopa_record(lopa_id)
         if not row:
             raise ValueError('LOPA:n finns inte längre.')
@@ -2637,6 +2672,8 @@ class Database:
             if duplicate:
                 raise ValueError(f'LOPA {value} används redan.')
             assignments.append('display_number=?'); values.append(value)
+        if sif_number is not None:
+            assignments.append('sif_number=?'); values.append(str(sif_number or ''))
         if sif_name is not None:
             assignments.append('sif_name=?'); values.append(str(sif_name))
         if sis_name is not None:
@@ -2687,11 +2724,24 @@ class Database:
         with self.history_group():
             try:
                 self.conn.execute('BEGIN')
+                # A revision begins with the same document assumptions as its
+                # predecessor.  It is still a distinct editable snapshot: a
+                # later change must never rewrite the locked source revision.
                 new_revision_id = self.conn.execute(
-                    "INSERT INTO lopa_revisions(lopa_id,label,status,created_by,matrix_snapshot_json,notes) "
-                    "VALUES (?,?,?,?,?,?)",
+                    "INSERT INTO lopa_revisions("
+                    "lopa_id,label,status,created_by,matrix_snapshot_json,notes,"
+                    "performed_by_text,approved_by_text,document_date,"
+                    "dimensioning_category_key,additional_actions,additional_requirements,"
+                    "process_safety_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (lopa_id, label, 'Utkast', str(created_by or ''), snapshot,
-                     str(notes or ''))).lastrowid
+                     str(notes or (source or {}).get('notes') or ''),
+                     str((source or {}).get('performed_by_text') or ''),
+                     str((source or {}).get('approved_by_text') or ''),
+                     str((source or {}).get('document_date') or ''),
+                     str((source or {}).get('dimensioning_category_key') or ''),
+                     str((source or {}).get('additional_actions') or ''),
+                     str((source or {}).get('additional_requirements') or ''),
+                     (source or {}).get('process_safety_time'))).lastrowid
                 if source:
                     self._copy_lopa_revision_children(source['id'], new_revision_id)
                 self._log_lopa(lopa_id, new_revision_id, 'revision-created',
@@ -2747,6 +2797,29 @@ class Database:
                 member_cols = list(copied_member)
                 self.conn.execute(
                     f"INSERT INTO lopa_sensor_members({','.join(member_cols)}) "
+                    f"VALUES ({','.join('?' for _ in member_cols)})",
+                    [copied_member[column] for column in member_cols])
+
+        # The final-element side is independent from the sensor hierarchy,
+        # but follows the identical revision-copy rule.  Keep its object
+        # identity, action and voting review flag in the new draft.
+        for group in self.lopa_final_groups(source_revision_id):
+            copied_group = dict(group)
+            old_id = copied_group.pop('id')
+            copied_group['revision_id'] = target_revision_id
+            group_cols = list(copied_group)
+            new_id = self.conn.execute(
+                f"INSERT INTO lopa_final_groups({','.join(group_cols)}) "
+                f"VALUES ({','.join('?' for _ in group_cols)})",
+                [copied_group[column] for column in group_cols]).lastrowid
+            for member in self.lopa_final_members(old_id):
+                copied_member = dict(member)
+                copied_member.pop('id')
+                copied_member.pop('tag', None)
+                copied_member['group_id'] = new_id
+                member_cols = list(copied_member)
+                self.conn.execute(
+                    f"INSERT INTO lopa_final_members({','.join(member_cols)}) "
                     f"VALUES ({','.join('?' for _ in member_cols)})",
                     [copied_member[column] for column in member_cols])
 
@@ -2826,6 +2899,58 @@ class Database:
             "LEFT JOIN equipment_catalog ec ON ec.id=ls.equipment_id "
             "WHERE ls.revision_id=? ORDER BY ls.id", (revision_id,)).fetchall()]
 
+    def lopa_source_sync_state(self, source_id):
+        """Compare one active LOPA snapshot with its originating HAZOP row.
+
+        This method is intentionally read-only.  A LOPA analyst must see
+        that HAZOP changed before deciding whether to keep a historic/local
+        snapshot; a background refresh must never silently overwrite it.
+        """
+        source = self.conn.execute(
+            "SELECT * FROM lopa_source_scenarios WHERE id=?", (source_id,)).fetchone()
+        if not source:
+            return {'state': 'missing', 'messages': ['LOPA-källscenariot saknas.']}
+        source = dict(source)
+        if not source.get('follows_hazop'):
+            return {'state': 'detached', 'messages': ['Frikopplad från HAZOP lokalt.']}
+        if not source.get('origin_safeguard_id'):
+            return {'state': 'missing', 'messages': ['HAZOP-barriären finns inte längre.']}
+        live = self.conn.execute(
+            "SELECT s.id,c.description AS cause_text,c.base_frequency,co.description AS scenario_text "
+            "FROM safeguards s JOIN consequences co ON co.id=s.consequence_id "
+            "JOIN causes c ON c.id=co.cause_id WHERE s.id=?",
+            (source['origin_safeguard_id'],)).fetchone()
+        if not live:
+            return {'state': 'missing', 'messages': ['HAZOP-barriären finns inte längre.']}
+        live = dict(live)
+        changes = []
+        if (live.get('cause_text') or '') != (source.get('cause_text') or ''):
+            changes.append('orsakstext')
+        if (live.get('scenario_text') or '') != (source.get('scenario_text') or ''):
+            changes.append('scenariotext')
+        live_frequency = self.cause_base_frequency_per_year(
+            self.get_cause(source.get('hazop_cause_id')))
+        stored_frequency = source.get('base_frequency')
+        if ((live_frequency is None) != (stored_frequency is None) or
+                (live_frequency is not None and stored_frequency is not None and
+                 abs(float(live_frequency) - float(stored_frequency)) > 1e-12)):
+            changes.append('grundfrekvens')
+        for barrier in self.lopa_barriers(source['revision_id'], source_id):
+            if barrier['manual'] or not barrier['follows_hazop']:
+                continue
+            current = self.get_safeguard(barrier.get('source_safeguard_id'))
+            if not current:
+                changes.append('oberoende barriär saknas')
+                continue
+            current = dict(current)
+            if ((current.get('description') or '') != (barrier.get('description') or '') or
+                    float(current.get('rrf') or 1) != float(barrier.get('rrf') or 1) or
+                    (current.get('sg_type') or '') != (barrier.get('sg_type') or '')):
+                changes.append('oberoende barriär')
+        if changes:
+            return {'state': 'changed', 'messages': list(dict.fromkeys(changes))}
+        return {'state': 'current', 'messages': []}
+
     def lopa_source_consequences(self, source_id):
         return [dict(row) for row in self.conn.execute(
             "SELECT * FROM lopa_source_consequences WHERE source_id=? "
@@ -2861,6 +2986,445 @@ class Database:
             "SELECT * FROM lopa_escalation_rows WHERE source_id=? ORDER BY category_key,id",
             (source_id,)).fetchall()]
 
+    def update_lopa_revision_details(self, revision_id, performed_by_text=None,
+                                     approved_by_text=None, notes=None, document_date=None,
+                                     dimensioning_category_key=None, additional_actions=None,
+                                     additional_requirements=None, process_safety_time=None):
+        """Update the editable document fields stored on one LOPA revision."""
+        revision = self._assert_lopa_revision_editable(revision_id)
+        assignments, values = [], []
+        if performed_by_text is not None:
+            assignments.append('performed_by_text=?')
+            values.append(str(performed_by_text or ''))
+        if approved_by_text is not None:
+            assignments.append('approved_by_text=?')
+            values.append(str(approved_by_text or ''))
+        if notes is not None:
+            assignments.append('notes=?')
+            values.append(str(notes or ''))
+        if document_date is not None:
+            assignments.append('document_date=?')
+            values.append(str(document_date or ''))
+        if dimensioning_category_key is not None:
+            assignments.append('dimensioning_category_key=?')
+            values.append(str(dimensioning_category_key or ''))
+        if additional_actions is not None:
+            assignments.append('additional_actions=?')
+            values.append(str(additional_actions or ''))
+        if additional_requirements is not None:
+            assignments.append('additional_requirements=?')
+            values.append(str(additional_requirements or ''))
+        if process_safety_time is not None:
+            raw_value = str(process_safety_time).strip()
+            if not raw_value:
+                value = None
+            else:
+                try:
+                    value = float(raw_value.replace(',', '.'))
+                except (TypeError, ValueError):
+                    raise ValueError('Processäkerhetstid måste vara ett tal.')
+                if value < 0:
+                    raise ValueError('Processäkerhetstid får inte vara negativ.')
+            assignments.append('process_safety_time=?')
+            values.append(value)
+        if not assignments:
+            return
+        values.append(revision_id)
+        self.conn.execute(
+            f"UPDATE lopa_revisions SET {','.join(assignments)} WHERE id=?", values)
+        self._log_lopa(revision['lopa_id'], revision_id, 'revision-details-updated')
+        self.commit()
+
+    def _lopa_source_revision(self, source_id):
+        row = self.conn.execute(
+            "SELECT ls.*,lr.lopa_id FROM lopa_source_scenarios ls "
+            "JOIN lopa_revisions lr ON lr.id=ls.revision_id WHERE ls.id=?", (source_id,)).fetchone()
+        if not row:
+            raise ValueError('LOPA-källscenariot finns inte längre.')
+        row = dict(row)
+        self._assert_lopa_revision_editable(row['revision_id'])
+        return row
+
+    def set_lopa_source_active(self, source_id, active):
+        """Include or exclude one imported HAZOP source locally in the LOPA."""
+        source = self._lopa_source_revision(source_id)
+        self.conn.execute("UPDATE lopa_source_scenarios SET active=? WHERE id=?",
+                          (int(bool(active)), source_id))
+        self._log_lopa(source['lopa_id'], source['revision_id'], 'source-inclusion-changed',
+                       f"Källscenario {source_id}: {'aktiv' if active else 'exkluderad'}")
+        self.commit()
+
+    def set_lopa_source_scenario_text(self, source_id, scenario_text, detached_reason=''):
+        """Set a local LOPA scenario description and mark it detached from HAZOP.
+
+        The caller is responsible for asking the user before this deliberate
+        local override.  The original HAZOP ids remain stored for traceability.
+        """
+        source = self._lopa_source_revision(source_id)
+        self.conn.execute(
+            "UPDATE lopa_source_scenarios SET scenario_text=?,follows_hazop=0,detached_reason=? "
+            "WHERE id=?",
+            (str(scenario_text or ''), str(detached_reason or 'Redigerad lokalt i LOPA.'), source_id))
+        self._log_lopa(source['lopa_id'], source['revision_id'], 'source-detached',
+                       f'Källscenario {source_id}: scenariotext ändrad lokalt')
+        self.commit()
+
+    def update_lopa_source_analysis_details(self, source_id, control_frequency=None,
+                                            assumption_percent=None, assumption_reason=None):
+        """Store LOPA-only analysis assumptions for one source scenario.
+
+        These fields complement, rather than overwrite, the imported HAZOP
+        frequency.  ``assumption_percent`` is deliberately retained as a
+        percentage: 10 means 1/10 in the calculator.
+        """
+        source = self._lopa_source_revision(source_id)
+        assignments, values = [], []
+        if control_frequency is not None:
+            assignments.append('control_frequency=?')
+            values.append(str(control_frequency or ''))
+        if assumption_percent is not None:
+            try:
+                percent = float(str(assumption_percent).replace(',', '.'))
+            except (TypeError, ValueError):
+                raise ValueError('Förutsättning måste vara ett procenttal.')
+            if percent < 0:
+                raise ValueError('Förutsättning får inte vara negativ.')
+            assignments.append('assumption_percent=?')
+            values.append(percent)
+        if assumption_reason is not None:
+            assignments.append('assumption_reason=?')
+            values.append(str(assumption_reason or ''))
+        if not assignments:
+            return
+        values.append(source_id)
+        self.conn.execute(
+            f"UPDATE lopa_source_scenarios SET {','.join(assignments)} WHERE id=?", values)
+        self._log_lopa(source['lopa_id'], source['revision_id'], 'source-analysis-updated',
+                       f'Källscenario {source_id}: LOPA-underlag')
+        self.commit()
+
+    def _lopa_consequence_source(self, consequence_id):
+        row = self.conn.execute(
+            "SELECT lc.*,ls.revision_id,lr.lopa_id FROM lopa_source_consequences lc "
+            "JOIN lopa_source_scenarios ls ON ls.id=lc.source_id "
+            "JOIN lopa_revisions lr ON lr.id=ls.revision_id WHERE lc.id=?", (consequence_id,)).fetchone()
+        if not row:
+            raise ValueError('LOPA-konsekvensen finns inte längre.')
+        row = dict(row)
+        self._assert_lopa_revision_editable(row['revision_id'])
+        return row
+
+    def set_lopa_consequence_active(self, consequence_id, active):
+        """Include or exclude an imported consequence only in this LOPA."""
+        consequence = self._lopa_consequence_source(consequence_id)
+        self.conn.execute("UPDATE lopa_source_consequences SET active=? WHERE id=?",
+                          (int(bool(active)), consequence_id))
+        self._log_lopa(consequence['lopa_id'], consequence['revision_id'],
+                       'consequence-inclusion-changed',
+                       f"Konsekvens {consequence_id}: {'aktiv' if active else 'exkluderad'}")
+        self.commit()
+
+    def update_lopa_consequence(self, consequence_id, description=None, severity=None,
+                                detached_reason=''):
+        """Make an explicitly local consequence override in an editable revision."""
+        consequence = self._lopa_consequence_source(consequence_id)
+        assignments, values = [], []
+        if description is not None:
+            assignments.append('description=?')
+            values.append(str(description or ''))
+        if severity is not None:
+            try:
+                severity = int(severity)
+            except (TypeError, ValueError):
+                raise ValueError('Konsekvensnivå måste vara ett heltal.')
+            if severity < 0:
+                raise ValueError('Konsekvensnivå får inte vara negativ.')
+            assignments.append('severity=?')
+            values.append(severity)
+        if not assignments:
+            return
+        assignments.extend(['follows_hazop=0', 'detached_reason=?'])
+        values.append(str(detached_reason or 'Redigerad lokalt i LOPA.'))
+        values.append(consequence_id)
+        self.conn.execute(
+            f"UPDATE lopa_source_consequences SET {','.join(assignments)} WHERE id=?", values)
+        self._log_lopa(consequence['lopa_id'], consequence['revision_id'], 'consequence-detached',
+                       f'Konsekvens {consequence_id}: lokalt ändrad')
+        self.commit()
+
+    def add_lopa_custom_consequence(self, source_id, category_key, category_name,
+                                    severity=0, description=''):
+        """Add a clearly local consequence without creating anything in HAZOP."""
+        source = self._lopa_source_revision(source_id)
+        try:
+            numeric_severity = int(severity)
+        except (TypeError, ValueError):
+            raise ValueError('Konsekvensnivå måste vara ett heltal.')
+        if numeric_severity < 0:
+            raise ValueError('Konsekvensnivå får inte vara negativ.')
+        consequence_id = self.conn.execute(
+            "INSERT INTO lopa_source_consequences(source_id,category_key,category_name,severity,description,"
+            "follows_hazop,detached_reason) VALUES (?,?,?,?,?,0,?)",
+            (source_id, str(category_key or ''), str(category_name or category_key or ''),
+             numeric_severity, str(description or ''), 'Skapad lokalt i LOPA.')).lastrowid
+        self._log_lopa(source['lopa_id'], source['revision_id'], 'custom-consequence-added',
+                       f'Källscenario {source_id}')
+        self.commit()
+        return consequence_id
+
+    def _lopa_barrier_revision(self, barrier_id):
+        row = self.conn.execute(
+            "SELECT lb.*,lr.lopa_id FROM lopa_barriers lb "
+            "JOIN lopa_revisions lr ON lr.id=lb.revision_id WHERE lb.id=?", (barrier_id,)).fetchone()
+        if not row:
+            raise ValueError('LOPA-barriären finns inte längre.')
+        row = dict(row)
+        self._assert_lopa_revision_editable(row['revision_id'])
+        return row
+
+    def set_lopa_barrier_active(self, barrier_id, active):
+        """Include or exclude a barrier only for this LOPA calculation."""
+        barrier = self._lopa_barrier_revision(barrier_id)
+        self.conn.execute("UPDATE lopa_barriers SET active=? WHERE id=?",
+                          (int(bool(active)), barrier_id))
+        self._log_lopa(barrier['lopa_id'], barrier['revision_id'], 'barrier-inclusion-changed',
+                       f"Barriär {barrier_id}: {'aktiv' if active else 'exkluderad'}")
+        self.commit()
+
+    def update_lopa_barrier(self, barrier_id, description=None, rrf=None, sg_type=None,
+                            detached_reason=''):
+        """Update a barrier locally, retaining its HAZOP source id as evidence."""
+        barrier = self._lopa_barrier_revision(barrier_id)
+        assignments, values = [], []
+        if description is not None:
+            assignments.append('description=?')
+            values.append(str(description or ''))
+        if rrf is not None:
+            try:
+                numeric_rrf = float(rrf)
+            except (TypeError, ValueError):
+                raise ValueError('RRF måste vara ett tal.')
+            if numeric_rrf < 1:
+                raise ValueError('RRF måste vara minst 1.')
+            assignments.append('rrf=?')
+            values.append(numeric_rrf)
+        if sg_type is not None:
+            assignments.append('sg_type=?')
+            values.append(str(sg_type or 'Övrigt'))
+        if not assignments:
+            return
+        assignments.extend(['follows_hazop=0', 'detached_reason=?'])
+        values.append(str(detached_reason or 'Redigerad lokalt i LOPA.'))
+        values.append(barrier_id)
+        self.conn.execute(f"UPDATE lopa_barriers SET {','.join(assignments)} WHERE id=?", values)
+        self._log_lopa(barrier['lopa_id'], barrier['revision_id'], 'barrier-detached',
+                       f'Barriär {barrier_id}: lokalt ändrad')
+        self.commit()
+
+    def set_lopa_barrier_category_keys(self, barrier_id, category_keys=None):
+        """Set category applicability; ``None`` means all active categories."""
+        barrier = self._lopa_barrier_revision(barrier_id)
+        category_keys = None if category_keys is None else [str(key) for key in category_keys]
+        with self.history_group():
+            try:
+                self.conn.execute('BEGIN')
+                self.conn.execute("UPDATE lopa_barriers SET applies_all_categories=? WHERE id=?",
+                                  (int(category_keys is None), barrier_id))
+                self.conn.execute("DELETE FROM lopa_barrier_categories WHERE barrier_id=?", (barrier_id,))
+                for key in category_keys or []:
+                    self.conn.execute(
+                        "INSERT INTO lopa_barrier_categories(barrier_id,category_key,active) VALUES (?,?,1)",
+                        (barrier_id, key))
+                self._log_lopa(barrier['lopa_id'], barrier['revision_id'],
+                               'barrier-categories-changed', f'Barriär {barrier_id}')
+                self.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    def set_lopa_escalation_values(self, source_id, category_key, factor_values=None,
+                                   reason=None, active=True):
+        """Persist local escalation factors for one source/category pair."""
+        source = self._lopa_source_revision(source_id)
+        values = factor_values if isinstance(factor_values, dict) else {}
+        self.conn.execute(
+            "INSERT INTO lopa_escalation_rows(source_id,category_key,factor_values_json,reason,active) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(source_id,category_key) DO UPDATE SET "
+            "factor_values_json=excluded.factor_values_json,reason=excluded.reason,active=excluded.active",
+            (source_id, str(category_key or ''), json.dumps(values), str(reason or ''), int(bool(active))))
+        self._log_lopa(source['lopa_id'], source['revision_id'], 'escalation-updated',
+                       f'Källscenario {source_id}, {category_key}')
+        self.commit()
+
+    def add_lopa_sensor_group(self, revision_id, voting='1oo1'):
+        """Add a separate sensor voting group to an editable LOPA revision."""
+        revision = self._assert_lopa_revision_editable(revision_id)
+        text = str(voting or '').strip().lower()
+        if not re.fullmatch(r'\d+oo\d+', text, re.IGNORECASE):
+            raise ValueError('Ange röstning som exempelvis 1oo1 eller 2oo3.')
+        sort_order = self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_sensor_groups WHERE revision_id=?",
+            (revision_id,)).fetchone()[0]
+        group_id = self.conn.execute(
+            "INSERT INTO lopa_sensor_groups(revision_id,voting,sort_order) VALUES (?,?,?)",
+            (revision_id, text, sort_order)).lastrowid
+        self._log_lopa(revision['lopa_id'], revision_id, 'sensor-group-added', text)
+        self.commit()
+        return group_id
+
+    def add_lopa_sensor_member(self, revision_id, equipment_id, trigger_code='', trigger_custom='',
+                               group_id=None, origin_safeguard_id=None):
+        """Add an equipment object to a sensor voting group.
+
+        A second active member deliberately leaves the voting at its existing
+        value and raises ``needs_voting_review`` until the analyst confirms it.
+        """
+        revision = self._assert_lopa_revision_editable(revision_id)
+        equipment = self.get_equipment_by_id(equipment_id)
+        if not equipment:
+            raise ValueError('Objektet finns inte längre i objektdatabasen.')
+        if group_id is None:
+            group_id = self._ensure_lopa_sensor_group(revision_id)
+        group = self.conn.execute(
+            "SELECT id FROM lopa_sensor_groups WHERE id=? AND revision_id=?", (group_id, revision_id)).fetchone()
+        if not group:
+            raise ValueError('Givargruppen hör inte till den här LOPA-revisionen.')
+        with self.history_group():
+            try:
+                self.conn.execute('BEGIN')
+                member_id = self._add_lopa_sensor_member(
+                    revision_id, equipment_id, origin_safeguard_id,
+                    trigger_code, trigger_custom, equipment.get('tag') or '', group_id=group_id)
+                self._log_lopa(revision['lopa_id'], revision_id, 'sensor-added',
+                               f"{equipment.get('tag') or equipment_id}")
+                self.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return member_id
+
+    def set_lopa_sensor_member_active(self, member_id, active):
+        row = self.conn.execute(
+            "SELECT lm.group_id,lg.revision_id,lr.lopa_id FROM lopa_sensor_members lm "
+            "JOIN lopa_sensor_groups lg ON lg.id=lm.group_id "
+            "JOIN lopa_revisions lr ON lr.id=lg.revision_id WHERE lm.id=?", (member_id,)).fetchone()
+        if not row:
+            raise ValueError('Givarobjektet finns inte längre.')
+        row = dict(row)
+        self._assert_lopa_revision_editable(row['revision_id'])
+        self.conn.execute("UPDATE lopa_sensor_members SET active=? WHERE id=?",
+                          (int(bool(active)), member_id))
+        self._log_lopa(row['lopa_id'], row['revision_id'], 'sensor-inclusion-changed',
+                       f"Givare {member_id}: {'aktiv' if active else 'exkluderad'}")
+        self.commit()
+
+    def lopa_final_groups(self, revision_id):
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM lopa_final_groups WHERE revision_id=? ORDER BY sort_order,id",
+            (revision_id,)).fetchall()]
+
+    def lopa_final_members(self, group_id):
+        return [dict(row) for row in self.conn.execute(
+            "SELECT fm.*,COALESCE(ec.tag,fm.name_snapshot,'') AS tag "
+            "FROM lopa_final_members fm LEFT JOIN equipment_catalog ec ON ec.id=fm.equipment_id "
+            "WHERE fm.group_id=? ORDER BY fm.sort_order,fm.id", (group_id,)).fetchall()]
+
+    def add_lopa_final_group(self, revision_id, voting='1oo1'):
+        revision = self._assert_lopa_revision_editable(revision_id)
+        text = str(voting or '').strip().lower()
+        if not re.fullmatch(r'\d+oo\d+', text, re.IGNORECASE):
+            raise ValueError('Ange röstning som exempelvis 1oo1 eller 2oo3.')
+        sort_order = self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_final_groups WHERE revision_id=?",
+            (revision_id,)).fetchone()[0]
+        group_id = self.conn.execute(
+            "INSERT INTO lopa_final_groups(revision_id,voting,sort_order) VALUES (?,?,?)",
+            (revision_id, text, sort_order)).lastrowid
+        self._log_lopa(revision['lopa_id'], revision_id, 'final-group-added', text)
+        self.commit()
+        return group_id
+
+    def set_lopa_final_group_voting(self, group_id, voting):
+        row = self.conn.execute(
+            "SELECT revision_id FROM lopa_final_groups WHERE id=?", (group_id,)).fetchone()
+        if not row:
+            raise ValueError('Manövergruppen finns inte längre.')
+        self._assert_lopa_revision_editable(row['revision_id'])
+        text = str(voting or '').strip().lower()
+        if not re.fullmatch(r'\d+oo\d+', text, re.IGNORECASE):
+            raise ValueError('Ange röstning som exempelvis 1oo1 eller 2oo3.')
+        self.conn.execute(
+            "UPDATE lopa_final_groups SET voting=?,needs_voting_review=0 WHERE id=?",
+            (text, group_id))
+        self.commit()
+
+    def add_lopa_final_member(self, revision_id, equipment_id=None, name='', action_text='', group_id=None):
+        revision = self._assert_lopa_revision_editable(revision_id)
+        equipment = self.get_equipment_by_id(equipment_id) if equipment_id is not None else None
+        if equipment_id is not None and not equipment:
+            raise ValueError('Objektet finns inte längre i objektdatabasen.')
+        if group_id is None:
+            groups = self.lopa_final_groups(revision_id)
+            group_id = groups[0]['id'] if groups else self.add_lopa_final_group(revision_id)
+        group = self.conn.execute(
+            "SELECT id FROM lopa_final_groups WHERE id=? AND revision_id=?", (group_id, revision_id)).fetchone()
+        if not group:
+            raise ValueError('Manövergruppen hör inte till den här LOPA-revisionen.')
+        label = (equipment.get('tag') if equipment else '') or str(name or '').strip()
+        if not label:
+            raise ValueError('Ange ett objekt eller ett namn för manöverdelen.')
+        member_count = self.conn.execute(
+            "SELECT COUNT(*) FROM lopa_final_members WHERE group_id=? AND active=1", (group_id,)).fetchone()[0]
+        sort_order = self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_final_members WHERE group_id=?", (group_id,)).fetchone()[0]
+        cur = self.conn.execute(
+            "INSERT INTO lopa_final_members(group_id,equipment_id,name_snapshot,action_text,sort_order) "
+            "VALUES (?,?,?,?,?)", (group_id, equipment_id, label, str(action_text or ''), sort_order))
+        if member_count >= 1:
+            self.conn.execute("UPDATE lopa_final_groups SET needs_voting_review=1 WHERE id=?", (group_id,))
+        self._log_lopa(revision['lopa_id'], revision_id, 'final-member-added', label)
+        self.commit()
+        return cur.lastrowid
+
+    def update_lopa_final_member(self, member_id, name=None, action_text=None, active=None):
+        row = self.conn.execute(
+            "SELECT fm.*,fg.revision_id,lr.lopa_id FROM lopa_final_members fm "
+            "JOIN lopa_final_groups fg ON fg.id=fm.group_id "
+            "JOIN lopa_revisions lr ON lr.id=fg.revision_id WHERE fm.id=?", (member_id,)).fetchone()
+        if not row:
+            raise ValueError('Manöverobjektet finns inte längre.')
+        row = dict(row)
+        self._assert_lopa_revision_editable(row['revision_id'])
+        assignments, values = [], []
+        if name is not None:
+            assignments.append('name_snapshot=?'); values.append(str(name or ''))
+        if action_text is not None:
+            assignments.append('action_text=?'); values.append(str(action_text or ''))
+        if active is not None:
+            assignments.append('active=?'); values.append(int(bool(active)))
+        if not assignments:
+            return
+        values.append(member_id)
+        self.conn.execute(f"UPDATE lopa_final_members SET {','.join(assignments)} WHERE id=?", values)
+        self._log_lopa(row['lopa_id'], row['revision_id'], 'final-member-updated', str(member_id))
+        self.commit()
+
+    def lopa_comments(self, revision_id):
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM lopa_comments WHERE revision_id=? ORDER BY id", (revision_id,)).fetchall()]
+
+    def add_lopa_comment(self, revision_id, body, author=''):
+        revision = self._assert_lopa_revision_editable(revision_id)
+        text = str(body or '').strip()
+        if not text:
+            raise ValueError('Kommentaren är tom.')
+        comment_id = self.conn.execute(
+            "INSERT INTO lopa_comments(revision_id,author,body) VALUES (?,?,?)",
+            (revision_id, str(author or ''), text)).lastrowid
+        self._log_lopa(revision['lopa_id'], revision_id, 'comment-added', text[:80])
+        self.commit()
+        return comment_id
+
     def _ensure_lopa_sensor_group(self, revision_id):
         groups = self.lopa_sensor_groups(revision_id)
         if groups:
@@ -2884,10 +3448,10 @@ class Database:
         self.commit()
 
     def _add_lopa_sensor_member(self, revision_id, equipment_id, origin_safeguard_id,
-                                trigger_code='', trigger_custom='', tag_snapshot=''):
+                                trigger_code='', trigger_custom='', tag_snapshot='', group_id=None):
         if equipment_id is None:
             return None
-        group_id = self._ensure_lopa_sensor_group(revision_id)
+        group_id = group_id or self._ensure_lopa_sensor_group(revision_id)
         existing = self.conn.execute(
             "SELECT id FROM lopa_sensor_members WHERE group_id=? AND equipment_id=? "
             "AND trigger_code=? AND trigger_custom=?",
@@ -2998,14 +3562,15 @@ class Database:
                 source_id = self.conn.execute(
                     "INSERT INTO lopa_source_scenarios(revision_id,hazop_node_id,hazop_deviation_id,"
                     "hazop_cause_id,origin_safeguard_id,equipment_id,trigger_code,trigger_custom,"
-                    "cause_text,scenario_text,base_frequency,frequency_origin) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "cause_text,scenario_text,base_frequency,frequency_origin,assumption_percent) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (revision['id'], source_row['node_id'], source_row['deviation_id'],
                      source_row['cause_id'], safeguard_id, chosen_equipment_id,
                      str(primary_link.get('trigger_code') or trigger_code or '').upper(),
                      str(primary_link.get('trigger_custom') or trigger_custom or ''),
                      source_row.get('cause_text') or '', source_row.get('scenario_text') or '',
-                     numeric_frequency, origin)).lastrowid
+                     numeric_frequency, origin,
+                     (matrix.get('lopa') or {}).get('default_assumption_percent', 100.0))).lastrowid
 
                 # A cause can produce several HAZOP consequences. Import each
                 # assessed category, not just the consequence where the user
@@ -3024,6 +3589,14 @@ class Database:
                             "VALUES (?,?,?,?,?,?,?)",
                             (source_id, consequence['id'], severity['category_id'], category_key,
                              severity['name'], severity['severity'], consequence.get('description') or ''))
+                        # One local escalation row per active consequence
+                        # category.  The factor payload starts empty so the
+                        # revision snapshot's configured defaults apply until
+                        # the analyst explicitly changes a percentage.
+                        self.conn.execute(
+                            "INSERT OR IGNORE INTO lopa_escalation_rows("
+                            "source_id,category_key,factor_values_json,reason,active) VALUES (?,?, '{}','',1)",
+                            (source_id, category_key))
                         category_applicability[(consequence['id'], category_key)] = severity
 
                 # The barrier used to create the sensor remains excluded here.
@@ -3087,17 +3660,22 @@ class Database:
         factor_values = {}
         for row in self.lopa_escalation_rows(source_id):
             try:
-                factor_values[row['category_key']] = json.loads(row['factor_values_json'] or '{}')
+                values = json.loads(row['factor_values_json'] or '{}')
             except (TypeError, ValueError, json.JSONDecodeError):
-                factor_values[row['category_key']] = {}
+                values = {}
+            factor_values[row['category_key']] = {
+                'values': values if isinstance(values, dict) else {},
+                'active': bool(row['active']),
+            }
         source['categories'] = []
         for consequence in self.lopa_source_consequences(source_id):
+            escalation = factor_values.get(consequence['category_key'], {})
             source['categories'].append({
                 'category_key': consequence['category_key'],
                 'category_name': consequence['category_name'],
                 'severity': consequence['severity'],
-                'active': bool(consequence['active']),
-                'factors': factor_values.get(consequence['category_key'], {}),
+                'active': bool(consequence['active']) and escalation.get('active', True),
+                'factors': escalation.get('values', {}),
             })
         source['barriers'] = []
         for barrier in self.lopa_barriers(source['revision_id'], source_id):

@@ -136,6 +136,20 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn('#2457A6', layer_button)
         self.assertIn('#FFFFFF', layer_button)
 
+    def test_lopa_document_builders_share_the_neutral_design_tokens(self):
+        from design import (
+            ACCENT_SELECTION, SECONDARY_TEXT, SEPARATOR, SURFACE, TEXT,
+            lopa_card_stylesheet, lopa_note_stylesheet, lopa_section_title_stylesheet,
+            lopa_table_stylesheet, lopa_title_stylesheet,
+        )
+
+        self.assertIn(SURFACE, lopa_card_stylesheet())
+        self.assertIn(SEPARATOR, lopa_card_stylesheet())
+        self.assertIn(TEXT, lopa_title_stylesheet())
+        self.assertIn(TEXT, lopa_section_title_stylesheet())
+        self.assertIn(SECONDARY_TEXT, lopa_note_stylesheet())
+        self.assertIn(ACCENT_SELECTION, lopa_table_stylesheet())
+
 
 if __name__ == '__main__':
     unittest.main()
