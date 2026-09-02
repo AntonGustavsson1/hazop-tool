@@ -199,7 +199,7 @@ class LopaPanel(QWidget):
             self._drive_layout, self._drive_cards, (1, 1),
             width < LOPA_BREAKPOINT_TWO_COLUMN)
         self._set_row_direction(
-            self._overview_layout, self._overview_cards, (3, 2),
+            self._overview_layout, self._overview_cards, (1,),
             width < LOPA_BREAKPOINT_OVERVIEW)
         self._set_row_direction(
             self._bottom_layout, self._bottom_cards, (1, 2, 2),
@@ -473,31 +473,6 @@ class LopaPanel(QWidget):
         scenario_actions.addWidget(self._save_scenario_btn)
         scenario_layout.addLayout(scenario_actions)
 
-        worst_card = self._card()
-        self._allow_card_to_shrink(worst_card)
-        worst_layout = QVBoxLayout(worst_card)
-        worst_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
-                                        LOPA_CARD_PADDING, LOPA_CARD_PADDING)
-        worst_title = QLabel('VÄRSTA REPRESENTATIVA KONSEKVENS')
-        worst_title.setStyleSheet(lopa_section_title_stylesheet())
-        worst_layout.addWidget(worst_title)
-        self._worst_note = QLabel('Visar den aktiva konsekvens som är dimensionerande per kategori.')
-        self._worst_note.setWordWrap(True)
-        self._worst_note.setMaximumHeight(34)
-        self._worst_note.setMinimumWidth(0)
-        self._worst_note.setStyleSheet(lopa_note_stylesheet())
-        worst_layout.addWidget(self._worst_note)
-        self._worst_consequences = QTableWidget(0, 4)
-        self._worst_consequences.setHorizontalHeaderLabels(['Kategori', 'Nivå', 'Beskrivning', 'TEL (/år)'])
-        self._worst_consequences.verticalHeader().setVisible(False)
-        self._worst_consequences.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._worst_consequences.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._worst_consequences.horizontalHeader().setStretchLastSection(True)
-        self._worst_consequences.setWordWrap(True)
-        self._worst_consequences.setStyleSheet(lopa_table_stylesheet())
-        self._configure_compact_table(self._worst_consequences, 56, 112)
-        worst_layout.addWidget(self._worst_consequences)
-
         # Consequences belong to the selected scenario.  Keeping them in the
         # same document block avoids a redundant full-width card.
         consequence_layout = scenario_layout
@@ -534,8 +509,7 @@ class LopaPanel(QWidget):
         overview_layout = QHBoxLayout(overview_row)
         overview_layout.setContentsMargins(0, 0, 0, 0)
         overview_layout.setSpacing(8)
-        overview_layout.addWidget(scenario_card, 3, Qt.AlignmentFlag.AlignTop)
-        overview_layout.addWidget(worst_card, 2, Qt.AlignmentFlag.AlignTop)
+        overview_layout.addWidget(scenario_card, 1, Qt.AlignmentFlag.AlignTop)
 
         sensor_card = self._card()
         self._allow_card_to_shrink(sensor_card)
@@ -663,7 +637,7 @@ class LopaPanel(QWidget):
         # dimensionerande consequence picture.
         detail_layout.addWidget(overview_row)
         self._overview_layout = overview_layout
-        self._overview_cards = (scenario_card, worst_card)
+        self._overview_cards = (scenario_card,)
 
         barrier_card = self._card()
         self._allow_card_to_shrink(barrier_card)
@@ -952,7 +926,7 @@ class LopaPanel(QWidget):
         self._sync_sources_btn.setEnabled(False)
         self._source_sync_note.clear()
         self._consequences.setRowCount(0)
-        self._worst_consequences.setRowCount(0)
+        # self._worst_consequences.setRowCount(0)  # Worst consequence section removed 2026-09-02
         self._sensor_group.clear()
         self._sensor_members.setRowCount(0)
         self._sensor_equipment.clear()
@@ -1253,7 +1227,7 @@ class LopaPanel(QWidget):
             self._goto_hazop_btn.setEnabled(False)
             self._scenario_note.setText('Välj ett källscenario för att beskriva vad som händer i processen.')
             self._consequences.setRowCount(0)
-            self._worst_consequences.setRowCount(0)
+            # self._worst_consequences.setRowCount(0)  # Worst consequence section removed 2026-09-02
             self._barriers.setRowCount(0)
             self._barrier_matrix.setRowCount(0)
             self._barrier_matrix.setColumnCount(0)
@@ -1371,49 +1345,50 @@ class LopaPanel(QWidget):
         self._edit_consequence_btn.setEnabled(bool(rows) and self._revision_is_editable())
         self._add_consequence_btn.setEnabled(bool(self._source_id) and self._revision_is_editable())
         self._loading = old_loading
-        self._populate_worst_consequences()
+        # self._populate_worst_consequences()  # Worst consequence section removed 2026-09-02
 
-    def _populate_worst_consequences(self):
-        if not self._source_id:
-            self._worst_consequences.setRowCount(0)
-            self._worst_note.setText('Välj ett källscenario för att se representativa konsekvenser.')
-            self._worst_note.show()
-            return
-        result = self.db.lopa_source_calculation(self._source_id)
-        candidates = {}
-        for row in result['categories']:
-            if not row['active']:
-                continue
-            previous = candidates.get(row['category_key'])
-            # Required RRF is the primary LOPA criterion.  Severity makes the
-            # tie deterministic when TEL or frequency is still incomplete.
-            row_key = (row['required_rrf'] if row['required_rrf'] is not None else -1,
-                       row['severity'])
-            previous_key = ((previous['required_rrf'] if previous and
-                             previous['required_rrf'] is not None else -1),
-                            previous['severity'] if previous else -1)
-            if previous is None or row_key > previous_key:
-                candidates[row['category_key']] = row
-        old_loading = self._loading
-        self._loading = True
-        rows = list(candidates.values())
-        self._worst_consequences.setRowCount(len(rows))
-        for index, row in enumerate(rows):
-            description = next((item['description'] for item in self.db.lopa_source_consequences(self._source_id)
-                                if item['category_key'] == row['category_key'] and
-                                item['severity'] == row['severity']), '')
-            self._worst_consequences.setCellWidget(
-                index, 0, self._category_badge_widget(row['category_name']))
-            self._worst_consequences.setItem(index, 1, self._readonly_cell(row['severity']))
-            self._worst_consequences.setItem(index, 2, self._readonly_cell(description))
-            self._worst_consequences.setItem(
-                index, 3, self._readonly_cell('—' if row['tel'] is None else f"{row['tel']:.6g}"))
-        self._worst_consequences.resizeRowsToContents()
-        self._fit_table_height(self._worst_consequences, 56, 112)
-        self._worst_note.setText(
-            'Aktiva LOPA-rader visas. Saknad TEL markeras med — och ger ingen beräknad SIL.')
-        self._worst_note.setVisible(any(row['tel'] is None for row in rows))
-        self._loading = old_loading
+    # Worst consequence section removed 2026-09-02 (layout refactor).
+    # def _populate_worst_consequences(self):
+    #     if not self._source_id:
+    #         self._worst_consequences.setRowCount(0)
+    #         self._worst_note.setText('Välj ett källscenario för att se representativa konsekvenser.')
+    #         self._worst_note.show()
+    #         return
+    #     result = self.db.lopa_source_calculation(self._source_id)
+    #     candidates = {}
+    #     for row in result['categories']:
+    #         if not row['active']:
+    #             continue
+    #         previous = candidates.get(row['category_key'])
+    #         # Required RRF is the primary LOPA criterion.  Severity makes the
+    #         # tie deterministic when TEL or frequency is still incomplete.
+    #         row_key = (row['required_rrf'] if row['required_rrf'] is not None else -1,
+    #                    row['severity'])
+    #         previous_key = ((previous['required_rrf'] if previous and
+    #                          previous['required_rrf'] is not None else -1),
+    #                         previous['severity'] if previous else -1)
+    #         if previous is None or row_key > previous_key:
+    #             candidates[row['category_key']] = row
+    #     old_loading = self._loading
+    #     self._loading = True
+    #     rows = list(candidates.values())
+    #     self._worst_consequences.setRowCount(len(rows))
+    #     for index, row in enumerate(rows):
+    #         description = next((item['description'] for item in self.db.lopa_source_consequences(self._source_id)
+    #                             if item['category_key'] == row['category_key'] and
+    #                             item['severity'] == row['severity']), '')
+    #         self._worst_consequences.setCellWidget(
+    #             index, 0, self._category_badge_widget(row['category_name']))
+    #         self._worst_consequences.setItem(index, 1, self._readonly_cell(row['severity']))
+    #         self._worst_consequences.setItem(index, 2, self._readonly_cell(description))
+    #         self._worst_consequences.setItem(
+    #             index, 3, self._readonly_cell('—' if row['tel'] is None else f"{row['tel']:.6g}"))
+    #     self._worst_consequences.resizeRowsToContents()
+    #     self._fit_table_height(self._worst_consequences, 56, 112)
+    #     self._worst_note.setText(
+    #         'Aktiva LOPA-rader visas. Saknad TEL markeras med — och ger ingen beräknad SIL.')
+    #     self._worst_note.setVisible(any(row['tel'] is None for row in rows))
+    #     self._loading = old_loading
 
     def _on_consequence_item_changed(self, item):
         if self._loading or item.column() != 0:
