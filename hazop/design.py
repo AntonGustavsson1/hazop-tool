@@ -45,6 +45,7 @@ SUMMARY_SEPARATOR = SEPARATOR
 SUMMARY_BADGE_WIDTH = 32
 SUMMARY_BADGE_HEIGHT = 22
 SUMMARY_BUTTON_HEIGHT = 24
+SUMMARY_BADGE_RADIUS = 0
 
 # Shared risk-bar geometry.  The risk colour itself remains data-driven and
 # is therefore intentionally not part of this design module.
@@ -260,16 +261,25 @@ def scenario_table_stylesheet() -> str:
     )
 
 
-def summary_badge_stylesheet(selected: bool = False) -> str:
+def summary_badge_stylesheet(
+        selected: bool = False,
+        object_name: str = 'enablerSummaryButton') -> str:
     """Return the common Enablers/RRF/Frequency summary-button style."""
     background = SCENARIO_SELECTION_BG if selected else SUMMARY_BADGE_BG
     hover = SCENARIO_SELECTION_HOVER if selected else HOVER_SURFACE
     return (
-        f'QPushButton#enablerSummaryButton{{background:{background};'
+        f'QPushButton#{object_name}{{background:{background};'
         f'color:{TEXT};border:none;font-size:9px;font-weight:bold;'
         f'padding:2px 4px;}}'
-        f'QPushButton#enablerSummaryButton:hover{{background:{hover};}}'
+        f'QPushButton#{object_name}:hover{{background:{hover};}}'
     )
+
+
+def summary_badge_colors(selected: bool = False) -> tuple[str, str]:
+    """Return ``(background, text)`` for painted summary badges."""
+    if selected:
+        return SCENARIO_SELECTION_BG, SCENARIO_SELECTION_FG
+    return SUMMARY_BADGE_BG, TEXT
 
 
 def popup_shell_stylesheet(object_name: str, *, border: str = POPUP_BORDER,

@@ -33,8 +33,8 @@ from design import (
     RISK_BAR_HEIGHT, RISK_BAR_MARGIN_X, RISK_BAR_MARGIN_Y,
     RISK_BAR_RADIUS, RISK_COLUMN_DEFAULT_WIDTH,
     SCENARIO_SELECTION_BG, SCENARIO_SELECTION_FG,
-    SUMMARY_BADGE_BG as DESIGN_SUMMARY_BADGE_BG,
-    SUMMARY_BADGE_HEIGHT, SUMMARY_BADGE_WIDTH, SUMMARY_BUTTON_HEIGHT,
+    SUMMARY_BADGE_HEIGHT, SUMMARY_BADGE_RADIUS, SUMMARY_BADGE_WIDTH,
+    SUMMARY_BUTTON_HEIGHT,
     SUMMARY_SEPARATOR as DESIGN_SUMMARY_SEPARATOR,
     popup_action_button_stylesheet, popup_form_button_stylesheet,
     popup_frequency_button_stylesheet,
@@ -44,7 +44,7 @@ from design import (
     popup_secondary_button_stylesheet, popup_separator_stylesheet,
     popup_shell_stylesheet, popup_toggle_button_stylesheet,
     scenario_table_stylesheet,
-    summary_badge_stylesheet,
+    summary_badge_colors, summary_badge_stylesheet,
 )
 from pid_viewer import _icon, FREQ_LABELS, freq_to_idx, MODE_PICK_REF_TAG
 from ui_helpers import (
@@ -2755,7 +2755,6 @@ _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _ORS_FIRST_LINE_H = 17
 
 _RRF_W       = SUMMARY_BADGE_WIDTH  # compact width shared by RRF/frequency badges
-_SUMMARY_BADGE_BG = DESIGN_SUMMARY_BADGE_BG
 _SUMMARY_SEPARATOR = DESIGN_SUMMARY_SEPARATOR
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
 
@@ -3423,17 +3422,22 @@ class _PidDelegate(_ScenarioDelegate):
                         painter, desc_rect.adjusted(2, 1, -2, -1), desc,
                         tagged_refs, option.font, tc, word_wrap=True)
 
-                # RRF badge (right column)
-                badge_bg = (QColor(_SCENARIO_SELECTION_BG) if sel
-                            else QColor(_SUMMARY_BADGE_BG))
-                badge_rect = rrf_rect.adjusted(1, 1, -1, -1)
+                # RRF summary button (right column). Keep the painted badge
+                # geometry aligned with the real Enablers button: compact,
+                # flat and top-aligned, even when a neighbouring cell wraps
+                # to several lines.
+                badge_height = min(
+                    SUMMARY_BADGE_HEIGHT, max(1, r.height() - 2))
+                badge_rect = QRect(
+                    rrf_rect.left() + 1, r.top() + 1,
+                    max(1, rrf_rect.width() - 2), badge_height)
+                badge_bg, badge_text = summary_badge_colors(sel)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(badge_bg))
-                painter.drawRoundedRect(badge_rect, 4, 4)
-                badge_tc = (QColor(_SCENARIO_SELECTION_FG) if sel
-                            else QColor('#17191C'))
-                painter.setPen(badge_tc)
+                painter.setBrush(QBrush(QColor(badge_bg)))
+                painter.drawRoundedRect(
+                    badge_rect, SUMMARY_BADGE_RADIUS, SUMMARY_BADGE_RADIUS)
+                painter.setPen(QColor(badge_text))
                 badge_font = QFont(option.font)
                 badge_font.setBold(True)
                 painter.setFont(badge_font)
@@ -3627,17 +3631,15 @@ class _PidDelegate(_ScenarioDelegate):
                     # visibly drift downward when the description wraps.
                     chip_rect = QRect(freq_zone_x, r.top(), freq_zone_w,
                                       min(_ORS_FIRST_LINE_H, r.height()))
-                    chip_bg = (QColor(_SCENARIO_SELECTION_BG) if sel
-                               else QColor(_SUMMARY_BADGE_BG))
+                    chip_bg, chip_text = summary_badge_colors(sel)
                     badge_rect = chip_rect.adjusted(1, 1, -1, -1)
                     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                     painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QBrush(chip_bg))
-                    painter.drawRoundedRect(badge_rect, 4, 4)
+                    painter.setBrush(QBrush(QColor(chip_bg)))
+                    painter.drawRoundedRect(
+                        badge_rect, SUMMARY_BADGE_RADIUS, SUMMARY_BADGE_RADIUS)
                     painter.setFont(ff)
-                    f_tc = (QColor(_SCENARIO_SELECTION_FG) if sel
-                            else QColor('#17191C'))
-                    painter.setPen(f_tc)
+                    painter.setPen(QColor(chip_text))
                     painter.drawText(badge_rect.adjusted(1, 0, -1, 0),
                                      Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
                                      ffm.elidedText(freq_str, Qt.TextElideMode.ElideRight,

@@ -1,5 +1,20 @@
 # NOTES.md — Beslut och kontext
 
+## RRF- och frekvensbadge följer enablersdesignen (2026-09-02)
+
+RRF i barriärkolumnen och frekvens i orsaksfältet använder nu samma centrala
+sammanfattningsstil som enablersknappen: neutral platt bakgrund, samma
+markeringsfärg, fet kompakt text och gemensam bredd. RRF-badgen har dessutom
+en fast kompakt höjd och toppjustering när raden är högre på grund av annan
+text. Frekvensen behåller sin första-rad-geometri så att den inte spiller över
+till nästa rad.
+
+Gemensamma färg- och stilvärden kommer från `design.py`; riskmatrisens
+datadrivna färger och klickzonernas logik är oförändrade.
+
+Verifierat med riktade design-, RRF-, orsaks-/frekvens- och smoke-tester (25
+tester), `py_compile` och `git diff --check`. Testningen är headless.
+
 ## Gemensamma träd- och markupstilar till designlagret (2026-09-02)
 
 Nästa steg i front-end-refaktorn är genomfört utan att ändra HAZOP-logik:

@@ -52,6 +52,21 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn('QPushButton#enablerSummaryButton:hover', selected)
         self.assertIn('QPushButton#enablerSummaryButton:hover', unselected)
 
+    def test_summary_style_can_be_reused_by_rrf_and_frequency(self):
+        from design import (
+            SCENARIO_SELECTION_BG, SCENARIO_SELECTION_FG,
+            SUMMARY_BADGE_BG, TEXT, summary_badge_colors,
+            summary_badge_stylesheet,
+        )
+
+        rrf = summary_badge_stylesheet(object_name='rrfSummaryButton')
+        frequency = summary_badge_stylesheet(object_name='frequencySummaryButton')
+        self.assertIn('QPushButton#rrfSummaryButton', rrf)
+        self.assertIn('QPushButton#frequencySummaryButton', frequency)
+        self.assertEqual(summary_badge_colors(False), (SUMMARY_BADGE_BG, TEXT))
+        self.assertEqual(summary_badge_colors(True),
+                         (SCENARIO_SELECTION_BG, SCENARIO_SELECTION_FG))
+
     def test_popup_builders_use_the_shared_palette(self):
         from design import (
             ACCENT, ACCENT_HOVER, FIELD_BORDER, HOVER_SURFACE, SEPARATOR,
