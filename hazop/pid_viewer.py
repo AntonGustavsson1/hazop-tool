@@ -507,6 +507,7 @@ MODE_PICK_REF_TAG   = 16  # one-shot click: detect tag near point → emit ref_t
 MODE_ANNOTATION     = 17  # click on board to place a sticky note
 MODE_PLACE_EQUIPMENT = 18 # one-shot click to place an equipment marker
 MODE_EDIT_EQUIPMENT = 19  # one-shot click to reposition an existing marker
+MODE_RESIZE_EQUIPMENT = 20  # drag a new bounding box for an existing marker
 
 # ── Off-page connector analysis ───────────────────────────────────────────────
 _RE_TO_FROM = re.compile(

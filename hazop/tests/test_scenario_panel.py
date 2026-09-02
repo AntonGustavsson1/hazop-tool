@@ -2279,6 +2279,29 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_selected_risk_bar_keeps_matrix_colour_inside_the_bar(self):
+        from hazop import ScenarioTablePanel, risk_info
+        from PyQt6.QtGui import QColor
+        panel = ScenarioTablePanel(self.db)
+        try:
+            node_id = self.db.add_node()
+            dev_id = self.db.deviations(node_id)[0]['id']
+            cause_id = self.db.add_cause(dev_id)
+            self.db.update_cause(cause_id, likelihood=5)
+            cons_id = self.db.add_consequence(cause_id)
+            category = self.db.consequence_categories()[0]
+            self.db.set_consequence_severity(cons_id, category['id'], 5)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            panel._table.setCurrentCell(row, panel._C_RFORE)
+            pixmap = self._paint_cell_to_pixmap(panel, row, panel._C_RFORE)
+            _, expected_bg, _ = risk_info(5, 5)
+            sampled = pixmap.toImage().pixelColor(pixmap.width() // 2, 2)
+            self.assertEqual(sampled, QColor(expected_bg),
+                             'selecting the risk cell must not hide its bar')
+        finally:
+            panel.deleteLater()
+
 
     def test_filled_risk_cells_use_the_matrix_colour_when_bars_are_disabled(self):
         from hazop import ScenarioTablePanel, risk_info

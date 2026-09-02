@@ -1864,6 +1864,103 @@ class EquipmentDragNavButtonResetTests(unittest.TestCase):
             "the cursor must be forced back to the idle open-hand look, not left as a closed hand")
 
 
+class EquipmentMarkerGeometryTests(unittest.TestCase):
+    """Moving/resizing a rubber-band marker must keep its stored contour
+    aligned with the label anchor (2026-09-02)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_equipment_geometry_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        from pid_viewer import PIDPanel
+        self.panel = PIDPanel(self.db)
+        self.eq_id = self.db.add_equipment_item(
+            "V-1", "V-1", "V", 0, "Ventil", '', 0)
+
+    def tearDown(self):
+        self.panel.deleteLater()
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _marker(self):
+        import json
+        return self.db.add_equipment_marker(
+            self.eq_id, "V-1", 0, 10.0, 10.0, "Ventil",
+            shape_outline=json.dumps([[0, 0], [10, 0], [10, 10], [0, 10]]),
+            confidence=1.0, link_method='manual')
+
+    def test_move_translates_outline_with_label_anchor(self):
+        import json
+        from PyQt6.QtCore import QPointF
+        marker_id = self._marker()
+
+        self.panel._finish_equipment_reposition(marker_id, QPointF(30, 40), 0)
+
+        row = dict(self.db.equipment_markers_for_page(0)[0])
+        self.assertEqual((row['x'], row['y']), (30.0, 40.0))
+        self.assertEqual(json.loads(row['shape_outline']),
+                         [[20.0, 30.0], [30.0, 30.0],
+                          [30.0, 40.0], [20.0, 40.0]])
+
+    def test_move_mode_keeps_marker_id_until_click(self):
+        marker_id = self._marker()
+
+        self.panel._begin_equipment_reposition(marker_id)
+
+        self.assertEqual(self.panel.viewer.mode, 19)
+        self.assertEqual(self.panel.viewer._reposition_marker_id, marker_id)
+
+    def test_resize_scales_outline_and_moves_anchor_to_new_bounds(self):
+        import json
+        from PyQt6.QtCore import QRectF
+        marker_id = self._marker()
+
+        self.panel._finish_equipment_resize(
+            marker_id, QRectF(100, 200, 40, 60), 0)
+
+        row = dict(self.db.equipment_markers_for_page(0)[0])
+        self.assertEqual((row['x'], row['y']), (120.0, 230.0))
+        self.assertEqual(json.loads(row['shape_outline']),
+                         [[100.0, 200.0], [140.0, 200.0],
+                          [140.0, 260.0], [100.0, 260.0]])
+
+    def test_resize_mode_keeps_marker_id_until_rectangle_is_released(self):
+        from PyQt6.QtCore import QPointF
+        marker_id = self._marker()
+        self.panel._begin_equipment_resize(marker_id)
+        self.assertEqual(self.panel.viewer.mode, 20)
+        self.assertEqual(self.panel.viewer._resize_marker_id, marker_id)
+
+        self.panel.viewer.mapToScene = lambda point: QPointF(point)
+        press = unittest.mock.MagicMock()
+        press.button.return_value = Qt.MouseButton.LeftButton
+        press.position.return_value = QPointF(20, 30)
+        self.panel.viewer.mousePressEvent(press)
+
+        move = unittest.mock.MagicMock()
+        move.buttons.return_value = Qt.MouseButton.LeftButton
+        move.position.return_value = QPointF(60, 90)
+        self.panel.viewer.mouseMoveEvent(move)
+
+        release = unittest.mock.MagicMock()
+        release.button.return_value = Qt.MouseButton.LeftButton
+        release.position.return_value = QPointF(60, 90)
+        self.panel.viewer.mouseReleaseEvent(release)
+
+        self.assertEqual(self.panel.viewer.mode, 0)
+        self.assertIsNone(self.panel.viewer._resize_marker_id)
+        self.assertEqual(
+            (dict(self.db.equipment_markers_for_page(0)[0])['x'],
+             dict(self.db.equipment_markers_for_page(0)[0])['y']),
+            (40.0, 60.0))
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # PIDPanel._export_pdf — four separate bugs reported together (2026-08-17,
 # see NOTES.md): "Dels kan den inte hantera om P&ID har roterats. Dels blir

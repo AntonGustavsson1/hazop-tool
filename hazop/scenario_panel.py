@@ -2670,49 +2670,55 @@ class _ScenarioDelegate(QStyledItemDelegate):
         r = option.rect
         painter.save()
         has_risk = bool(index.data(Qt.ItemDataRole.DisplayRole))
-        if sel:
-            painter.fillRect(r, QColor(_SCENARIO_SELECTION_BG))
+        bg = index.data(Qt.ItemDataRole.BackgroundRole)
+        risk_color = (bg.color() if isinstance(bg, QBrush)
+                      else QColor('#FFFFFF'))
+        neutral_bg = (option.palette.alternateBase() if index.row() % 2 == 1
+                      else option.palette.base())
+
+        # Keep the risk presentation visible while the cell is selected.  A
+        # selected risk cell is normally the one for which the popup is open;
+        # replacing the matrix colour with the generic selection colour made
+        # the bar appear to jump away during editing.  The selection state is
+        # still shown by the table's focus/current-cell treatment, while the
+        # actual risk colour remains the stable visual anchor in both modes.
+        if self._panel._risk_bars_enabled and has_risk:
+            painter.fillRect(r, (QColor(_SCENARIO_SELECTION_BG)
+                                 if sel else neutral_bg))
+            bar_height = max(1, min(
+                _RISK_BAR_HEIGHT, r.height() - 2 * _RISK_BAR_MARGIN_Y))
+            bar = QRect(
+                r.left() + _RISK_BAR_MARGIN_X,
+                r.top() + _RISK_BAR_MARGIN_Y,
+                max(1, r.width() - 2 * _RISK_BAR_MARGIN_X),
+                bar_height)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(risk_color))
+            painter.drawRoundedRect(bar, _RISK_BAR_RADIUS,
+                                    _RISK_BAR_RADIUS)
+        elif has_risk:
+            # Accessibility/legacy option: use the risk-matrix colour as the
+            # complete cell background rather than an inset bar.  This also
+            # intentionally survives selection, just like the bar mode.
+            painter.fillRect(r, QBrush(risk_color))
         else:
-            bg = index.data(Qt.ItemDataRole.BackgroundRole)
-            risk_color = (bg.color() if isinstance(bg, QBrush)
-                          else QColor('#FFFFFF'))
-            if self._panel._risk_bars_enabled and has_risk:
-                # Keep the table's neutral background around the risk token;
-                # the matrix colour is drawn as a compact rounded bar below.
-                painter.fillRect(r, (
-                    option.palette.alternateBase() if index.row() % 2 == 1
-                    else option.palette.base()))
-                bar_height = max(1, min(
-                    _RISK_BAR_HEIGHT, r.height() - 2 * _RISK_BAR_MARGIN_Y))
-                bar = QRect(
-                    r.left() + _RISK_BAR_MARGIN_X,
-                    r.top() + _RISK_BAR_MARGIN_Y,
-                    max(1, r.width() - 2 * _RISK_BAR_MARGIN_X),
-                    bar_height)
-                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(risk_color))
-                painter.drawRoundedRect(bar, _RISK_BAR_RADIUS,
-                                        _RISK_BAR_RADIUS)
-            elif has_risk:
-                # Accessibility/legacy option: use the risk-matrix colour as
-                # the complete cell background rather than an inset bar.
-                painter.fillRect(r, QBrush(risk_color))
-            else:
-                painter.fillRect(r, (
-                    option.palette.alternateBase() if index.row() % 2 == 1
-                    else option.palette.base()))
-        if sel:
-            tc = QColor(_SCENARIO_SELECTION_FG)
-        else:
+            painter.fillRect(r, neutral_bg if not sel
+                             else QColor(_SCENARIO_SELECTION_BG))
+
+        if has_risk:
             fg = index.data(Qt.ItemDataRole.ForegroundRole)
             tc = fg.color() if fg is not None else option.palette.text().color()
+        else:
+            tc = (QColor(_SCENARIO_SELECTION_FG) if sel
+                  else option.palette.text().color())
         painter.setPen(tc)
         font = index.data(Qt.ItemDataRole.FontRole)
         painter.setFont(font if font is not None else option.font)
-        # Put the short risk value inside the bar. A selected cell uses the
-        # full cell as its neutral overlay, so it remains visually uniform.
-        if sel or not self._panel._risk_bars_enabled or not has_risk:
+        # Put the short risk value inside the bar.  The selected cell uses the
+        # same geometry as the unselected cell so the value does not move when
+        # the popup opens.
+        if not self._panel._risk_bars_enabled or not has_risk:
             text_rect = r
         else:
             bar_height = max(1, min(
@@ -7481,7 +7487,13 @@ class ScenarioTablePanel(QWidget):
             # stale cell into an unhandled GUI crash.
             cause, group_ids = None, []
         if len(group_ids) >= 2:
-            lines = self.db.group_cause_description_lines(cause, group_ids)
+            try:
+                lines = self.db.group_cause_description_lines(cause, group_ids)
+            except Exception:
+                # The database can close between the two reads above and the
+                # line expansion. Keep the already-painted cell usable during
+                # teardown; a later rebuild will restore the grouped lines.
+                lines = str(desc or '').splitlines() or ['']
             number = item.data(Qt.ItemDataRole.UserRole + 10) if item else None
             stored = '\n'.join(lines)
             return f"{number}.  {stored}" if number else stored

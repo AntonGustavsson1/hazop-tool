@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsLineItem,
     QGraphicsSimpleTextItem, QGraphicsTextItem, QLineEdit, QMenu,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QTimer, QMimeData
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QPointF, QRectF, QTimer, QMimeData
 from PyQt6.QtGui import (
     QColor, QPen, QBrush, QPainterPath, QPolygonF, QPixmap, QImage, QFont,
     QPainter, QDrag,
@@ -41,6 +41,7 @@ from pid_viewer import (
     MODE_ADD_SHEET_LINK, MODE_PICK_REF_TAG, MODE_ANNOTATION,
     MODE_PLACE_EQUIPMENT,
     MODE_EDIT_EQUIPMENT,
+    MODE_RESIZE_EQUIPMENT,
     _icon, _get_red_symbol_svg, _PageRenderer, _apply_min_pdf_line_width,
     SimilarSymbolSearchDialog, TREE_CONTEXT_LINK_COLORS,
 )
@@ -71,6 +72,8 @@ class PIDGraphicsView(QGraphicsView):
     equipment_delete_requested = pyqtSignal(int)  # equipment_markers.id — right-click "Ta bort" (2026-08-25)
     equipment_reposition_requested = pyqtSignal(int)
     equipment_reposition_finished = pyqtSignal(int, object, int)
+    equipment_resize_requested = pyqtSignal(int)
+    equipment_resize_finished = pyqtSignal(int, object, int)
 
     # Keys for QGraphicsItem.setData / .data
     _DATA_TYPE      = 0    # 'cause' | 'consequence' | 'safeguard' | 'markup'
@@ -86,6 +89,7 @@ class PIDGraphicsView(QGraphicsView):
     _DATA_BADGE_OUTLINE = 12
     _DATA_BADGE_TEXT = 13
     _DATA_BADGE_COUNT = 14
+    _DATA_EQUIPMENT_LABEL = 15
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -224,6 +228,15 @@ class PIDGraphicsView(QGraphicsView):
         self._place_rband_start_scene = None
         self._place_rband_preview_item = None
         self._place_rband_dragging = False
+        # Existing equipment-marker geometry editing. Move keeps the
+        # original outline attached to the marker; resize uses a temporary
+        # scene rectangle and scales that outline on commit.
+        self._equipment_edit_operation = None
+        self._equipment_resize_marker_id = None
+        self._equipment_resize_page = None
+        self._equipment_resize_start_scene = None
+        self._equipment_resize_preview_item = None
+        self._equipment_resize_dragging = False
 
         # Label slot tracker: (qx, qy) → next free row index (reset on clear_overlays)
         self._label_slots: dict = {}
@@ -773,7 +786,8 @@ class PIDGraphicsView(QGraphicsView):
         """
         for attr in ('_rband_preview_item', '_rband_label_item',
                      '_place_rband_preview_item',
-                     '_ctrl_rband_preview_item', '_ctrl_rband_count_label'):
+                     '_ctrl_rband_preview_item', '_ctrl_rband_count_label',
+                     '_equipment_resize_preview_item'):
             item = getattr(self, attr, None)
             if item is not None:
                 try:
@@ -785,6 +799,11 @@ class PIDGraphicsView(QGraphicsView):
         self._rband_dragging         = False
         self._place_rband_start_scene = None
         self._place_rband_dragging = False
+        self._equipment_resize_start_scene = None
+        self._equipment_resize_marker_id = None
+        self._equipment_resize_page = None
+        self._equipment_resize_dragging = False
+        self._equipment_edit_operation = None
         self._ctrl_rband_start_scene = None
         self._ctrl_rband_dragging    = False
 
@@ -813,6 +832,9 @@ class PIDGraphicsView(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_EDIT_EQUIPMENT:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        elif mode == MODE_RESIZE_EQUIPMENT:
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.setCursor(Qt.CursorShape.CrossCursor)
         elif mode == MODE_RED_MARKUP_SYMBOL:
@@ -1991,6 +2013,10 @@ class PIDGraphicsView(QGraphicsView):
             act.triggered.connect(partial(self.equipment_edit_requested.emit, mid))
             move_act = menu.addAction(_icon('move'), "Redigera placering")
             move_act.triggered.connect(partial(self.equipment_reposition_requested.emit, mid))
+            resize_act = menu.addAction(_icon('resize'), "Ändra storlek")
+            resize_act.setToolTip(
+                "Dra en ny rektangel runt objektet; etikett och kontur följer med")
+            resize_act.triggered.connect(partial(self.equipment_resize_requested.emit, mid))
             # "Ta bort" alongside it (2026-08-25, see NOTES.md — Anton:
             # "om man högerklickar på objektet så ska också alternativet
             # att ta bort finnas") — this menu previously had no way to
@@ -2166,6 +2192,11 @@ class PIDGraphicsView(QGraphicsView):
         item.setToolTip(tip)
         item.setData(self._DATA_TYPE, 'equipment')
         item.setData(self._DATA_ID, marker_id)
+        # Keep the live label on the marker item as well as in the separate
+        # scene text items. This gives the native QDrag preview a stable,
+        # database-independent source and avoids inferring text from the
+        # rendered label's child items.
+        item.setData(self._DATA_EQUIPMENT_LABEL, str(tag or '').strip())
         item.setAcceptHoverEvents(True)
         item.setCursor(Qt.CursorShape.PointingHandCursor)   # matches cause/consequence/safeguard markers
         self._add_tracked(item, 'equipment')
@@ -2211,6 +2242,50 @@ class PIDGraphicsView(QGraphicsView):
                               'equipment', badges=badge_specs,
                               marker_id=marker_id)
             self._apply_tree_context_badges()
+
+    def _equipment_drag_pixmap(self, marker_ids):
+        """Return the compact label stack shown while dragging equipment.
+
+        QDrag normally supplies no useful visual for a custom scene item, so
+        the user sees only the cursor while dragging from a rubber-band
+        marker. Draw the same black/white label language as the P&ID label;
+        multiple selected markers are deliberately stacked in source order.
+        """
+        labels = []
+        for marker_id in marker_ids:
+            item = self._find_equipment_item(int(marker_id))
+            label = item.data(self._DATA_EQUIPMENT_LABEL) if item else ''
+            label = str(label or '').strip()
+            if not label:
+                label = f'Objekt {int(marker_id)}'
+            labels.append(label[:48])
+        if not labels:
+            labels = ['Objekt']
+
+        font = QFont()
+        font.setPointSize(9)
+        font.setBold(True)
+        from PyQt6.QtGui import QFontMetrics
+        fm = QFontMetrics(font)
+        row_height = max(24, fm.height() + 10)
+        width = max(72, max(fm.horizontalAdvance(label) for label in labels) + 18)
+        pixmap = QPixmap(width, row_height * len(labels) + 4)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setFont(font)
+        for index, label in enumerate(labels):
+            rect = QRectF(1, 2 + index * row_height,
+                          width - 2, row_height - 2)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(0, 0, 0, 204)))
+            painter.drawRoundedRect(rect, 4, 4)
+            painter.setPen(QColor('#FFFFFF'))
+            painter.drawText(rect.adjusted(8, 0, -8, 0),
+                             Qt.AlignmentFlag.AlignLeft |
+                             Qt.AlignmentFlag.AlignVCenter, label)
+        painter.end()
+        return pixmap
 
     def _extract_tag_from_rect(self, pdf_rect: QRectF) -> str:
         """Thin wrapper around equipment_detection.extract_tag_from_rect
@@ -2601,12 +2676,33 @@ class PIDGraphicsView(QGraphicsView):
             self._place_rband_dragging = False
             event.accept(); return
 
+        if (self.mode in (MODE_EDIT_EQUIPMENT, MODE_RESIZE_EQUIPMENT) and
+                event.button() == Qt.MouseButton.RightButton):
+            # Both geometry-edit modes are explicitly armed from the marker's
+            # context menu. A right click is a predictable, non-destructive
+            # cancel path instead of falling through to the normal P&ID menu.
+            self._reposition_marker_id = None
+            self._resize_marker_id = None
+            self.set_mode(MODE_NAV)
+            event.accept(); return
+
         if self.mode == MODE_EDIT_EQUIPMENT and event.button() == Qt.MouseButton.LeftButton:
             marker_id = getattr(self, '_reposition_marker_id', None)
             self._reposition_marker_id = None
             self.set_mode(MODE_NAV)
             if marker_id is not None:
                 self.equipment_reposition_finished.emit(int(marker_id), sp, self.current_page)
+            event.accept(); return
+
+        if self.mode == MODE_RESIZE_EQUIPMENT and event.button() == Qt.MouseButton.LeftButton:
+            marker_id = getattr(self, '_resize_marker_id', None)
+            if marker_id is None:
+                self.set_mode(MODE_NAV)
+                event.accept(); return
+            self._equipment_resize_marker_id = int(marker_id)
+            self._equipment_resize_page = self.current_page
+            self._equipment_resize_start_scene = sp
+            self._equipment_resize_dragging = False
             event.accept(); return
 
         # ── Shift+press on an equipment marker: arm a possible drag-to-worksheet ──
@@ -2794,6 +2890,36 @@ class PIDGraphicsView(QGraphicsView):
                 self.equipment_place_requested.emit(sp, page)
             event.accept(); return
 
+        if (self.mode == MODE_RESIZE_EQUIPMENT and
+                event.button() == Qt.MouseButton.LeftButton and
+                self._equipment_resize_start_scene is not None):
+            sp = self.mapToScene(event.position().toPoint())
+            start = self._equipment_resize_start_scene
+            dragging = self._equipment_resize_dragging
+            marker_id = self._equipment_resize_marker_id
+            page = self._equipment_resize_page
+            if self._equipment_resize_preview_item is not None:
+                try:
+                    self._scene.removeItem(self._equipment_resize_preview_item)
+                except RuntimeError:
+                    pass
+                self._equipment_resize_preview_item = None
+            self._equipment_resize_start_scene = None
+            self._equipment_resize_marker_id = None
+            self._equipment_resize_page = None
+            self._equipment_resize_dragging = False
+            self._resize_marker_id = None
+            self.set_mode(MODE_NAV)
+            if dragging and marker_id is not None and page is not None:
+                rect = QRectF(start, sp).normalized()
+                rs = self.render_scale
+                ox, oy = self._page_offsets.get(page, (0.0, 0.0))
+                pdf_rect = QRectF((rect.x() - ox) / rs, (rect.y() - oy) / rs,
+                                  rect.width() / rs, rect.height() / rs)
+                self.equipment_resize_finished.emit(
+                    int(marker_id), pdf_rect, int(page))
+            event.accept(); return
+
         # ── Board layout page drag release ────────────────────────────────────
         if (self.mode == MODE_BOARD_LAYOUT and self._dragging_page is not None and
                 event.button() == Qt.MouseButton.LeftButton):
@@ -2924,6 +3050,31 @@ class PIDGraphicsView(QGraphicsView):
                     self._place_rband_preview_item.setRect(rect)
             event.accept(); return
 
+        # ── Resize an existing equipment/rubber-band marker ────────────────
+        # The operation is deliberately a rectangle gesture rather than a
+        # collection of tiny corner handles. It remains usable at every zoom
+        # level and gives the user an unambiguous preview of the final bounds.
+        if (self.mode == MODE_RESIZE_EQUIPMENT and
+                self._equipment_resize_start_scene is not None and
+                event.buttons() & Qt.MouseButton.LeftButton):
+            sp = self.mapToScene(event.position().toPoint())
+            start = self._equipment_resize_start_scene
+            dx, dy = sp.x() - start.x(), sp.y() - start.y()
+            if not self._equipment_resize_dragging and dx * dx + dy * dy > 100:
+                self._equipment_resize_dragging = True
+            if self._equipment_resize_dragging:
+                rect = QRectF(start, sp).normalized()
+                if self._equipment_resize_preview_item is None:
+                    pen = QPen(QColor(30, 110, 220), 1.5)
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                    pen.setCosmetic(True)
+                    self._equipment_resize_preview_item = self._scene.addRect(
+                        rect, pen, QBrush(QColor(30, 110, 220, 32)))
+                    self._equipment_resize_preview_item.setZValue(Z_TEMP)
+                else:
+                    self._equipment_resize_preview_item.setRect(rect)
+            event.accept(); return
+
         # ── Shift+drag of an equipment marker → worksheet consequence row ─────
         if (self._equip_drag_candidate is not None and
                 event.buttons() & Qt.MouseButton.LeftButton and
@@ -2942,12 +3093,21 @@ class PIDGraphicsView(QGraphicsView):
                 # unchanged single-marker behaviour.
                 if (len(self._selected_equipment_markers) >= 2 and
                         marker_id in self._selected_equipment_markers):
-                    ids_text = ",".join(str(i) for i in sorted(self._selected_equipment_markers))
+                    drag_ids = sorted(self._selected_equipment_markers)
+                    ids_text = ",".join(str(i) for i in drag_ids)
                     mime.setText(f'hzp:equipment-multi:{ids_text}:-1:-1')
                 else:
+                    drag_ids = [marker_id]
                     mime.setText(f'hzp:equipment:{marker_id}:-1:-1')
                 drag = QDrag(self)
                 drag.setMimeData(mime)
+                # Make the object label itself visibly follow the cursor.
+                # For a multi-selection this is a deliberately stacked label
+                # preview, so the user can verify what will be dropped before
+                # releasing the mouse button.
+                drag_pixmap = self._equipment_drag_pixmap(drag_ids)
+                drag.setPixmap(drag_pixmap)
+                drag.setHotSpot(QPoint(drag_pixmap.width() // 2, 4))
                 drag.exec(Qt.DropAction.CopyAction)
                 # drag.exec() blocks until the drop is released; a native
                 # drag suppresses normal hover/leave events for widgets the

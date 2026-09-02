@@ -64,6 +64,7 @@ from pid_viewer import (
     MODE_RED_MARKUP_SYMBOL, MODE_BOARD_LAYOUT,
     MODE_PICK_REF_TAG, MODE_ANNOTATION, MODE_PLACE_EQUIPMENT,
     MODE_EDIT_EQUIPMENT,
+    MODE_RESIZE_EQUIPMENT,
     _icon, _vline, _draw_pid_marker, _draw_pdf_equipment_marker,
     _hex_to_fitz_rgb, _sheet_ref_variants,
     _equip_prefix_from_tag, _obj_type_matches, ensure_ocr_available,
@@ -1615,6 +1616,8 @@ class PIDPanel(QWidget):
         self.viewer.equipment_edit_requested.connect(self.equipment_edit_requested.emit)
         self.viewer.equipment_reposition_requested.connect(self._begin_equipment_reposition)
         self.viewer.equipment_reposition_finished.connect(self._finish_equipment_reposition)
+        self.viewer.equipment_resize_requested.connect(self._begin_equipment_resize)
+        self.viewer.equipment_resize_finished.connect(self._finish_equipment_resize)
         self.viewer.equipment_delete_requested.connect(self._on_equipment_delete_requested)
         self.viewer.ref_tag_picked.connect(self.ref_tag_picked)
         self.viewer.annotation_clicked.connect(self._on_annotation_click)
@@ -3898,20 +3901,122 @@ class PIDPanel(QWidget):
         if not row:
             return
         self.viewer._reposition_marker_id = int(marker_id)
+        self.viewer._equipment_edit_operation = 'move'
         self.viewer.set_mode(MODE_EDIT_EQUIPMENT)
         self.viewer.setToolTip(
             f"Klicka på den nya placeringen för {row['tag'] or 'objektet'}. Högerklick avbryter.")
 
     def _finish_equipment_reposition(self, marker_id, scene_pos, page):
-        """Persist a marker's new center and redraw the active P&ID page."""
+        """Move the centre and translate a stored rubber-band outline with it."""
         try:
             x_pdf, y_pdf = self.viewer.scene_to_pdf(scene_pos)
             row = self.db.conn.execute(
-                "SELECT equipment_id FROM equipment_markers WHERE id=?",
+                "SELECT equipment_id, x, y, shape_outline "
+                "FROM equipment_markers WHERE id=?",
                 (int(marker_id),)).fetchone()
-            self.db.update_equipment_marker_position(marker_id, page, x_pdf, y_pdf)
+            if not row:
+                return
+            old_x = float(row['x'] or 0.0)
+            old_y = float(row['y'] or 0.0)
+            outline = row['shape_outline'] or ''
+            translated = outline
+            try:
+                points = json.loads(outline) if outline else None
+                if isinstance(points, list) and len(points) >= 3:
+                    translated = json.dumps([
+                        [float(point[0]) + x_pdf - old_x,
+                         float(point[1]) + y_pdf - old_y]
+                        for point in points if isinstance(point, (list, tuple))
+                        and len(point) >= 2
+                    ])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                # A malformed/legacy outline must not block moving the
+                # marker centre. Keep its original value for a later repair.
+                translated = outline
+            with self.db.history_group():
+                if translated != outline:
+                    self.db.update_equipment_marker_geometry(
+                        marker_id, page, x_pdf, y_pdf, translated)
+                else:
+                    self.db.update_equipment_marker_position(
+                        marker_id, page, x_pdf, y_pdf)
             self._load_overlays()
             if row and row['equipment_id'] is not None:
+                self.equipment_updated.emit(int(row['equipment_id']))
+        finally:
+            self.viewer.setToolTip('')
+
+    def _begin_equipment_resize(self, marker_id):
+        """Arm a rectangle gesture for resizing an existing marker."""
+        row = self.db.conn.execute(
+            "SELECT tag FROM equipment_markers WHERE id=?", (int(marker_id),)
+        ).fetchone()
+        if not row:
+            return
+        self.viewer._resize_marker_id = int(marker_id)
+        self.viewer._equipment_edit_operation = 'resize'
+        self.viewer.set_mode(MODE_RESIZE_EQUIPMENT)
+        self.viewer.setToolTip(
+            f"Dra en ny rektangel för {row['tag'] or 'objektet'}. "
+            "Högerklick avbryter.")
+
+    def _finish_equipment_resize(self, marker_id, pdf_rect, page):
+        """Scale a marker's outline into ``pdf_rect`` and rebuild its label."""
+        try:
+            rect = QRectF(pdf_rect).normalized()
+            if rect.width() <= 0.5 or rect.height() <= 0.5:
+                return
+            row = self.db.conn.execute(
+                "SELECT equipment_id, x, y, shape_outline "
+                "FROM equipment_markers WHERE id=?", (int(marker_id),)
+            ).fetchone()
+            if not row:
+                return
+
+            try:
+                old_points = json.loads(row['shape_outline'] or '')
+            except (TypeError, ValueError, json.JSONDecodeError):
+                old_points = None
+            valid_points = [point for point in (old_points or [])
+                            if isinstance(point, (list, tuple)) and len(point) >= 2]
+            if len(valid_points) >= 3:
+                min_x = min(float(point[0]) for point in valid_points)
+                max_x = max(float(point[0]) for point in valid_points)
+                min_y = min(float(point[1]) for point in valid_points)
+                max_y = max(float(point[1]) for point in valid_points)
+                old_w = max_x - min_x
+                old_h = max_y - min_y
+            else:
+                valid_points = []
+                old_x = float(row['x'] or 0.0)
+                old_y = float(row['y'] or 0.0)
+                min_x = old_x - 1.0
+                min_y = old_y - 1.0
+                old_w = old_h = 2.0
+
+            if old_w <= 0.001 or old_h <= 0.001:
+                old_w = old_h = 2.0
+            new_points = []
+            if valid_points:
+                for point in valid_points:
+                    new_points.append([
+                        rect.left() + (float(point[0]) - min_x) * rect.width() / old_w,
+                        rect.top() + (float(point[1]) - min_y) * rect.height() / old_h,
+                    ])
+            else:
+                new_points = [
+                    [rect.left(), rect.top()],
+                    [rect.right(), rect.top()],
+                    [rect.right(), rect.bottom()],
+                    [rect.left(), rect.bottom()],
+                ]
+            outline = json.dumps(new_points)
+            center = rect.center()
+            with self.db.history_group():
+                self.db.update_equipment_marker_geometry(
+                    marker_id, page, center.x(), center.y(), outline)
+            self._load_overlays()
+            if row['equipment_id'] is not None:
                 self.equipment_updated.emit(int(row['equipment_id']))
         finally:
             self.viewer.setToolTip('')

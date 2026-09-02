@@ -5314,3 +5314,27 @@ overlay-refresh, så den nya etiketten visas direkt efter redigering.
 
 Verifierat med riktat test för gummibands-popupens tagg- och typändring samt
 de befintliga placerings- och asynkrona taggsökningstesterna.
+
+## Stabil riskpresentation och redigering av gummibandsmarkeringar (2026-09-02)
+
+Risk före barriär och Risker efter barriärer behåller nu sin riskfärg och
+stapelgeometri när cellen är vald och riskmatris-popupen är öppen. Det gäller
+både stapelläget och det alternativa fyllda cell-läget; urvalet byter inte
+längre ut riskpresentationen mot en blå/grå redigeringsyta.
+
+En befintlig P&ID-/gummibandsmarkering kan flyttas via Redigera placering.
+Flytten translaterar den sparade PDF-konturen relativt markeringens centrum,
+så etiketten och konturen följs åt även efter en sidflytt. Kontextmenyn har
+också Ändra storlek, där användaren drar en ny rektangel. Den befintliga
+konturen skalas in i den nya rektangeln och etiketten byggs om från det nya
+centrumet.
+
+Shift-drag från en eller flera markeringar visar nu en native dragbild med
+svart etikett och vit text. Vid flera objekt staplas etiketterna under
+varandra och dragbildens hotspot ligger i dess överkant, vilket gör att
+etiketterna syns direkt under muspekaren.
+
+Verifierat med riktade riskrenderingstester, 48 P&ID-grafiktester, placerings-
+och geometritester samt py_compile. En befintlig testsvit har kvar två äldre
+förväntningsfel för tomma slutriskceller (den förväntar ett mojibake-tecken
+i stället för programmets avsiktliga tomma text); dessa berör inte ändringen.

@@ -4481,6 +4481,22 @@ class Database:
             (int(page), float(x), float(y), int(marker_id)))
         self.commit()
 
+    def update_equipment_marker_geometry(self, marker_id, page, x, y,
+                                         shape_outline):
+        """Persist an equipment marker's centre and optional outline together.
+
+        Rubber-band equipment markers store their visible contour as PDF
+        points. Moving only ``x``/``y`` therefore leaves that contour behind;
+        this atomic update keeps the label anchor and contour in sync. The
+        geometry editor uses the same method when it rescales a marker.
+        """
+        self.conn.execute(
+            "UPDATE equipment_markers SET pid_page=?, x=?, y=?, "
+            "shape_outline=? WHERE id=?",
+            (int(page), float(x), float(y), str(shape_outline or ''),
+             int(marker_id)))
+        self.commit()
+
     def delete_equipment_marker(self, id_):
         self.conn.execute("DELETE FROM equipment_markers WHERE id=?", (id_,))
         self.commit()

@@ -224,6 +224,9 @@ class EquipmentMultiSelectTests(unittest.TestCase):
 
         mime_arg = mock_drag.setMimeData.call_args[0][0]
         self.assertEqual(mime_arg.text(), 'hzp:equipment-multi:5,6:-1:-1')
+        drag_pixmap = mock_drag.setPixmap.call_args[0][0]
+        self.assertGreater(drag_pixmap.height(), 24,
+                           'a multi-marker drag should show stacked labels')
         # Selection is cleared once the group drag has actually started.
         self.assertEqual(view._selected_equipment_markers, set())
 
@@ -323,6 +326,35 @@ class EquipmentMultiSelectTests(unittest.TestCase):
             view._show_context_menu(QPointF(500, 500), QPoint(0, 0))
 
         self.assertTrue(any("Rensa markering" in t for t in texts), texts)
+
+    def test_context_menu_offers_equipment_resize(self):
+        from PyQt6.QtCore import QPointF, QPoint
+        from PyQt6.QtWidgets import QMenu
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.add_equipment_marker(1, 10.0, 10.0, 'Ventil', tag='V-1')
+        texts = []
+
+        def _fake_exec(menu_self, _pos=None):
+            texts.extend(a.text() for a in menu_self.actions())
+            return None
+
+        with unittest.mock.patch.object(QMenu, 'exec', new=_fake_exec):
+            view._show_context_menu(QPointF(10, 10), QPoint(0, 0))
+
+        self.assertIn('Ändra storlek', texts)
+
+    def test_drag_pixmap_contains_one_row_per_marker(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.add_equipment_marker(1, 10.0, 10.0, 'Ventil', tag='V-1')
+        view.add_equipment_marker(2, 50.0, 10.0, 'Pump', tag='P-2')
+
+        one = view._equipment_drag_pixmap([1])
+        two = view._equipment_drag_pixmap([1, 2])
+
+        self.assertGreaterEqual(two.height(), one.height() + 20)
+        self.assertGreater(two.width(), 0)
 
     def test_context_menu_does_not_offer_manual_equipment_placement(self):
         from PyQt6.QtCore import QPointF, QPoint
