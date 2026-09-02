@@ -1108,11 +1108,10 @@ class LopaPanel(QWidget):
         out of a busy row instead of reading it as plain text."""
         holder = QWidget()
         layout = QHBoxLayout(holder)
-        layout.setContentsMargins(2, 1, 2, 1)
+        layout.setContentsMargins(0, 0, 0, 0)
         label = QLabel(str(text or '—'))
         label.setStyleSheet(lopa_category_badge_stylesheet())
         layout.addWidget(label)
-        layout.addStretch(1)
         return holder
 
     def _revision_is_editable(self):

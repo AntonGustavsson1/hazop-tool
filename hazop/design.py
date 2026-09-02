@@ -391,8 +391,8 @@ def lopa_category_badge_stylesheet() -> str:
     actual risk-severity data (see the RISK_BAR_* comment above)."""
     return (
         f'QLabel{{background:{SUMMARY_BADGE_BG};color:{TEXT};'
-        f'border:1px solid {SUMMARY_BADGE_BORDER};border-radius:8px;'
-        'padding:1px 7px;font-size:8pt;font-weight:600;}'
+        f'border:1px solid {SUMMARY_BADGE_BORDER};border-radius:4px;'
+        'padding:0px 5px;font-size:7pt;font-weight:600;}'
     )
 
 
