@@ -36,7 +36,15 @@ from design import (
     SUMMARY_BADGE_BG as DESIGN_SUMMARY_BADGE_BG,
     SUMMARY_BADGE_HEIGHT, SUMMARY_BADGE_WIDTH, SUMMARY_BUTTON_HEIGHT,
     SUMMARY_SEPARATOR as DESIGN_SUMMARY_SEPARATOR,
-    scenario_table_stylesheet, summary_badge_stylesheet,
+    popup_action_button_stylesheet, popup_form_button_stylesheet,
+    popup_frequency_button_stylesheet,
+    popup_input_stylesheet, popup_list_stylesheet,
+    popup_label_stylesheet,
+    popup_muted_label_stylesheet, popup_primary_button_stylesheet,
+    popup_secondary_button_stylesheet, popup_separator_stylesheet,
+    popup_shell_stylesheet, popup_toggle_button_stylesheet,
+    scenario_table_stylesheet,
+    summary_badge_stylesheet,
 )
 from pid_viewer import _icon, FREQ_LABELS, freq_to_idx, MODE_PICK_REF_TAG
 from ui_helpers import (
@@ -91,14 +99,10 @@ class _ObjectTagActionPopup(QDialog):
         self.setObjectName('objectTagActionPopup')
         self.setMinimumWidth(240)
         self.setStyleSheet(
-            'QWidget#objectTagActionPopup{background:#FFFFFF;'
-            'border:1px solid #4B5563;border-radius:3px;}'
-            'QLabel{border:none;color:#17191C;}'
-            'QComboBox,QLineEdit{border:1px solid #B8BDC4;border-radius:2px;'
-            'padding:2px 5px;background:#FFFFFF;color:#17191C;}'
-            'QPushButton{border:1px solid #8D9299;border-radius:2px;'
-            'padding:3px 7px;background:#F5F5F3;color:#17191C;}'
-            'QPushButton:hover{background:#E8E9E6;}')
+            popup_shell_stylesheet('objectTagActionPopup')
+            + popup_label_stylesheet()
+            + popup_input_stylesheet()
+            + popup_form_button_stylesheet())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 7, 8, 8)
@@ -651,9 +655,7 @@ class RiskMatrixPopup(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName("riskMatrixPopup")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setStyleSheet(
-            "QWidget#riskMatrixPopup{background:#FFFFFF;"
-            "border:1px solid #4B5563;border-radius:3px;}")
+        self.setStyleSheet(popup_shell_stylesheet('riskMatrixPopup'))
 
         cfg       = get_matrix()
         n_cons    = cfg.get('rows', 5)
@@ -1029,14 +1031,7 @@ class RiskMatrixPopup(QDialog):
 
     @staticmethod
     def _cat_bstyle(selected: bool) -> str:
-        if selected:
-            return ("QPushButton{background:#2F5FD0;color:white;"
-                    "border:2px solid #2F5FD0;border-radius:0px;"
-                    "font-size:8px;font-weight:bold;}"
-                    "QPushButton:hover{background:#3D6BD8;}")
-        return ("QPushButton{background:#F5F5F3;color:#17191C;"
-                "border:1px solid #CFD1CE;border-radius:0px;font-size:8px;}"
-                "QPushButton:hover{background:#E8E9E6;border:1px solid #B3B7B2;}")
+        return popup_toggle_button_stylesheet(selected, font_size='8px')
 
     def _toggle_category(self, cat_id, sev):
         cur = self._cat_sel.get(cat_id, 0)
@@ -3750,14 +3745,8 @@ class StandardCauseSuggestPopup(QWidget):
     client area (screen-edge clamping doesn't apply to a child
     widget) — see _show_standard_cause_popup's positioning code."""
 
-    _BTN_STYLE = (
-        "QPushButton{text-align:left; font-size:10px; padding:3px 6px;"
-        "border:none; background:transparent; border-radius:0px;}"
-        "QPushButton:hover{background:#F5F5F3;}")
-    _FREQ_BTN_STYLE = (
-        "QPushButton{color:#17191C; background:#F5F5F3; border-radius:0px;"
-        "padding:1px 6px; font-size:10px; font-weight:bold; border:none;}"
-        "QPushButton:hover{background:#E8E9E6;}")
+    _BTN_STYLE = popup_action_button_stylesheet()
+    _FREQ_BTN_STYLE = popup_frequency_button_stylesheet()
 
     def __init__(self, panel, row, cause_id, editor, comp_type, dev_description,
                  rows, equipment_id=None, parent=None):
@@ -3773,9 +3762,7 @@ class StandardCauseSuggestPopup(QWidget):
         # Give the child popup a clear boundary against the table and the
         # application background. It remains a non-focusable child widget;
         # only the visual framing changes here.
-        self.setStyleSheet("QWidget#standardCauseSuggestPopup{"
-                           "background:#FFFFFF;border:1px solid #4B5563;"
-                           "border-radius:3px;}")
+        self.setStyleSheet(popup_shell_stylesheet('standardCauseSuggestPopup'))
         self._panel = panel
         self._row = row
         self._cause_id = cause_id
@@ -3787,7 +3774,7 @@ class StandardCauseSuggestPopup(QWidget):
         layout.setContentsMargins(8, 6, 8, 6)
 
         header = QLabel()
-        header.setStyleSheet("color:#777; font-size:9px;")
+        header.setStyleSheet(popup_muted_label_stylesheet())
         header.setWordWrap(True)
         if rows and dev_description:
             header.setText(f"Standardorsaker  —  {comp_type}  /  {dev_description}")
@@ -3820,7 +3807,7 @@ class StandardCauseSuggestPopup(QWidget):
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color:#E2E3E1; margin:2px 0px;")
+        sep.setStyleSheet(popup_separator_stylesheet() + " margin:2px 0px;")
         layout.addWidget(sep)
 
         freq_row = QHBoxLayout()
@@ -3941,18 +3928,17 @@ class RecommendationAssistPopup(QWidget):
     Choosing a result links it once and closes the editor without creating a
     second recommendation."""
 
-    _RESULT_STYLE = (
-        "QPushButton{text-align:left; font-size:10px; padding:4px 6px;"
-        "border:none; background:transparent; border-radius:0px;}"
-        "QPushButton:hover{background:#F5F5F3;}"
-        "QPushButton:pressed{background:#E6ECFA;}")
+    _RESULT_STYLE = popup_action_button_stylesheet(
+        padding='4px 6px', pressed=True)
 
     def __init__(self, panel, cons_id, editor, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setStyleSheet("RecommendationAssistPopup{background:#FFFFFF;"
-                           "border:1px solid #E2E3E1;}")
+        self.setObjectName('recommendationAssistPopup')
+        self.setStyleSheet(popup_shell_stylesheet('recommendationAssistPopup',
+                                                  border=DESIGN_SUMMARY_SEPARATOR))
         self._panel = panel
         self._cons_id = cons_id
         self._editor = editor
@@ -3972,7 +3958,7 @@ class RecommendationAssistPopup(QWidget):
         layout.addWidget(title)
 
         hint = QLabel("Skriv för att söka på nummer eller text. Klicka för att använda.")
-        hint.setStyleSheet("color:#666; font-size:9px;")
+        hint.setStyleSheet(popup_muted_label_stylesheet())
         hint.setWordWrap(True)
         hint.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         layout.addWidget(hint)
@@ -4022,7 +4008,7 @@ class RecommendationAssistPopup(QWidget):
         recs = self._panel.db.all_recommendations()
         if not recs:
             empty = QLabel("Inga rekommendationer i studien ännu.")
-            empty.setStyleSheet("font-size:9px; color:#8D9299;")
+            empty.setStyleSheet(popup_muted_label_stylesheet())
             empty.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self._list_layout.addWidget(empty)
             return
@@ -4036,7 +4022,7 @@ class RecommendationAssistPopup(QWidget):
                           if matching_recs
                           else "Inga numrerade rekommendationer matchar sökningen.")
             empty = QLabel(empty_text)
-            empty.setStyleSheet("font-size:9px; color:#8D9299;")
+            empty.setStyleSheet(popup_muted_label_stylesheet())
             empty.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self._list_layout.addWidget(empty)
             return
@@ -4111,12 +4097,7 @@ class SgRRFCategoryPopup(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName("sgRrfPopup")
         self.setStyleSheet(
-            "QWidget#sgRrfPopup{background:#FFFFFF;"
-            "border:1px solid #4B5563;border-radius:3px;}"
-            "QListWidget{border:none;background:#FFFFFF;font-size:10px;}"
-            "QListWidget::item{padding:3px 6px;color:#17191C;}"
-            "QListWidget::item:hover{background:#F5F5F3;}"
-            "QListWidget::item:selected{background:#E8E9E6;color:#17191C;}")
+            popup_shell_stylesheet('sgRrfPopup') + popup_list_stylesheet())
         self._build()
         add_mini_popup_close_button(self)
 
@@ -4138,8 +4119,8 @@ class SgRRFCategoryPopup(QDialog):
         idx = self._type_combo.findText(self._current_type)
         if idx >= 0:
             self._type_combo.setCurrentIndex(idx)
-        self._type_combo.setStyleSheet("border:1px solid #CFD1CE;"
-                                      "font-size:10px;")
+        self._type_combo.setStyleSheet(popup_input_stylesheet() +
+                                       "font-size:10px;")
         type_row.addWidget(self._type_combo)
         outer.addLayout(type_row)
 
@@ -4177,10 +4158,10 @@ class SgRRFCategoryPopup(QDialog):
         if self._sev_cat_list:
             sep = QFrame()
             sep.setFrameShape(QFrame.Shape.HLine)
-            sep.setStyleSheet("color:#E2E3E1;")
+            sep.setStyleSheet(popup_separator_stylesheet())
             outer.addWidget(sep)
             applies_label = QLabel("Gäller för konsekvenskategori:")
-            applies_label.setStyleSheet("border:none;color:#5B616B;font-size:9px;")
+            applies_label.setStyleSheet(popup_muted_label_stylesheet())
             outer.addWidget(applies_label)
             for severity_id, category_name in self._sev_cat_list:
                 try:
@@ -4195,10 +4176,7 @@ class SgRRFCategoryPopup(QDialog):
 
         ok = QPushButton("OK")
         ok.setDefault(True)
-        ok.setStyleSheet(
-            "QPushButton{border:none;font-size:10px;padding:3px 12px;"
-            "background:#2F5FD0;color:white;border-radius:0px;}"
-            "QPushButton:hover{background:#3D6BD8;}")
+        ok.setStyleSheet(popup_primary_button_stylesheet())
         ok.clicked.connect(self._ok)
         outer.addWidget(ok, alignment=Qt.AlignmentFlag.AlignRight)
 
@@ -4237,7 +4215,10 @@ class CatSGSelectionPopup(QDialog):
         self.setWindowTitle("Barriärer — gäller ej för")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._checks: dict[int, QCheckBox] = {}
+        self.setObjectName('catSgPopup')
+        self.setStyleSheet(popup_shell_stylesheet('catSgPopup'))
         self._build()
         add_mini_popup_close_button(self)
 
@@ -4253,7 +4234,7 @@ class CatSGSelectionPopup(QDialog):
         outer.addWidget(title)
 
         note = QLabel("Bocka ur barriärer som inte gäller denna kategori.")
-        note.setStyleSheet("font-size:9px; color:#666;")
+        note.setStyleSheet(popup_muted_label_stylesheet())
         note.setWordWrap(True)
         outer.addWidget(note)
 
@@ -4269,18 +4250,15 @@ class CatSGSelectionPopup(QDialog):
             outer.addWidget(cb)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep)
+        sep.setStyleSheet(popup_separator_stylesheet()); outer.addWidget(sep)
 
         btn_row = QHBoxLayout()
         ok = QPushButton("OK")
         ok.setDefault(True)
-        ok.setStyleSheet(
-            "QPushButton{font-size:10px;padding:2px 12px;"
-            "background:#2F5FD0;color:white;border-radius:0px;}"
-            "QPushButton:hover{background:#3D6BD8;}")
+        ok.setStyleSheet(popup_primary_button_stylesheet())
         ok.clicked.connect(self._ok)
         cancel = QPushButton("Avbryt")
-        cancel.setStyleSheet("font-size:10px; padding:2px 8px;")
+        cancel.setStyleSheet(popup_secondary_button_stylesheet())
         cancel.clicked.connect(self.reject)
         btn_row.addStretch(); btn_row.addWidget(cancel); btn_row.addWidget(ok)
         outer.addLayout(btn_row)
@@ -4301,8 +4279,11 @@ class ConsCategoryMatrixPopup(QDialog):
         self.setWindowTitle("Konsekvens per kategori")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._sel: dict[int, int] = {}
         self._buttons: dict[tuple, QPushButton] = {}
+        self.setObjectName('consCategoryMatrixPopup')
+        self.setStyleSheet(popup_shell_stylesheet('consCategoryMatrixPopup'))
         self._build()
         add_mini_popup_close_button(self)
 
@@ -4332,7 +4313,7 @@ class ConsCategoryMatrixPopup(QDialog):
             lbl = QLabel(cons_axis_label(s))
             lbl.setFixedWidth(42)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("font-size:9px; color:#555;")
+            lbl.setStyleSheet(popup_muted_label_stylesheet())
             hdr.addWidget(lbl)
         outer.addLayout(hdr)
 
@@ -4356,21 +4337,18 @@ class ConsCategoryMatrixPopup(QDialog):
             outer.addLayout(row_l)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color:#E2E3E1;"); outer.addWidget(sep)
+        sep.setStyleSheet(popup_separator_stylesheet()); outer.addWidget(sep)
 
         btn_row = QHBoxLayout()
         clr = QPushButton("Rensa alla")
-        clr.setStyleSheet("font-size:10px; padding:2px 8px;")
+        clr.setStyleSheet(popup_secondary_button_stylesheet())
         clr.clicked.connect(self._clear)
         ok  = QPushButton("OK")
         ok.setDefault(True)
-        ok.setStyleSheet(
-            "QPushButton{font-size:10px;padding:2px 12px;"
-            "background:#2F5FD0;color:white;border-radius:0px;}"
-            "QPushButton:hover{background:#3D6BD8;}")
+        ok.setStyleSheet(popup_primary_button_stylesheet())
         ok.clicked.connect(self._ok)
         cancel = QPushButton("Avbryt")
-        cancel.setStyleSheet("font-size:10px; padding:2px 8px;")
+        cancel.setStyleSheet(popup_secondary_button_stylesheet())
         cancel.clicked.connect(self.reject)
         btn_row.addWidget(clr); btn_row.addStretch()
         btn_row.addWidget(cancel); btn_row.addWidget(ok)
@@ -4378,14 +4356,7 @@ class ConsCategoryMatrixPopup(QDialog):
 
     @staticmethod
     def _bstyle(selected: bool) -> str:
-        if selected:
-            return ("QPushButton{background:#2F5FD0;color:white;"
-                    "border:2px solid #2F5FD0;border-radius:0px;"
-                    "font-size:9px;font-weight:bold;}"
-                    "QPushButton:hover{background:#3D6BD8;}")
-        return ("QPushButton{background:#F5F5F3;color:#17191C;"
-                "border:1px solid #CFD1CE;border-radius:0px;font-size:9px;}"
-                "QPushButton:hover{background:#E8E9E6;border:1px solid #B3B7B2;}")
+        return popup_toggle_button_stylesheet(selected)
 
     def _toggle(self, cat_id: int, sev: int):
         self._sel[cat_id] = 0 if self._sel.get(cat_id) == sev else sev

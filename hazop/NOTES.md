@@ -5420,6 +5420,24 @@ Verifierat med `py_compile`, centrala designsystemtester och befintlig
 Scenario/Worksheet-smoke-test. Headless Qt visar de förväntade
 font-/OpenGL-varningarna.
 
+## Scenario-popupdesign till central designfil (2026-09-02)
+
+Den andra designetappen flyttar gemensamma popupregler från `scenario_panel.py`
+till `design.py`: popupskal, inputfält, listor, alternativknappar, frekvens-
+knapp, primär/sekundär knapp, separator och markerade matrisval.
+Standardorsaks-popup, rekommendations-popup, riskmatris-popup, barriär-RRF,
+barriär-kategorier och konsekvenskategorier använder nu dessa byggare.
+
+Riskcellernas färger förblir datadrivna från den valda riskmatrisen. Den
+tidigare beteendelogiken och popupens signaler är inte flyttade eller ändrade.
+
+Verifierat med 5 designsystemtester, smoke-test (12 tester), 26 riktade
+popup-/integrations-/renderingstester, ytterligare 13 riskmatristester,
+`py_compile` och `git diff --check`. En bredare 38-testkörning innehåller ett
+separat befintligt SgRRF-test med mockad databas som faller på att mocken
+saknar context-manager för `history_group()`; det berör inte denna
+designändring.
+
 ## Gummiband: minimal krockflytt och dragbar placering (2026-09-02)
 
 Automatisk etikettplacering söker nu närmaste lediga position i faktisk

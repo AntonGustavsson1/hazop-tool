@@ -52,6 +52,36 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn('QPushButton#enablerSummaryButton:hover', selected)
         self.assertIn('QPushButton#enablerSummaryButton:hover', unselected)
 
+    def test_popup_builders_use_the_shared_palette(self):
+        from design import (
+            ACCENT, ACCENT_HOVER, FIELD_BORDER, HOVER_SURFACE, SEPARATOR,
+            SUBTLE_SURFACE, SURFACE, TEXT,
+            popup_action_button_stylesheet, popup_list_stylesheet,
+            popup_primary_button_stylesheet, popup_separator_stylesheet,
+            popup_shell_stylesheet, popup_toggle_button_stylesheet,
+        )
+
+        shell = popup_shell_stylesheet('testPopup')
+        action = popup_action_button_stylesheet(pressed=True)
+        listing = popup_list_stylesheet()
+        primary = popup_primary_button_stylesheet()
+        separator = popup_separator_stylesheet()
+        toggle = popup_toggle_button_stylesheet(True)
+
+        self.assertIn(SURFACE, shell)
+        for css in (action, listing):
+            self.assertIn(TEXT, css)
+        self.assertIn(SURFACE, primary)
+        self.assertIn(SURFACE, toggle)
+        self.assertIn(SEPARATOR, separator)
+        self.assertIn(SUBTLE_SURFACE, action)
+        self.assertIn(HOVER_SURFACE, listing)
+        self.assertIn(ACCENT, primary)
+        self.assertIn(ACCENT_HOVER, toggle)
+        unselected_toggle = popup_toggle_button_stylesheet(False)
+        self.assertIn(TEXT, unselected_toggle)
+        self.assertIn(FIELD_BORDER, unselected_toggle)
+
 
 if __name__ == '__main__':
     unittest.main()

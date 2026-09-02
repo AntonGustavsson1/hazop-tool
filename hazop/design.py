@@ -27,7 +27,10 @@ GRIDLINE = '#EEEFEC'
 SCROLL_HANDLE = '#CFD1CE'
 SCROLL_HANDLE_HOVER = '#B3B7B2'
 ACCENT = '#2F5FD0'
+ACCENT_HOVER = '#3D6BD8'
 ACCENT_SELECTION = '#E6ECFA'
+POPUP_BORDER = '#4B5563'
+INPUT_BORDER = '#B8BDC4'
 
 # HAZOP's deliberately neutral, flat selected-cell overlay.  Custom-painted
 # delegates use the same values, so a selected cell does not turn into a
@@ -267,3 +270,114 @@ def summary_badge_stylesheet(selected: bool = False) -> str:
         f'padding:2px 4px;}}'
         f'QPushButton#enablerSummaryButton:hover{{background:{hover};}}'
     )
+
+
+def popup_shell_stylesheet(object_name: str, *, border: str = POPUP_BORDER,
+                           radius: int = 3) -> str:
+    """Return the common framed shell for a compact popup."""
+    return (
+        f'QWidget#{object_name}{{background:{SURFACE};'
+        f'border:1px solid {border};border-radius:{int(radius)}px;}}'
+    )
+
+
+def popup_label_stylesheet() -> str:
+    """Return the borderless default label style inside a popup."""
+    return f'QLabel{{border:none;color:{TEXT};}}'
+
+
+def popup_input_stylesheet() -> str:
+    """Return the compact input style used inside object/risk popups."""
+    return (
+        f'QComboBox,QLineEdit{{border:1px solid {INPUT_BORDER};'
+        f'border-radius:2px;padding:2px 5px;background:{SURFACE};'
+        f'color:{TEXT};}}'
+    )
+
+
+def popup_form_button_stylesheet() -> str:
+    """Return the compact bordered button used by popup form actions."""
+    return (
+        f'QPushButton{{border:1px solid {MUTED_TEXT};border-radius:2px;'
+        f'padding:3px 7px;background:{SUBTLE_SURFACE};color:{TEXT};}}'
+        f'QPushButton:hover{{background:{HOVER_SURFACE};}}'
+    )
+
+
+def popup_action_button_stylesheet(*, padding: str = '3px 6px',
+                                   pressed: bool = False) -> str:
+    """Return a flat, left-aligned popup option-button style."""
+    pressed_rule = (
+        f'QPushButton:pressed{{background:{ACCENT_SELECTION};}}'
+        if pressed else ''
+    )
+    return (
+        f'QPushButton{{text-align:left;font-size:10px;padding:{padding};'
+        f'border:none;background:transparent;color:{TEXT};border-radius:0px;}}'
+        f'QPushButton:hover{{background:{SUBTLE_SURFACE};}}'
+        f'{pressed_rule}'
+    )
+
+
+def popup_frequency_button_stylesheet() -> str:
+    """Return the compact bold frequency action style."""
+    return (
+        f'QPushButton{{color:{TEXT};background:{SUBTLE_SURFACE};'
+        f'border-radius:0px;padding:1px 6px;font-size:10px;'
+        f'font-weight:bold;border:none;}}'
+        f'QPushButton:hover{{background:{HOVER_SURFACE};}}'
+    )
+
+
+def popup_list_stylesheet() -> str:
+    """Return the shared compact list style for popup choices."""
+    return (
+        f'QListWidget{{border:none;background:{SURFACE};font-size:10px;}}'
+        f'QListWidget::item{{padding:3px 6px;color:{TEXT};}}'
+        f'QListWidget::item:hover{{background:{SUBTLE_SURFACE};}}'
+        f'QListWidget::item:selected{{background:{HOVER_SURFACE};'
+        f'color:{TEXT};}}'
+    )
+
+
+def popup_primary_button_stylesheet() -> str:
+    """Return the standard compact affirmative popup button style."""
+    return (
+        f'QPushButton{{border:none;font-size:10px;padding:3px 12px;'
+        f'background:{ACCENT};color:{SURFACE};border-radius:0px;}}'
+        f'QPushButton:hover{{background:{ACCENT_HOVER};}}'
+    )
+
+
+def popup_secondary_button_stylesheet() -> str:
+    """Return the standard compact secondary popup button style."""
+    return 'QPushButton{font-size:10px;padding:2px 8px;}'
+
+
+def popup_toggle_button_stylesheet(selected: bool, *,
+                                   font_size: str = '9px') -> str:
+    """Return the selected/unselected style for compact matrix choices."""
+    if selected:
+        return (
+            f'QPushButton{{background:{ACCENT};color:{SURFACE};'
+            f'border:2px solid {ACCENT};border-radius:0px;'
+            f'font-size:{font_size};font-weight:bold;}}'
+            f'QPushButton:hover{{background:{ACCENT_HOVER};}}'
+        )
+    return (
+        f'QPushButton{{background:{SUBTLE_SURFACE};color:{TEXT};'
+        f'border:1px solid {FIELD_BORDER};border-radius:0px;'
+        f'font-size:{font_size};}}'
+        f'QPushButton:hover{{background:{HOVER_SURFACE};'
+        f'border:1px solid {SCROLL_HANDLE_HOVER};}}'
+    )
+
+
+def popup_separator_stylesheet() -> str:
+    """Return the shared separator colour used inside compact popups."""
+    return f'color:{SEPARATOR};'
+
+
+def popup_muted_label_stylesheet(font_size: str = '9px') -> str:
+    """Return a small neutral explanatory-label style."""
+    return f'color:{SECONDARY_TEXT};font-size:{font_size};'
