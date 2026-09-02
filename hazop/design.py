@@ -295,12 +295,20 @@ def popup_input_stylesheet() -> str:
     )
 
 
-def popup_form_button_stylesheet() -> str:
+def popup_form_button_stylesheet(*, default: bool = False) -> str:
     """Return the compact bordered button used by popup form actions."""
+    default_rule = ''
+    if default:
+        default_rule = (
+            f'QPushButton:default{{background:{ACCENT};color:{SURFACE};'
+            f'border-color:{ACCENT};}}'
+            f'QPushButton:default:hover{{background:{ACCENT_HOVER};}}'
+        )
     return (
         f'QPushButton{{border:1px solid {MUTED_TEXT};border-radius:2px;'
         f'padding:3px 7px;background:{SUBTLE_SURFACE};color:{TEXT};}}'
         f'QPushButton:hover{{background:{HOVER_SURFACE};}}'
+        f'{default_rule}'
     )
 
 
@@ -381,3 +389,168 @@ def popup_separator_stylesheet() -> str:
 def popup_muted_label_stylesheet(font_size: str = '9px') -> str:
     """Return a small neutral explanatory-label style."""
     return f'color:{SECONDARY_TEXT};font-size:{font_size};'
+
+
+def compact_control_stylesheet(font_size: str = '10px') -> str:
+    """Return the shared small-control override used in compact panels."""
+    return f'font-size:{font_size};'
+
+
+def separator_line_stylesheet(color: str = SEPARATOR) -> str:
+    """Return the flat one-pixel separator style used by tool panels."""
+    return f'background:{color};max-height:1px;border:none;'
+
+
+def ribbon_button_stylesheet(*, font_size: str | None = None,
+                             checkable: bool = False) -> str:
+    """Return the common compact button style used by vertical ribbons."""
+    size = f'font-size:{font_size};' if font_size else ''
+    checked = ''
+    if checkable:
+        checked = (
+            f'QPushButton:checked{{background:{ACCENT};border-color:{ACCENT};}}'
+        )
+    return (
+        f'QPushButton{{border:1px solid {SEPARATOR};border-radius:5px;'
+        f'background:{SURFACE};padding:0px;{size}}}'
+        f'{checked}'
+        f'QPushButton:hover:!checked{{background:{SUBTLE_SURFACE};'
+        f'border-color:{FIELD_BORDER};}}'
+        f'QPushButton:pressed{{background:{PRESSED_SURFACE};}}'
+    )
+
+
+def dialog_primary_button_stylesheet() -> str:
+    """Return the legacy-sized primary button used by detail popups."""
+    return (
+        f'QPushButton{{background:{ACCENT};color:{SURFACE};border:none;'
+        f'border-radius:4px;padding:4px 16px;}}'
+        f'QPushButton:hover{{background:{ACCENT_HOVER};}}'
+    )
+
+
+def compact_table_stylesheet() -> str:
+    """Return the compact table override used by markup tables."""
+    return (
+        f'QTableWidget{{border:1px solid {SEPARATOR};font-size:10px;}}'
+        f'QTableWidget::item:selected{{background:{ACCENT_SELECTION};'
+        f'color:{TEXT};}}'
+    )
+
+
+def popup_compact_title_stylesheet() -> str:
+    """Return the compact bold title style used by list popups."""
+    return f'border:none;color:{TEXT};font-size:10px;font-weight:bold;'
+
+
+def popup_muted_heading_stylesheet(font_size: str = '11px') -> str:
+    """Return the muted heading style used by compact detail popups."""
+    return f'border:none;color:{MUTED_TEXT};font-size:{font_size};'
+
+
+def popup_clear_button_stylesheet(object_name: str) -> str:
+    """Return the unobtrusive clear/action link style for a popup."""
+    return (
+        f'QPushButton#{object_name}{{border:none;color:{POPUP_BORDER};'
+        f'padding:2px 4px;font-size:10px;text-align:left;}}'
+        f'QPushButton#{object_name}:hover{{color:{TEXT};'
+        'text-decoration:underline;}'
+    )
+
+
+def compact_panel_stylesheet(background: str = APP_BACKGROUND) -> str:
+    """Return the flat background style for a narrow utility panel."""
+    return f'background:{background};'
+
+
+def side_panel_stylesheet(background: str = SURFACE) -> str:
+    """Return the utility-panel style with the standard right separator."""
+    return f'background:{background};border-right:1px solid {SEPARATOR};'
+
+
+def colour_swatch_stylesheet(color: str, *, selected: bool = False,
+                             selected_border: str = '#333') -> str:
+    """Return a small data-colour swatch style with an optional selection ring."""
+    border = selected_border if selected else 'transparent'
+    return f'background:{color};border:2px solid {border};border-radius:3px;'
+
+
+def colour_strip_stylesheet(color: str, *, radius: int = 3) -> str:
+    """Return the flat colour preview strip used by markup controls."""
+    return f'background:{color};border-radius:{int(radius)}px;border:none;'
+
+
+def markup_flyout_stylesheet() -> str:
+    """Return the small flyout shell used by markup-tool settings."""
+    return (
+        f'QWidget{{background:{SURFACE};border-radius:4px;}}'
+        f'QLabel{{font-size:10px;color:{TEXT};border:none;}}'
+    )
+
+
+def palette_button_stylesheet() -> str:
+    """Return the compact button style for opening a custom colour palette."""
+    return (
+        f'font-size:10px;border:1px solid {FIELD_BORDER};'
+        'border-radius:3px;'
+    )
+
+
+def visibility_toggle_stylesheet() -> str:
+    """Return the shared show/hide-all markup toggle style."""
+    return (
+        f'QPushButton{{border:none;border-radius:5px;padding:0px;'
+        f'background:#27AE60;}}'
+        f'QPushButton:!checked{{background:#E74C3C;}}'
+    )
+
+
+def visibility_layer_button_stylesheet(
+        color: str, foreground: str, *, off_background: str = '#e4e7e9',
+        off_foreground: str = '#7a7f83') -> str:
+    """Return the tree layer-toggle style while keeping its color dynamic."""
+    return (
+        f'QPushButton{{background:{color};color:{foreground};border:none;'
+        'border-radius:3px;font-size:10px;font-weight:bold;padding:0 4px;}'
+        f'QPushButton:!checked{{background:{off_background};'
+        f'color:{off_foreground};}}'
+    )
+
+
+def symbol_selector_stylesheet() -> str:
+    """Return the compact P&ID-symbol picker shell and button style."""
+    return (
+        f'QFrame{{background:{SURFACE};border:1px solid {FIELD_BORDER};'
+        'border-radius:6px;}'
+        f'QPushButton{{border:1px solid {SEPARATOR};border-radius:4px;'
+        f'background:{SUBTLE_SURFACE};padding:2px;}}'
+        f'QPushButton:hover{{background:{SUBTLE_SURFACE};'
+        f'border-color:{FIELD_BORDER};}}'
+        f'QPushButton:checked{{background:{ACCENT};border-color:{ACCENT};}}'
+    )
+
+
+def symbol_selector_tab_stylesheet() -> str:
+    """Return the compact tab override used by the symbol picker."""
+    return (
+        f'QTabBar::tab{{padding:4px 10px;font-size:9px;}}'
+        f'QTabBar::tab:selected{{background:{ACCENT_SELECTION};}}'
+    )
+
+
+def red_markup_tool_stylesheet() -> str:
+    """Return the legacy red-markup tool-button style."""
+    return (
+        f'QPushButton{{border:1px solid #D0D4DA;border-radius:5px;'
+        f'background:{SURFACE};padding:0px;}}'
+        f'QPushButton:checked{{background:#C62828;border-color:#C62828;}}'
+        'QPushButton:hover:!checked{background:#FFEBEE;border-color:#EF9A9A;}'
+    )
+
+
+def red_markup_close_stylesheet() -> str:
+    """Return the legacy red-markup close-button style."""
+    return (
+        'QPushButton{background:#546E7A;border:none;border-radius:5px;padding:0px;}'
+        'QPushButton:hover{background:#37474F;}'
+    )

@@ -1,5 +1,25 @@
 # NOTES.md — Beslut och kontext
 
+## Gemensamma träd- och markupstilar till designlagret (2026-09-02)
+
+Nästa steg i front-end-refaktorn är genomfört utan att ändra HAZOP-logik:
+`design.py` innehåller nu återanvändbara byggare för kompakta kontroller,
+separeringslinjer, ribbon-knappar, tabeller, färgswatchar, paneler,
+symbolväljare och markup-popupens verktyg. `tree_panel.py` använder samma
+designkälla för lagerknappar, tagg-/RRF-/frekvenspopupen och den arkiverade
+standardorsakspopupen. `node_markup.py` använder den för PropertiesRibbon,
+markup-tabellen, färg-/symbolväljare och red-markup-panelen.
+
+Datadrivna färger och P&ID-rendering ligger kvar i komponenterna; de har bara
+fått centrala stilbyggare där det är säkert. På så sätt kan framtida
+designändringar göras i `design.py` utan att blanda ihop presentation och
+HAZOP-dataflöden.
+
+Verifierat med `tests.test_tree_panel` (73 tester), riktade design-,
+nodmarkup-, popup- och smoke-tester (39 tester), `py_compile` och
+`git diff --check`. Testningen är headless; Qt:s kända offscreen-varningar om
+OpenGL/fontkatalog och grafikplugin kvarstår utan testfel.
+
 ## Tom orsak exporteras utan frekvens (2026-09-01)
 
 Exportmotorn känner nu även igen äldre tomma orsaksrader där

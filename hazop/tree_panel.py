@@ -36,6 +36,14 @@ from ui_helpers import (
     standard_cause_options,
     add_mini_popup_close_button,
 )
+from design import (
+    TEXT, popup_clear_button_stylesheet, popup_compact_title_stylesheet,
+    popup_form_button_stylesheet, popup_input_stylesheet,
+    popup_list_stylesheet, popup_muted_heading_stylesheet,
+    popup_muted_label_stylesheet, popup_primary_button_stylesheet,
+    popup_separator_stylesheet, compact_control_stylesheet,
+    popup_shell_stylesheet, visibility_layer_button_stylesheet,
+)
 
 class _PickDeviationDialog(QDialog):
     """Small dialog to pick/type a deviation description when adding a new deviation."""
@@ -297,9 +305,8 @@ class TreePanel(QWidget):
                      + 0.114 * qcolor.blue())
         foreground = '#111111' if luminance > 155 else '#ffffff'
         btn.setStyleSheet(
-            f"QPushButton{{background:{qcolor.name()}; color:{foreground}; border:none;"
-            f" border-radius:3px; font-size:10px; font-weight:bold; padding:0 4px;}}"
-            "QPushButton:!checked{background:#e4e7e9; color:#7a7f83;}")
+            visibility_layer_button_stylesheet(qcolor.name(), foreground)
+        )
 
     def _on_visibility_toggled(self, type_key, checked):
         self.visibility_changed.emit(type_key, checked)
@@ -2276,12 +2283,8 @@ class CauseObjectPopup(QDialog):
         self.setMinimumWidth(CONFIG['W_PANEL_MIN'])
         self.setMaximumWidth(340)
 
-        _small = "font-size:10px;"
-        _btn_style = ("QPushButton{font-size:10px; padding:2px 10px;"
-                      "border:1px solid #E2E3E1; border-radius:3px; background:#FFFFFF;}"
-                      "QPushButton:hover{background:#F5F5F3;}"
-                      "QPushButton:default{background:#2F5FD0; color:white; border-color:#2F5FD0;}"
-                      "QPushButton:default:hover{background:#3D6BD8;}")
+        _small = compact_control_stylesheet()
+        _btn_style = popup_form_button_stylesheet(default=True)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
@@ -2294,7 +2297,7 @@ class CauseObjectPopup(QDialog):
         self._icon_lbl.setFixedSize(22, 22)
         hdr.addWidget(self._icon_lbl)
         title = QLabel("<b>Orsak på P&amp;ID</b>")
-        title.setStyleSheet("font-size:11px; color:#8D9299;")
+        title.setStyleSheet(popup_muted_heading_stylesheet())
         hdr.addWidget(title)
         hdr.addStretch()
         layout.addLayout(hdr)
@@ -2358,13 +2361,13 @@ class CauseObjectPopup(QDialog):
         # ── Thin separator ────────────────────────────────────────────────────
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("color:#e0e0e0; margin:0px;")
+        sep.setStyleSheet(popup_separator_stylesheet() + " margin:0px;")
         sep.setFixedHeight(CONFIG['H_SEP_LINE'])
         layout.addWidget(sep)
 
         # ── Standard causes section ───────────────────────────────────────────
         self._causes_header = QLabel()
-        self._causes_header.setStyleSheet("color:#777; font-size:9px;")
+        self._causes_header.setStyleSheet(popup_muted_label_stylesheet())
         layout.addWidget(self._causes_header)
 
         self._scroll = QScrollArea()
@@ -2521,7 +2524,7 @@ class CauseObjectPopup(QDialog):
         _std_dev_id, _obj_id, rows = standard_cause_options(
             self._db, self._dev_description, comp_type) if self._db else (None, None, [])
 
-        _rs = "font-size:10px;"
+        _rs = compact_control_stylesheet()
 
         inner = QWidget()
         vbox  = QVBoxLayout(inner)
@@ -2673,9 +2676,15 @@ class CauseTagPopup(QDialog):
         self._cause_id = cause_id
         self.setWindowTitle("Tagg")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setObjectName("causeTagPopup")
+        self.setStyleSheet(
+            popup_input_stylesheet()
+            + popup_shell_stylesheet("causeTagPopup")
+        )
         self.setMinimumWidth(220)
 
-        _small = "font-size:10px;"
+        _small = compact_control_stylesheet()
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -2711,7 +2720,9 @@ class CauseTagPopup(QDialog):
             if equipment:
                 equipment = dict(equipment)
                 object_info = QLabel(str(equipment.get('tag') or comp_tag or 'Objekt'))
-                object_info.setStyleSheet("font-weight:bold; font-size:11px; color:#17191C;")
+                object_info.setStyleSheet(
+                    f"font-weight:bold; {compact_control_stylesheet('11px')}"
+                    f"color:{TEXT};")
                 object_info.setToolTip(str(equipment.get('description') or ''))
                 layout.addWidget(object_info)
                 details = []
@@ -2721,13 +2732,13 @@ class CauseTagPopup(QDialog):
                     details.append(f"P&ID · sida {equipment['pid_page']}")
                 if details:
                     detail_label = QLabel("  ·  ".join(details))
-                    detail_label.setStyleSheet("font-size:9px; color:#6B7280;")
+                    detail_label.setStyleSheet(popup_muted_label_stylesheet())
                     layout.addWidget(detail_label)
 
         if group_operator:
             operator_label = QLabel(f"Gruppkoppling: {group_operator}")
             operator_label.setTextFormat(Qt.TextFormat.PlainText)
-            operator_label.setStyleSheet("font-size:9px; color:#6B7280;")
+            operator_label.setStyleSheet(popup_muted_label_stylesheet())
             layout.addWidget(operator_label)
 
         form = QFormLayout()
@@ -2782,10 +2793,7 @@ class CauseTagPopup(QDialog):
         if cause_id is not None and not equipment_id:
             place = QPushButton("Placera objekt på P&ID")
             place.setFixedHeight(CONFIG['H_BTN_SMALL'])
-            place.setStyleSheet(
-                "QPushButton{background:#2F5FD0;color:white;border:0px;"
-                "border-radius:3px;font-weight:bold;}"
-                "QPushButton:hover{background:#3D6BD8;}")
+            place.setStyleSheet(popup_primary_button_stylesheet())
             place.clicked.connect(self._place_on_pid)
             layout.addWidget(place)
 
@@ -2830,19 +2838,14 @@ class RRFPopup(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName("rrfPopup")
         self.setStyleSheet(
-            "QWidget#rrfPopup{background:#FFFFFF;"
-            "border:1px solid #4B5563;border-radius:3px;}"
-            "QListWidget{border:none;background:#FFFFFF;font-size:10px;}"
-            "QListWidget::item{padding:3px 6px;color:#17191C;}"
-            "QListWidget::item:hover{background:#F5F5F3;}"
-            "QListWidget::item:selected{background:#E8E9E6;color:#17191C;}")
+            popup_shell_stylesheet("rrfPopup") + popup_list_stylesheet()
+        )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(4)
 
         title = QLabel("RRF")
-        title.setStyleSheet("border:none;color:#17191C;font-size:10px;"
-                            "font-weight:bold;")
+        title.setStyleSheet(popup_compact_title_stylesheet())
         layout.addWidget(title)
 
         # Type selector
@@ -2853,7 +2856,7 @@ class RRFPopup(QDialog):
         idx = self._type_combo.findText(current_sg_type)
         if idx >= 0:
             self._type_combo.setCurrentIndex(idx)
-        self._type_combo.setStyleSheet("border:1px solid #CFD1CE;font-size:10px;")
+        self._type_combo.setStyleSheet(popup_input_stylesheet())
         type_row.addWidget(self._type_combo)
         layout.addLayout(type_row)
 
@@ -2881,14 +2884,11 @@ class RRFPopup(QDialog):
         self._spin = QSpinBox()
         self._spin.setRange(1, 1_000_000)
         self._spin.setValue(current_rrf)
-        self._spin.setStyleSheet("font-size:10px;")
+        self._spin.setStyleSheet(compact_control_stylesheet())
         custom_row.addWidget(self._spin)
         ok_btn = QPushButton("OK")
         ok_btn.setDefault(True)
-        ok_btn.setStyleSheet(
-            "QPushButton{border:none;font-size:10px;padding:3px 12px;"
-            "background:#2F5FD0;color:white;border-radius:0px;}"
-            "QPushButton:hover{background:#3D6BD8;}")
+        ok_btn.setStyleSheet(popup_primary_button_stylesheet())
         ok_btn.clicked.connect(lambda: self._pick(self._spin.value()))
         custom_row.addWidget(ok_btn)
         layout.addLayout(custom_row)
@@ -2924,20 +2924,16 @@ class FrequencyPickerPopup(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setObjectName("frequencyPickerPopup")
         self.setStyleSheet(
-            "QWidget#frequencyPickerPopup{background:#FFFFFF;"
-            "border:1px solid #4B5563;border-radius:3px;}"
-            "QListWidget{border:none;background:#FFFFFF;font-size:10px;}"
-            "QListWidget::item{padding:3px 6px;color:#17191C;}"
-            "QListWidget::item:hover{background:#F5F5F3;}"
-            "QListWidget::item:selected{background:#E8E9E6;color:#17191C;}")
+            popup_shell_stylesheet("frequencyPickerPopup")
+            + popup_list_stylesheet()
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(4)
 
         header = QLabel("Frekvens")
-        header.setStyleSheet("border:none;color:#17191C;font-size:10px;"
-                             "font-weight:bold;")
+        header.setStyleSheet(popup_compact_title_stylesheet())
         layout.addWidget(header)
 
         cfg  = get_matrix()
@@ -2987,16 +2983,16 @@ class FrequencyPickerPopup(QDialog):
         self._clear_btn.setObjectName("clearFrequencyButton")
         self._clear_btn.setToolTip("Ta bort frekvens från denna orsak")
         self._clear_btn.setStyleSheet(
-            "QPushButton#clearFrequencyButton{border:none;color:#4B5563;"
-            "padding:2px 4px;font-size:10px;text-align:left;}"
-            "QPushButton#clearFrequencyButton:hover{color:#17191C;"
-            "text-decoration:underline;}")
+            popup_clear_button_stylesheet("clearFrequencyButton")
+        )
         self._clear_btn.clicked.connect(self._clear_frequency)
         layout.addWidget(self._clear_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
         # ── Live F-level preview for the numeric field ───────────────────────
         self._preview_lbl = QLabel()
-        self._preview_lbl.setStyleSheet("border:none;color:#555;font-size:9px;")
+        self._preview_lbl.setStyleSheet(
+            "border:none;" + popup_muted_label_stylesheet()
+        )
         layout.addWidget(self._preview_lbl)
         if current_numeric_freq is not None:
             self._update_preview_label(float(current_numeric_freq))

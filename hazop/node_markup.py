@@ -21,6 +21,16 @@ from pid_viewer import _icon, _mk_icon, _mk_pm, _EMOJI_ICON, _RED_MARKUP_SYMBOLS
 from ui_helpers import freq_axis_label, add_mini_popup_close_button
 from tree_panel import RRFPopup
 from scenario_panel import ConsCategoryMatrixPopup
+from design import (
+    compact_panel_stylesheet, compact_table_stylesheet,
+    colour_strip_stylesheet, colour_swatch_stylesheet,
+    dialog_primary_button_stylesheet, markup_flyout_stylesheet,
+    palette_button_stylesheet, red_markup_close_stylesheet,
+    red_markup_tool_stylesheet, ribbon_button_stylesheet,
+    separator_line_stylesheet, side_panel_stylesheet,
+    symbol_selector_stylesheet, symbol_selector_tab_stylesheet,
+    visibility_toggle_stylesheet, popup_muted_heading_stylesheet,
+)
 
 
 # ── Style popup ───────────────────────────────────────────────────────────────
@@ -41,9 +51,7 @@ class _StylePopup(QWidget):
         super().__init__(parent,
                          Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        self.setStyleSheet(
-            "QWidget{background:#fff;border-radius:4px;}"
-            "QLabel{font-size:10px;color:#444;border:none;}")
+        self.setStyleSheet(markup_flyout_stylesheet())
         self._ribbon = ribbon
 
         outer = QVBoxLayout(self)
@@ -57,7 +65,7 @@ class _StylePopup(QWidget):
         outer.addWidget(self._title_lbl)
 
         sep = QLabel(); sep.setFixedHeight(CONFIG['H_SEP_LINE'])
-        sep.setStyleSheet("background:#E2E3E1;border:none;")
+        sep.setStyleSheet(separator_line_stylesheet())
         outer.addWidget(sep)
 
         # Colour swatches (always shown)
@@ -68,12 +76,11 @@ class _StylePopup(QWidget):
         self._cbts = []
         for hc in MARKUP_COLORS:
             cb = QPushButton(); cb.setFixedSize(22, 22)
-            cb.setStyleSheet(f"background:{hc};border:2px solid transparent;"
-                             f"border-radius:3px;")
+            cb.setStyleSheet(colour_swatch_stylesheet(hc))
             cb.clicked.connect(partial(self._pick, hc))
             crow.addWidget(cb); self._cbts.append((hc, cb))
         pal = QPushButton("···"); pal.setFixedSize(28, 22)
-        pal.setStyleSheet("font-size:10px;border:1px solid #ccc;border-radius:3px;")
+        pal.setStyleSheet(palette_button_stylesheet())
         pal.clicked.connect(self._open_palette)
         crow.addWidget(pal); crow.addStretch()
         outer.addWidget(color_widget)
@@ -83,7 +90,7 @@ class _StylePopup(QWidget):
         outer.addWidget(self._bar)
 
         sep2 = QLabel(); sep2.setFixedHeight(CONFIG['H_SEP_LINE'])
-        sep2.setStyleSheet("background:#eee;border:none;")
+        sep2.setStyleSheet(separator_line_stylesheet())
         outer.addWidget(sep2)
 
         # Opacity row (polygon, polyline, comment)
@@ -153,7 +160,7 @@ class _StylePopup(QWidget):
 
     def _sync(self):
         r = self._ribbon
-        self._bar.setStyleSheet(f"background:{r._color};border-radius:2px;border:none;")
+        self._bar.setStyleSheet(colour_strip_stylesheet(r._color, radius=2))
         self._op_sl.blockSignals(True); self._op_sl.setValue(int(r._opacity * 100))
         self._op_sl.blockSignals(False)
         self._op_lbl.setText(f"{int(r._opacity * 100)}%")
@@ -164,17 +171,15 @@ class _StylePopup(QWidget):
         self._snap_cb.blockSignals(True); self._snap_cb.setChecked(r._snap)
         self._snap_cb.blockSignals(False)
         for hc, cb in self._cbts:
-            cb.setStyleSheet(
-                f"background:{hc};border:2px solid "
-                f"{'#333' if hc == r._color else 'transparent'};border-radius:3px;")
+            cb.setStyleSheet(colour_swatch_stylesheet(
+                hc, selected=(hc == r._color)))
 
     def _pick(self, hex_c):
         self._ribbon._apply_color(hex_c)
-        self._bar.setStyleSheet(f"background:{hex_c};border-radius:2px;border:none;")
+        self._bar.setStyleSheet(colour_strip_stylesheet(hex_c, radius=2))
         for hc, cb in self._cbts:
-            cb.setStyleSheet(
-                f"background:{hc};border:2px solid "
-                f"{'#333' if hc == hex_c else 'transparent'};border-radius:3px;")
+            cb.setStyleSheet(colour_swatch_stylesheet(
+                hc, selected=(hc == hex_c)))
 
     def _open_palette(self):
         self.hide()
@@ -225,23 +230,13 @@ class PropertiesRibbon(QWidget):
 
     _BTN_SZ  = 50
     _WIDTH   = 62
-    _BTN_SS  = (
-        "QPushButton{border:1px solid #E2E3E1;border-radius:5px;"
-        "background:#FFFFFF;padding:0px;font-size:15px;}"
-        "QPushButton:hover{background:#F5F5F3;border-color:#CFD1CE;}"
-        "QPushButton:pressed{background:#E8E9E6;}"
-    )
+    _BTN_SS  = ribbon_button_stylesheet(font_size='15px')
     _GRP_SS  = "font-size:8px;color:#8D9299;margin:0px;padding:0px;"
     # Shared style for the OK button inside floating popups
-    _OK_BTN_SS = ("background:#2F5FD0;color:white;border:none;"
-                  "border-radius:4px;padding:4px 16px;")
+    _OK_BTN_SS = dialog_primary_button_stylesheet()
     # Checkable-button style for the markup toggle + tool buttons —
     # ported from NodeMarkupPanel._btn_ss (2026-08-19).
-    _TOOL_BTN_SS = (
-        "QPushButton{border:1px solid #E2E3E1;border-radius:5px;"
-        "background:#FFFFFF;padding:0px;}"
-        "QPushButton:checked{background:#2F5FD0;border-color:#2F5FD0;}"
-        "QPushButton:hover:!checked{background:#F5F5F3;border-color:#CFD1CE;}")
+    _TOOL_BTN_SS = ribbon_button_stylesheet(checkable=True)
 
     _MARKUP_TOOLS = [
         ('select',   'select',   'Välj/flytta'),
@@ -274,7 +269,7 @@ class PropertiesRibbon(QWidget):
         self._style_popup   = None
 
         self.setFixedWidth(self._WIDTH)
-        self.setStyleSheet("background:#FBFBFA;")
+        self.setStyleSheet(compact_panel_stylesheet())
         self._outer = QVBoxLayout(self)
         self._outer.setContentsMargins(6, 8, 6, 8)
         self._outer.setSpacing(3)
@@ -358,7 +353,7 @@ class PropertiesRibbon(QWidget):
         for spec in buttons:
             if spec is None:
                 sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-                sep.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+                sep.setStyleSheet(separator_line_stylesheet())
                 sep.setFixedHeight(CONFIG['H_SEP_LINE'])
                 self._outer.addWidget(sep)
                 self._btns.append(sep)
@@ -393,7 +388,7 @@ class PropertiesRibbon(QWidget):
         "✕ Avsluta" button. See markup_mode_toggled's own docstring for
         why this needs to be a toggle rather than a close button."""
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        sep.setStyleSheet(separator_line_stylesheet())
         sep.setFixedHeight(CONFIG['H_SEP_LINE'])
         self._outer.addWidget(sep)
         self._btns.append(sep)
@@ -456,7 +451,7 @@ class PropertiesRibbon(QWidget):
         self._btns.append(nav_widget)
 
         sep0 = QFrame(); sep0.setFrameShape(QFrame.Shape.HLine)
-        sep0.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        sep0.setStyleSheet(separator_line_stylesheet())
         self._outer.addWidget(sep0)
         self._btns.append(sep0)
 
@@ -496,20 +491,19 @@ class PropertiesRibbon(QWidget):
         self._btns.append(self._place_symbol_btn)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        sep2.setStyleSheet(separator_line_stylesheet())
         self._outer.addWidget(sep2)
         self._btns.append(sep2)
 
         # ── Color strip ────────────────────────────────────────────────
         self._color_strip = QLabel()
         self._color_strip.setFixedHeight(CONFIG['H_COLOR_STRIP'])
-        self._color_strip.setStyleSheet(
-            f"background:{self._color};border-radius:3px;border:none;")
+        self._color_strip.setStyleSheet(colour_strip_stylesheet(self._color))
         self._outer.addWidget(self._color_strip)
         self._btns.append(self._color_strip)
 
         sep3 = QFrame(); sep3.setFrameShape(QFrame.Shape.HLine)
-        sep3.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        sep3.setStyleSheet(separator_line_stylesheet())
         self._outer.addWidget(sep3)
         self._btns.append(sep3)
 
@@ -526,16 +520,13 @@ class PropertiesRibbon(QWidget):
                            QIcon.Mode.Normal, QIcon.State.On)
         self._all_vis_btn.setIcon(eye_icon)
         self._all_vis_btn.setIconSize(QSize(ISZ, ISZ))
-        self._all_vis_btn.setStyleSheet(
-            "QPushButton{border:none;border-radius:5px;padding:0px;"
-            "background:#27AE60;}"
-            "QPushButton:!checked{background:#E74C3C;}")
+        self._all_vis_btn.setStyleSheet(visibility_toggle_stylesheet())
         self._all_vis_btn.clicked.connect(self._on_all_vis)
         self._outer.addWidget(self._all_vis_btn)
         self._btns.append(self._all_vis_btn)
 
         sep4 = QFrame(); sep4.setFrameShape(QFrame.Shape.HLine)
-        sep4.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        sep4.setStyleSheet(separator_line_stylesheet())
         self._outer.addWidget(sep4)
         self._btns.append(sep4)
 
@@ -573,7 +564,7 @@ class PropertiesRibbon(QWidget):
     def _apply_color(self, hex_c):
         self._color = hex_c
         if getattr(self, '_color_strip', None) is not None:
-            self._color_strip.setStyleSheet(f"background:{hex_c};border-radius:3px;")
+            self._color_strip.setStyleSheet(colour_strip_stylesheet(hex_c))
         self.style_changed.emit(self._color, self._opacity, self._width)
 
     def _apply_opacity(self, val):
@@ -689,7 +680,7 @@ class PropertiesRibbon(QWidget):
         lay = QVBoxLayout(dlg)
         lay.setSpacing(6); lay.setContentsMargins(10, 10, 10, 10)
         hdr = QLabel(f"<b>{title}</b>")
-        hdr.setStyleSheet("color:#8D9299;")
+        hdr.setStyleSheet(popup_muted_heading_stylesheet())
         lay.addWidget(hdr)
         if multiline:
             ed = QTextEdit(); ed.setPlainText(current)
@@ -835,7 +826,7 @@ class PropertiesRibbon(QWidget):
         freq_e = QLineEdit(f"{current_freq:g}" if current_freq else '')
         freq_e.setPlaceholderText("t.ex. 0.01")
         level_lbl = QLabel('')
-        level_lbl.setStyleSheet("color:#8D9299;font-size:10px;")
+        level_lbl.setStyleSheet(popup_muted_heading_stylesheet(font_size='10px'))
         def _upd(txt):
             try: level_lbl.setText(freq_axis_label(freq_to_f_level(float(txt))))
             except: level_lbl.setText('')
@@ -959,8 +950,8 @@ class _MarkupStyleDialog(QDialog):
             btn.setFixedSize(22, 22)
             sel = hc.lower() == color.lower()
             btn.setStyleSheet(
-                f"background:{hc};border:2px solid {'#222' if sel else 'transparent'};"
-                f"border-radius:3px;")
+                colour_swatch_stylesheet(hc, selected=sel, selected_border='#222')
+            )
             btn.clicked.connect(partial(self._pick, hc))
             color_row.addWidget(btn)
             self._color_btns.append((hc, btn))
@@ -1015,8 +1006,10 @@ class _MarkupStyleDialog(QDialog):
         self._color = hc
         for c, btn in self._color_btns:
             btn.setStyleSheet(
-                f"background:{c};border:2px solid {'#222' if c.lower()==hc.lower() else 'transparent'};"
-                f"border-radius:3px;")
+                colour_swatch_stylesheet(
+                    c, selected=(c.lower() == hc.lower()), selected_border='#222'
+                )
+            )
 
     def get_style(self):
         return (self._color,
@@ -1066,9 +1059,7 @@ class MarkupTablePanel(QWidget):
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_ctx_menu)
         self._table.cellClicked.connect(self._on_cell_clicked)
-        self._table.setStyleSheet(
-            "QTableWidget{border:1px solid #E2E3E1;font-size:10px;}"
-            "QTableWidget::item:selected{background:#E6ECFA;color:#17191C;}")
+        self._table.setStyleSheet(compact_table_stylesheet())
 
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -1244,12 +1235,7 @@ class _SymbolSelectorPopup(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.setStyleSheet(
-            "QFrame{background:#FFFFFF;border:1px solid #CFD1CE;border-radius:6px;}"
-            "QPushButton{border:1px solid #E2E3E1;border-radius:4px;background:#FAFAFA;"
-            "padding:2px;}"
-            "QPushButton:hover{background:#F5F5F3;border-color:#CFD1CE;}"
-            "QPushButton:checked{background:#2F5FD0;border-color:#2F5FD0;}")
+        self.setStyleSheet(symbol_selector_stylesheet())
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(4)
@@ -1260,9 +1246,7 @@ class _SymbolSelectorPopup(QFrame):
         outer.addWidget(lbl)
 
         tabs = QTabWidget()
-        tabs.setStyleSheet(
-            "QTabBar::tab{padding:4px 10px;font-size:9px;}"
-            "QTabBar::tab:selected{background:#E6ECFA;}")
+        tabs.setStyleSheet(symbol_selector_tab_stylesheet())
         outer.addWidget(tabs)
 
         for cat, syms in _RED_MARKUP_SYMBOLS.items():
@@ -1353,17 +1337,13 @@ class RedMarkupPanel(QWidget):
         SZ = 48
         ISZ = 28
         self.setFixedWidth(CONFIG['W_SPINNER'])
-        self.setStyleSheet("background:#FFFFFF; border-right: 1px solid #E2E3E1;")
+        self.setStyleSheet(side_panel_stylesheet())
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(5, 6, 5, 6)
         outer.setSpacing(3)
 
-        _btn_ss = (
-            "QPushButton{border:1px solid #D0D4DA;border-radius:5px;"
-            "background:#FFFFFF;padding:0px;}"
-            "QPushButton:checked{background:#C62828;border-color:#C62828;}"
-            "QPushButton:hover:!checked{background:#FFEBEE;border-color:#EF9A9A;}")
+        _btn_ss = red_markup_tool_stylesheet()
 
         # Close button
         close_btn = QPushButton()
@@ -1373,14 +1353,12 @@ class RedMarkupPanel(QWidget):
         close_icon.addPixmap(_mk_pm('close', ISZ, QColor("#ffffff")))
         close_btn.setIcon(close_icon)
         close_btn.setIconSize(QSize(ISZ, ISZ))
-        close_btn.setStyleSheet(
-            "QPushButton{background:#546E7A;border:none;border-radius:5px;padding:0px;}"
-            "QPushButton:hover{background:#37474F;}")
+        close_btn.setStyleSheet(red_markup_close_stylesheet())
         close_btn.clicked.connect(self.closed.emit)
         outer.addWidget(close_btn)
 
         sep1 = QFrame(); sep1.setFrameShape(QFrame.Shape.HLine)
-        sep1.setStyleSheet("background:#E2E3E1;max-height:1px;border:none;")
+        sep1.setStyleSheet(separator_line_stylesheet())
         outer.addWidget(sep1)
 
         self._tool_btns = {}

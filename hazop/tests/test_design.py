@@ -82,6 +82,38 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn(TEXT, unselected_toggle)
         self.assertIn(FIELD_BORDER, unselected_toggle)
 
+    def test_common_panel_builders_use_named_design_tokens(self):
+        from design import (
+            ACCENT, ACCENT_HOVER, ACCENT_SELECTION, FIELD_BORDER,
+            POPUP_BORDER, SEPARATOR, SUBTLE_SURFACE, SURFACE, TEXT,
+            compact_control_stylesheet, compact_table_stylesheet,
+            colour_strip_stylesheet, colour_swatch_stylesheet,
+            dialog_primary_button_stylesheet, popup_clear_button_stylesheet,
+            popup_compact_title_stylesheet, ribbon_button_stylesheet,
+            separator_line_stylesheet, side_panel_stylesheet,
+            symbol_selector_stylesheet, visibility_layer_button_stylesheet,
+        )
+
+        self.assertEqual(compact_control_stylesheet(), 'font-size:10px;')
+        self.assertIn(SEPARATOR, separator_line_stylesheet())
+        self.assertIn(SURFACE, ribbon_button_stylesheet())
+        ribbon = ribbon_button_stylesheet(checkable=True)
+        self.assertIn(ACCENT, ribbon)
+        self.assertIn(SUBTLE_SURFACE, ribbon)
+        self.assertIn(ACCENT_SELECTION, compact_table_stylesheet())
+        self.assertIn(TEXT, compact_table_stylesheet())
+        self.assertIn(ACCENT, dialog_primary_button_stylesheet())
+        self.assertIn(ACCENT_HOVER, dialog_primary_button_stylesheet())
+        self.assertIn(POPUP_BORDER, popup_clear_button_stylesheet('clear'))
+        self.assertIn(TEXT, popup_compact_title_stylesheet())
+        self.assertIn(SEPARATOR, side_panel_stylesheet())
+        self.assertIn(ACCENT, symbol_selector_stylesheet())
+        self.assertIn('#123456', colour_strip_stylesheet('#123456'))
+        self.assertIn('#333', colour_swatch_stylesheet('#123456', selected=True))
+        layer_button = visibility_layer_button_stylesheet('#2457A6', '#FFFFFF')
+        self.assertIn('#2457A6', layer_button)
+        self.assertIn('#FFFFFF', layer_button)
+
 
 if __name__ == '__main__':
     unittest.main()
