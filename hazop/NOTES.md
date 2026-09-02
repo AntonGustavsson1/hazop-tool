@@ -1,5 +1,39 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA-sidans typografi och överblickbarhet (2026-09-02, uppföljning)
+
+Efter att en riktig skärmdump av LOPA-sidan äntligen kunde jämföras mot de
+två Claude-referensbilderna (`Screenshot 2026-09-02 163452/163602.png`) —
+tidigare pass verifierade bara headless utan riktiga typsnitt, se NOTES.md
+ovan — åtgärdades de konkreta gapen:
+
+- Sektionsrubriker (`GIVARDEL`, `MANÖVERDEL`, `OBEROENDE BARRIÄRER`, ...)
+  är nu versala och dämpade (`MUTED_TEXT` i stället för `TEXT`) i stället för
+  vanlig brödtextfärg, så de läses som sidhuvud snarare än data. Qt Style
+  Sheets saknar stöd för CSS `text-transform`, så texten är versaliserad i
+  Python, inte via `lopa_section_title_stylesheet()`.
+- `Datum`-fältet är en riktig `QDateEdit` med kalenderpopup i stället för
+  ett fritextfält med platshållaren `YYYY-MM-DD` — samma tomt-tills-ifyllt
+  mönster (sentinel-datum 1900-01-01 + `setSpecialValueText`) som
+  rekommendationernas förfallodatum i `recommendations_panel.py`.
+- Kategori-kolumnen i Konsekvenser/Värsta konsekvens/Eskalering visar nu
+  namnet som en liten diskret badge (`lopa_category_badge_stylesheet()`,
+  samma neutrala toner som Enablers/RRF-kontrollerna) i stället för ren
+  text, så kategorin går att skilja ut i en tät rad utan att uppfinna ett
+  nytt färgspråk (riskfärg är fortsatt reserverad för verklig riskdata).
+- Hela sidan (`LopaPanel._build()`) sätter nu `font-size:8pt` som bas, ett
+  steg under appens 9pt-standard, för en tätare arbetsyta med fler synliga
+  rader per skärm. Varje LOPA-specifik etikett har fortsatt sin egen
+  explicita storlek som vinner över detta.
+
+Verifierat med de 35 tidigare LOPA-/export-/design-/smoke-testerna
+(en design-token-test uppdaterades avsiktligt: sektionsrubriker använder nu
+`MUTED_TEXT`, inte `TEXT`), `py_compile` och en ny headless-skärmdump av en
+fullt importerad LOPA på 1720×1040 (samma layout som smoke-testets strikta
+scrollbudget, som fortsatt klarar sig utan att växa). Offscreen-Qt saknar
+fortsatt textfonter — riktig GUI-kontroll på skärm är sista manuella
+acceptanspunkt, som alltid för LOPA-sidan.
+
 ## Responsiv LOPA enligt Claude-layoutspecifikation (2026-09-02)
 
 `../lopa_pyqt6_layout_spec.md` är nu den explicita layoutkällan för LOPA.

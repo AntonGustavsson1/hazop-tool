@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QDate, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QBoxLayout,
     QComboBox,
+    QDateEdit,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -58,6 +59,7 @@ from design import (
     SECONDARY_TEXT,
     TEXT,
     lopa_card_stylesheet,
+    lopa_category_badge_stylesheet,
     lopa_note_stylesheet,
     lopa_section_title_stylesheet,
     lopa_status_stylesheet,
@@ -77,6 +79,11 @@ class LopaPanel(QWidget):
     _ROLE_SOURCE_ID = int(Qt.ItemDataRole.UserRole) + 2
     _ROLE_ENTITY_ID = int(Qt.ItemDataRole.UserRole) + 3
     _ROLE_FACTOR_KEY = int(Qt.ItemDataRole.UserRole) + 4
+
+    # Sentinel "unset" value for the document-date picker (see
+    # recommendations_panel.py's due-date field for the same pattern) --
+    # keeps an unfilled date genuinely blank instead of defaulting to today.
+    _LOPA_BLANK_DATE = QDate(1900, 1, 1)
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -202,6 +209,17 @@ class LopaPanel(QWidget):
         QTimer.singleShot(0, self._apply_responsive_layout)
 
     def _build(self):
+        # LOPA is a dense, document-like worksheet (many small cards meant
+        # to be scannable at once), not a form with a handful of large
+        # fields -- drop one point size below the app-wide default (9pt,
+        # set once in hazop.py's app.setFont()) for better overview.  Scoped
+        # to this page only: app_stylesheet()'s universal selector
+        # deliberately carries no font-size (see its own docstring) so this
+        # cannot clobber Scenario/Worksheet's separate user-adjustable text
+        # size, and every LOPA-specific label already sets its own explicit
+        # font-size (lopa_title_stylesheet/lopa_section_title_stylesheet/
+        # lopa_note_stylesheet/...), which continues to take precedence.
+        self.setStyleSheet('QWidget{font-size:8pt;}')
         outer = QVBoxLayout(self)
         # Responsive rules, not a desktop size hint, decide how small the
         # page may become.  Without this Qt freezes the panel at the sum of
@@ -248,7 +266,7 @@ class LopaPanel(QWidget):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                        LOPA_CARD_PADDING, LOPA_CARD_PADDING)
-        label = QLabel('LOPA-ark')
+        label = QLabel('LOPA-ARK')
         label.setStyleSheet(lopa_section_title_stylesheet())
         left_layout.addWidget(label)
         hint = QLabel('Varje ark är en SIF. Arkiverade ark kan återställas men automatiska nummer återanvänds inte.')
@@ -283,7 +301,7 @@ class LopaPanel(QWidget):
                                          LOPA_CARD_PADDING, LOPA_CARD_PADDING)
         top = QHBoxLayout()
         self._record_title = QLabel('Välj eller skapa en LOPA')
-        self._record_title.setStyleSheet('font-size:15px;font-weight:700;')
+        self._record_title.setStyleSheet('font-size:13px;font-weight:700;')
         top.addWidget(self._record_title)
         top.addStretch(1)
         self._status = QLabel('')
@@ -326,9 +344,20 @@ class LopaPanel(QWidget):
         self._approved_by = QLineEdit()
         self._approved_by.setPlaceholderText('Godkänd av')
         self._approved_by.editingFinished.connect(self._save_revision_details)
-        self._document_date = QLineEdit()
-        self._document_date.setPlaceholderText('YYYY-MM-DD')
+        # A real calendar picker, not a free-text field -- matches the
+        # ISO-date pattern already used for recommendation due dates
+        # (recommendations_panel.py) instead of inviting typos/format
+        # drift.  The 1900-01-01 sentinel + special-value text keeps an
+        # unset date genuinely blank rather than defaulting to today.
+        self._document_date = QDateEdit()
+        self._document_date.setCalendarPopup(True)
+        self._document_date.setDisplayFormat('yyyy-MM-dd')
+        self._document_date.setMinimumDate(self._LOPA_BLANK_DATE)
+        self._document_date.setSpecialValueText(' ')
+        self._document_date.setDate(self._LOPA_BLANK_DATE)
+        self._document_date.lineEdit().clear()
         self._document_date.editingFinished.connect(self._save_revision_details)
+        self._document_date.dateChanged.connect(self._save_revision_details)
         self._revision = QComboBox()
         self._revision.currentIndexChanged.connect(self._on_revision_changed)
         def add_header_field(row, column, label, field, stretch=1):
@@ -365,7 +394,7 @@ class LopaPanel(QWidget):
         source_card = QWidget()
         source_layout = QVBoxLayout(source_card)
         source_layout.setContentsMargins(0, 2, 0, 2)
-        source_label = QLabel('Källscenarier från HAZOP')
+        source_label = QLabel('KÄLLSCENARIER FRÅN HAZOP')
         source_label.setStyleSheet(lopa_section_title_stylesheet())
         source_layout.addWidget(source_label)
         self._sources = QTableWidget(0, 6)
@@ -400,7 +429,7 @@ class LopaPanel(QWidget):
         scenario_layout = QVBoxLayout(scenario_card)
         scenario_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                            LOPA_CARD_PADDING, LOPA_CARD_PADDING)
-        scenario_title = QLabel('Scenario')
+        scenario_title = QLabel('SCENARIO')
         scenario_title.setStyleSheet(lopa_section_title_stylesheet())
         scenario_layout.addWidget(scenario_title)
         self._scenario_note = QLabel('Välj ett källscenario för att beskriva vad som händer i processen.')
@@ -429,7 +458,7 @@ class LopaPanel(QWidget):
         worst_layout = QVBoxLayout(worst_card)
         worst_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                         LOPA_CARD_PADDING, LOPA_CARD_PADDING)
-        worst_title = QLabel('Värsta representativa konsekvens')
+        worst_title = QLabel('VÄRSTA REPRESENTATIVA KONSEKVENS')
         worst_title.setStyleSheet(lopa_section_title_stylesheet())
         worst_layout.addWidget(worst_title)
         self._worst_note = QLabel('Visar den aktiva konsekvens som är dimensionerande per kategori.')
@@ -452,7 +481,7 @@ class LopaPanel(QWidget):
         # Consequences belong to the selected scenario.  Keeping them in the
         # same document block avoids a redundant full-width card.
         consequence_layout = scenario_layout
-        consequence_title = QLabel('Konsekvenser från HAZOP')
+        consequence_title = QLabel('KONSEKVENSER FRÅN HAZOP')
         consequence_title.setStyleSheet(lopa_section_title_stylesheet())
         consequence_layout.addWidget(consequence_title)
         self._consequence_note = QLabel('Kryssa ur en konsekvens om den inte ska dimensionera just denna LOPA.')
@@ -493,7 +522,7 @@ class LopaPanel(QWidget):
         sensor_layout = QVBoxLayout(sensor_card)
         sensor_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                          LOPA_CARD_PADDING, LOPA_CARD_PADDING)
-        sensor_title = QLabel('Givardel')
+        sensor_title = QLabel('GIVARDEL')
         sensor_title.setStyleSheet(lopa_section_title_stylesheet())
         sensor_layout.addWidget(sensor_title)
         self._sensor_note = QLabel('Givare kommer från den kopplade HAZOP-barriären. Flera givare kräver att voting bekräftas.')
@@ -548,7 +577,7 @@ class LopaPanel(QWidget):
         final_layout = QVBoxLayout(final_card)
         final_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                         LOPA_CARD_PADDING, LOPA_CARD_PADDING)
-        final_title = QLabel('Manöverdel')
+        final_title = QLabel('MANÖVERDEL')
         final_title.setStyleSheet(lopa_section_title_stylesheet())
         final_layout.addWidget(final_title)
         self._final_note = QLabel(
@@ -621,7 +650,7 @@ class LopaPanel(QWidget):
         barrier_layout = QVBoxLayout(barrier_card)
         barrier_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                           LOPA_CARD_PADDING, LOPA_CARD_PADDING)
-        barrier_title = QLabel('Oberoende barriärer')
+        barrier_title = QLabel('OBEROENDE BARRIÄRER')
         barrier_title.setStyleSheet(lopa_section_title_stylesheet())
         barrier_heading = QHBoxLayout()
         barrier_heading.addWidget(barrier_title)
@@ -702,7 +731,7 @@ class LopaPanel(QWidget):
         escalation_layout = QVBoxLayout(escalation_card)
         escalation_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                              LOPA_CARD_PADDING, LOPA_CARD_PADDING)
-        escalation_title = QLabel('Eskalering')
+        escalation_title = QLabel('ESKALERING')
         escalation_title.setStyleSheet(lopa_section_title_stylesheet())
         escalation_layout.addWidget(escalation_title)
         self._escalation_note = QLabel('Procentfaktorer är LOPA-specifika och multipliceras med återstående frekvens.')
@@ -726,7 +755,7 @@ class LopaPanel(QWidget):
         calculation_layout = QVBoxLayout(calculation_card)
         calculation_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                               LOPA_CARD_PADDING, LOPA_CARD_PADDING)
-        calculation_title = QLabel('Beräkningsöversikt')
+        calculation_title = QLabel('BERÄKNINGSÖVERSIKT')
         calculation_title.setStyleSheet(lopa_section_title_stylesheet())
         calculation_layout.addWidget(calculation_title)
         self._calculation = QTableWidget(0, 5)
@@ -751,7 +780,7 @@ class LopaPanel(QWidget):
         document_layout = QVBoxLayout(document_card)
         document_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                            LOPA_CARD_PADDING, LOPA_CARD_PADDING)
-        document_title = QLabel('Ytterligare åtgärder och krav')
+        document_title = QLabel('YTTERLIGARE ÅTGÄRDER OCH KRAV')
         document_title.setStyleSheet(lopa_section_title_stylesheet())
         document_layout.addWidget(document_title)
         document_title.setToolTip(
@@ -789,7 +818,7 @@ class LopaPanel(QWidget):
         comments_layout = QVBoxLayout(comments_card)
         comments_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                            LOPA_CARD_PADDING, LOPA_CARD_PADDING)
-        comments_title = QLabel('Kommentarer')
+        comments_title = QLabel('KOMMENTARER')
         comments_title.setStyleSheet(lopa_section_title_stylesheet())
         comments_layout.addWidget(comments_title)
         self._comments = QTableWidget(0, 3)
@@ -875,9 +904,12 @@ class LopaPanel(QWidget):
         self._record_title.setText('Välj eller skapa en LOPA')
         self._status.hide()
         self._revision.clear()
+        self._document_date.setDate(self._LOPA_BLANK_DATE)
+        self._document_date.lineEdit().clear()
         for widget in (self._number, self._sif_number, self._sif_name, self._sis_name,
                        self._document_date, self._performed_by, self._approved_by):
-            widget.clear()
+            if widget is not self._document_date:
+                widget.clear()
             widget.setEnabled(False)
         self._new_revision_btn.setEnabled(False)
         self._lock_btn.setEnabled(False)
@@ -1004,7 +1036,19 @@ class LopaPanel(QWidget):
         for widget in (self._document_date, self._performed_by, self._approved_by):
             widget.setEnabled(not locked and not bool(record.get('archived')))
         self._choose_performed_btn.setEnabled(not locked and not bool(record.get('archived')))
-        self._document_date.setText(revision.get('document_date') or '')
+        # setDate() emits dateChanged() even for a programmatic change, which
+        # would otherwise immediately re-save the value we just loaded via
+        # _save_revision_details() -- bracket it the same way other
+        # programmatic-vs-user-edit distinctions are made in this file.
+        old_loading = self._loading
+        self._loading = True
+        stored_date = QDate.fromString(revision.get('document_date') or '', 'yyyy-MM-dd')
+        if stored_date.isValid():
+            self._document_date.setDate(stored_date)
+        else:
+            self._document_date.setDate(self._LOPA_BLANK_DATE)
+            self._document_date.lineEdit().clear()
+        self._loading = old_loading
         self._performed_by.setText(revision.get('performed_by_text') or '')
         self._approved_by.setText(revision.get('approved_by_text') or '')
         self._additional_actions.setPlainText(revision.get('additional_actions') or '')
@@ -1048,6 +1092,21 @@ class LopaPanel(QWidget):
         if entity_id is not None:
             item.setData(LopaPanel._ROLE_ENTITY_ID, entity_id)
         return item
+
+    @staticmethod
+    def _category_badge_widget(text):
+        """A small chip for a consequence-category name, used via
+        ``setCellWidget`` wherever a table column shows a bare category
+        name (2026-09-02 overview pass) -- lets the eye pick the category
+        out of a busy row instead of reading it as plain text."""
+        holder = QWidget()
+        layout = QHBoxLayout(holder)
+        layout.setContentsMargins(2, 1, 2, 1)
+        label = QLabel(str(text or '—'))
+        label.setStyleSheet(lopa_category_badge_stylesheet())
+        layout.addWidget(label)
+        layout.addStretch(1)
+        return holder
 
     def _revision_is_editable(self):
         revision = self.db.get_lopa_revision(self._revision_id) if self._revision_id else None
@@ -1265,7 +1324,8 @@ class LopaPanel(QWidget):
                 row_index, 0, self._check_cell(bool(consequence['active']),
                                                 enabled=self._revision_is_editable(),
                                                 entity_id=consequence['id']))
-            self._consequences.setItem(row_index, 1, self._readonly_cell(consequence['category_name']))
+            self._consequences.setCellWidget(
+                row_index, 1, self._category_badge_widget(consequence['category_name']))
             self._consequences.setItem(row_index, 2, self._readonly_cell(consequence['severity']))
             self._consequences.setItem(row_index, 3, self._readonly_cell(consequence['description']))
             self._consequences.setItem(
@@ -1309,7 +1369,8 @@ class LopaPanel(QWidget):
             description = next((item['description'] for item in self.db.lopa_source_consequences(self._source_id)
                                 if item['category_key'] == row['category_key'] and
                                 item['severity'] == row['severity']), '')
-            self._worst_consequences.setItem(index, 0, self._readonly_cell(row['category_name']))
+            self._worst_consequences.setCellWidget(
+                index, 0, self._category_badge_widget(row['category_name']))
             self._worst_consequences.setItem(index, 1, self._readonly_cell(row['severity']))
             self._worst_consequences.setItem(index, 2, self._readonly_cell(description))
             self._worst_consequences.setItem(
@@ -1921,7 +1982,8 @@ class LopaPanel(QWidget):
             active_item = self._check_cell(active, enabled=editable, entity_id=key)
             active_item.setData(self._ROLE_SOURCE_ID, self._source_id)
             self._escalation.setItem(row_index, 0, active_item)
-            self._escalation.setItem(row_index, 1, self._readonly_cell(consequence['category_name']))
+            self._escalation.setCellWidget(
+                row_index, 1, self._category_badge_widget(consequence['category_name']))
             self._escalation.setItem(row_index, 2, self._readonly_cell(consequence['severity']))
             tel = calculated.get('tel')
             self._escalation.setItem(
@@ -2311,7 +2373,7 @@ class LopaBarrierDialog(QDialog):
         form.addRow('Beskrivning', self._description)
         form.addRow('RRF', self._rrf)
         layout.addLayout(form)
-        category_title = QLabel('Gäller konsekvenskategorier')
+        category_title = QLabel('GÄLLER KONSEKVENSKATEGORIER')
         category_title.setStyleSheet(lopa_section_title_stylesheet())
         layout.addWidget(category_title)
         hint = QLabel('Alla ikryssade betyder att barriären används för dessa kategorier. Alla valda = gäller alla.')

@@ -138,7 +138,7 @@ class DesignSystemTests(unittest.TestCase):
 
     def test_lopa_document_builders_share_the_neutral_design_tokens(self):
         from design import (
-            ACCENT_SELECTION, SECONDARY_TEXT, SEPARATOR, SURFACE, TEXT,
+            ACCENT_SELECTION, MUTED_TEXT, SECONDARY_TEXT, SEPARATOR, SURFACE, TEXT,
             lopa_card_stylesheet, lopa_note_stylesheet, lopa_section_title_stylesheet,
             lopa_table_stylesheet, lopa_title_stylesheet,
         )
@@ -146,7 +146,11 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn(SURFACE, lopa_card_stylesheet())
         self.assertIn(SEPARATOR, lopa_card_stylesheet())
         self.assertIn(TEXT, lopa_title_stylesheet())
-        self.assertIn(TEXT, lopa_section_title_stylesheet())
+        # Section headings are deliberately muted, not full-strength TEXT
+        # (2026-09-02 overview pass) -- they're page chrome that should
+        # recede behind the data, not compete with it -- but still a named
+        # design token, not an ad hoc colour.
+        self.assertIn(MUTED_TEXT, lopa_section_title_stylesheet())
         self.assertIn(SECONDARY_TEXT, lopa_note_stylesheet())
         self.assertIn(ACCENT_SELECTION, lopa_table_stylesheet())
 

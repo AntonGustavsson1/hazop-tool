@@ -328,18 +328,45 @@ def lopa_status_stylesheet(status: str) -> str:
 
 
 def lopa_title_stylesheet() -> str:
-    """Main LOPA page title, kept separate from document card headings."""
-    return f'font-size:20px;font-weight:700;color:{TEXT};'
+    """Main LOPA page title, kept separate from document card headings.
+
+    Smaller than a typical page title (2026-09-02 overview pass) -- LOPA is
+    a dense, document-like worksheet where many small cards need to be
+    scannable at once; a large title competes with that for space and
+    attention without adding information."""
+    return f'font-size:16px;font-weight:700;color:{TEXT};'
 
 
 def lopa_section_title_stylesheet() -> str:
-    """Quiet document-section heading shared by all LOPA cards."""
-    return f'font-size:11px;font-weight:700;color:{TEXT};'
+    """Quiet document-section heading shared by all LOPA cards.
+
+    Uppercase + muted (2026-09-02) rather than same-weight-as-body text, so
+    section chrome ("GIVARDEL", "OBEROENDE BARRIÄRER", ...) visually recedes
+    behind the actual data -- the thing an analyst scans for. Callers must
+    pass already-uppercased text themselves: Qt Style Sheets have no
+    supported ``text-transform`` property, so this cannot be done in CSS
+    alone (see lopa_panel.py's ``_section_label`` helper)."""
+    return f'font-size:10px;font-weight:700;color:{MUTED_TEXT};letter-spacing:1px;'
 
 
 def lopa_note_stylesheet() -> str:
     """Small explanatory text for LOPA source, revision and review hints."""
-    return f'color:{SECONDARY_TEXT};font-size:9pt;'
+    return f'color:{SECONDARY_TEXT};font-size:8pt;'
+
+
+def lopa_category_badge_stylesheet() -> str:
+    """Flat neutral chip for a consequence-category name in a LOPA table.
+
+    Reuses the same tokens as the Enablers/RRF/Frequency summary badges
+    (2026-09-02 overview pass) so a category name reads as a distinct tag at
+    a glance instead of blending into the surrounding row text -- without
+    inventing a new colour language for it. Risk colour stays reserved for
+    actual risk-severity data (see the RISK_BAR_* comment above)."""
+    return (
+        f'QLabel{{background:{SUMMARY_BADGE_BG};color:{TEXT};'
+        f'border:1px solid {SUMMARY_BADGE_BORDER};border-radius:8px;'
+        'padding:1px 7px;font-size:8pt;font-weight:600;}'
+    )
 
 
 def lopa_table_stylesheet() -> str:
