@@ -18,6 +18,11 @@ from constants import (
     DEVIATION_TYPES, _app_dir,
     NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, SYSTEM_T,
 )
+from lopa_models import (
+    DEFAULT_SAFEGUARD_TYPES,
+    calculate_lopa,
+    normalise_lopa_config,
+)
 
 
 def append_tag_to_text(description: str, tag: str) -> str:
@@ -465,6 +470,10 @@ def _normalise_matrix(cfg: dict) -> dict:
             'descriptions': descriptions,
         })
     cfg['consequence_categories'] = normalised_categories
+    # LOPA shares this project/template risk matrix.  Its own settings are
+    # nested here so copied matrix templates and locked LOPA revisions retain
+    # the category names, colours and TEL scale that were actually used.
+    cfg['lopa'] = normalise_lopa_config(cfg.get('lopa'), cfg)
     return cfg
 
 
@@ -1909,6 +1918,147 @@ class Database:
                 physical_page INTEGER PRIMARY KEY,
                 rotation      INTEGER NOT NULL DEFAULT 0
             );
+            -- LOPA is deliberately revisioned and stores HAZOP ids as soft
+            -- references.  A deleted HAZOP row must leave historical LOPA
+            -- evidence visible (with a missing-source warning), never delete
+            -- an approved analysis through a foreign-key cascade.
+            CREATE TABLE IF NOT EXISTS safeguard_equipment_links (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                safeguard_id INTEGER NOT NULL REFERENCES safeguards(id) ON DELETE CASCADE,
+                equipment_id INTEGER REFERENCES equipment_catalog(id) ON DELETE SET NULL,
+                trigger_code TEXT NOT NULL DEFAULT '',
+                trigger_custom TEXT NOT NULL DEFAULT '',
+                tag_snapshot TEXT NOT NULL DEFAULT '',
+                sort_order   INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(safeguard_id, equipment_id, trigger_code, trigger_custom)
+            );
+            CREATE TABLE IF NOT EXISTS lopa_records (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_number TEXT NOT NULL,
+                sif_name       TEXT NOT NULL DEFAULT '',
+                sis_name       TEXT NOT NULL DEFAULT '',
+                archived       INTEGER NOT NULL DEFAULT 0,
+                created_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_lopa_active_display_number
+                ON lopa_records(display_number) WHERE archived=0;
+            CREATE TABLE IF NOT EXISTS lopa_revisions (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                lopa_id               INTEGER NOT NULL REFERENCES lopa_records(id) ON DELETE CASCADE,
+                label                 TEXT NOT NULL,
+                status                TEXT NOT NULL DEFAULT 'Utkast',
+                created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_by            TEXT NOT NULL DEFAULT '',
+                locked_at             TEXT NOT NULL DEFAULT '',
+                locked_by             TEXT NOT NULL DEFAULT '',
+                unlock_reason         TEXT NOT NULL DEFAULT '',
+                performed_by_text     TEXT NOT NULL DEFAULT '',
+                approved_by_text      TEXT NOT NULL DEFAULT '',
+                matrix_snapshot_json  TEXT NOT NULL DEFAULT '{}',
+                notes                 TEXT NOT NULL DEFAULT '',
+                UNIQUE(lopa_id, label)
+            );
+            CREATE TABLE IF NOT EXISTS lopa_source_scenarios (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                revision_id           INTEGER NOT NULL REFERENCES lopa_revisions(id) ON DELETE CASCADE,
+                hazop_node_id         INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
+                hazop_deviation_id    INTEGER REFERENCES deviations(id) ON DELETE SET NULL,
+                hazop_cause_id        INTEGER REFERENCES causes(id) ON DELETE SET NULL,
+                origin_safeguard_id   INTEGER REFERENCES safeguards(id) ON DELETE SET NULL,
+                equipment_id          INTEGER REFERENCES equipment_catalog(id) ON DELETE SET NULL,
+                trigger_code          TEXT NOT NULL DEFAULT '',
+                trigger_custom        TEXT NOT NULL DEFAULT '',
+                cause_text            TEXT NOT NULL DEFAULT '',
+                scenario_text         TEXT NOT NULL DEFAULT '',
+                base_frequency        REAL DEFAULT NULL,
+                frequency_origin      TEXT NOT NULL DEFAULT '',
+                assumption_percent    REAL DEFAULT NULL,
+                active                INTEGER NOT NULL DEFAULT 1,
+                follows_hazop         INTEGER NOT NULL DEFAULT 1,
+                detached_reason       TEXT NOT NULL DEFAULT '',
+                source_missing        INTEGER NOT NULL DEFAULT 0,
+                created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_lopa_source_origin
+                ON lopa_source_scenarios(revision_id, origin_safeguard_id)
+                WHERE origin_safeguard_id IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS lopa_source_consequences (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id             INTEGER NOT NULL REFERENCES lopa_source_scenarios(id) ON DELETE CASCADE,
+                hazop_consequence_id  INTEGER REFERENCES consequences(id) ON DELETE SET NULL,
+                hazop_category_id     INTEGER REFERENCES consequence_categories(id) ON DELETE SET NULL,
+                category_key          TEXT NOT NULL DEFAULT '',
+                category_name         TEXT NOT NULL DEFAULT '',
+                severity              INTEGER NOT NULL DEFAULT 0,
+                description           TEXT NOT NULL DEFAULT '',
+                active                INTEGER NOT NULL DEFAULT 1,
+                follows_hazop         INTEGER NOT NULL DEFAULT 1,
+                detached_reason       TEXT NOT NULL DEFAULT '',
+                source_missing        INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS lopa_sensor_groups (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                revision_id           INTEGER NOT NULL REFERENCES lopa_revisions(id) ON DELETE CASCADE,
+                voting                TEXT NOT NULL DEFAULT '1oo1',
+                sort_order            INTEGER NOT NULL DEFAULT 0,
+                needs_voting_review   INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS lopa_sensor_members (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id              INTEGER NOT NULL REFERENCES lopa_sensor_groups(id) ON DELETE CASCADE,
+                equipment_id          INTEGER REFERENCES equipment_catalog(id) ON DELETE SET NULL,
+                origin_safeguard_id   INTEGER REFERENCES safeguards(id) ON DELETE SET NULL,
+                trigger_code          TEXT NOT NULL DEFAULT '',
+                trigger_custom        TEXT NOT NULL DEFAULT '',
+                tag_snapshot          TEXT NOT NULL DEFAULT '',
+                active                INTEGER NOT NULL DEFAULT 1,
+                sort_order            INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS lopa_barriers (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                revision_id           INTEGER NOT NULL REFERENCES lopa_revisions(id) ON DELETE CASCADE,
+                source_id             INTEGER REFERENCES lopa_source_scenarios(id) ON DELETE CASCADE,
+                source_safeguard_id   INTEGER REFERENCES safeguards(id) ON DELETE SET NULL,
+                sg_type               TEXT NOT NULL DEFAULT 'Övrigt',
+                description           TEXT NOT NULL DEFAULT '',
+                rrf                   REAL NOT NULL DEFAULT 1,
+                independent            INTEGER NOT NULL DEFAULT 1,
+                manual                INTEGER NOT NULL DEFAULT 0,
+                applies_all_categories INTEGER NOT NULL DEFAULT 0,
+                active                INTEGER NOT NULL DEFAULT 1,
+                follows_hazop         INTEGER NOT NULL DEFAULT 1,
+                detached_reason       TEXT NOT NULL DEFAULT '',
+                source_missing        INTEGER NOT NULL DEFAULT 0,
+                sort_order            INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_lopa_barrier_source_safeguard
+                ON lopa_barriers(source_id, source_safeguard_id)
+                WHERE source_safeguard_id IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS lopa_barrier_categories (
+                barrier_id            INTEGER NOT NULL REFERENCES lopa_barriers(id) ON DELETE CASCADE,
+                category_key          TEXT NOT NULL,
+                active                INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (barrier_id, category_key)
+            );
+            CREATE TABLE IF NOT EXISTS lopa_escalation_rows (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id             INTEGER NOT NULL REFERENCES lopa_source_scenarios(id) ON DELETE CASCADE,
+                category_key          TEXT NOT NULL,
+                factor_values_json    TEXT NOT NULL DEFAULT '{}',
+                reason                TEXT NOT NULL DEFAULT '',
+                active                INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(source_id, category_key)
+            );
+            CREATE TABLE IF NOT EXISTS lopa_change_log (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                lopa_id               INTEGER NOT NULL REFERENCES lopa_records(id) ON DELETE CASCADE,
+                revision_id           INTEGER REFERENCES lopa_revisions(id) ON DELETE SET NULL,
+                action                TEXT NOT NULL,
+                detail                TEXT NOT NULL DEFAULT '',
+                created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                actor                 TEXT NOT NULL DEFAULT ''
+            );
         """)
 
         # Seed missing deviation_id for existing causes
@@ -2327,6 +2477,643 @@ class Database:
             cfg['consequence_categories'] = self._project_category_template(cfg['rows'])
         self.set_config('risk_matrix', json.dumps(cfg))
         _risk_matrix_cache.load(self)
+
+    # ── LOPA configuration and revisioned data ──────────────────────────────
+    # LOPA is not a second risk matrix.  Its project settings live inside the
+    # normal risk-matrix template so colours, category keys, descriptions and
+    # the user-defined TEL scale can be snapshotted together in a revision.
+    def lopa_matrix_config(self):
+        matrix = self._risk_matrix_copy(self.get_risk_matrix() or DEFAULT_MATRIX)
+        return normalise_lopa_config(matrix.get('lopa'), matrix)
+
+    def set_lopa_matrix_config(self, config):
+        matrix = self._risk_matrix_copy(self.get_risk_matrix() or DEFAULT_MATRIX)
+        matrix['lopa'] = normalise_lopa_config(config, matrix)
+        self.set_risk_matrix(matrix)
+        return matrix['lopa']
+
+    def safeguard_types(self):
+        """Project-configurable safeguard types shared by HAZOP and LOPA."""
+        return list(self.lopa_matrix_config().get('safeguard_types') or
+                    DEFAULT_SAFEGUARD_TYPES)
+
+    def set_safeguard_types(self, values):
+        config = self.lopa_matrix_config()
+        config['safeguard_types'] = list(values or [])
+        return self.set_lopa_matrix_config(config)
+
+    def _lopa_matrix_snapshot(self):
+        """Capture the full active matrix, including LOPA/TEL metadata."""
+        matrix = self._risk_matrix_copy(self.get_risk_matrix() or DEFAULT_MATRIX)
+        matrix['lopa'] = normalise_lopa_config(matrix.get('lopa'), matrix)
+        return matrix
+
+    @staticmethod
+    def _lopa_number_sort_key(value):
+        text = str(value or '').strip()
+        try:
+            return (0, int(text), text)
+        except ValueError:
+            return (1, 0, text.casefold())
+
+    def _next_lopa_display_number(self):
+        numeric = []
+        for row in self.conn.execute("SELECT display_number FROM lopa_records").fetchall():
+            try:
+                numeric.append(int(str(row['display_number']).strip()))
+            except (TypeError, ValueError):
+                continue
+        return f"{(max(numeric) if numeric else 0) + 1:03d}"
+
+    def _log_lopa(self, lopa_id, revision_id, action, detail='', actor=''):
+        self.conn.execute(
+            "INSERT INTO lopa_change_log(lopa_id,revision_id,action,detail,actor) "
+            "VALUES (?,?,?,?,?)",
+            (lopa_id, revision_id, str(action or ''), str(detail or ''), str(actor or '')))
+
+    def _lopa_revision_row(self, revision_id):
+        row = self.conn.execute(
+            "SELECT * FROM lopa_revisions WHERE id=?", (revision_id,)).fetchone()
+        return dict(row) if row else None
+
+    def _assert_lopa_revision_editable(self, revision_id):
+        revision = self._lopa_revision_row(revision_id)
+        if not revision:
+            raise ValueError('LOPA-revisionen finns inte längre.')
+        if revision['status'] in ('Låst', 'Godkänd', 'Arkiverad'):
+            raise PermissionError('LOPA-revisionen är låst. Lås upp den innan du ändrar data.')
+        return revision
+
+    def lopa_records(self, include_archived=False):
+        sql = "SELECT * FROM lopa_records"
+        if not include_archived:
+            sql += " WHERE archived=0"
+        rows = [dict(row) for row in self.conn.execute(sql).fetchall()]
+        return sorted(rows, key=lambda row: self._lopa_number_sort_key(row['display_number']))
+
+    def get_lopa_record(self, lopa_id):
+        row = self.conn.execute("SELECT * FROM lopa_records WHERE id=?", (lopa_id,)).fetchone()
+        return dict(row) if row else None
+
+    def lopa_revisions(self, lopa_id):
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM lopa_revisions WHERE lopa_id=? ORDER BY id", (lopa_id,)).fetchall()]
+
+    def get_lopa_revision(self, revision_id):
+        return self._lopa_revision_row(revision_id)
+
+    def current_lopa_revision(self, lopa_id):
+        row = self.conn.execute(
+            "SELECT * FROM lopa_revisions WHERE lopa_id=? "
+            "ORDER BY id DESC LIMIT 1", (lopa_id,)).fetchone()
+        return dict(row) if row else None
+
+    def lopa_revision_matrix(self, revision_id):
+        revision = self._lopa_revision_row(revision_id)
+        if not revision:
+            return self._lopa_matrix_snapshot()
+        try:
+            raw = json.loads(revision.get('matrix_snapshot_json') or '{}')
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw = {}
+        if not isinstance(raw, dict) or not raw:
+            raw = self._lopa_matrix_snapshot()
+        return self._risk_matrix_copy(raw)
+
+    def create_lopa(self, display_number=None, sif_name='', sis_name='',
+                    created_by='', notes='', allow_archived_reuse=False):
+        """Create an empty, editable LOPA with revision ``00``.
+
+        Display numbers are deliberately independent from the internal key.
+        Automatic numbers never reuse an archived number; a manual archived
+        reuse requires the caller to opt in after showing a warning.
+        """
+        manual_number = display_number is not None
+        display_number = str(display_number or self._next_lopa_display_number()).strip()
+        if not display_number:
+            raise ValueError('Ange ett LOPA-nummer.')
+        duplicate = self.conn.execute(
+            "SELECT id,archived FROM lopa_records WHERE lower(display_number)=lower(?) "
+            "ORDER BY archived ASC LIMIT 1", (display_number,)).fetchone()
+        if duplicate and not duplicate['archived']:
+            raise ValueError(f'LOPA {display_number} används redan.')
+        if duplicate and duplicate['archived'] and manual_number and not allow_archived_reuse:
+            raise ValueError(
+                f'LOPA {display_number} är arkiverad. Bekräfta återanvändning uttryckligen.')
+
+        snapshot = json.dumps(self._lopa_matrix_snapshot())
+        with self.history_group():
+            try:
+                self.conn.execute('BEGIN')
+                cur = self.conn.execute(
+                    "INSERT INTO lopa_records(display_number,sif_name,sis_name) VALUES (?,?,?)",
+                    (display_number, str(sif_name or ''), str(sis_name or '')))
+                lopa_id = cur.lastrowid
+                revision_id = self.conn.execute(
+                    "INSERT INTO lopa_revisions(lopa_id,label,status,created_by,matrix_snapshot_json,notes) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (lopa_id, '00', 'Utkast', str(created_by or ''), snapshot,
+                     str(notes or ''))).lastrowid
+                self._log_lopa(lopa_id, revision_id, 'created', 'Ny tom LOPA-revision 00', created_by)
+                self.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return {'lopa_id': lopa_id, 'revision_id': revision_id}
+
+    def update_lopa_record(self, lopa_id, display_number=None, sif_name=None, sis_name=None):
+        row = self.get_lopa_record(lopa_id)
+        if not row:
+            raise ValueError('LOPA:n finns inte längre.')
+        values = []
+        assignments = []
+        if display_number is not None:
+            value = str(display_number).strip()
+            if not value:
+                raise ValueError('LOPA-nummer får inte vara tomt.')
+            duplicate = self.conn.execute(
+                "SELECT id FROM lopa_records WHERE archived=0 AND lower(display_number)=lower(?) AND id<>?",
+                (value, lopa_id)).fetchone()
+            if duplicate:
+                raise ValueError(f'LOPA {value} används redan.')
+            assignments.append('display_number=?'); values.append(value)
+        if sif_name is not None:
+            assignments.append('sif_name=?'); values.append(str(sif_name))
+        if sis_name is not None:
+            assignments.append('sis_name=?'); values.append(str(sis_name))
+        if not assignments:
+            return
+        assignments.append("updated_at=CURRENT_TIMESTAMP")
+        values.append(lopa_id)
+        self.conn.execute(
+            f"UPDATE lopa_records SET {', '.join(assignments)} WHERE id=?", values)
+        self._log_lopa(lopa_id, None, 'updated', 'Uppdaterade LOPA-huvud')
+        self.commit()
+
+    def archive_lopa(self, lopa_id, archived=True, actor=''):
+        record = self.get_lopa_record(lopa_id)
+        if not record:
+            return False
+        self.conn.execute("UPDATE lopa_records SET archived=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                          (int(bool(archived)), lopa_id))
+        self._log_lopa(lopa_id, None, 'archived' if archived else 'restored', '', actor)
+        self.commit()
+        return True
+
+    def _next_lopa_revision_label(self, lopa_id):
+        numbers = []
+        for row in self.lopa_revisions(lopa_id):
+            try:
+                numbers.append(int(str(row['label']).strip()))
+            except (TypeError, ValueError):
+                continue
+        return f"{(max(numbers) if numbers else -1) + 1:02d}"
+
+    def create_lopa_revision(self, lopa_id, source_revision_id=None, label=None,
+                             created_by='', notes=''):
+        """Deep-copy a revision, retaining evidence while starting a new draft."""
+        source = (self._lopa_revision_row(source_revision_id)
+                  if source_revision_id else self.current_lopa_revision(lopa_id))
+        if source and source['lopa_id'] != lopa_id:
+            raise ValueError('Källrevisionen hör till en annan LOPA.')
+        label = str(label or self._next_lopa_revision_label(lopa_id)).strip()
+        if not label:
+            raise ValueError('Revisionsbeteckning saknas.')
+        if self.conn.execute("SELECT 1 FROM lopa_revisions WHERE lopa_id=? AND label=?",
+                             (lopa_id, label)).fetchone():
+            raise ValueError(f'Revision {label} finns redan.')
+        snapshot = (source.get('matrix_snapshot_json') if source else
+                    json.dumps(self._lopa_matrix_snapshot()))
+        with self.history_group():
+            try:
+                self.conn.execute('BEGIN')
+                new_revision_id = self.conn.execute(
+                    "INSERT INTO lopa_revisions(lopa_id,label,status,created_by,matrix_snapshot_json,notes) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (lopa_id, label, 'Utkast', str(created_by or ''), snapshot,
+                     str(notes or ''))).lastrowid
+                if source:
+                    self._copy_lopa_revision_children(source['id'], new_revision_id)
+                self._log_lopa(lopa_id, new_revision_id, 'revision-created',
+                               f'Ny revision {label}', created_by)
+                self.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return new_revision_id
+
+    def _copy_lopa_revision_children(self, source_revision_id, target_revision_id):
+        """Internal deep copy. Called inside one transaction/history group."""
+        source_map = {}
+        source_rows = self.lopa_sources(source_revision_id)
+        for source in source_rows:
+            payload = dict(source)
+            old_id = payload.pop('id')
+            payload.pop('equipment_tag', None)  # joined display-only value
+            payload['revision_id'] = target_revision_id
+            columns = list(payload)
+            new_id = self.conn.execute(
+                f"INSERT INTO lopa_source_scenarios({','.join(columns)}) "
+                f"VALUES ({','.join('?' for _ in columns)})",
+                [payload[column] for column in columns]).lastrowid
+            source_map[old_id] = new_id
+            for consequence in self.lopa_source_consequences(old_id):
+                copy = dict(consequence); copy.pop('id'); copy['source_id'] = new_id
+                cols = list(copy)
+                self.conn.execute(
+                    f"INSERT INTO lopa_source_consequences({','.join(cols)}) "
+                    f"VALUES ({','.join('?' for _ in cols)})",
+                    [copy[column] for column in cols])
+            for escalation in self.lopa_escalation_rows(old_id):
+                copy = dict(escalation); copy.pop('id'); copy['source_id'] = new_id
+                cols = list(copy)
+                self.conn.execute(
+                    f"INSERT INTO lopa_escalation_rows({','.join(cols)}) "
+                    f"VALUES ({','.join('?' for _ in cols)})",
+                    [copy[column] for column in cols])
+
+        group_map = {}
+        for group in self.lopa_sensor_groups(source_revision_id):
+            copy = dict(group); old_id = copy.pop('id'); copy['revision_id'] = target_revision_id
+            cols = list(copy)
+            new_id = self.conn.execute(
+                f"INSERT INTO lopa_sensor_groups({','.join(cols)}) "
+                f"VALUES ({','.join('?' for _ in cols)})",
+                [copy[column] for column in cols]).lastrowid
+            group_map[old_id] = new_id
+            for member in self.lopa_sensor_members(old_id):
+                copied_member = dict(member); copied_member.pop('id'); copied_member.pop('tag', None)
+                copied_member['group_id'] = new_id
+                member_cols = list(copied_member)
+                self.conn.execute(
+                    f"INSERT INTO lopa_sensor_members({','.join(member_cols)}) "
+                    f"VALUES ({','.join('?' for _ in member_cols)})",
+                    [copied_member[column] for column in member_cols])
+
+        for barrier in self.lopa_barriers(source_revision_id):
+            copy = dict(barrier); old_id = copy.pop('id')
+            copy['revision_id'] = target_revision_id
+            copy['source_id'] = source_map.get(copy.get('source_id'))
+            cols = list(copy)
+            new_id = self.conn.execute(
+                f"INSERT INTO lopa_barriers({','.join(cols)}) "
+                f"VALUES ({','.join('?' for _ in cols)})",
+                [copy[column] for column in cols]).lastrowid
+            for category in self.lopa_barrier_categories(old_id):
+                self.conn.execute(
+                    "INSERT INTO lopa_barrier_categories(barrier_id,category_key,active) VALUES (?,?,?)",
+                    (new_id, category['category_key'], category['active']))
+
+    def lock_lopa_revision(self, revision_id, actor=''):
+        revision = self._assert_lopa_revision_editable(revision_id)
+        self.conn.execute(
+            "UPDATE lopa_revisions SET status='Låst',locked_at=CURRENT_TIMESTAMP,locked_by=? WHERE id=?",
+            (str(actor or ''), revision_id))
+        self._log_lopa(revision['lopa_id'], revision_id, 'locked', '', actor)
+        self.commit()
+
+    def unlock_lopa_revision(self, revision_id, reason, actor=''):
+        revision = self._lopa_revision_row(revision_id)
+        if not revision:
+            raise ValueError('LOPA-revisionen finns inte längre.')
+        reason = str(reason or '').strip()
+        if not reason:
+            raise ValueError('Ange varför LOPA-revisionen låses upp.')
+        self.conn.execute(
+            "UPDATE lopa_revisions SET status='Utkast',unlock_reason=?,locked_at='',locked_by='' WHERE id=?",
+            (reason, revision_id))
+        self._log_lopa(revision['lopa_id'], revision_id, 'unlocked', reason, actor)
+        self.commit()
+
+    def safeguard_equipment_links(self, safeguard_id):
+        return [dict(row) for row in self.conn.execute(
+            "SELECT sel.*,COALESCE(ec.tag,sel.tag_snapshot,'') AS tag "
+            "FROM safeguard_equipment_links sel "
+            "LEFT JOIN equipment_catalog ec ON ec.id=sel.equipment_id "
+            "WHERE sel.safeguard_id=? ORDER BY sel.sort_order,sel.id", (safeguard_id,)).fetchall()]
+
+    def add_safeguard_equipment_link(self, safeguard_id, equipment_id, trigger_code='',
+                                     trigger_custom=''):
+        safeguard = self.get_safeguard(safeguard_id)
+        equipment = self.get_equipment_by_id(equipment_id)
+        if not safeguard:
+            raise ValueError('Barriären finns inte längre.')
+        if not equipment:
+            raise ValueError('Objektet finns inte längre i objektdatabasen.')
+        trigger_code = str(trigger_code or '').strip().upper()
+        trigger_custom = str(trigger_custom or '').strip()
+        existing = self.conn.execute(
+            "SELECT id FROM safeguard_equipment_links WHERE safeguard_id=? AND equipment_id=? "
+            "AND trigger_code=? AND trigger_custom=?",
+            (safeguard_id, equipment_id, trigger_code, trigger_custom)).fetchone()
+        if existing:
+            return existing['id']
+        sort_order = self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1)+1 FROM safeguard_equipment_links WHERE safeguard_id=?",
+            (safeguard_id,)).fetchone()[0]
+        cur = self.conn.execute(
+            "INSERT INTO safeguard_equipment_links "
+            "(safeguard_id,equipment_id,trigger_code,trigger_custom,tag_snapshot,sort_order) "
+            "VALUES (?,?,?,?,?,?)",
+            (safeguard_id, equipment_id, trigger_code, trigger_custom,
+             equipment.get('tag') or '', sort_order))
+        self.commit()
+        return cur.lastrowid
+
+    def lopa_sources(self, revision_id):
+        return [dict(row) for row in self.conn.execute(
+            "SELECT ls.*,COALESCE(ec.tag,'') AS equipment_tag FROM lopa_source_scenarios ls "
+            "LEFT JOIN equipment_catalog ec ON ec.id=ls.equipment_id "
+            "WHERE ls.revision_id=? ORDER BY ls.id", (revision_id,)).fetchall()]
+
+    def lopa_source_consequences(self, source_id):
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM lopa_source_consequences WHERE source_id=? "
+            "ORDER BY category_name,category_key,id", (source_id,)).fetchall()]
+
+    def lopa_sensor_groups(self, revision_id):
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM lopa_sensor_groups WHERE revision_id=? ORDER BY sort_order,id",
+            (revision_id,)).fetchall()]
+
+    def lopa_sensor_members(self, group_id):
+        return [dict(row) for row in self.conn.execute(
+            "SELECT lm.*,COALESCE(ec.tag,lm.tag_snapshot,'') AS tag "
+            "FROM lopa_sensor_members lm LEFT JOIN equipment_catalog ec ON ec.id=lm.equipment_id "
+            "WHERE lm.group_id=? ORDER BY lm.sort_order,lm.id", (group_id,)).fetchall()]
+
+    def lopa_barriers(self, revision_id, source_id=None):
+        values = [revision_id]
+        where = 'lb.revision_id=?'
+        if source_id is not None:
+            where += ' AND lb.source_id=?'; values.append(source_id)
+        return [dict(row) for row in self.conn.execute(
+            "SELECT lb.* FROM lopa_barriers lb WHERE " + where + " ORDER BY lb.sort_order,lb.id",
+            values).fetchall()]
+
+    def lopa_barrier_categories(self, barrier_id):
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM lopa_barrier_categories WHERE barrier_id=? ORDER BY category_key",
+            (barrier_id,)).fetchall()]
+
+    def lopa_escalation_rows(self, source_id):
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM lopa_escalation_rows WHERE source_id=? ORDER BY category_key,id",
+            (source_id,)).fetchall()]
+
+    def _ensure_lopa_sensor_group(self, revision_id):
+        groups = self.lopa_sensor_groups(revision_id)
+        if groups:
+            return groups[0]['id']
+        return self.conn.execute(
+            "INSERT INTO lopa_sensor_groups(revision_id,voting,sort_order) VALUES (?,'1oo1',0)",
+            (revision_id,)).lastrowid
+
+    def set_lopa_sensor_group_voting(self, group_id, voting):
+        row = self.conn.execute(
+            "SELECT revision_id FROM lopa_sensor_groups WHERE id=?", (group_id,)).fetchone()
+        if not row:
+            raise ValueError('Givargruppen finns inte längre.')
+        self._assert_lopa_revision_editable(row['revision_id'])
+        text = str(voting or '').strip()
+        if not re.fullmatch(r'\d+oo\d+', text, re.IGNORECASE):
+            raise ValueError('Ange röstning som exempelvis 1oo1 eller 2oo3.')
+        self.conn.execute(
+            "UPDATE lopa_sensor_groups SET voting=?,needs_voting_review=0 WHERE id=?",
+            (text.lower(), group_id))
+        self.commit()
+
+    def _add_lopa_sensor_member(self, revision_id, equipment_id, origin_safeguard_id,
+                                trigger_code='', trigger_custom='', tag_snapshot=''):
+        if equipment_id is None:
+            return None
+        group_id = self._ensure_lopa_sensor_group(revision_id)
+        existing = self.conn.execute(
+            "SELECT id FROM lopa_sensor_members WHERE group_id=? AND equipment_id=? "
+            "AND trigger_code=? AND trigger_custom=?",
+            (group_id, equipment_id, trigger_code, trigger_custom)).fetchone()
+        if existing:
+            return existing['id']
+        member_count = self.conn.execute(
+            "SELECT COUNT(*) FROM lopa_sensor_members WHERE group_id=? AND active=1",
+            (group_id,)).fetchone()[0]
+        sort_order = self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_sensor_members WHERE group_id=?",
+            (group_id,)).fetchone()[0]
+        cur = self.conn.execute(
+            "INSERT INTO lopa_sensor_members(group_id,equipment_id,origin_safeguard_id,"
+            "trigger_code,trigger_custom,tag_snapshot,sort_order) VALUES (?,?,?,?,?,?,?)",
+            (group_id, equipment_id, origin_safeguard_id, trigger_code,
+             trigger_custom, tag_snapshot, sort_order))
+        # The second sensor is a deliberate review point.  The database
+        # keeps 1oo1 until the user explicitly confirms/provides voting.
+        if member_count >= 1:
+            self.conn.execute(
+                "UPDATE lopa_sensor_groups SET needs_voting_review=1 WHERE id=?",
+                (group_id,))
+        return cur.lastrowid
+
+    def add_lopa_barrier(self, revision_id, source_id=None, description='', rrf=1,
+                         sg_type='Övrigt', category_keys=None, manual=True):
+        self._assert_lopa_revision_editable(revision_id)
+        numeric_rrf = float(rrf)
+        if numeric_rrf < 1:
+            raise ValueError('RRF måste vara minst 1.')
+        category_keys = None if category_keys is None else list(category_keys)
+        sort_order = self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_barriers WHERE revision_id=?",
+            (revision_id,)).fetchone()[0]
+        cur = self.conn.execute(
+            "INSERT INTO lopa_barriers(revision_id,source_id,sg_type,description,rrf,manual,"
+            "applies_all_categories,sort_order) VALUES (?,?,?,?,?,?,?,?)",
+            (revision_id, source_id, str(sg_type or 'Övrigt'), str(description or ''),
+             numeric_rrf, int(bool(manual)), int(category_keys is None), sort_order))
+        barrier_id = cur.lastrowid
+        for key in category_keys or []:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO lopa_barrier_categories(barrier_id,category_key,active) "
+                "VALUES (?,?,1)", (barrier_id, str(key)))
+        self.commit()
+        return barrier_id
+
+    def _lopa_category_key_map(self, matrix):
+        result = {}
+        for index, category in enumerate(matrix.get('consequence_categories') or []):
+            category = category if isinstance(category, dict) else {}
+            key = self._template_category_key(
+                category.get('key') or category.get('name'), f'category-{index + 1}')
+            result[category.get('name') or key] = key
+        return result
+
+    def add_lopa_source_from_safeguard(self, lopa_id, safeguard_id, equipment_id=None,
+                                       trigger_code='', trigger_custom=''):
+        """Import one HAZOP safeguard as a LOPA sensor path and source scenario.
+
+        The selected safeguard is deliberately *not* copied as an independent
+        barrier. Other safeguards under the same HAZOP cause are copied with
+        their per-category applicability, while the selected safeguard's
+        object+trigger becomes a sensor member.
+        """
+        revision = self.current_lopa_revision(lopa_id)
+        if not revision:
+            raise ValueError('LOPA:n saknar en aktiv revision.')
+        self._assert_lopa_revision_editable(revision['id'])
+        source_row = self.conn.execute(
+            "SELECT s.id AS safeguard_id,s.consequence_id,c.id AS cause_id,c.node_id,"
+            "c.deviation_id,c.description AS cause_text,c.likelihood,c.base_frequency,"
+            "c.frequency_cleared,c.standard_cause_id,co.description AS scenario_text "
+            "FROM safeguards s JOIN consequences co ON co.id=s.consequence_id "
+            "JOIN causes c ON c.id=co.cause_id WHERE s.id=?", (safeguard_id,)).fetchone()
+        if not source_row:
+            raise ValueError('HAZOP-barriären finns inte längre.')
+        source_row = dict(source_row)
+        existing = self.conn.execute(
+            "SELECT id FROM lopa_source_scenarios WHERE revision_id=? AND origin_safeguard_id=?",
+            (revision['id'], safeguard_id)).fetchone()
+        if existing:
+            return {'source_id': existing['id'], 'created': False}
+
+        links = self.safeguard_equipment_links(safeguard_id)
+        if equipment_id is not None:
+            links = [link for link in links if link.get('equipment_id') == equipment_id] or links
+        if not links and equipment_id is not None:
+            equipment = self.get_equipment_by_id(equipment_id)
+            if equipment:
+                links = [{
+                    'equipment_id': equipment_id,
+                    'trigger_code': trigger_code,
+                    'trigger_custom': trigger_custom,
+                    'tag': equipment.get('tag') or '',
+                }]
+        primary_link = links[0] if links else {}
+        chosen_equipment_id = primary_link.get('equipment_id') or equipment_id
+        numeric_frequency = self.cause_base_frequency_per_year(self.get_cause(source_row['cause_id']))
+        origin = 'numerisk HAZOP-frekvens' if numeric_frequency is not None else 'HAZOP-frekvensnivå'
+        matrix = self.lopa_revision_matrix(revision['id'])
+        category_keys = self._lopa_category_key_map(matrix)
+
+        with self.history_group():
+            try:
+                self.conn.execute('BEGIN')
+                source_id = self.conn.execute(
+                    "INSERT INTO lopa_source_scenarios(revision_id,hazop_node_id,hazop_deviation_id,"
+                    "hazop_cause_id,origin_safeguard_id,equipment_id,trigger_code,trigger_custom,"
+                    "cause_text,scenario_text,base_frequency,frequency_origin) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (revision['id'], source_row['node_id'], source_row['deviation_id'],
+                     source_row['cause_id'], safeguard_id, chosen_equipment_id,
+                     str(primary_link.get('trigger_code') or trigger_code or '').upper(),
+                     str(primary_link.get('trigger_custom') or trigger_custom or ''),
+                     source_row.get('cause_text') or '', source_row.get('scenario_text') or '',
+                     numeric_frequency, origin)).lastrowid
+
+                # A cause can produce several HAZOP consequences. Import each
+                # assessed category, not just the consequence where the user
+                # happened to click the safeguard.
+                cause_consequences = self.consequences(source_row['cause_id'])
+                category_applicability = {}
+                for consequence in cause_consequences:
+                    consequence = dict(consequence)
+                    for severity in self.get_consequence_severities(consequence['id']):
+                        severity = dict(severity)
+                        category_key = category_keys.get(severity['name']) or self._template_category_key(
+                            severity['name'], f"category-{severity['category_id']}")
+                        self.conn.execute(
+                            "INSERT INTO lopa_source_consequences(source_id,hazop_consequence_id,"
+                            "hazop_category_id,category_key,category_name,severity,description) "
+                            "VALUES (?,?,?,?,?,?,?)",
+                            (source_id, consequence['id'], severity['category_id'], category_key,
+                             severity['name'], severity['severity'], consequence.get('description') or ''))
+                        category_applicability[(consequence['id'], category_key)] = severity
+
+                # The barrier used to create the sensor remains excluded here.
+                # All other barriers mirror HAZOP and keep their category-level
+                # exclusions in the LOPA copy.
+                for consequence in cause_consequences:
+                    consequence = dict(consequence)
+                    severities = self.get_consequence_severities(consequence['id'])
+                    for safeguard in self.safeguards(consequence['id']):
+                        safeguard = dict(safeguard)
+                        if safeguard['id'] == safeguard_id:
+                            continue
+                        existing_barrier = self.conn.execute(
+                            "SELECT id FROM lopa_barriers WHERE source_id=? AND source_safeguard_id=?",
+                            (source_id, safeguard['id'])).fetchone()
+                        if existing_barrier:
+                            barrier_id = existing_barrier['id']
+                        else:
+                            barrier_id = self.conn.execute(
+                                "INSERT INTO lopa_barriers(revision_id,source_id,source_safeguard_id,"
+                                "sg_type,description,rrf,manual,applies_all_categories,sort_order) "
+                                "VALUES (?,?,?,?,?,?,0,0,?)",
+                                (revision['id'], source_id, safeguard['id'],
+                                 safeguard.get('sg_type') or 'Övrigt',
+                                 safeguard.get('description') or '',
+                                 safeguard.get('rrf') or 1,
+                                 self.conn.execute(
+                                     "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_barriers WHERE revision_id=?",
+                                     (revision['id'],)).fetchone()[0])).lastrowid
+                        for severity in severities:
+                            severity = dict(severity)
+                            category_key = category_keys.get(severity['name']) or self._template_category_key(
+                                severity['name'], f"category-{severity['category_id']}")
+                            if safeguard['id'] in self.get_severity_excluded_sgs(severity['id']):
+                                continue
+                            self.conn.execute(
+                                "INSERT OR REPLACE INTO lopa_barrier_categories(barrier_id,category_key,active) "
+                                "VALUES (?,?,1)", (barrier_id, category_key))
+
+                for link in links:
+                    self._add_lopa_sensor_member(
+                        revision['id'], link.get('equipment_id'), safeguard_id,
+                        str(link.get('trigger_code') or trigger_code or '').upper(),
+                        str(link.get('trigger_custom') or trigger_custom or ''),
+                        str(link.get('tag') or ''))
+                self._log_lopa(lopa_id, revision['id'], 'hazop-linked',
+                               f"Barriär {safeguard_id} importerad som givardel")
+                self.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return {'source_id': source_id, 'created': True}
+
+    def lopa_source_calculation(self, source_id):
+        source = self.conn.execute(
+            "SELECT * FROM lopa_source_scenarios WHERE id=?", (source_id,)).fetchone()
+        if not source:
+            raise ValueError('LOPA-källscenariot finns inte längre.')
+        source = dict(source)
+        source['matrix'] = self.lopa_revision_matrix(source['revision_id'])
+        factor_values = {}
+        for row in self.lopa_escalation_rows(source_id):
+            try:
+                factor_values[row['category_key']] = json.loads(row['factor_values_json'] or '{}')
+            except (TypeError, ValueError, json.JSONDecodeError):
+                factor_values[row['category_key']] = {}
+        source['categories'] = []
+        for consequence in self.lopa_source_consequences(source_id):
+            source['categories'].append({
+                'category_key': consequence['category_key'],
+                'category_name': consequence['category_name'],
+                'severity': consequence['severity'],
+                'active': bool(consequence['active']),
+                'factors': factor_values.get(consequence['category_key'], {}),
+            })
+        source['barriers'] = []
+        for barrier in self.lopa_barriers(source['revision_id'], source_id):
+            if not barrier['independent']:
+                continue
+            if barrier['applies_all_categories']:
+                categories = None
+            else:
+                categories = {row['category_key']: bool(row['active'])
+                              for row in self.lopa_barrier_categories(barrier['id'])}
+            source['barriers'].append({
+                'id': barrier['id'], 'description': barrier['description'],
+                'rrf': barrier['rrf'], 'active': bool(barrier['active']),
+                'categories': categories,
+            })
+        return calculate_lopa(source, source['matrix'].get('lopa') or {})
 
     def get_custom_risk_matrix_templates(self):
         """Return this project's named, user-created risk-matrix templates.
@@ -3201,6 +3988,11 @@ class Database:
         # column. equipment_markers.equipment_id is the only one of the
         # three FKs into equipment_catalog with ON DELETE CASCADE already,
         # so it needs no manual handling here.
+        # LOPA retains snapshots after an object is deleted. Flag affected
+        # imports before the FK becomes NULL so the analyst sees a red/missing
+        # source rather than a silently detached historical sensor.
+        self.conn.execute(
+            "UPDATE lopa_source_scenarios SET source_missing=1 WHERE equipment_id=?", (id_,))
         self.conn.execute("UPDATE deviations SET equipment_id=NULL WHERE equipment_id=?", (id_,))
         self.conn.execute("UPDATE causes SET equipment_id=NULL WHERE equipment_id=?", (id_,))
         self.conn.execute("DELETE FROM equipment_catalog WHERE id=?", (id_,))
@@ -3209,6 +4001,8 @@ class Database:
     def clear_equipment_catalog(self):
         # Same fix as delete_equipment_item() above, but for the full-
         # rescan-replaces-catalog path ("🔍 Skanna P&ID"/"📋 Analysera P&ID").
+        self.conn.execute(
+            "UPDATE lopa_source_scenarios SET source_missing=1 WHERE equipment_id IS NOT NULL")
         self.conn.execute("UPDATE deviations SET equipment_id=NULL WHERE equipment_id IS NOT NULL")
         self.conn.execute("UPDATE causes SET equipment_id=NULL WHERE equipment_id IS NOT NULL")
         self.conn.execute("DELETE FROM equipment_catalog")
@@ -6563,6 +7357,11 @@ class Database:
         self.conn.execute("DELETE FROM nodes WHERE id=?", (id_,)); self.commit()
 
     def delete_cause(self, id_):
+        # Preserve LOPA evidence when its HAZOP source is removed. The FK is
+        # intentionally SET NULL, while this flag turns that retained record
+        # into an explicit missing-source warning in the LOPA view.
+        self.conn.execute(
+            "UPDATE lopa_source_scenarios SET source_missing=1 WHERE hazop_cause_id=?", (id_,))
         # Clean up severity/exclusion data for all consequences under this cause
         # (no FK cascade exists for these tables).
         self.conn.execute(
@@ -6596,6 +7395,8 @@ class Database:
         self.conn.execute("DELETE FROM causes WHERE id=?", (id_,)); self.commit()
 
     def delete_consequence(self, id_):
+        self.conn.execute(
+            "UPDATE lopa_source_consequences SET source_missing=1 WHERE hazop_consequence_id=?", (id_,))
         # Clean up orphaned severity data (no FK cascade exists for these tables)
         self.conn.execute(
             "DELETE FROM reduction_factor_severity_exclusions WHERE reduction_factor_id IN ("
@@ -6653,6 +7454,10 @@ class Database:
 
     def delete_safeguard(self, id_):
         # No FK cascade exists for consequence_severity_exclusions.safeguard_id
+        self.conn.execute(
+            "UPDATE lopa_source_scenarios SET source_missing=1 WHERE origin_safeguard_id=?", (id_,))
+        self.conn.execute(
+            "UPDATE lopa_barriers SET source_missing=1 WHERE source_safeguard_id=?", (id_,))
         self.conn.execute("DELETE FROM consequence_severity_exclusions WHERE safeguard_id=?", (id_,))
         self.conn.execute("DELETE FROM safeguards WHERE id=?", (id_,)); self.commit()
 

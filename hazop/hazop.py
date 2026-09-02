@@ -69,6 +69,7 @@ from node_markup import (
 )
 from worksheet import HAZOPWorksheet
 from recommendations_panel import RecommendationsPanel
+from lopa_panel import LopaPanel
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QSplitter, QScrollArea,
@@ -1218,6 +1219,7 @@ class MainWindow(QMainWindow):
         self.btn_prep      = QPushButton()
         self.btn_pid       = QPushButton()
         self.btn_sheet     = QPushButton()
+        self.btn_lopa      = QPushButton()
         self.btn_recommendations = QPushButton()
         self.btn_equip     = QPushButton()
         self.btn_admin     = QPushButton()
@@ -1228,6 +1230,7 @@ class MainWindow(QMainWindow):
             self.btn_prep:     "HAZOP preparation",
             self.btn_pid:      "P&ID-vy",
             self.btn_sheet:    "Worksheet",
+            self.btn_lopa:     "LOPA",
             self.btn_recommendations: "Rekommendationer",
             self.btn_equip:    "Utrustning",
             self.btn_admin:    "Studiehantering",
@@ -1238,6 +1241,7 @@ class MainWindow(QMainWindow):
             self.btn_prep:     'check',
             self.btn_pid:      'map',
             self.btn_sheet:    'clipboard',
+            self.btn_lopa:     'shield',
             self.btn_recommendations: 'flag',
             self.btn_equip:    'bolt-nut',
             self.btn_admin:    'document',
@@ -1245,7 +1249,8 @@ class MainWindow(QMainWindow):
         }
         _nav_icons[self.btn_beta] = 'bolt-nut'
 
-        for btn in (self.btn_prep, self.btn_pid, self.btn_sheet, self.btn_recommendations,
+        for btn in (self.btn_prep, self.btn_pid, self.btn_sheet, self.btn_lopa,
+                    self.btn_recommendations,
                     self.btn_equip, self.btn_admin, self.btn_settings, self.btn_beta):
             btn.setCheckable(True)
             btn.setFixedSize(40, 40)
@@ -1272,6 +1277,7 @@ class MainWindow(QMainWindow):
         self.btn_prep.clicked.connect(lambda: self._switch_view(0))
         self.btn_pid.clicked.connect(lambda: self._switch_view(1))
         self.btn_sheet.clicked.connect(lambda: self._switch_view(2))
+        self.btn_lopa.clicked.connect(lambda: self._switch_view(8))
         self.btn_recommendations.clicked.connect(lambda: self._switch_view(3))
         self.btn_equip.clicked.connect(lambda: self._switch_view(4))
         self.btn_admin.clicked.connect(lambda: self._switch_view(5))
@@ -1455,6 +1461,15 @@ class MainWindow(QMainWindow):
         beta_layout.addStretch()
         self.view_stack.addWidget(self.beta_panel)
 
+        # Page 8: LOPA.  It is kept as a dedicated top-level page (rather
+        # than embedded in HAZOP Preparation) because one LOPA is a
+        # revisioned SIF document with links back to several HAZOP scenarios.
+        # Its index is appended deliberately, preserving all pre-existing
+        # page numbers and navigation paths while its rail button sits next
+        # to Worksheet where users naturally expect it.
+        self.lopa_panel = LopaPanel(self.db)
+        self.view_stack.addWidget(self.lopa_panel)
+
         # The tools are now available from Beta; keep the equipment register
         # focused on browsing and editing its data.
         self.equipment_panel._scan_btn.hide()
@@ -1523,11 +1538,13 @@ class MainWindow(QMainWindow):
             lambda cause_id, comp_type, comp_tag:
                 self.pid_panel.start_cause_equipment_placement(
                     cause_id, comp_tag, comp_type))
+        self.scenario_panel.lopa_linked.connect(self._open_lopa_from_hazop)
         # Worksheet uses the same placement control, but must return to its
         # own page and selected cause after the P&ID click is completed.
         self._worksheet_place_return_cause_id = None
         self.worksheet.place_cause_object_requested.connect(
             self._on_worksheet_place_cause_object_requested)
+        self.worksheet.lopa_linked.connect(self._open_lopa_from_hazop)
         self.pid_panel.cause_equipment_bound.connect(
             self._on_cause_equipment_bound)
         self.scenario_panel.new_item_created.connect(
@@ -1836,6 +1853,7 @@ class MainWindow(QMainWindow):
         self.btn_prep.setChecked(page == 0)
         self.btn_pid.setChecked(page == 1)
         self.btn_sheet.setChecked(page == 2)
+        self.btn_lopa.setChecked(page == 8)
         self.btn_recommendations.setChecked(page == 3)
         self.btn_equip.setChecked(page == 4)
         self.btn_admin.setChecked(page == 5)
@@ -1855,6 +1873,13 @@ class MainWindow(QMainWindow):
                 self.settings_panel.refresh_tag_memory()
         if page == 7:
             self.equipment_panel.refresh()
+        if page == 8:
+            self.lopa_panel.refresh()
+
+    def _open_lopa_from_hazop(self, lopa_id, revision_id):
+        """Open the exact LOPA revision created/updated from a HAZOP barrier."""
+        self._switch_view(8)
+        self.lopa_panel.activate_lopa(lopa_id, revision_id or None)
 
     def _on_props_changed(self):
         """PropertiesRibbon saved a field — refresh tree + scenario."""

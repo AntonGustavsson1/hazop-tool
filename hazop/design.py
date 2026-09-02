@@ -61,6 +61,12 @@ RISK_BAR_MARGIN_Y = 1
 RISK_BAR_RADIUS = 5
 RISK_COLUMN_DEFAULT_WIDTH = 52
 
+# LOPA is a document-like analysis page, not another variant of the dense
+# Scenario table.  Keep its calm cards and status chips here so the page can
+# follow the same design contract as the rest of the application.
+LOPA_CARD_RADIUS = 6
+LOPA_CARD_PADDING = 10
+
 
 def app_stylesheet() -> str:
     """Return the application-wide light theme.
@@ -282,6 +288,29 @@ def summary_badge_stylesheet(
         f'padding:2px {SUMMARY_BADGE_PADDING_X}px;}}'
         f'QPushButton#{object_name}:hover{{background:{hover};'
         f'border-color:{SCROLL_HANDLE_HOVER};}}'
+    )
+
+
+def lopa_card_stylesheet(object_name: str = 'lopaCard') -> str:
+    """Compact neutral card used by the LOPA overview and detail panels."""
+    return (
+        f'QFrame#{object_name}{{background:{SURFACE};border:1px solid {SEPARATOR};'
+        f'border-radius:{LOPA_CARD_RADIUS}px;}}'
+        f'QFrame#{object_name} QLabel{{background:transparent;border:none;}}'
+    )
+
+
+def lopa_status_stylesheet(status: str) -> str:
+    """Subtle textual status chip; risk colours remain reserved for matrix data."""
+    if status in ('Låst', 'Godkänd'):
+        background, border = '#E8E9E6', '#B3B7B2'
+    elif status == 'Arkiverad':
+        background, border = '#F1F1EF', '#CFD1CE'
+    else:
+        background, border = '#F5F5F3', '#CFD1CE'
+    return (
+        f'QLabel{{background:{background};color:{TEXT};border:1px solid {border};'
+        'border-radius:9px;padding:2px 7px;font-size:9px;font-weight:600;}'
     )
 
 

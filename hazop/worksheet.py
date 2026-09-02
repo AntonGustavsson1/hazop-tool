@@ -23,6 +23,7 @@ class HAZOPWorksheet(QWidget):
     item_edited = pyqtSignal(int, int)
     equipment_renamed = pyqtSignal()
     place_cause_object_requested = pyqtSignal(int, str, str)
+    lopa_linked = pyqtSignal(int, int)
 
     def __init__(self, db: Database):
         super().__init__()
@@ -91,6 +92,7 @@ class HAZOPWorksheet(QWidget):
         self._table_panel.equipment_renamed.connect(self.equipment_renamed)
         self._table_panel.place_cause_object_requested.connect(
             self.place_cause_object_requested)
+        self._table_panel.lopa_linked.connect(self.lopa_linked)
         layout.addWidget(self._table_panel, 1)
 
         self._node_combo.currentIndexChanged.connect(self._on_node_combo_changed)

@@ -1,5 +1,37 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA grundmodul, HAZOP-koppling och revisionsspår (2026-09-02)
+
+Första användbara LOPA-etappen är införd som en egen sida i huvudnavigeringen.
+En LOPA är knuten till en SIF och kan skapas tom eller från en HAZOP-safeguard
+via högerklicksalternativet **Koppla till LOPA…**. Kopplingen använder ett
+strukturerat objekt (utrustnings-id) och utlösningsvillkor (H, HH, L, LL,
+Till, Från eller egen text), aldrig enbart fritext.
+
+Datamodellen sparar LOPA, revisioner, HAZOP-källscenarier, importerade
+konsekvensnivåer, sensorgrupper/-medlemmar, oberoende barriärer,
+kategoritillämpning och ändringslogg. Nya revisioner kopierar hela underlaget,
+låsta revisioner kan inte ändras och upplåsning kräver en motivering.
+Arkivering bevarar numret; ett manuellt arkiverat LOPA-nummer kräver en
+uttrycklig bekräftelse för att användas igen.
+
+LOPA använder samma HAZOP-riskmatris. Riskmatriskonfigurationen innehåller nu
+TEL per dynamisk konsekvenskategori och nivå, anpassningsbara
+safeguard-typer, RRF-till-SIL-band och standardantagandet för förutsättning.
+LOPA-beräkningen väljer styrande kategori och redovisar mellanled. Den ger
+inte något SIL-påstående när numerisk frekvens eller TEL saknas. En
+förutsättning på 10 % tolkas som 0,1 (= 1/10).
+
+När HAZOP-källan tas bort ligger LOPA-underlaget kvar men flaggas som saknat,
+så att historik och spårbarhet inte går förlorade. Import från HAZOP är
+medvetet den första vertikala delen: redigering av enskilda LOPA-rader,
+fullständig synkning/Gå till HAZOP, P&ID-navigering och Excel-export återstår
+som nästa etapper.
+
+Verifierat med 7 riktade LOPA-data-/beräkningstester, 13 konstruktionstester
+inklusive huvudfönstrets riktiga sida, `py_compile` och `git diff --check`.
+Qt-testningen är headless; faktisk visuell granskning i vanlig display återstår.
+
 ## Kompletterad aktiv badge-rendering (2026-09-02)
 
 Den första ändringen nådde bara delegate-renderingen i Scenario/Worksheet och

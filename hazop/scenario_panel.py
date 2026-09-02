@@ -74,6 +74,7 @@ _RISK_BAR_RADIUS = RISK_BAR_RADIUS
 _RISK_COLUMN_DEFAULT_WIDTH = RISK_COLUMN_DEFAULT_WIDTH
 
 from tree_panel import CauseTagPopup, RRFPopup, FrequencyPickerPopup
+from lopa_panel import LopaLinkDialog
 
 
 class _ObjectTagActionPopup(QDialog):
@@ -4123,7 +4124,9 @@ class SgRRFCategoryPopup(QDialog):
         type_row = QHBoxLayout()
         type_row.addWidget(QLabel("Typ:"))
         self._type_combo = QComboBox()
-        self._type_combo.addItems(SG_TYPES)
+        # Safeguard types now come from the shared risk-matrix/LOPA project
+        # settings, so a category added for LOPA is available in HAZOP too.
+        self._type_combo.addItems(self.db.safeguard_types())
         idx = self._type_combo.findText(self._current_type)
         if idx >= 0:
             self._type_combo.setCurrentIndex(idx)
@@ -4442,6 +4445,7 @@ class ScenarioTablePanel(QWidget):
     bind_cause_to_pid_requested = pyqtSignal(int)      # choose an existing P&ID object
     bind_secondary_cause_to_pid_requested = pyqtSignal(int)  # group affected object
     place_cause_object_requested = pyqtSignal(int, str, str)  # cause_id, type, tag
+    lopa_linked = pyqtSignal(int, int)  # (lopa_id, revision_id)
 
     # Column indices
     _C_NOD, _C_UTR, _C_DEV, _C_ORS, _C_KON, _C_RFORE = 0, 1, 2, 3, 4, 5
@@ -11182,6 +11186,9 @@ class ScenarioTablePanel(QWidget):
                 lambda: self._try_start_edit(row, self._C_SG))
             a_rrf = menu.addAction(_icon('settings'), "Ändra RRF...")
             a_rrf.triggered.connect(lambda: self._show_rrf_popup(row, sg_id))
+            a_lopa = menu.addAction(_icon('shield'), "Koppla till LOPA…")
+            a_lopa.triggered.connect(lambda _=False, sid=sg_id:
+                                     self._link_safeguard_to_lopa(sid))
             a_copy = menu.addAction(_icon('clipboard'), "Kopiera till annan konsekvens…")
             a_copy.triggered.connect(
                 lambda: self._copy_safeguard_dialog(sg_id))
@@ -11204,6 +11211,13 @@ class ScenarioTablePanel(QWidget):
 
         if not menu.isEmpty():
             menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _link_safeguard_to_lopa(self, safeguard_id):
+        """Open the explicit object/trigger bridge for a HAZOP safeguard."""
+        dialog = LopaLinkDialog(self.db, safeguard_id, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.result_lopa_id:
+            return
+        self.lopa_linked.emit(dialog.result_lopa_id, dialog.result_revision_id or 0)
 
     def _disconnect_tag(self, kind, id_, tag):
         """Disconnect a tag and keep its related metadata changes atomic."""

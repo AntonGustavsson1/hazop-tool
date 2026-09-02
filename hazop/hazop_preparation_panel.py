@@ -1786,7 +1786,8 @@ class HAZOPPreparationPanel(QWidget):
         # ── Riskmatris: local subviews ────────────────────────────────────────
         # The main preparation navigation stays compact.  Riskmatris gets its
         # own second row only while that main tab is active: one view for the
-        # coloured matrix and one (built below) for readable axis/category text.
+        # coloured matrix, one for readable axis/category text and one for
+        # LOPA's TEL/SIL configuration that shares this exact matrix.
         matrix_editor = QWidget()
         ml = QVBoxLayout(matrix_editor)
         ml.setSpacing(6)
@@ -2009,7 +2010,8 @@ class HAZOPPreparationPanel(QWidget):
         subnav.setContentsMargins(8, 6, 8, 0)
         self._risk_matrix_btn = QPushButton("Riskmatris")
         self._risk_axes_btn = QPushButton("Axlar")
-        for btn in (self._risk_matrix_btn, self._risk_axes_btn):
+        self._risk_lopa_btn = QPushButton("LOPA")
+        for btn in (self._risk_matrix_btn, self._risk_axes_btn, self._risk_lopa_btn):
             btn.setCheckable(True)
             btn.setAutoExclusive(True)
             subnav.addWidget(btn)
@@ -2019,6 +2021,8 @@ class HAZOPPreparationPanel(QWidget):
         self._risk_substack.addWidget(matrix_editor)
         self._axes_page = self._create_axes_page()
         self._risk_substack.addWidget(self._axes_page)
+        self._lopa_settings_page = self._create_lopa_settings_page()
+        self._risk_substack.addWidget(self._lopa_settings_page)
         risk_lay.addWidget(self._risk_substack)
         save_row = QHBoxLayout()
         save_row.setContentsMargins(8, 0, 8, 6)
@@ -2034,6 +2038,8 @@ class HAZOPPreparationPanel(QWidget):
             lambda: self._set_risk_subview(0))
         self._risk_axes_btn.clicked.connect(
             lambda: self._set_risk_subview(1))
+        self._risk_lopa_btn.clicked.connect(
+            lambda: self._set_risk_subview(2))
         self._set_risk_subview(0)
 
         # ── Tab: Kategorier ───────────────────────────────────────────────────
@@ -2660,19 +2666,263 @@ class HAZOPPreparationPanel(QWidget):
     # ── Matrix ────────────────────────────────────────────────────────────────
 
     def _set_risk_subview(self, index):
-        """Select the local Riskmatris/Axlar view without touching data."""
+        """Select the local Riskmatris/Axlar/LOPA view without touching data."""
         if not hasattr(self, '_risk_substack'):
             return
-        index = 1 if int(index) == 1 else 0
+        index = max(0, min(2, int(index)))
         if index == 1 and self._risk_substack.currentIndex() != 1:
             # Bring unsaved matrix header/cell edits into the same working
             # configuration before showing the larger, spreadsheet-style
             # axis editor.  This is presentation only; Save remains explicit.
             self._apply_size()
             self._reload_axes_tables()
+        if index == 2:
+            self._load_lopa_settings()
         self._risk_substack.setCurrentIndex(index)
         self._risk_matrix_btn.setChecked(index == 0)
         self._risk_axes_btn.setChecked(index == 1)
+        self._risk_lopa_btn.setChecked(index == 2)
+
+    def _create_lopa_settings_page(self):
+        """Editable TEL, escalation and safeguard-type settings for LOPA.
+
+        The data is stored inside the active risk-matrix configuration. This
+        makes custom matrices and locked LOPA revision snapshots self-
+        contained instead of relying on a hidden second project setting.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(8)
+        intro = QLabel(
+            'LOPA använder samma konsekvenskategorier, nivåer och färger som '
+            'riskmatrisen. Ange tolerabel händelsefrekvens (TEL) per kategori '
+            'och nivå. Lämna ett fält tomt om nivån inte ska ge en beräknad SIL.')
+        intro.setWordWrap(True)
+        intro.setStyleSheet('color:#444; font-size:11px;')
+        layout.addWidget(intro)
+
+        assumption_row = QHBoxLayout()
+        assumption_row.addWidget(QLabel('Standardförutsättning per källscenario:'))
+        self._lopa_default_assumption = QDoubleSpinBox()
+        self._lopa_default_assumption.setRange(0.0, 100.0)
+        self._lopa_default_assumption.setDecimals(3)
+        self._lopa_default_assumption.setSuffix(' %')
+        assumption_row.addWidget(self._lopa_default_assumption)
+        assumption_row.addStretch()
+        layout.addLayout(assumption_row)
+
+        tel_box = QGroupBox('TEL per konsekvenskategori och nivå')
+        tel_layout = QVBoxLayout(tel_box)
+        self._lopa_tel_table = QTableWidget(0, 5)
+        self._lopa_tel_table.setHorizontalHeaderLabels(
+            ['Kategori', 'Nivå', 'Konsekvensbeskrivning', 'TEL (/år)', 'Färg'])
+        self._lopa_tel_table.verticalHeader().setVisible(False)
+        self._lopa_tel_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectItems)
+        self._lopa_tel_table.setWordWrap(True)
+        self._lopa_tel_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch)
+        self._lopa_tel_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents)
+        self._lopa_tel_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents)
+        self._lopa_tel_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.ResizeToContents)
+        self._lopa_tel_table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.ResizeMode.ResizeToContents)
+        tel_layout.addWidget(self._lopa_tel_table)
+        layout.addWidget(tel_box, 2)
+
+        lower = QHBoxLayout()
+        types_box = QGroupBox('Safeguard-typer (delas med HAZOP)')
+        types_layout = QVBoxLayout(types_box)
+        self._lopa_safeguard_types = QTableWidget(0, 1)
+        self._lopa_safeguard_types.setHorizontalHeaderLabels(['Typ'])
+        self._lopa_safeguard_types.verticalHeader().setVisible(False)
+        self._lopa_safeguard_types.horizontalHeader().setStretchLastSection(True)
+        types_layout.addWidget(self._lopa_safeguard_types)
+        type_buttons = QHBoxLayout()
+        add_type = QPushButton('+')
+        remove_type = QPushButton('−')
+        add_type.setToolTip('Lägg till safeguard-typ')
+        remove_type.setToolTip('Ta bort vald safeguard-typ')
+        add_type.clicked.connect(self._add_lopa_safeguard_type)
+        remove_type.clicked.connect(self._remove_lopa_safeguard_type)
+        type_buttons.addWidget(add_type); type_buttons.addWidget(remove_type); type_buttons.addStretch()
+        types_layout.addLayout(type_buttons)
+        lower.addWidget(types_box, 1)
+
+        sil_box = QGroupBox('RRF → SIL')
+        sil_layout = QVBoxLayout(sil_box)
+        self._lopa_sil_bands = QTableWidget(0, 2)
+        self._lopa_sil_bands.setHorizontalHeaderLabels(['Högsta RRF (inkl.)', 'Resultat'])
+        self._lopa_sil_bands.verticalHeader().setVisible(False)
+        self._lopa_sil_bands.horizontalHeader().setStretchLastSection(True)
+        sil_layout.addWidget(self._lopa_sil_bands)
+        band_buttons = QHBoxLayout()
+        add_band = QPushButton('+')
+        remove_band = QPushButton('−')
+        add_band.setToolTip('Lägg till SIL-intervall')
+        remove_band.setToolTip('Ta bort valt SIL-intervall')
+        add_band.clicked.connect(self._add_lopa_sil_band)
+        remove_band.clicked.connect(self._remove_lopa_sil_band)
+        band_buttons.addWidget(add_band); band_buttons.addWidget(remove_band); band_buttons.addStretch()
+        sil_layout.addLayout(band_buttons)
+        lower.addWidget(sil_box, 1)
+        layout.addLayout(lower, 1)
+
+        save_row = QHBoxLayout()
+        save_row.addStretch()
+        save = QPushButton('Spara LOPA-inställningar')
+        save.setIcon(_icon('save', 16, '#ffffff'))
+        save.setStyleSheet('background:#2F5FD0; color:#fff; font-weight:bold; padding:4px 12px;')
+        save.clicked.connect(self._save_lopa_settings)
+        save_row.addWidget(save)
+        layout.addLayout(save_row)
+        return page
+
+    @staticmethod
+    def _lopa_read_item(table, row, column):
+        item = table.item(row, column)
+        return item.text().strip() if item is not None else ''
+
+    def _lopa_static_item(self, text, key=None):
+        item = QTableWidgetItem(str(text or ''))
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        if key is not None:
+            item.setData(Qt.ItemDataRole.UserRole, key)
+        return item
+
+    def _load_lopa_settings(self):
+        if not hasattr(self, '_lopa_tel_table'):
+            return
+        cfg = self.db.lopa_matrix_config()
+        matrix = _normalise_matrix(self.db.get_risk_matrix() or DEFAULT_MATRIX)
+        self._lopa_default_assumption.setValue(
+            float(cfg.get('default_assumption_percent') or 0.0))
+        self._lopa_tel_table.setRowCount(0)
+        row = 0
+        categories = matrix.get('consequence_categories') or []
+        y_codes = matrix.get('y_codes') or []
+        y_labels = matrix.get('y_labels') or []
+        for category in categories:
+            key = str(category.get('key') or category.get('name') or '')
+            setting = cfg.get('category_settings', {}).get(key, {})
+            tels = setting.get('tel') or []
+            descriptions = category.get('descriptions') or []
+            for level in range(int(matrix.get('rows') or 0)):
+                self._lopa_tel_table.insertRow(row)
+                name_item = self._lopa_static_item(category.get('name') or key, key)
+                name_item.setData(Qt.ItemDataRole.UserRole + 1, level)
+                self._lopa_tel_table.setItem(row, 0, name_item)
+                self._lopa_tel_table.setItem(
+                    row, 1, self._lopa_static_item(
+                        y_codes[level] if level < len(y_codes) else str(level + 1)))
+                description = (descriptions[level] if level < len(descriptions) else
+                               (y_labels[level] if level < len(y_labels) else ''))
+                self._lopa_tel_table.setItem(row, 2, self._lopa_static_item(description))
+                tel = tels[level] if level < len(tels) else None
+                self._lopa_tel_table.setItem(
+                    row, 3, QTableWidgetItem('' if tel is None else f'{float(tel):.6g}'))
+                color = str(category.get('color') or '#64748b')
+                color_item = self._lopa_static_item(color)
+                color_item.setBackground(QBrush(QColor(color)))
+                color_item.setForeground(QBrush(QColor('#ffffff')))
+                self._lopa_tel_table.setItem(row, 4, color_item)
+                row += 1
+        self._lopa_tel_table.resizeRowsToContents()
+
+        self._lopa_safeguard_types.setRowCount(0)
+        for value in cfg.get('safeguard_types') or []:
+            row = self._lopa_safeguard_types.rowCount()
+            self._lopa_safeguard_types.insertRow(row)
+            self._lopa_safeguard_types.setItem(row, 0, QTableWidgetItem(str(value)))
+        self._lopa_sil_bands.setRowCount(0)
+        for band in cfg.get('sil_bands') or []:
+            row = self._lopa_sil_bands.rowCount()
+            self._lopa_sil_bands.insertRow(row)
+            self._lopa_sil_bands.setItem(row, 0, QTableWidgetItem(f"{float(band['max_rrf']):.6g}"))
+            self._lopa_sil_bands.setItem(row, 1, QTableWidgetItem(str(band.get('label') or '')))
+
+    def _add_lopa_safeguard_type(self):
+        row = self._lopa_safeguard_types.rowCount()
+        self._lopa_safeguard_types.insertRow(row)
+        self._lopa_safeguard_types.setItem(row, 0, QTableWidgetItem('Ny typ'))
+        self._lopa_safeguard_types.setCurrentCell(row, 0)
+        self._lopa_safeguard_types.editItem(self._lopa_safeguard_types.item(row, 0))
+
+    def _remove_lopa_safeguard_type(self):
+        row = self._lopa_safeguard_types.currentRow()
+        if row >= 0:
+            self._lopa_safeguard_types.removeRow(row)
+
+    def _add_lopa_sil_band(self):
+        row = self._lopa_sil_bands.rowCount()
+        self._lopa_sil_bands.insertRow(row)
+        self._lopa_sil_bands.setItem(row, 0, QTableWidgetItem('1000000'))
+        self._lopa_sil_bands.setItem(row, 1, QTableWidgetItem('SIL 5'))
+        self._lopa_sil_bands.setCurrentCell(row, 0)
+
+    def _remove_lopa_sil_band(self):
+        row = self._lopa_sil_bands.currentRow()
+        if row >= 0:
+            self._lopa_sil_bands.removeRow(row)
+
+    def _save_lopa_settings(self):
+        cfg = self.db.lopa_matrix_config()
+        cfg['default_assumption_percent'] = self._lopa_default_assumption.value()
+        for row in range(self._lopa_tel_table.rowCount()):
+            anchor = self._lopa_tel_table.item(row, 0)
+            if anchor is None:
+                continue
+            key = str(anchor.data(Qt.ItemDataRole.UserRole) or '')
+            level = int(anchor.data(Qt.ItemDataRole.UserRole + 1) or 0)
+            raw = self._lopa_read_item(self._lopa_tel_table, row, 3)
+            try:
+                value = float(raw) if raw else None
+            except ValueError:
+                QMessageBox.warning(self, 'Ogiltig TEL',
+                                    f'TEL på rad {row + 1} måste vara ett positivt tal eller tomt.')
+                return
+            if value is not None and value <= 0:
+                QMessageBox.warning(self, 'Ogiltig TEL', 'TEL måste vara större än 0 eller tom.')
+                return
+            setting = cfg.get('category_settings', {}).get(key)
+            if setting is None:
+                continue
+            while len(setting['tel']) <= level:
+                setting['tel'].append(None)
+            setting['tel'][level] = value
+        cfg['safeguard_types'] = [
+            self._lopa_read_item(self._lopa_safeguard_types, row, 0)
+            for row in range(self._lopa_safeguard_types.rowCount())
+            if self._lopa_read_item(self._lopa_safeguard_types, row, 0)
+        ]
+        bands = []
+        for row in range(self._lopa_sil_bands.rowCount()):
+            raw = self._lopa_read_item(self._lopa_sil_bands, row, 0)
+            label = self._lopa_read_item(self._lopa_sil_bands, row, 1)
+            try:
+                maximum = float(raw)
+            except ValueError:
+                QMessageBox.warning(self, 'Ogiltig RRF-gräns',
+                                    f'RRF-gränsen på rad {row + 1} måste vara ett positivt tal.')
+                return
+            if maximum <= 0 or not label:
+                QMessageBox.warning(self, 'Ogiltigt SIL-intervall',
+                                    'Varje SIL-intervall behöver positiv RRF-gräns och resultattext.')
+                return
+            bands.append({'max_rrf': maximum, 'label': label})
+        cfg['sil_bands'] = bands
+        try:
+            self.db.set_lopa_matrix_config(cfg)
+        except Exception as exc:
+            QMessageBox.critical(self, 'LOPA-inställningar sparades inte', str(exc))
+            return
+        self._load_lopa_settings()
+        self.matrix_changed.emit()
+        QMessageBox.information(self, 'Sparat', 'LOPA-inställningarna sparades i riskmatrisen.')
 
     def _create_axes_page(self):
         """Build the large, paste-friendly editor for axes and categories."""
@@ -3737,6 +3987,15 @@ class HAZOPPreparationPanel(QWidget):
             'cell_colors':    colors,
             'cell_labels':    labels,
             'cell_fg_colors': fg_colors,
+            # LOPA settings are part of the same reusable risk-matrix
+            # template.  Matrix-grid/axis editing must therefore carry them
+            # forward instead of resetting user-entered TEL/SIL values.
+            # The LOPA page can have saved TEL changes since this grid was
+            # first built. Prefer the latest persisted LOPA block so a later
+            # matrix-cell save never rolls those changes back.
+            'lopa': json.loads(json.dumps(
+                (self.db.get_risk_matrix() or {}).get('lopa') or
+                working.get('lopa') or {})),
         }
         # Read frequency boundaries from editable row/column (display order)
         freq_boundaries = []

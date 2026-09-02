@@ -99,7 +99,7 @@ class SmokeTests(unittest.TestCase):
         import constants, design, database, ui_helpers, tree_panel, node_markup
         import worksheet, scenario_panel, equipment_panel, settings_panels
         import pid_viewer, pid_graphics_view, pid_panel_mod, hazop
-        import equipment_detection, symbol_geometry, image_symbol_matching
+        import equipment_detection, symbol_geometry, image_symbol_matching, lopa_models, lopa_panel
         import recommendations_panel
 
     # ── Every major panel constructs (and does its normal startup work)
@@ -136,6 +136,20 @@ class SmokeTests(unittest.TestCase):
         p = RecommendationsPanel(self.db)
         try:
             p.load()
+        finally:
+            p.deleteLater()
+
+    def test_lopa_panel_constructs_and_creates_empty_revision(self):
+        """LOPA is a top-level page, so smoke-test its real first workflow."""
+        from lopa_panel import LopaPanel
+        p = LopaPanel(self.db)
+        try:
+            created = self.db.create_lopa(sif_name='Smoke SIF')
+            p._lopa_id = created['lopa_id']
+            p._revision_id = created['revision_id']
+            p.refresh()
+            self.assertGreaterEqual(p._list.count(), 1)
+            self.assertIn('LOPA', p._record_title.text())
         finally:
             p.deleteLater()
 
