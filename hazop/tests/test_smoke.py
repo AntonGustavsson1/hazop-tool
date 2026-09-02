@@ -96,7 +96,7 @@ class SmokeTests(unittest.TestCase):
     # ── Every extracted module imports cleanly (catches NameError/
     # ImportError from a missed dependency at the module-load level) ──────
     def test_every_module_imports(self):
-        import constants, database, ui_helpers, tree_panel, node_markup
+        import constants, design, database, ui_helpers, tree_panel, node_markup
         import worksheet, scenario_panel, equipment_panel, settings_panels
         import pid_viewer, pid_graphics_view, pid_panel_mod, hazop
         import equipment_detection, symbol_geometry, image_symbol_matching

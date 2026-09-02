@@ -23,7 +23,7 @@ pip install easyocr       # pure pip, downloads ~1 GB models on first use
 
 Syntax check without running the GUI (all modules):
 ```
-python -m py_compile constants.py database.py ui_helpers.py tree_panel.py node_markup.py worksheet.py scenario_panel.py equipment_panel.py settings_panels.py standard_causes_panel.py standard_objects_panel.py tag_memory_panel.py participant_matrix_panel.py hazop_preparation_panel.py hazop.py pid_viewer.py pid_graphics_view.py pid_panel_mod.py equipment_detection.py symbol_geometry.py image_symbol_matching.py
+python -m py_compile constants.py design.py database.py ui_helpers.py tree_panel.py node_markup.py worksheet.py scenario_panel.py equipment_panel.py settings_panels.py standard_causes_panel.py standard_objects_panel.py tag_memory_panel.py participant_matrix_panel.py hazop_preparation_panel.py hazop.py pid_viewer.py pid_graphics_view.py pid_panel_mod.py equipment_detection.py symbol_geometry.py image_symbol_matching.py
 ```
 
 ## Packaging as a Windows installer (2026-08-21, see NOTES.md "Paketera HAZOP-appen som en installationsfil")
@@ -78,7 +78,7 @@ both the hazop/ root and its own `tests/` directory to `sys.path` itself
 works if that's more convenient — pick whichever style, both are supported.
 
 The regression suite (818 tests) is split into 14 per-module files —
-`test_database.py`, `test_scenario_panel.py`, `test_pid_viewer.py`,
+`test_database.py`, `test_design.py`, `test_scenario_panel.py`, `test_pid_viewer.py`,
 `test_pid_panel_mod.py`, `test_pid_graphics_view.py`, `test_tree_panel.py`,
 `test_equipment_panel.py`, `test_equipment_detection.py`,
 `test_settings_panels.py`, `test_worksheet.py`, `test_node_markup.py`,
@@ -198,6 +198,23 @@ __pycache__/
 *.xlsx
 ```
 
+## Front-end design source
+
+All new or changed visual design belongs in `design.py`. This includes
+semantic colours, typography, spacing, radii, shared dimensions, and reusable
+Qt stylesheet builders. Panel modules should consume named tokens/builders
+from that file instead of adding new hard-coded colours or QSS blocks. A
+component-specific visual variant should get a named design token or builder
+in `design.py`; interaction, data, and component-specific layout logic stays
+in the component module. The migration from older inline styles is
+incremental, but every future design change must first be checked against and
+documented in `design.py`.
+
+When changing the appearance of a shared control, verify both Scenario and
+Worksheet where applicable. Keep existing behaviour and selection/edit state
+intact, and add a small regression test for the central token or stylesheet
+builder before moving on to broader visual work.
+
 ## Architecture
 
 The application was originally two files (`hazop.py`, `pid_viewer.py`) that grew into ~22,000 and ~11,000 line "god files". Both were split into layered modules 2026-08-17/18 (see NOTES.md "Förenkla koden + dela upp hazop.py i fler filer") using a **layer + re-export** pattern throughout: every module only imports from layers *below* it, and each layer re-exports the names its callers already relied on, so `from hazop import X` / `from pid_viewer import Y` keep working unchanged regardless of which file `X`/`Y` now actually lives in. The test suite (then still one monolithic `test_regression.py`) needed essentially zero changes as a result — it still imported everything the same way it always did. (That file was itself later split into 14 per-module files 2026-08-20 — see the Testing section above.)
@@ -205,6 +222,10 @@ The application was originally two files (`hazop.py`, `pid_viewer.py`) that grew
 Import layers, lowest first (each layer imports only from layers above it in this list):
 
 1. **`constants.py`** — pure Python, zero imports. `CONFIG` (magic-number dict), `NODE_T`/`CAUSE_T`/`CONS_T`/`SG_T`/`DEV_T`/`EQUIP_T`/`LEDORD_T` (tree-item type tags), `DEVIATION_TYPES`, `MARKUP_COLORS`, `RISK_ICON`, `SG_TYPES`, `RRF_VALUES`/`RRF_LABELS`, `SEV_LABELS`.
+1a. **`design.py`** - dependency-free visual design layer. Owns semantic
+palette tokens, shared compact HAZOP dimensions, the application stylesheet,
+and reusable Scenario/Worksheet stylesheet builders. It imports no database
+or application modules, so every Qt-facing UI layer can safely consume it.
 2. **`symbol_geometry.py`**, **`image_symbol_matching.py`**, **`equipment_detection.py`** — the pre-existing no-Qt PDF/vector analysis layer (unchanged by this split; see their own entries below).
 3. **`database.py`** — the `Database` class (SQLite wrapper, ~4000 lines, still 100% Qt-free) plus `SCHEMA`, the risk-matrix cache (`load_matrix`/`get_matrix`/`risk_info`/`_normalise_matrix`/`DEFAULT_MATRIX`), `freq_to_f_level`, seed/migrate helpers, and a few small tag-text helpers (`append_tag_to_text`/`parse_tag_refs`/`add_tag_ref`) that the `Database` class itself calls.
 4. **`pid_viewer.py`** (base layer, ~5100 lines after the split) — P&ID-related dialogs, `QThread` workers, small canvas-item classes, and shared module-level constants/helpers (`MODE_*` draw-mode constants, `Z_*` z-order constants, `CONFIG`, `_icon`/`_mk_icon`/`_mk_pm`, `_get_red_symbol_svg`, OCR helpers, etc.). Re-exports `equipment_detection.py` names so old `from pid_viewer import scan_pdf_for_equipment` calls keep working.

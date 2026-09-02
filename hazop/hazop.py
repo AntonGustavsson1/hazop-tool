@@ -20,6 +20,7 @@ from constants import (
     RISK_ICON, NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, EQUIP_T, LEDORD_T, SYSTEM_T,
     DEVIATION_TYPES, _app_dir,
 )
+from design import ACCENT, APP_BACKGROUND, SURFACE, TEXT, app_stylesheet
 from database import (
     Database, DB_PATH, DEFAULT_MATRIX, _normalise_matrix, _risk_matrix_cache,
     load_matrix, get_matrix, risk_info, freq_to_f_level, DEFAULT_FREQ_BOUNDARIES,
@@ -412,7 +413,7 @@ def _configure_utf8_console_output():
 # WINDOWS 11 THEME — LJUST TEMA
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _get_windows11_stylesheet():
+def _legacy_windows11_stylesheet():
     """Near-monochrome theme with one signal accent, matching the design mockup.
 
     Deliberately no `font-size` here (2026-08-11, bug report: "möjligheten
@@ -424,189 +425,12 @@ def _get_windows11_stylesheet():
     spinbox. The app-wide default size is set via QApplication.setFont()
     in main() instead — that one DOES yield to a widget's own setFont().
     """
-    return """
-    * {
-        font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
-    }
+    return app_stylesheet()
 
-    QMainWindow, QDialog, QWidget {
-        background-color: #FBFBFA;
-        color: #17191C;
-    }
 
-    QPushButton {
-        background-color: #FFFFFF;
-        color: #17191C;
-        border: 1px solid #E2E3E1;
-        border-radius: 4px;
-        padding: 4px 10px;
-        font-weight: 500;
-    }
-    QPushButton:hover {
-        background-color: #F5F5F3;
-        border-color: #CFD1CE;
-    }
-    QPushButton:pressed {
-        background-color: #E8E9E6;
-    }
-    QPushButton:checked {
-        background-color: #2F5FD0;
-        color: #FFFFFF;
-        border-color: #2F5FD0;
-    }
-    QPushButton:focus {
-        outline: 2px solid #2F5FD0;
-        outline-offset: 2px;
-    }
-    QPushButton:default {
-        border-color: #2F5FD0;
-    }
-
-    QCheckBox, QRadioButton { color: #17191C; spacing: 6px; }
-    QCheckBox::indicator, QRadioButton::indicator {
-        width: 14px; height: 14px;
-        border: 1px solid #CFD1CE;
-        background-color: #FFFFFF;
-    }
-    QCheckBox::indicator { border-radius: 3px; }
-    QRadioButton::indicator { border-radius: 7px; }
-    QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #17191C; }
-    QCheckBox::indicator:checked, QRadioButton::indicator:checked {
-        background-color: #2F5FD0;
-        border-color: #2F5FD0;
-    }
-
-    QSpinBox, QDoubleSpinBox {
-        background-color: #FFFFFF;
-        color: #17191C;
-        border: 1px solid #CFD1CE;
-        border-radius: 4px;
-        padding: 3px 4px;
-    }
-    QSpinBox:focus, QDoubleSpinBox:focus { border: 2px solid #2F5FD0; }
-
-    QListWidget, QListView {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E3E1;
-        border-radius: 4px;
-    }
-    QListWidget::item:hover, QListView::item:hover { background-color: #F5F5F3; }
-    QListWidget::item:selected, QListView::item:selected {
-        background-color: #E6ECFA;
-        color: #17191C;
-    }
-
-    QTabWidget::pane { border: 1px solid #E2E3E1; border-radius: 4px; }
-    QTabBar::tab {
-        background-color: #F5F5F3;
-        color: #17191C;
-        padding: 5px 12px;
-        border: 1px solid #E2E3E1;
-        border-bottom: none;
-        border-top-left-radius: 4px;
-        border-top-right-radius: 4px;
-    }
-    QTabBar::tab:hover { background-color: #E8E9E6; }
-    QTabBar::tab:selected {
-        background-color: #FFFFFF;
-        border-bottom: 2px solid #2F5FD0;
-    }
-
-    QLineEdit, QTextEdit, QPlainTextEdit {
-        background-color: #FFFFFF;
-        color: #17191C;
-        border: 1px solid #CFD1CE;
-        border-radius: 4px;
-        padding: 4px 6px;
-        selection-background-color: #2F5FD0;
-        selection-color: #FFFFFF;
-    }
-    QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
-        border: 2px solid #2F5FD0;
-        padding: 3px 5px;
-    }
-
-    QComboBox {
-        background-color: #FFFFFF;
-        color: #17191C;
-        border: 1px solid #CFD1CE;
-        border-radius: 4px;
-        padding: 4px 8px;
-    }
-    QComboBox:focus { border: 2px solid #2F5FD0; }
-    QComboBox::drop-down { border: none; width: 20px; }
-    QComboBox::down-arrow { image: none; }
-
-    QTableWidget, QTableView {
-        background-color: #FFFFFF;
-        alternate-background-color: #F5F5F3;
-        gridline-color: #EEEFEC;
-        border: 1px solid #E2E3E1;
-        border-radius: 4px;
-    }
-    QTableWidget::item, QTableView::item { padding: 4px; border: none; }
-    QTableWidget::item:selected, QTableView::item:selected {
-        background-color: #E6ECFA;
-        color: #17191C;
-    }
-    QHeaderView::section {
-        background-color: #F5F5F3;
-        color: #8D9299;
-        padding: 4px;
-        border: none;
-        border-bottom: 1px solid #E2E3E1;
-        font-weight: 600;
-        font-size: 8pt;
-        letter-spacing: 0.5px;
-    }
-
-    QTreeWidget, QTreeView {
-        background-color: #FFFFFF;
-        alternate-background-color: #F5F5F3;
-        border: 1px solid #E2E3E1;
-        border-radius: 4px;
-    }
-    QTreeWidget::item:hover, QTreeView::item:hover { background-color: #F5F5F3; }
-    QTreeWidget::item:selected, QTreeView::item:selected {
-        background-color: #E6ECFA;
-        color: #17191C;
-    }
-
-    QFrame { background-color: #FFFFFF; border: none; }
-    QGroupBox {
-        color: #17191C;
-        border: 1px solid #E2E3E1;
-        border-radius: 6px;
-        margin-top: 8px;
-        padding-top: 8px;
-    }
-    QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; color: #8D9299; }
-
-    QScrollBar:vertical { background-color: #F5F5F3; border: none; width: 12px; }
-    QScrollBar::handle:vertical { background-color: #CFD1CE; border-radius: 6px; margin: 2px; min-height: 20px; }
-    QScrollBar::handle:vertical:hover { background-color: #B3B7B2; }
-    QScrollBar:horizontal { background-color: #F5F5F3; border: none; height: 12px; }
-    QScrollBar::handle:horizontal { background-color: #CFD1CE; border-radius: 6px; margin: 2px; min-width: 20px; }
-    QScrollBar::handle:horizontal:hover { background-color: #B3B7B2; }
-    QScrollBar::add-line, QScrollBar::sub-line { border: none; background: none; }
-
-    QDialog { background-color: #FFFFFF; }
-    QSplitter::handle { background-color: #E2E3E1; }
-    QSplitter::handle:hover { background-color: #CFD1CE; }
-
-    QMenuBar { background-color: #FFFFFF; color: #17191C; border-bottom: 1px solid #E2E3E1; }
-    QMenuBar::item:selected { background-color: #F5F5F3; }
-    QMenu { background-color: #FFFFFF; color: #17191C; border: 1px solid #CFD1CE; border-radius: 4px; }
-    QMenu::item:selected { background-color: #F5F5F3; }
-
-    QToolTip {
-        background-color: #17191C;
-        color: #FFFFFF;
-        border: none;
-        border-radius: 4px;
-        padding: 4px 8px;
-    }
-    """
+def _get_windows11_stylesheet():
+    """Compatibility entry point for the central application stylesheet."""
+    return app_stylesheet()
 
 
 def _contrast_fg(bg_hex):
@@ -4121,17 +3945,17 @@ if __name__ == '__main__':
     # paints via option.palette.highlight(), combo box popups, etc.) show
     # a different blue than the one used throughout the QSS below.
     _palette = app.palette()
-    _palette.setColor(QPalette.ColorRole.Highlight, QColor('#2F5FD0'))
-    _palette.setColor(QPalette.ColorRole.HighlightedText, QColor('#FFFFFF'))
-    _palette.setColor(QPalette.ColorRole.Window, QColor('#FBFBFA'))
-    _palette.setColor(QPalette.ColorRole.Base, QColor('#FFFFFF'))
-    _palette.setColor(QPalette.ColorRole.Text, QColor('#17191C'))
-    _palette.setColor(QPalette.ColorRole.WindowText, QColor('#17191C'))
+    _palette.setColor(QPalette.ColorRole.Highlight, QColor(ACCENT))
+    _palette.setColor(QPalette.ColorRole.HighlightedText, QColor(SURFACE))
+    _palette.setColor(QPalette.ColorRole.Window, QColor(APP_BACKGROUND))
+    _palette.setColor(QPalette.ColorRole.Base, QColor(SURFACE))
+    _palette.setColor(QPalette.ColorRole.Text, QColor(TEXT))
+    _palette.setColor(QPalette.ColorRole.WindowText, QColor(TEXT))
     # Tooltips are top-level windows.  Set their contrast on the application
     # palette so every tooltip stays readable even when its source widget has
     # a local stylesheet of its own.
-    _palette.setColor(QPalette.ColorRole.ToolTipBase, QColor('#17191C'))
-    _palette.setColor(QPalette.ColorRole.ToolTipText, QColor('#FFFFFF'))
+    _palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(TEXT))
+    _palette.setColor(QPalette.ColorRole.ToolTipText, QColor(SURFACE))
     app.setPalette(_palette)
 
     # Apply Windows 11 light theme

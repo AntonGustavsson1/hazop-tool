@@ -379,10 +379,13 @@ class GlobalTooltipContrastTests(unittest.TestCase):
         src = Path(hazop.__file__).read_text(encoding='utf-8')
         main_idx = src.index("if __name__ == '__main__':")
         startup = src[main_idx:]
+        from design import SURFACE, TEXT
         self.assertIn(
-            "QPalette.ColorRole.ToolTipBase, QColor('#17191C')", startup)
+            "QPalette.ColorRole.ToolTipBase, QColor(TEXT)", startup)
         self.assertIn(
-            "QPalette.ColorRole.ToolTipText, QColor('#FFFFFF')", startup)
+            "QPalette.ColorRole.ToolTipText, QColor(SURFACE)", startup)
+        self.assertEqual(TEXT, '#17191C')
+        self.assertEqual(SURFACE, '#FFFFFF')
 
 
 class Utf8ConsoleOutputTests(unittest.TestCase):

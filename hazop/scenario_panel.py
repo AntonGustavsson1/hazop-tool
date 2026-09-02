@@ -29,6 +29,15 @@ from PyQt6.QtGui import (
 
 from constants import CAUSE_T, CONS_T, SG_T, SG_TYPES, CONFIG
 from database import Database, DEFAULT_MATRIX, get_matrix, risk_info, parse_tag_refs
+from design import (
+    RISK_BAR_HEIGHT, RISK_BAR_MARGIN_X, RISK_BAR_MARGIN_Y,
+    RISK_BAR_RADIUS, RISK_COLUMN_DEFAULT_WIDTH,
+    SCENARIO_SELECTION_BG, SCENARIO_SELECTION_FG,
+    SUMMARY_BADGE_BG as DESIGN_SUMMARY_BADGE_BG,
+    SUMMARY_BADGE_HEIGHT, SUMMARY_BADGE_WIDTH, SUMMARY_BUTTON_HEIGHT,
+    SUMMARY_SEPARATOR as DESIGN_SUMMARY_SEPARATOR,
+    scenario_table_stylesheet, summary_badge_stylesheet,
+)
 from pid_viewer import _icon, FREQ_LABELS, freq_to_idx, MODE_PICK_REF_TAG
 from ui_helpers import (
     freq_axis_label, freq_axis_label_full, cons_axis_label, cons_axis_label_full,
@@ -44,17 +53,17 @@ MAX_GROUP_OBJECTS = 20
 # Scenario mixes ordinary QTableWidget items with custom-painted cells. Keep
 # the selected-cell treatment explicit so every one of those paths uses the
 # same neutral, flat overlay instead of the application-wide blue accent.
-_SCENARIO_SELECTION_BG = '#D9DBD8'
-_SCENARIO_SELECTION_FG = '#17191C'
+_SCENARIO_SELECTION_BG = SCENARIO_SELECTION_BG
+_SCENARIO_SELECTION_FG = SCENARIO_SELECTION_FG
 
 # Risk values are rendered as compact colour bars, matching the visual
 # footprint of the enabler summary button. The colour still comes from the
 # configured risk matrix; only the presentation changes.
-_RISK_BAR_HEIGHT = 22
-_RISK_BAR_MARGIN_X = 2
-_RISK_BAR_MARGIN_Y = 1
-_RISK_BAR_RADIUS = 5
-_RISK_COLUMN_DEFAULT_WIDTH = 52
+_RISK_BAR_HEIGHT = RISK_BAR_HEIGHT
+_RISK_BAR_MARGIN_X = RISK_BAR_MARGIN_X
+_RISK_BAR_MARGIN_Y = RISK_BAR_MARGIN_Y
+_RISK_BAR_RADIUS = RISK_BAR_RADIUS
+_RISK_COLUMN_DEFAULT_WIDTH = RISK_COLUMN_DEFAULT_WIDTH
 
 from tree_panel import CauseTagPopup, RRFPopup, FrequencyPickerPopup
 
@@ -2750,9 +2759,9 @@ _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 # the bottom of wrapped description text). See NOTES.md.
 _ORS_FIRST_LINE_H = 17
 
-_RRF_W       = 32          # compact width shared by RRF and Orsak frequency badges
-_SUMMARY_BADGE_BG = '#F5F5F3'
-_SUMMARY_SEPARATOR = '#E2E3E1'
+_RRF_W       = SUMMARY_BADGE_WIDTH  # compact width shared by RRF/frequency badges
+_SUMMARY_BADGE_BG = DESIGN_SUMMARY_BADGE_BG
+_SUMMARY_SEPARATOR = DESIGN_SUMMARY_SEPARATOR
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
 
 
@@ -4410,7 +4419,7 @@ class _LopaWidget(QWidget):
         lay.setSpacing(0)
         self._extra_btn = QPushButton()
         self._extra_btn.setObjectName('enablerSummaryButton')
-        self._extra_btn.setFixedHeight(22)
+        self._extra_btn.setFixedHeight(SUMMARY_BADGE_HEIGHT)
         # This is a cell action, not a keyboard-focus target.  Letting the
         # embedded button take focus makes QTableWidget ensure its row is
         # visible, which can make the surrounding HAZOP protocol jump when
@@ -4419,19 +4428,12 @@ class _LopaWidget(QWidget):
         self._selected = False
         self._extra_btn.setToolTip('Klicka för att välja enablers och deras RRF.')
         lay.addWidget(self._extra_btn)
-        self.setFixedHeight(24)
+        self.setFixedHeight(SUMMARY_BUTTON_HEIGHT)
         self._apply_button_style()
         self.update_summary(n_active, total_rrf)
 
     def _apply_button_style(self):
-        background = (_SCENARIO_SELECTION_BG if self._selected
-                      else _SUMMARY_BADGE_BG)
-        hover = ('#C8CCC8' if self._selected else '#E8E9E6')
-        self._extra_btn.setStyleSheet(
-            f'QPushButton#enablerSummaryButton{{background:{background};'
-            'color:#17191C;border:none;font-size:9px;font-weight:bold;'
-            f'padding:2px 4px;}}'
-            f'QPushButton#enablerSummaryButton:hover{{background:{hover};}}')
+        self._extra_btn.setStyleSheet(summary_badge_stylesheet(self._selected))
 
     def set_selected(self, selected):
         selected = bool(selected)
@@ -4615,14 +4617,7 @@ class ScenarioTablePanel(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.setWordWrap(True)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._table.setStyleSheet(
-            "QTableWidget{border-radius:0px;}"
-            "QTableWidget::item{padding:2px 3px;border:none;}"
-            f"QTableWidget::item:selected{{background:{_SCENARIO_SELECTION_BG};"
-            f"color:{_SCENARIO_SELECTION_FG};border:none;outline:none;}}"
-            "QTableWidget::item:focus{border:none;outline:none;}"
-            "QHeaderView::section{background:#F5F5F3;color:#8D9299;"
-            "font-weight:600;padding:3px;border-radius:0px;}")
+        self._table.setStyleSheet(scenario_table_stylesheet())
         # All headers, including columns revealed in Worksheet mode, use the
         # same left-aligned compact presentation as the cell contents.
         header_alignment = (Qt.AlignmentFlag.AlignLeft |

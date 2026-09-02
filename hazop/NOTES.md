@@ -5403,6 +5403,23 @@ Efter efterkontroll är rubrikerna i både HAZOP Scenario och HAZOP Worksheet
 vänsterställda enligt användarens förtydligande; detta ersätter den tidigare
 felaktiga högerställningen.
 
+## Central designfil för front-end (2026-09-02)
+
+`design.py` är nu den centrala källan för HAZOP-appens gemensamma visuella
+design. Den innehåller semantiska färger, gemensamma mått, appens globala QSS
+och de delade stilarna för Scenario/Worksheet-tabellen och sammanfattnings-
+knapparna. Den befintliga app-starten använder fortfarande
+`_get_windows11_stylesheet()` som kompatibilitetsnamn, men funktionen hämtar
+stilen från `design.py`.
+
+Migreringen av äldre komponentspecifika inline-stilar är avsiktligt stegvis för
+att inte påverka HAZOP-beteende eller redigeringslogik. Nya designändringar
+ska följa regeln i `CLAUDE.md` och läggas i designfilen.
+
+Verifierat med `py_compile`, centrala designsystemtester och befintlig
+Scenario/Worksheet-smoke-test. Headless Qt visar de förväntade
+font-/OpenGL-varningarna.
+
 ## Gummiband: minimal krockflytt och dragbar placering (2026-09-02)
 
 Automatisk etikettplacering söker nu närmaste lediga position i faktisk
