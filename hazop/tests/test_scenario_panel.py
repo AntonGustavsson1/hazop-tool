@@ -3446,12 +3446,12 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_all_scenario_headers_are_right_aligned(self):
+    def test_all_scenario_headers_are_left_aligned(self):
         from hazop import ScenarioTablePanel
         from PyQt6.QtCore import Qt
         panel = ScenarioTablePanel(self.db)
         try:
-            expected = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            expected = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             for col in range(panel._table.columnCount()):
                 self.assertEqual(panel._table.horizontalHeaderItem(col).textAlignment(), expected)
         finally:

@@ -5379,7 +5379,7 @@ RRF och frekvens använder nu samma platta sammanfattningsstil som Enablers,
 med samma neutrala/markerade ytor. Separatorerna i Orsak och Safeguard använder
 den gemensamma separatorfärgen. Tom Safeguard spänner över konsekvensens hela
 riskblock även när flera riskkategorier skapar extra rader, och samtliga
-Scenario/Worksheet-rubriker är explicit högerställda. Tomma markerade celler
+Scenario/Worksheet-rubriker är explicit vänsterställda. Tomma markerade celler
 har ingen extra fokusram.
 
 Verifierat med 26 riktade smoke-/scenario-/integrations- och layouttester,
@@ -5398,6 +5398,10 @@ flytt. Etikettens meny erbjuder fortsatt endast flytt.
 
 Verifierat med 68 smoke-/P&ID-/paneltester, `py_compile` och
 `git diff --check`. Headless Qt visar de förväntade OpenGL-/fontvarningarna.
+
+Efter efterkontroll är rubrikerna i både HAZOP Scenario och HAZOP Worksheet
+vänsterställda enligt användarens förtydligande; detta ersätter den tidigare
+felaktiga högerställningen.
 
 ## Gummiband: minimal krockflytt och dragbar placering (2026-09-02)
 

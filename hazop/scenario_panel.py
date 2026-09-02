@@ -3422,7 +3422,11 @@ class _PidDelegate(_ScenarioDelegate):
                 # RRF badge (right column)
                 badge_bg = (QColor(_SCENARIO_SELECTION_BG) if sel
                             else QColor(_SUMMARY_BADGE_BG))
-                painter.fillRect(rrf_rect, badge_bg)
+                badge_rect = rrf_rect.adjusted(1, 1, -1, -1)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(badge_bg))
+                painter.drawRoundedRect(badge_rect, 4, 4)
                 badge_tc = (QColor(_SCENARIO_SELECTION_FG) if sel
                             else QColor('#17191C'))
                 painter.setPen(badge_tc)
@@ -3437,7 +3441,7 @@ class _PidDelegate(_ScenarioDelegate):
                 rrf_text = QFontMetrics(badge_font).elidedText(
                     raw_rrf, Qt.TextElideMode.ElideRight,
                     max(1, rrf_rect.width() - 4))
-                painter.drawText(rrf_rect.adjusted(1, 0, -1, 0),
+                painter.drawText(badge_rect.adjusted(1, 0, -1, 0),
                                  Qt.AlignmentFlag.AlignCenter |
                                  Qt.AlignmentFlag.AlignVCenter,
                                  rrf_text)
@@ -3621,12 +3625,16 @@ class _PidDelegate(_ScenarioDelegate):
                                       min(_ORS_FIRST_LINE_H, r.height()))
                     chip_bg = (QColor(_SCENARIO_SELECTION_BG) if sel
                                else QColor(_SUMMARY_BADGE_BG))
-                    painter.fillRect(chip_rect, chip_bg)
+                    badge_rect = chip_rect.adjusted(1, 1, -1, -1)
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QBrush(chip_bg))
+                    painter.drawRoundedRect(badge_rect, 4, 4)
                     painter.setFont(ff)
                     f_tc = (QColor(_SCENARIO_SELECTION_FG) if sel
                             else QColor('#17191C'))
                     painter.setPen(f_tc)
-                    painter.drawText(chip_rect.adjusted(1, 0, -1, 0),
+                    painter.drawText(badge_rect.adjusted(1, 0, -1, 0),
                                      Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
                                      ffm.elidedText(freq_str, Qt.TextElideMode.ElideRight,
                                                     max(1, freq_zone_w - 2)))
@@ -4616,8 +4624,8 @@ class ScenarioTablePanel(QWidget):
             "QHeaderView::section{background:#F5F5F3;color:#8D9299;"
             "font-weight:600;padding:3px;border-radius:0px;}")
         # All headers, including columns revealed in Worksheet mode, use the
-        # same right-aligned compact presentation.
-        header_alignment = (Qt.AlignmentFlag.AlignRight |
+        # same left-aligned compact presentation as the cell contents.
+        header_alignment = (Qt.AlignmentFlag.AlignLeft |
                              Qt.AlignmentFlag.AlignVCenter)
         h.setDefaultAlignment(header_alignment)
         for col in range(self._table.columnCount()):
@@ -7606,7 +7614,13 @@ class ScenarioTablePanel(QWidget):
         if count < 2:
             return []
         meta = item.data(Qt.ItemDataRole.UserRole) if item else None
-        cause = self.db.get_cause(meta[1]) if meta else None
+        try:
+            cause = self.db.get_cause(meta[1]) if meta else None
+        except Exception:
+            # A queued repaint may arrive while a temporary window is being
+            # torn down and its SQLite connection has just closed.  Returning
+            # the default operator keeps painting harmless in that window.
+            cause = None
         raw = (cause.get('comp_tag') or '') if cause else ''
         found = [self._normalise_group_operator(value)
                  for value in re.findall(r'\s(&|OR|<>|->|\+)\s', raw,
