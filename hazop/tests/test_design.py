@@ -55,7 +55,8 @@ class DesignSystemTests(unittest.TestCase):
     def test_summary_style_can_be_reused_by_rrf_and_frequency(self):
         from design import (
             SCENARIO_SELECTION_BG, SCENARIO_SELECTION_FG,
-            SUMMARY_BADGE_BG, TEXT, summary_badge_colors,
+            SUMMARY_BADGE_BG, SUMMARY_BADGE_BORDER, TEXT,
+            summary_badge_colors, summary_badge_override_stylesheet,
             summary_badge_stylesheet,
         )
 
@@ -63,9 +64,15 @@ class DesignSystemTests(unittest.TestCase):
         frequency = summary_badge_stylesheet(object_name='frequencySummaryButton')
         self.assertIn('QPushButton#rrfSummaryButton', rrf)
         self.assertIn('QPushButton#frequencySummaryButton', frequency)
+        self.assertIn(f'border:1px solid {SUMMARY_BADGE_BORDER}', frequency)
+        self.assertIn('font-size:9px', frequency)
+        self.assertIn('QPushButton#frequencySummaryButton',
+                      summary_badge_override_stylesheet())
         self.assertEqual(summary_badge_colors(False), (SUMMARY_BADGE_BG, TEXT))
         self.assertEqual(summary_badge_colors(True),
                          (SCENARIO_SELECTION_BG, SCENARIO_SELECTION_FG))
+        self.assertNotEqual(summary_badge_colors(False, hovered=True),
+                            summary_badge_colors(False))
 
     def test_popup_builders_use_the_shared_palette(self):
         from design import (

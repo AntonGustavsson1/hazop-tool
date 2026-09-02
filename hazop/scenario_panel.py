@@ -33,18 +33,18 @@ from design import (
     RISK_BAR_HEIGHT, RISK_BAR_MARGIN_X, RISK_BAR_MARGIN_Y,
     RISK_BAR_RADIUS, RISK_COLUMN_DEFAULT_WIDTH,
     SCENARIO_SELECTION_BG, SCENARIO_SELECTION_FG,
-    SUMMARY_BADGE_HEIGHT, SUMMARY_BADGE_RADIUS, SUMMARY_BADGE_WIDTH,
+    SUMMARY_BADGE_FONT_SIZE, SUMMARY_BADGE_HEIGHT, SUMMARY_BADGE_PADDING_X,
+    SUMMARY_BADGE_WIDTH,
     SUMMARY_BUTTON_HEIGHT,
     SUMMARY_SEPARATOR as DESIGN_SUMMARY_SEPARATOR,
     popup_action_button_stylesheet, popup_form_button_stylesheet,
-    popup_frequency_button_stylesheet,
     popup_input_stylesheet, popup_list_stylesheet,
     popup_label_stylesheet,
     popup_muted_label_stylesheet, popup_primary_button_stylesheet,
     popup_secondary_button_stylesheet, popup_separator_stylesheet,
     popup_shell_stylesheet, popup_toggle_button_stylesheet,
     scenario_table_stylesheet,
-    summary_badge_colors, summary_badge_stylesheet,
+    summary_badge_border_color, summary_badge_colors, summary_badge_stylesheet,
 )
 from pid_viewer import _icon, FREQ_LABELS, freq_to_idx, MODE_PICK_REF_TAG
 from ui_helpers import (
@@ -2759,6 +2759,39 @@ _SUMMARY_SEPARATOR = DESIGN_SUMMARY_SEPARATOR
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
 
 
+def _paint_summary_badge(painter, rect, text, option, font=None):
+    """Paint RRF/frequency exactly like the Enablers summary button.
+
+    These two controls are painted by a delegate rather than represented by
+    child QPushButtons, so assigning the QPushButton stylesheet alone cannot
+    affect them. Keeping this helper next to the shared design tokens makes
+    the delegate path use the same background, hover/selection treatment,
+    compact font and square flat shape as ``_LopaWidget``.
+    """
+    hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+    selected = bool(option.state & QStyle.StateFlag.State_Selected)
+    bg, fg = summary_badge_colors(selected, hovered)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(QPen(QColor(summary_badge_border_color(selected, hovered)), 1))
+    painter.setBrush(QBrush(QColor(bg)))
+    painter.drawRect(rect)
+
+    badge_font = QFont(font if font is not None else option.font)
+    badge_font.setBold(True)
+    badge_font.setPixelSize(SUMMARY_BADGE_FONT_SIZE)
+    painter.setFont(badge_font)
+    painter.setPen(QColor(fg))
+    metrics = QFontMetrics(badge_font)
+    visible_text = metrics.elidedText(
+        str(text or ''), Qt.TextElideMode.ElideRight,
+        max(1, rect.width() - 2 * SUMMARY_BADGE_PADDING_X))
+    painter.drawText(
+        rect.adjusted(SUMMARY_BADGE_PADDING_X, 0,
+                      -SUMMARY_BADGE_PADDING_X, 0),
+        Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+        visible_text)
+
+
 def _draw_pid_pin(painter, rect, placed):
     """Draw a needle pin (circle + stick) inside rect. Green=placed, red=not placed."""
     color = QColor('#27ae60') if placed else QColor('#e74c3c')
@@ -3431,28 +3464,14 @@ class _PidDelegate(_ScenarioDelegate):
                 badge_rect = QRect(
                     rrf_rect.left() + 1, r.top() + 1,
                     max(1, rrf_rect.width() - 2), badge_height)
-                badge_bg, badge_text = summary_badge_colors(sel)
-                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(QColor(badge_bg)))
-                painter.drawRoundedRect(
-                    badge_rect, SUMMARY_BADGE_RADIUS, SUMMARY_BADGE_RADIUS)
-                painter.setPen(QColor(badge_text))
                 badge_font = QFont(option.font)
-                badge_font.setBold(True)
-                painter.setFont(badge_font)
                 # Just the number — "RRF" now lives in the column header
                 # instead, so this single-line badge doesn't force the
                 # row taller than the ORS/description content needs
                 # (2026-08-14, see NOTES.md).
                 raw_rrf = f"{rrf}"
-                rrf_text = QFontMetrics(badge_font).elidedText(
-                    raw_rrf, Qt.TextElideMode.ElideRight,
-                    max(1, rrf_rect.width() - 4))
-                painter.drawText(badge_rect.adjusted(1, 0, -1, 0),
-                                 Qt.AlignmentFlag.AlignCenter |
-                                 Qt.AlignmentFlag.AlignVCenter,
-                                 rrf_text)
+                _paint_summary_badge(painter, badge_rect, raw_rrf,
+                                     option, badge_font)
 
                 # Separator line between description and badge
                 painter.setPen(QPen(QColor(_SUMMARY_SEPARATOR), 1))
@@ -3621,29 +3640,14 @@ class _PidDelegate(_ScenarioDelegate):
                     self._panel._ors_freq_zone_geometry(index, r.left() + 2, r.right() - 2)
                 if freq_str is not None:
                     ff = QFont(option.font)
-                    # Keep the compact first-line badge within the shared
-                    # 17px line; boldness and alignment match the RRF badge.
-                    ff.setPointSize(max(6, option.font.pointSize() - 1))
-                    ff.setBold(True)
-                    ffm = QFontMetrics(ff)
                     # The badge belongs to the first line, not the full
                     # wrapped cause cell; otherwise AlignVCenter makes it
                     # visibly drift downward when the description wraps.
                     chip_rect = QRect(freq_zone_x, r.top(), freq_zone_w,
                                       min(_ORS_FIRST_LINE_H, r.height()))
-                    chip_bg, chip_text = summary_badge_colors(sel)
                     badge_rect = chip_rect.adjusted(1, 1, -1, -1)
-                    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QBrush(QColor(chip_bg)))
-                    painter.drawRoundedRect(
-                        badge_rect, SUMMARY_BADGE_RADIUS, SUMMARY_BADGE_RADIUS)
-                    painter.setFont(ff)
-                    painter.setPen(QColor(chip_text))
-                    painter.drawText(badge_rect.adjusted(1, 0, -1, 0),
-                                     Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
-                                     ffm.elidedText(freq_str, Qt.TextElideMode.ElideRight,
-                                                    max(1, freq_zone_w - 2)))
+                    _paint_summary_badge(painter, badge_rect, freq_str,
+                                         option, ff)
                     painter.setPen(QPen(QColor(_SUMMARY_SEPARATOR), 1))
                     painter.drawLine(chip_rect.left(), r.top(),
                                      chip_rect.left(), r.bottom())
@@ -3748,7 +3752,8 @@ class StandardCauseSuggestPopup(QWidget):
     widget) — see _show_standard_cause_popup's positioning code."""
 
     _BTN_STYLE = popup_action_button_stylesheet()
-    _FREQ_BTN_STYLE = popup_frequency_button_stylesheet()
+    _FREQ_BTN_STYLE = summary_badge_stylesheet(
+        object_name='frequencySummaryButton')
 
     def __init__(self, panel, row, cause_id, editor, comp_type, dev_description,
                  rows, equipment_id=None, parent=None):
@@ -3815,6 +3820,7 @@ class StandardCauseSuggestPopup(QWidget):
         freq_row = QHBoxLayout()
         freq_row.addWidget(QLabel("Frekvens:"))
         self._freq_btn = QPushButton()
+        self._freq_btn.setObjectName('frequencySummaryButton')
         self._freq_btn.setStyleSheet(self._FREQ_BTN_STYLE)
         self._freq_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._freq_btn.clicked.connect(self._edit_frequency)

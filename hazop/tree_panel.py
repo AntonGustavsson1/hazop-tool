@@ -43,6 +43,8 @@ from design import (
     popup_muted_label_stylesheet, popup_primary_button_stylesheet,
     popup_separator_stylesheet, compact_control_stylesheet,
     popup_shell_stylesheet, visibility_layer_button_stylesheet,
+    SUMMARY_BADGE_HEIGHT, summary_badge_override_stylesheet,
+    summary_badge_stylesheet,
 )
 
 class _PickDeviationDialog(QDialog):
@@ -2551,11 +2553,10 @@ class CauseObjectPopup(QDialog):
             if freq is not None:
                 freq_str = f"{freq:.3g} /år" if freq >= 0.01 else f"{freq:.2e} /år"
                 fb = QPushButton(freq_str)
-                fb.setFixedHeight(CONFIG['H_BADGE'])
-                fb.setStyleSheet(
-                    "QPushButton{color:#17191C; background:#F5F5F3; border-radius:3px;"
-                    "padding:1px 5px; font-size:10px; font-weight:bold; border:none;}"
-                    "QPushButton:hover{background:#E8E9E6;}")
+                fb.setObjectName('frequencySummaryButton')
+                fb.setFixedHeight(SUMMARY_BADGE_HEIGHT)
+                fb.setStyleSheet(summary_badge_stylesheet(
+                    object_name='frequencySummaryButton'))
                 fb.setToolTip("Klicka för att ange anpassad frekvens")
                 # capture radio + fb in closure
                 def _make_freq_handler(r=radio, btn=fb, base=freq):
@@ -2569,11 +2570,8 @@ class CauseObjectPopup(QDialog):
                             self._freq_overrides[r] = val
                             label = f"{val:.3g} /år" if val >= 0.01 else f"{val:.2e} /år"
                             btn.setText(label)
-                            btn.setStyleSheet(
-                                "QPushButton{color:#7B2D00; background:#fde8cc;"
-                                "border-radius:3px; padding:1px 5px;"
-                                "font-size:10px; font-weight:bold; border:none;}"
-                                "QPushButton:hover{background:#fbd4a0;}")
+                            btn.setStyleSheet(summary_badge_override_stylesheet(
+                                object_name='frequencySummaryButton'))
                     return _handler
                 fb.clicked.connect(_make_freq_handler())
                 row_h.addWidget(fb)

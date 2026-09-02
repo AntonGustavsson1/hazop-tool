@@ -42,10 +42,16 @@ SCENARIO_SELECTION_HOVER = '#C8CCC8'
 # Shared compact summary controls used by Enablers, RRF, and Frequency.
 SUMMARY_BADGE_BG = SUBTLE_SURFACE
 SUMMARY_SEPARATOR = SEPARATOR
-SUMMARY_BADGE_WIDTH = 32
+# The painted RRF/frequency zones use the same practical width as the
+# original semantic table zones.  32 px made the control look like a tiny
+# label beside the full Enablers button and clipped numeric values too easily.
+SUMMARY_BADGE_WIDTH = 50
 SUMMARY_BADGE_HEIGHT = 22
 SUMMARY_BUTTON_HEIGHT = 24
 SUMMARY_BADGE_RADIUS = 0
+SUMMARY_BADGE_FONT_SIZE = 9
+SUMMARY_BADGE_PADDING_X = 4
+SUMMARY_BADGE_BORDER = FIELD_BORDER
 
 # Shared risk-bar geometry.  The risk colour itself remains data-driven and
 # is therefore intentionally not part of this design module.
@@ -267,19 +273,58 @@ def summary_badge_stylesheet(
     """Return the common Enablers/RRF/Frequency summary-button style."""
     background = SCENARIO_SELECTION_BG if selected else SUMMARY_BADGE_BG
     hover = SCENARIO_SELECTION_HOVER if selected else HOVER_SURFACE
+    border = SCROLL_HANDLE_HOVER if selected else SUMMARY_BADGE_BORDER
     return (
         f'QPushButton#{object_name}{{background:{background};'
-        f'color:{TEXT};border:none;font-size:9px;font-weight:bold;'
-        f'padding:2px 4px;}}'
-        f'QPushButton#{object_name}:hover{{background:{hover};}}'
+        f'color:{TEXT};border:1px solid {border};'
+        f'border-radius:{SUMMARY_BADGE_RADIUS}px;font-size:{SUMMARY_BADGE_FONT_SIZE}px;'
+        f'font-weight:bold;'
+        f'padding:2px {SUMMARY_BADGE_PADDING_X}px;}}'
+        f'QPushButton#{object_name}:hover{{background:{hover};'
+        f'border-color:{SCROLL_HANDLE_HOVER};}}'
     )
 
 
-def summary_badge_colors(selected: bool = False) -> tuple[str, str]:
+def summary_badge_colors(selected: bool = False,
+                         hovered: bool = False) -> tuple[str, str]:
     """Return ``(background, text)`` for painted summary badges."""
     if selected:
-        return SCENARIO_SELECTION_BG, SCENARIO_SELECTION_FG
-    return SUMMARY_BADGE_BG, TEXT
+        return (SCENARIO_SELECTION_HOVER if hovered else SCENARIO_SELECTION_BG,
+                SCENARIO_SELECTION_FG)
+    return (HOVER_SURFACE if hovered else SUMMARY_BADGE_BG, TEXT)
+
+
+def summary_badge_border_color(selected: bool = False,
+                               hovered: bool = False) -> str:
+    """Return the border colour for a painted summary badge.
+
+    Delegate-painted badges cannot consume the QPushButton stylesheet, so
+    their border state is exposed beside ``summary_badge_colors``.  Keeping
+    this small decision here prevents the delegate and the real Enablers
+    button from drifting apart again.
+    """
+    if hovered or selected:
+        return SCROLL_HANDLE_HOVER
+    return SUMMARY_BADGE_BORDER
+
+
+def summary_badge_override_stylesheet(
+        object_name: str = 'frequencySummaryButton') -> str:
+    """Return the summary-button style for an explicit value override.
+
+    A manually entered frequency is still the same compact control, but keeps
+    the existing warm hint that its value differs from the catalogue value.
+    Geometry, typography and border treatment remain shared with Enablers and
+    the normal RRF/frequency controls.
+    """
+    return (
+        f'QPushButton#{object_name}{{background:#FDE8CC;color:#7B2D00;'
+        f'border:1px solid #E7B77A;border-radius:{SUMMARY_BADGE_RADIUS}px;'
+        f'font-size:{SUMMARY_BADGE_FONT_SIZE}px;font-weight:bold;'
+        f'padding:2px {SUMMARY_BADGE_PADDING_X}px;}}'
+        f'QPushButton#{object_name}:hover{{background:#FBD4A0;'
+        f'border-color:#D89B50;}}'
+    )
 
 
 def popup_shell_stylesheet(object_name: str, *, border: str = POPUP_BORDER,

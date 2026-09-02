@@ -1,5 +1,23 @@
 # NOTES.md — Beslut och kontext
 
+## Kompletterad aktiv badge-rendering (2026-09-02)
+
+Den första ändringen nådde bara delegate-renderingen i Scenario/Worksheet och
+blev därför svår att se. Hela den aktiva kedjan är nu genomgången:
+`_PidDelegate` målar RRF och frekvens med samma byggare som `_LopaWidget`,
+`StandardCauseSuggestPopup` använder samma knappstil för sin frekvensknapp och
+`tree_panel.py` använder den också för den kvarvarande standardorsaksväljaren.
+
+Alla tre använder nu gemensam font, padding, platt form, tunn ram och hover- /
+markeringsfärger. Den gemensamma zonen är 50 px bred så numeriska värden inte
+ser ut som små etiketter eller klipps i onödan. Klickzonerna och datalogiken är
+oförändrade; den manuella frekvensens varma färg ligger kvar som en separat
+designvariant.
+
+Verifierat med faktisk headless Qt-rendering av en Scenario-rad samt 25
+riktade design-, RRF-, frekvens-, popup- och smoke-tester, `py_compile` och
+`git diff --check`.
+
 ## RRF- och frekvensbadge följer enablersdesignen (2026-09-02)
 
 RRF i barriärkolumnen och frekvens i orsaksfältet använder nu samma centrala
