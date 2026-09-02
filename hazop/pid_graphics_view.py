@@ -241,6 +241,14 @@ class PIDGraphicsView(QGraphicsView):
         self._equipment_resize_preview_item = None
         self._equipment_resize_dragging = False
         self._label_reposition_marker_id = None
+        self._equipment_move_start_scene = None
+        self._equipment_move_origin = []
+        self._equipment_move_origin_center = None
+        self._equipment_move_dragging = False
+        self._label_drag_start_scene = None
+        self._label_drag_origin = []
+        self._label_drag_anchor = None
+        self._label_dragging = False
 
         # Label slot tracker: (qx, qy) → next free row index (reset on clear_overlays)
         self._label_slots: dict = {}
@@ -812,6 +820,14 @@ class PIDGraphicsView(QGraphicsView):
         self._equipment_resize_page = None
         self._equipment_resize_dragging = False
         self._equipment_edit_operation = None
+        self._equipment_move_start_scene = None
+        self._equipment_move_origin = []
+        self._equipment_move_origin_center = None
+        self._equipment_move_dragging = False
+        self._label_drag_start_scene = None
+        self._label_drag_origin = []
+        self._label_drag_anchor = None
+        self._label_dragging = False
         self._ctrl_rband_start_scene = None
         self._ctrl_rband_dragging    = False
 
@@ -2124,15 +2140,27 @@ class PIDGraphicsView(QGraphicsView):
             columns = (0, 1, -1, 2, -2, 3, -3)
             rows = max(24, len(self._label_occupied_rects) * 3 + 8)
             chosen = None
-            for row_no in range(rows):
-                for col_no in columns:
-                    cx = base_x + col_no * (bg_width + 10.0)
-                    cy = base_y + row_no * ROW_H
-                    candidate = _candidate_rect(cx, cy)
-                    if not any(candidate.adjusted(-2, -2, 2, 2).intersects(existing)
-                               for existing in self._label_occupied_rects):
-                        chosen = (cx, cy, candidate)
-                        break
+            # Search by actual distance from the natural position, not by
+            # column-first order.  A one-row vertical nudge is usually much
+            # closer to the rubber band than moving one complete label-width
+            # sideways, so collision avoidance now makes the smallest useful
+            # displacement first while remaining deterministic.
+            candidates = [
+                (row_no, col_no)
+                for row_no in range(-rows, rows + 1)
+                for col_no in columns
+            ]
+            candidates.sort(key=lambda rc: (
+                math.hypot(rc[1] * (bg_width + 10.0), rc[0] * ROW_H),
+                abs(rc[0]), abs(rc[1]), rc[0], rc[1]))
+            for row_no, col_no in candidates:
+                cx = base_x + col_no * (bg_width + 10.0)
+                cy = base_y + row_no * ROW_H
+                candidate = _candidate_rect(cx, cy)
+                if not any(candidate.adjusted(-2, -2, 2, 2).intersects(existing)
+                           for existing in self._label_occupied_rects):
+                    chosen = (cx, cy, candidate)
+                    break
                 if chosen is not None:
                     break
             if chosen is None:
@@ -2145,9 +2173,13 @@ class PIDGraphicsView(QGraphicsView):
             x0, y0, bg_rect = chosen
 
         cursor_x = x0 + br.width() + (gap if label_text and badge_specs else 0)
-        badge_y = y0 + br.height() / 2.0
         if label_pos_pdf is not None:
             bg_rect = QRectF(x0 - pad, y0 - pad, bg_width, bg_height)
+        # Derive the zero-tag position from the actual backing rectangle.
+        # This avoids depending on whether an empty text item's boundingRect
+        # contributes a native-font height on the current Qt platform.
+        badge_y = (y0 + br.height() / 2.0 if label_text
+                   else bg_rect.center().y())
         self._label_occupied_rects.append(QRectF(bg_rect))
         txt.setPos(x0, y0)
 
@@ -2205,6 +2237,21 @@ class PIDGraphicsView(QGraphicsView):
                              badge_y - tb.height() / 2)
             count_txt.setZValue(Z_OVERLAY + 3)
             self._add_tracked(count_txt, marker_type)
+
+    def _equipment_label_items(self, marker_id):
+        """Return every scene item belonging to one equipment label."""
+        return [item for item in self._scene.items()
+                if item.data(self._DATA_TYPE) == 'equipment-label'
+                and item.data(self._DATA_ID) is not None
+                and int(item.data(self._DATA_ID)) == int(marker_id)]
+
+    def _move_equipment_label_preview(self, marker_id, delta):
+        """Translate the complete label stack during a manual drag."""
+        for item, origin in self._label_drag_origin:
+            try:
+                item.setPos(origin + delta)
+            except RuntimeError:
+                pass
 
     def add_equipment_marker(self, marker_id, x_pdf, y_pdf, comp_type, tag='',
                              confidence=0.0, outline_pdf=None, deviation_count=0,
@@ -2782,19 +2829,37 @@ class PIDGraphicsView(QGraphicsView):
 
         if self.mode == MODE_EDIT_EQUIPMENT_LABEL and event.button() == Qt.MouseButton.LeftButton:
             marker_id = getattr(self, '_label_reposition_marker_id', None)
-            self._label_reposition_marker_id = None
-            self.set_mode(MODE_NAV)
-            if marker_id is not None:
-                self.equipment_label_reposition_finished.emit(
-                    int(marker_id), sp, self.current_page)
+            if marker_id is None:
+                self.set_mode(MODE_NAV)
+                event.accept(); return
+            self._label_drag_start_scene = sp
+            self._label_drag_origin = [
+                (item, item.pos())
+                for item in self._equipment_label_items(marker_id)]
+            text_item = next((item for item, _ in self._label_drag_origin
+                              if isinstance(item, QGraphicsSimpleTextItem)), None)
+            self._label_drag_anchor = text_item.pos() if text_item else sp
+            self._label_dragging = False
             event.accept(); return
 
         if self.mode == MODE_EDIT_EQUIPMENT and event.button() == Qt.MouseButton.LeftButton:
             marker_id = getattr(self, '_reposition_marker_id', None)
-            self._reposition_marker_id = None
-            self.set_mode(MODE_NAV)
-            if marker_id is not None:
-                self.equipment_reposition_finished.emit(int(marker_id), sp, self.current_page)
+            if marker_id is None:
+                self.set_mode(MODE_NAV)
+                event.accept(); return
+            self._equipment_move_start_scene = sp
+            self._equipment_move_origin = [
+                (item, item.pos())
+                for item in self._scene.items()
+                if item.data(self._DATA_TYPE) in ('equipment', 'equipment-label')
+                and item.data(self._DATA_ID) is not None
+                and int(item.data(self._DATA_ID)) == int(marker_id)]
+            marker_item = next((item for item, _ in self._equipment_move_origin
+                                if item.data(self._DATA_TYPE) == 'equipment'), None)
+            self._equipment_move_origin_center = (
+                marker_item.mapToScene(marker_item.boundingRect().center())
+                if marker_item is not None else sp)
+            self._equipment_move_dragging = False
             event.accept(); return
 
         if self.mode == MODE_RESIZE_EQUIPMENT and event.button() == Qt.MouseButton.LeftButton:
@@ -2993,6 +3058,54 @@ class PIDGraphicsView(QGraphicsView):
                 self.equipment_place_requested.emit(sp, page)
             event.accept(); return
 
+        if (self.mode == MODE_EDIT_EQUIPMENT_LABEL and
+                event.button() == Qt.MouseButton.LeftButton and
+                self._label_drag_start_scene is not None):
+            marker_id = self._label_reposition_marker_id
+            anchor = self._label_drag_anchor
+            dragging = self._label_dragging
+            if not dragging:
+                # Preserve the old one-click placement as a convenient
+                # fallback, while a held mouse button now performs a real
+                # drag with a live label preview.
+                anchor = self.mapToScene(event.position().toPoint())
+            else:
+                anchor = (self._label_drag_anchor +
+                          self.mapToScene(event.position().toPoint()) -
+                          self._label_drag_start_scene)
+            self._label_reposition_marker_id = None
+            self._label_drag_start_scene = None
+            self._label_drag_origin = []
+            self._label_drag_anchor = None
+            self._label_dragging = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self.set_mode(MODE_NAV)
+            if marker_id is not None and anchor is not None:
+                self.equipment_label_reposition_finished.emit(
+                    int(marker_id), anchor, self.current_page)
+            event.accept(); return
+
+        if (self.mode == MODE_EDIT_EQUIPMENT and
+                event.button() == Qt.MouseButton.LeftButton and
+                self._equipment_move_start_scene is not None):
+            marker_id = self._reposition_marker_id
+            start = self._equipment_move_start_scene
+            center = self._equipment_move_origin_center
+            dragging = self._equipment_move_dragging
+            release_pos = self.mapToScene(event.position().toPoint())
+            target = (center + release_pos - start) if dragging else release_pos
+            self._reposition_marker_id = None
+            self._equipment_move_start_scene = None
+            self._equipment_move_origin = []
+            self._equipment_move_origin_center = None
+            self._equipment_move_dragging = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self.set_mode(MODE_NAV)
+            if marker_id is not None:
+                self.equipment_reposition_finished.emit(
+                    int(marker_id), target, self.current_page)
+            event.accept(); return
+
         if (self.mode == MODE_RESIZE_EQUIPMENT and
                 event.button() == Qt.MouseButton.LeftButton and
                 self._equipment_resize_start_scene is not None):
@@ -3133,6 +3246,35 @@ class PIDGraphicsView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event):
+        if (self.mode == MODE_EDIT_EQUIPMENT_LABEL and
+                self._label_drag_start_scene is not None and
+                event.buttons() & Qt.MouseButton.LeftButton):
+            sp = self.mapToScene(event.position().toPoint())
+            delta = sp - self._label_drag_start_scene
+            if not self._label_dragging and delta.x() * delta.x() + delta.y() * delta.y() > 4.0:
+                self._label_dragging = True
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self._label_dragging:
+                self._move_equipment_label_preview(
+                    self._label_reposition_marker_id, delta)
+            event.accept(); return
+
+        if (self.mode == MODE_EDIT_EQUIPMENT and
+                self._equipment_move_start_scene is not None and
+                event.buttons() & Qt.MouseButton.LeftButton):
+            sp = self.mapToScene(event.position().toPoint())
+            delta = sp - self._equipment_move_start_scene
+            if not self._equipment_move_dragging and delta.x() * delta.x() + delta.y() * delta.y() > 4.0:
+                self._equipment_move_dragging = True
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self._equipment_move_dragging:
+                for item, origin in self._equipment_move_origin:
+                    try:
+                        item.setPos(origin + delta)
+                    except RuntimeError:
+                        pass
+            event.accept(); return
+
         if (self.mode == MODE_PLACE_EQUIPMENT and
                 self._place_rband_start_scene is not None and
                 event.buttons() & Qt.MouseButton.LeftButton):

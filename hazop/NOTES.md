@@ -5385,3 +5385,32 @@ har ingen extra fokusram.
 Verifierat med 26 riktade smoke-/scenario-/integrations- och layouttester,
 `py_compile` och `git diff --check`. Headless Qt visar fortfarande de
 förväntade font-/OpenGL-varningarna.
+
+## Förbättrad gummibands- och etikettredigering (2026-09-02)
+
+Automatisk krockplacering provar nu positioner i avståndsordning, så en
+etikett flyttas så lite som möjligt från sitt gummiband. Etikettens räknarbollar
+centreras från den faktiska bakgrundsrutan även innan något objektnummer finns.
+
+Efter `Flytta` via högerklick kan både gummibandets placering och etikettens
+placering dras med musknappen nedtryckt; etiketten följer gummibandet vid
+flytt. Etikettens meny erbjuder fortsatt endast flytt.
+
+Verifierat med 68 smoke-/P&ID-/paneltester, `py_compile` och
+`git diff --check`. Headless Qt visar de förväntade OpenGL-/fontvarningarna.
+
+## Gummiband: minimal krockflytt och dragbar placering (2026-09-02)
+
+Automatisk etikettplacering söker nu närmaste lediga position i faktisk
+geometriordning, vilket håller etiketten nära gummibandet vid krock. Nya
+gummiband med ännu okänd tagg centrerar sina räknarbollar korrekt i den svarta
+bakgrunden.
+
+`Redigera placering` för ett gummiband är nu ett klick-och-håll-drag där
+utrustningsmarkering, gummibandskontur och etikett följs åt. `Flytta etikett`
+har motsvarande dragbeteende för hela etikettstacken, men ändrar inte färg eller
+storlek.
+
+Verifierat med 68 smoke-/P&ID-/paneltester, `py_compile` och
+`git diff --check`. Visuell kontroll av hela draggesten återstår i en riktig
+Qt-display eftersom testmiljön är headless.

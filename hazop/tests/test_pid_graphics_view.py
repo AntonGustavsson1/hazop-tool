@@ -865,6 +865,8 @@ class EquipmentLabelPlacementTests(unittest.TestCase):
         self.assertEqual(len(view._label_occupied_rects), 2)
         first, second = view._label_occupied_rects
         self.assertFalse(first.adjusted(-2, -2, 2, 2).intersects(second))
+        self.assertAlmostEqual(first.center().x(), second.center().x(), places=5,
+                               msg='collision handling should prefer a nearby row over a full sideways move')
 
     def test_label_items_are_hit_testable_with_their_marker_id(self):
         from pid_viewer import PIDGraphicsView
@@ -877,6 +879,25 @@ class EquipmentLabelPlacementTests(unittest.TestCase):
                   and item.data(view._DATA_TYPE) == 'equipment-label']
         self.assertTrue(labels)
         self.assertTrue(all(item.data(view._DATA_ID) == 7 for item in labels))
+
+    def test_zero_tag_badges_are_centered_in_the_label_backing(self):
+        from pid_viewer import PIDGraphicsView
+        from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsPathItem
+        view = PIDGraphicsView()
+        view.add_equipment_marker(8, 10.0, 10.0, 'Ventil', tag='',
+                                  consequence_count=0,
+                                  show_cause=False, show_safeguard=False,
+                                  show_recommendation=False)
+        badge = next(item for item in view._type_items['equipment']
+                     if isinstance(item, QGraphicsEllipseItem))
+        backing = next(item for item in view._type_items['equipment']
+                       if isinstance(item, QGraphicsPathItem))
+        self.assertAlmostEqual(
+            badge.sceneBoundingRect().center().x(),
+            backing.sceneBoundingRect().center().x(), places=5)
+        self.assertAlmostEqual(
+            badge.sceneBoundingRect().center().y(),
+            backing.sceneBoundingRect().center().y(), places=5)
 
     def test_context_menu_offers_move_label_on_tag(self):
         from pid_viewer import PIDGraphicsView
