@@ -60,6 +60,7 @@ from design import (
     TEXT,
     lopa_card_stylesheet,
     lopa_category_badge_stylesheet,
+    lopa_ghost_button_stylesheet,
     lopa_note_stylesheet,
     lopa_section_title_stylesheet,
     lopa_status_stylesheet,
@@ -885,6 +886,19 @@ class LopaPanel(QWidget):
         detail.setWidget(detail_shell)
         splitter.addWidget(detail)
         splitter.setSizes([LOPA_SIDEBAR_MAX_WIDTH, LOPA_MAIN_MAX_WIDTH])
+
+        # Ghost tier (see lopa_ghost_button_stylesheet's own docstring):
+        # every inline "+ add a row" action, plus the two small "open a
+        # local-edit dialog" links. Every other LOPA button keeps the
+        # app-wide default QPushButton look, which already serves as the
+        # secondary tier -- so this list is deliberately just these nine.
+        for ghost_btn in (self._add_sensor_group_btn, self._add_sensor_btn,
+                          self._add_final_group_btn, self._add_final_btn,
+                          self._add_consequence_btn, self._edit_consequence_btn,
+                          self._add_barrier_btn, self._edit_barrier_btn,
+                          self._add_comment_btn):
+            ghost_btn.setStyleSheet(lopa_ghost_button_stylesheet())
+
         QTimer.singleShot(0, self._apply_responsive_layout)
 
     def _selected_lopa_id(self):

@@ -1,5 +1,39 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: ghost/secondary-knapphierarki mot Claude Design-referensen (2026-09-02, tredje uppföljningen)
+
+Anton delade den faktiska Claude Design-länken för LOPA-mockupen
+(`claude.ai/design/p/97a28be1-...`, filen `LOPA Modul.dc.html`). Efter
+`/design-login` gick den att läsa i sin helhet via DesignSync (källkod +
+designsystemets `styles.css`), inte bara som skärmdumpar.
+
+**Fyndet:** referensen använder ett eget visuellt språk (typsnittet "Barlow
+Condensed" från Google Fonts, en dämpad blågrå accent `#5980a6`, fyrkantiga
+"blueprint"-hörn med registreringsmarkeringar) som INTE delas av resten av
+HAZOP-appen (Segoe UI, `#2F5FD0`, rundade hörn). Beslut: ta strukturen, inte
+den bokstavliga stilen — särskilt referensens tydliga knapphierarki
+`btn-ghost` (ren text, ingen kant/bakgrund) / `btn-secondary` (kantad) /
+`btn-primary` (fylld), som saknades helt i den riktiga appen där varje
+LOPA-knapp — även små `+`-radtillägg — såg likadan ut som en meningsfull
+handling. Det var sannolikt den enskilt största orsaken till att sidan
+kändes "kaotisk".
+
+**Genomfört:** ny `lopa_ghost_button_stylesheet()` i `design.py` (appens egen
+accentfärg/typsnitt/hörnradie, inte referensens) applicerad på de nio
+knappar som är antingen `+`-radtillägg eller små "öppna lokal
+redigering"-länkar (`+ Givargrupp`, `+ Lägg till` ×2, `+ Manövergrupp`,
+`+ Egen LOPA-konsekvens`, `Ändra lokalt…` ×2, `+ Manuell barriär`,
+`+ Kommentar`). Alla övriga LOPA-knappar (Ny revision, Lås revision,
+Exportera Excel, Gå till HAZOP, Spara-knapparna, ...) behåller appens
+vanliga knappstil oförändrad — den fungerar redan som sekundärtoner.
+`Visa detaljredigering` lämnades avsiktligt kvar som vanlig
+växlingsknapp (kryssat-läge ger redan visuell feedback via appens delade
+`QPushButton:checked`-regel).
+
+Verifierat med samma 35 tester samt en headless-skärmdump med riktiga
+typsnitt som visar de nio knapparna som blå text utan kant, tydligt skilda
+från de kantade sekundärknapparna.
+
 ## LOPA: knappstorlek, dödyta och ytterligare typsnittsminskning (2026-09-02, andra uppföljningen)
 
 Med riktiga typsnitt påslagna (headless-renderingen ovan körde tidigare

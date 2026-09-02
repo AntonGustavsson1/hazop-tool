@@ -327,6 +327,33 @@ def lopa_status_stylesheet(status: str) -> str:
     )
 
 
+def lopa_ghost_button_stylesheet() -> str:
+    """Low-emphasis inline action -- add-a-row, or open a small local-edit
+    dialog -- text only, no border or fill (2026-09-02, comparing the LOPA
+    page against its Claude Design reference).
+
+    That reference draws every action as one of three tiers -- ghost /
+    secondary / primary -- so a page full of small "+" actions doesn't
+    visually compete with its few real commit-style buttons. The reference
+    itself uses a separate accent colour, condensed display font and
+    square "blueprint" corners nothing else in HAZOP has; this expresses
+    the same THREE-TIER IDEA in the app's own accent/font/corner-radius
+    instead, so LOPA keeps the rest of the app's feel. LOPA's plain
+    QPushButtons (via app_stylesheet()'s shared QPushButton rule) already
+    serve as the "secondary" tier -- this is only the ghost tier.
+    ``min-width:0`` cancels LopaPanel's own shared button min-width (meant
+    for its secondary-tier action buttons), since a ghost action should
+    stay as compact as its label, not be padded out to match them."""
+    return (
+        f'QPushButton{{background:transparent;color:{ACCENT};'
+        'border:1px solid transparent;border-radius:4px;'
+        'min-width:0;padding:3px 6px;font-weight:600;}'
+        f'QPushButton:hover{{background:{ACCENT_SELECTION};}}'
+        f'QPushButton:pressed{{background:{SCENARIO_SELECTION_HOVER};}}'
+        f'QPushButton:disabled{{color:{MUTED_TEXT};}}'
+    )
+
+
 def lopa_title_stylesheet() -> str:
     """Main LOPA page title, kept separate from document card headings.
 
