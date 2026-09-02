@@ -335,6 +335,35 @@ class DatabaseUndoRedoTests(unittest.TestCase):
         self.assertTrue(self.db.redo())
         self.assertIsNotNone(self.db.get_cause(cause_id))
 
+    def test_undo_redo_keep_the_live_connection_open(self):
+        """Restoring a file DB must not replace or close the UI's connection."""
+        connection = self.db.conn
+        cause_id = self.db.add_cause(self._first_deviation_id())
+
+        self.assertTrue(self.db.undo())
+        self.assertIs(self.db.conn, connection)
+        self.assertEqual(self.db.conn.execute("SELECT 1").fetchone()[0], 1)
+        self.assertIsNone(self.db.get_cause(cause_id))
+
+        self.assertTrue(self.db.redo())
+        self.assertIs(self.db.conn, connection)
+        self.assertIsNotNone(self.db.get_cause(cause_id))
+
+    def test_undo_restore_failure_is_non_fatal_and_retryable(self):
+        """A transient restore error must not escape into the Qt event loop."""
+        cause_id = self.db.add_cause(self._first_deviation_id())
+        connection = self.db.conn
+
+        with unittest.mock.patch.object(
+                self.db, '_restore_history_snapshot',
+                side_effect=PermissionError("simulated locked WAL")):
+            self.assertFalse(self.db.undo())
+
+        self.assertTrue(self.db.can_undo)
+        self.assertIs(self.db.conn, connection)
+        self.assertEqual(self.db.conn.execute("SELECT 1").fetchone()[0], 1)
+        self.assertIsNotNone(self.db.get_cause(cause_id))
+
     def test_text_update_undo_redo_and_new_edit_clears_redo(self):
         cause_id = self.db.add_cause(self._first_deviation_id())
         self.db.update_cause(cause_id, description='Första texten')

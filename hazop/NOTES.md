@@ -5274,6 +5274,22 @@ aktiv QLineEdit/QTextEdit lämnas till Qt:s vanliga text-undo; när fältet har
 sparats används dokumenthistoriken. Historiken är fortsatt sessionsbaserad
 med 100 steg och sparas inte i `.hzp`-filen.
 
+## Undo/redo: WAL-lasning och stangd anslutning (2026-09-02)
+
+Senaste crashloggen visade en kedja dar undo forst forsokte radera den
+OneDrive/SQLite-lasta filen `hazop_project.db-wal`. Nar det misslyckades hade
+den tidigare koden redan stangt den aktiva anslutningen; nasta Qt-omritning
+fick darfor `sqlite3.ProgrammingError: Cannot operate on a closed database`.
+
+Historikaterstallning sker nu med SQLite backup API fran en temporar
+in-memory-kalla till den redan oppna anslutningen. WAL/SHM-filer raderas eller
+ersatts inte och panelernas anslutning forblir giltig. Om databasen ar
+tillfalligt last returnerar undo/redo lugnt `False`, behaller historiksteget
+for ett nytt forsok och later inte felet na Qt:s event loop.
+
+Verifierat med atta riktade `DatabaseUndoRedoTests`, inklusive filbaserad
+undo/redo med samma anslutningsobjekt och ett simulerat WAL-lasningsfel.
+
 Verifierat med riktade databas-, MainWindow-, träd-, integrations-, P&ID-
 placerings-, markeringsgransknings- och global-ersättningstester, inklusive
 ett faktiskt Qt-tangenttryck för Ctrl+Z/Ctrl+Y, samt `py_compile` och

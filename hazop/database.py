@@ -5910,63 +5910,37 @@ class Database:
     def _restore_history_snapshot(self, snapshot):
         """Restore an image without producing a second history entry."""
         self._history_restoring = True
+        source = None
         try:
-            if str(self.path) == ':memory:':
-                # Build a replacement first so a failed dump does not leave
-                # the live in-memory connection half-restored.
-                replacement = sqlite3.connect(':memory:', timeout=30.0)
-                try:
-                    replacement.row_factory = sqlite3.Row
-                    replacement.execute("PRAGMA foreign_keys = ON")
-                    replacement.executescript(snapshot)
-                    replacement.commit()
-                except Exception:
-                    replacement.close()
-                    raise
-                self.conn.close()
-                self.conn = replacement
-            else:
-                # Materialise the snapshot next to the project first, then
-                # reopen the same Database connection object on that file.
-                # Panels retain their Database reference, so changing only
-                # ``self.conn`` is safe and avoids leaving a detached in-
-                # memory database behind.
-                tmp_path = None
-                try:
-                    fd, tmp_path = tempfile.mkstemp(
-                        prefix='.hazop_undo_', suffix='.db',
-                        dir=str(self.path.parent))
-                    os.close(fd)
-                    file_conn = sqlite3.connect(tmp_path, timeout=30.0)
-                    try:
-                        file_conn.executescript(snapshot)
-                        file_conn.commit()
-                    finally:
-                        file_conn.close()
-                    try:
-                        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    except Exception:
-                        pass
-                    self.conn.close()
-                    for suffix in ('-wal', '-shm'):
-                        sidecar = Path(str(self.path) + suffix)
-                        try:
-                            sidecar.unlink()
-                        except FileNotFoundError:
-                            pass
-                    os.replace(tmp_path, self.path)
-                    tmp_path = None
-                    self.conn = sqlite3.connect(str(self.path), timeout=30.0)
-                    self.conn.row_factory = sqlite3.Row
-                    self.conn.execute("PRAGMA foreign_keys = ON")
-                    self.conn.execute("PRAGMA journal_mode = WAL")
-                finally:
-                    if tmp_path:
-                        try:
-                            os.unlink(tmp_path)
-                        except FileNotFoundError:
-                            pass
+            # Restore into the already-open connection.  Replacing the file
+            # and deleting ``-wal``/``-shm`` sidecars looks attractive, but
+            # those files can be held by SQLite/OneDrive on Windows.  The old
+            # implementation closed ``self.conn`` before that deletion; when
+            # unlink() then raised WinError 32, every subsequent Qt repaint
+            # saw a closed database and crashed with ProgrammingError.
+            #
+            # An in-memory source plus SQLite's backup API keeps the live
+            # connection (and all panels using it) intact.  The backup is
+            # transactional on the destination, so a busy/locked database
+            # fails without intentionally detaching the application from its
+            # database.
+            source = sqlite3.connect(':memory:', timeout=30.0)
+            source.row_factory = sqlite3.Row
+            # sqlite3's iterdump is alphabetically ordered.  Some tables
+            # therefore reference a table that appears later in the dump;
+            # SQLite only accepts that schema order while foreign-key
+            # enforcement is disabled.  Enable it again after the dump has
+            # been materialised, matching the live connection's setting.
+            source.executescript(snapshot)
+            source.commit()
+            source.execute("PRAGMA foreign_keys = ON")
+            self.conn.commit()
+            source.backup(self.conn)
+            self.conn.commit()
+            self.conn.execute("PRAGMA foreign_keys = ON")
         finally:
+            if source is not None:
+                source.close()
             self._history_restoring = False
         # Risk information is cached at module level and is otherwise stale
         # after undoing a risk-matrix/settings change.
@@ -5987,7 +5961,16 @@ class Database:
             logging.warning("Database changed outside undo history; resetting baseline")
             self._reset_history_baseline()
             return False
-        self._restore_history_snapshot(before)
+        try:
+            self._restore_history_snapshot(before)
+        except Exception:
+            # Undo is a user convenience.  A transient lock must not escape
+            # into the Qt event loop and become a global crash.  Keep the
+            # history entry in place so the user can try again after the lock
+            # is released; the live connection is deliberately left usable by
+            # _restore_history_snapshot().
+            logging.warning("Could not restore undo snapshot", exc_info=True)
+            return False
         self._undo_stack.pop()
         self._redo_stack.append((before, after))
         self._history_snapshot = before
@@ -6007,7 +5990,11 @@ class Database:
             logging.warning("Database changed outside redo history; resetting baseline")
             self._reset_history_baseline()
             return False
-        self._restore_history_snapshot(after)
+        try:
+            self._restore_history_snapshot(after)
+        except Exception:
+            logging.warning("Could not restore redo snapshot", exc_info=True)
+            return False
         self._redo_stack.pop()
         self._undo_stack.append((before, after))
         if len(self._undo_stack) > self._HISTORY_LIMIT:
