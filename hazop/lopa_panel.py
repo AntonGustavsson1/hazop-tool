@@ -13,6 +13,7 @@ import json
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QBoxLayout,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -25,6 +26,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLayout,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -44,7 +46,14 @@ from PyQt6.QtWidgets import (
 from database import Database
 from lopa_export import export_lopa_excel
 from design import (
+    LOPA_BREAKPOINT_HEADER_SINGLE,
+    LOPA_BREAKPOINT_OVERVIEW,
+    LOPA_BREAKPOINT_SIDEBAR,
+    LOPA_BREAKPOINT_TWO_COLUMN,
     LOPA_CARD_PADDING,
+    LOPA_MAIN_MAX_WIDTH,
+    LOPA_SIDEBAR_MAX_WIDTH,
+    LOPA_SIDEBAR_MIN_WIDTH,
     MUTED_TEXT,
     SECONDARY_TEXT,
     TEXT,
@@ -114,10 +123,93 @@ class LopaPanel(QWidget):
         card.setMinimumWidth(0)
         card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
+    def _set_header_columns(self, columns: int):
+        """Lay out the document header as 4, 2 or 1 responsive columns."""
+        if self._header_columns == columns:
+            return
+        while self._header_form.count():
+            self._header_form.takeAt(0)
+        for column in range(8):
+            self._header_form.setColumnStretch(column, 0)
+        for index, (label, field, stretch) in enumerate(self._header_fields):
+            row, column = divmod(index, columns)
+            grid_column = column * 2
+            self._header_form.addWidget(label, row, grid_column)
+            self._header_form.addWidget(field, row, grid_column + 1)
+            self._header_form.setColumnStretch(grid_column + 1, stretch)
+        self._header_columns = columns
+
+    @staticmethod
+    def _set_row_direction(layout, cards, horizontal_stretches, stacked: bool):
+        """Switch a document row between proportional columns and a stack."""
+        direction = (QBoxLayout.Direction.TopToBottom if stacked else
+                     QBoxLayout.Direction.LeftToRight)
+        if layout.direction() == direction:
+            return
+        while layout.count():
+            layout.takeAt(0)
+        layout.setDirection(direction)
+        for index, card in enumerate(cards):
+            layout.addWidget(card, 0 if stacked else horizontal_stretches[index])
+
+    def _toggle_analysis_panel(self, visible: bool):
+        """Show the compact analysis picker only when the narrow view asks for it."""
+        if self.width() >= LOPA_BREAKPOINT_SIDEBAR:
+            return
+        self._analysis_panel.setVisible(visible)
+        self._analysis_toggle.setText('Dölj LOPA-ark' if visible else 'LOPA-ark')
+        if visible:
+            self._splitter.setSizes([LOPA_SIDEBAR_MAX_WIDTH, LOPA_MAIN_MAX_WIDTH])
+
+    def _set_barrier_detail_visible(self, visible: bool):
+        """Keep the full barrier matrix compact until local editing is needed."""
+        self._barrier_detail_area.setVisible(visible)
+        self._barrier_details_toggle.setText(
+            'Dölj detaljredigering' if visible else 'Visa detaljredigering')
+
+    def _apply_responsive_layout(self):
+        """Apply the breakpoint contract in ``lopa_pyqt6_layout_spec.md``."""
+        width = self.width()
+        self._set_header_columns(
+            1 if width < LOPA_BREAKPOINT_HEADER_SINGLE else
+            2 if width < LOPA_BREAKPOINT_TWO_COLUMN else 4)
+        self._set_row_direction(
+            self._drive_layout, self._drive_cards, (1, 1),
+            width < LOPA_BREAKPOINT_TWO_COLUMN)
+        self._set_row_direction(
+            self._overview_layout, self._overview_cards, (3, 2),
+            width < LOPA_BREAKPOINT_OVERVIEW)
+        self._set_row_direction(
+            self._bottom_layout, self._bottom_cards, (1, 2, 2),
+            width < LOPA_BREAKPOINT_TWO_COLUMN)
+
+        narrow_sidebar = width < LOPA_BREAKPOINT_SIDEBAR
+        self._analysis_toggle.setVisible(narrow_sidebar)
+        if narrow_sidebar:
+            self._analysis_panel.setVisible(self._analysis_toggle.isChecked())
+            self._analysis_toggle.setText(
+                'Dölj LOPA-ark' if self._analysis_toggle.isChecked() else 'LOPA-ark')
+        else:
+            self._analysis_panel.show()
+            self._analysis_toggle.blockSignals(True)
+            self._analysis_toggle.setChecked(False)
+            self._analysis_toggle.blockSignals(False)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Defer one event turn so QSplitter and QScrollArea have their final
+        # width before cards are moved between responsive layouts.
+        QTimer.singleShot(0, self._apply_responsive_layout)
+
     def _build(self):
         outer = QVBoxLayout(self)
+        # Responsive rules, not a desktop size hint, decide how small the
+        # page may become.  Without this Qt freezes the panel at the sum of
+        # the title-bar button widths before breakpoints can take effect.
+        outer.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(6)
+        self.setMinimumSize(0, 0)
 
         heading = QHBoxLayout()
         title = QLabel('LOPA')
@@ -126,6 +218,11 @@ class LopaPanel(QWidget):
         subtitle = QLabel('Skyddsbarriäranalys – samma riskmatris som HAZOP')
         subtitle.setStyleSheet(lopa_note_stylesheet())
         heading.addWidget(subtitle)
+        self._analysis_toggle = QPushButton('LOPA-ark')
+        self._analysis_toggle.setCheckable(True)
+        self._analysis_toggle.toggled.connect(self._toggle_analysis_panel)
+        self._analysis_toggle.hide()
+        heading.addWidget(self._analysis_toggle)
         heading.addStretch(1)
         self._show_archived = QPushButton('Visa arkiverade')
         self._show_archived.setCheckable(True)
@@ -141,11 +238,13 @@ class LopaPanel(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
+        self._splitter = splitter
         outer.addWidget(splitter, 1)
 
         left = self._card()
-        left.setMinimumWidth(205)
-        left.setMaximumWidth(250)
+        left.setMinimumWidth(LOPA_SIDEBAR_MIN_WIDTH)
+        left.setMaximumWidth(LOPA_SIDEBAR_MAX_WIDTH)
+        self._analysis_panel = left
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                        LOPA_CARD_PADDING, LOPA_CARD_PADDING)
@@ -165,14 +264,20 @@ class LopaPanel(QWidget):
         detail = QScrollArea()
         detail.setWidgetResizable(True)
         detail.setFrameShape(QFrame.Shape.NoFrame)
+        detail.setMinimumWidth(0)
+        detail.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         detail_body = QWidget()
         detail_layout = QVBoxLayout(detail_body)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(6)
         self._detail_scroll = detail
         self._detail_body = detail_body
+        detail_body.setMinimumWidth(0)
+        detail_body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        detail_body.setMaximumWidth(LOPA_MAIN_MAX_WIDTH)
 
         header = self._card()
+        self._allow_card_to_shrink(header)
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                          LOPA_CARD_PADDING, LOPA_CARD_PADDING)
@@ -198,6 +303,9 @@ class LopaPanel(QWidget):
         form = QGridLayout()
         form.setHorizontalSpacing(6)
         form.setVerticalSpacing(3)
+        self._header_form = form
+        self._header_fields = []
+        self._header_columns = None
         self._number = QLineEdit()
         self._number.setPlaceholderText('001')
         self._number.editingFinished.connect(self._save_header)
@@ -226,9 +334,7 @@ class LopaPanel(QWidget):
         def add_header_field(row, column, label, field, stretch=1):
             field_label = QLabel(label)
             field_label.setStyleSheet(lopa_note_stylesheet())
-            form.addWidget(field_label, row, column * 2)
-            form.addWidget(field, row, column * 2 + 1)
-            form.setColumnStretch(column * 2 + 1, stretch)
+            self._header_fields.append((field_label, field, stretch))
 
         add_header_field(0, 0, 'LOPA-nr', self._number)
         add_header_field(0, 1, 'SIF-nr', self._sif_number)
@@ -243,6 +349,7 @@ class LopaPanel(QWidget):
         performed_layout.addWidget(self._choose_performed_btn)
         add_header_field(1, 2, 'Utförd av', performed_row, 2)
         add_header_field(1, 3, 'Godkänd av', self._approved_by, 2)
+        self._set_header_columns(4)
         header_layout.addLayout(form)
         self._sync_note = QLabel('Tom LOPA: koppla en HAZOP-barriär för att importera källscenario och givardel.')
         self._sync_note.setWordWrap(True)
@@ -499,19 +606,31 @@ class LopaPanel(QWidget):
         drive_layout.setSpacing(8)
         drive_layout.addWidget(sensor_card, 1)
         drive_layout.addWidget(final_card, 1)
+        self._drive_layout = drive_layout
+        self._drive_cards = (sensor_card, final_card)
         detail_layout.addWidget(drive_row)
         # Keep the document order close to the original LOPA sheet: first
         # the SIF's givardel/manöverdel, then the linked scenario and its
         # dimensionerande consequence picture.
         detail_layout.addWidget(overview_row)
+        self._overview_layout = overview_layout
+        self._overview_cards = (scenario_card, worst_card)
 
         barrier_card = self._card()
+        self._allow_card_to_shrink(barrier_card)
         barrier_layout = QVBoxLayout(barrier_card)
         barrier_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                           LOPA_CARD_PADDING, LOPA_CARD_PADDING)
         barrier_title = QLabel('Oberoende barriärer')
         barrier_title.setStyleSheet(lopa_section_title_stylesheet())
-        barrier_layout.addWidget(barrier_title)
+        barrier_heading = QHBoxLayout()
+        barrier_heading.addWidget(barrier_title)
+        barrier_heading.addStretch(1)
+        self._barrier_details_toggle = QPushButton('Visa detaljredigering')
+        self._barrier_details_toggle.setCheckable(True)
+        self._barrier_details_toggle.toggled.connect(self._set_barrier_detail_visible)
+        barrier_heading.addWidget(self._barrier_details_toggle)
+        barrier_layout.addLayout(barrier_heading)
         self._barrier_note = QLabel('HAZOP-barriärer speglas som underlag. Lokala ändringar påverkar inte HAZOP.')
         self._barrier_note.setWordWrap(False)
         self._barrier_note.setMaximumHeight(18)
@@ -526,6 +645,10 @@ class LopaPanel(QWidget):
         self._barrier_matrix.setStyleSheet(lopa_table_stylesheet())
         self._configure_compact_table(self._barrier_matrix, 48, 104)
         barrier_layout.addWidget(self._barrier_matrix)
+        self._barrier_detail_area = QWidget()
+        barrier_detail_layout = QVBoxLayout(self._barrier_detail_area)
+        barrier_detail_layout.setContentsMargins(0, 0, 0, 0)
+        barrier_detail_layout.setSpacing(4)
         self._barriers = QTableWidget(0, 6)
         self._barriers.setHorizontalHeaderLabels(
             ['Aktiv', 'Typ', 'Beskrivning', 'RRF', 'Gäller kategori', 'Status'])
@@ -536,7 +659,7 @@ class LopaPanel(QWidget):
         self._barriers.setStyleSheet(lopa_table_stylesheet())
         self._barriers.itemChanged.connect(self._on_barrier_item_changed)
         self._configure_compact_table(self._barriers, 48, 106)
-        barrier_layout.addWidget(self._barriers)
+        barrier_detail_layout.addWidget(self._barriers)
         barrier_actions = QHBoxLayout()
         self._add_barrier_btn = QPushButton('+ Manuell barriär')
         self._add_barrier_btn.clicked.connect(self._add_manual_barrier)
@@ -545,7 +668,7 @@ class LopaPanel(QWidget):
         self._edit_barrier_btn.clicked.connect(self._edit_selected_barrier)
         barrier_actions.addWidget(self._edit_barrier_btn)
         barrier_actions.addStretch()
-        barrier_layout.addLayout(barrier_actions)
+        barrier_detail_layout.addLayout(barrier_actions)
         barrier_footer = QHBoxLayout()
         barrier_footer.addWidget(QLabel('Kontrollfrekvens'))
         self._control_frequency = QLineEdit()
@@ -563,7 +686,9 @@ class LopaPanel(QWidget):
         self._save_source_analysis_btn = QPushButton('Spara LOPA-underlag')
         self._save_source_analysis_btn.clicked.connect(self._save_source_analysis_details)
         barrier_footer.addWidget(self._save_source_analysis_btn)
-        barrier_layout.addLayout(barrier_footer)
+        barrier_detail_layout.addLayout(barrier_footer)
+        barrier_layout.addWidget(self._barrier_detail_area)
+        self._set_barrier_detail_visible(False)
         self._barrier_summary = QLabel('')
         self._barrier_summary.setWordWrap(True)
         self._barrier_summary.setMinimumWidth(0)
@@ -573,6 +698,7 @@ class LopaPanel(QWidget):
         detail_layout.addWidget(barrier_card)
 
         escalation_card = self._card()
+        self._allow_card_to_shrink(escalation_card)
         escalation_layout = QVBoxLayout(escalation_card)
         escalation_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                              LOPA_CARD_PADDING, LOPA_CARD_PADDING)
@@ -695,11 +821,23 @@ class LopaPanel(QWidget):
         bottom_layout.addWidget(calculation_card, 1)
         bottom_layout.addWidget(document_card, 2)
         bottom_layout.addWidget(comments_card, 2)
+        self._bottom_layout = bottom_layout
+        self._bottom_cards = (calculation_card, document_card, comments_card)
         detail_layout.addWidget(bottom_row)
         detail_layout.addStretch(1)
-        detail.setWidget(detail_body)
+        detail_shell = QWidget()
+        detail_shell.setMinimumWidth(0)
+        detail_shell.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        detail_shell_layout = QHBoxLayout(detail_shell)
+        detail_shell_layout.setContentsMargins(0, 0, 0, 0)
+        detail_shell_layout.addStretch(1)
+        detail_shell_layout.addWidget(detail_body, 100)
+        detail_shell_layout.addStretch(1)
+        self._detail_shell = detail_shell
+        detail.setWidget(detail_shell)
         splitter.addWidget(detail)
-        splitter.setSizes([270, 850])
+        splitter.setSizes([LOPA_SIDEBAR_MAX_WIDTH, LOPA_MAIN_MAX_WIDTH])
+        QTimer.singleShot(0, self._apply_responsive_layout)
 
     def _selected_lopa_id(self):
         item = self._list.currentItem()

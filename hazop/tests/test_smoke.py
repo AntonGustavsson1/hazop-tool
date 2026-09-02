@@ -47,7 +47,7 @@ for _p in (_HAZOP_DIR, _TEST_DIR):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QBoxLayout
 
 
 def _ensure_qapp():
@@ -196,6 +196,38 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(0, p._detail_scroll.horizontalScrollBar().maximum())
             self.assertLessEqual(p._detail_scroll.verticalScrollBar().maximum(), 220)
             self.assertEqual(0, p._detail_scroll.verticalScrollBar().value())
+            self.assertFalse(p._barrier_detail_area.isVisible())
+            p._barrier_details_toggle.click()
+            self.app.processEvents()
+            self.assertTrue(p._barrier_detail_area.isVisible())
+            p._barrier_details_toggle.click()
+            self.assertEqual(QBoxLayout.Direction.LeftToRight, p._drive_layout.direction())
+            self.assertEqual(QBoxLayout.Direction.LeftToRight, p._overview_layout.direction())
+            self.assertEqual(4, p._header_columns)
+
+            # The Claude layout contract uses 1200/900/600 px breakpoints.
+            p.resize(1150, 1040)
+            self.app.processEvents()
+            self.app.processEvents()
+            self.assertEqual(QBoxLayout.Direction.TopToBottom, p._overview_layout.direction())
+            self.assertEqual(QBoxLayout.Direction.LeftToRight, p._drive_layout.direction())
+            p.resize(850, 1040)
+            self.app.processEvents()
+            self.app.processEvents()
+            self.assertEqual(QBoxLayout.Direction.TopToBottom, p._drive_layout.direction())
+            self.assertEqual(QBoxLayout.Direction.TopToBottom, p._bottom_layout.direction())
+            self.assertEqual(2, p._header_columns)
+            self.assertFalse(p._analysis_panel.isVisible())
+            self.assertTrue(p._analysis_toggle.isVisible())
+            p._analysis_toggle.click()
+            self.app.processEvents()
+            self.assertTrue(p._analysis_panel.isVisible())
+            self.assertEqual(0, p._detail_scroll.horizontalScrollBar().maximum())
+            p._analysis_toggle.click()
+            p.resize(550, 1040)
+            self.app.processEvents()
+            self.app.processEvents()
+            self.assertEqual(1, p._header_columns)
             self.assertEqual(1, p._sources.rowCount())
             self.assertEqual(1, p._consequences.rowCount())
             self.assertEqual(1, p._sensor_members.rowCount())

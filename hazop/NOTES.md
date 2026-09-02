@@ -1,5 +1,29 @@
 # NOTES.md — Beslut och kontext
 
+## Responsiv LOPA enligt Claude-layoutspecifikation (2026-09-02)
+
+`../lopa_pyqt6_layout_spec.md` är nu den explicita layoutkällan för LOPA.
+Huvuddokumentet är centrerat och begränsat till 1400 px på desktop, medan
+LOPA-listan är en fast 160–220 px sidomeny. Ingen global horisontell scroll
+ska uppstå; överfulla tabeller använder sin egen scrollning.
+
+Brytpunkter är implementerade och testade: vid 1200 px staplas
+Scenario/Konsekvens-summering, vid 900 px staplas Givardel/Manöverdel och
+nedre informationskort, vid 600 px går dokumenthuvudet från fyra till en
+kolumn. Under 1024 px döljs sidomenyn tills användaren väljer knappen
+**LOPA-ark**; den kan öppnas utan att skapa horisontell scroll.
+
+Barriärmatrisen är standardvyn. **Visa detaljredigering** fäller vid behov
+ut den befintliga lokala barriärlistan, redigeringskontrollerna och
+antagandena utan att någon data eller funktion tas bort. En ifylld LOPA på
+1920×1080 får nu plats utan sidscroll eller global horisontell scroll i den
+headless-renderade kontrollen.
+
+Verifierat med 35 riktade LOPA-, export-, design- och smoke-tester, inklusive
+samtliga responsive brytpunkter och sidomenyns mobilknapp, samt `py_compile`,
+`git diff --check` och rendering på 1920×1080. Offscreen-Qt saknar fortsatt
+textfonter, så slutlig läsbarhet/typografi behöver kontrolleras i GUI:t.
+
 ## Kompakt LOPA-arbetsblad och stabil dokumentgeometri (2026-09-02)
 
 LOPA-gränssnittet är nu ombyggt till ett tätare, dokumentlikt arbetsblad.

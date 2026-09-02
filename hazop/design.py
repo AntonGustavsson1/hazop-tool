@@ -69,6 +69,17 @@ LOPA_CARD_RADIUS = 6
 # visibly separated but compact enough for a complete analysis on one screen.
 LOPA_CARD_PADDING = 7
 
+# Responsive LOPA document geometry.  These values follow
+# ``lopa_pyqt6_layout_spec.md`` and deliberately live in the design layer so
+# future visual adjustments do not have to be rediscovered in lopa_panel.py.
+LOPA_SIDEBAR_MIN_WIDTH = 160
+LOPA_SIDEBAR_MAX_WIDTH = 220
+LOPA_MAIN_MAX_WIDTH = 1400
+LOPA_BREAKPOINT_SIDEBAR = 1024
+LOPA_BREAKPOINT_OVERVIEW = 1200
+LOPA_BREAKPOINT_TWO_COLUMN = 900
+LOPA_BREAKPOINT_HEADER_SINGLE = 600
+
 
 def app_stylesheet() -> str:
     """Return the application-wide light theme.

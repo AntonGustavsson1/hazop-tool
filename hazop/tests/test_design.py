@@ -150,6 +150,20 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn(SECONDARY_TEXT, lopa_note_stylesheet())
         self.assertIn(ACCENT_SELECTION, lopa_table_stylesheet())
 
+    def test_lopa_responsive_geometry_is_centralized_in_design(self):
+        from design import (
+            LOPA_BREAKPOINT_HEADER_SINGLE, LOPA_BREAKPOINT_OVERVIEW,
+            LOPA_BREAKPOINT_SIDEBAR, LOPA_BREAKPOINT_TWO_COLUMN,
+            LOPA_MAIN_MAX_WIDTH, LOPA_SIDEBAR_MAX_WIDTH,
+            LOPA_SIDEBAR_MIN_WIDTH,
+        )
+
+        self.assertEqual(1400, LOPA_MAIN_MAX_WIDTH)
+        self.assertEqual((160, 220), (LOPA_SIDEBAR_MIN_WIDTH, LOPA_SIDEBAR_MAX_WIDTH))
+        self.assertEqual((1024, 1200, 900, 600), (
+            LOPA_BREAKPOINT_SIDEBAR, LOPA_BREAKPOINT_OVERVIEW,
+            LOPA_BREAKPOINT_TWO_COLUMN, LOPA_BREAKPOINT_HEADER_SINGLE))
+
 
 if __name__ == '__main__':
     unittest.main()
