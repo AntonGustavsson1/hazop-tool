@@ -1,5 +1,25 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: Ta bort "Värsta representativa konsekvens", expandera scenario till 100% (2026-09-02, fjärde uppföljningen)
+
+Efter att ha implementerat ghost/secondary-knapphierarki såg sidan mycket bättre
+ut men "Värsta representativa konsekvens"-sektionen (som låg 40% bredvid
+scenario-kortet i 60/40-delning) fortsatte att bara visa samma information som
+tabellen "KONSEKVENSER FRÅN HAZOP" men i en mer begränsad form. Den lade mer
+visuellt brus än värde.
+
+**Genomfört:** Helt ta bort kortet för "Värsta representativa konsekvens" och
+expandera scenario-kortet till 100% bredd. Uppdateringar:
+- Borttagen `worst_card` widget-konstruktion (tidigare linjer 476-499)
+- Borttagen `worst_card` från `overview_layout`
+- `_overview_cards` uppdaterad från `(scenario_card, worst_card)` till `(scenario_card,)`
+- Stretch-faktorer uppdaterad från `(3, 2)` till `(1,)` i `_set_row_direction`-anropet
+- `_populate_worst_consequences()` metod och dess anrop kommenterade ut
+- Layout-specifikationen (`lopa_pyqt6_layout_spec.md`) uppdaterad för att visa scenario
+  som 100% bredd istället för 60%
+
+Resultat: enklare, renare layout med fokus på Scenario + Konsekvenser från HAZOP.
+
 ## LOPA: ghost/secondary-knapphierarki mot Claude Design-referensen (2026-09-02, tredje uppföljningen)
 
 Anton delade den faktiska Claude Design-länken för LOPA-mockupen
