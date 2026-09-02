@@ -1,5 +1,25 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: Justera kategoribadgens storlek för bättre proportioner (2026-09-02, femte uppföljningen)
+
+Efter att scenario-kortet expanderades till 100% bredd blev kategoribadgarna
+för konsekvenserna visuellt oproportionellt stora — de tog upp alltför mycket
+plats i tabellcellerna och dominerade raden istället för att vara en
+diskret visuell hjälpare.
+
+**Grundorsak:** `_category_badge_widget()` i lopa_panel.py använde
+`layout.addStretch(1)` som tvingade badgen att växa till cellens fulla bredd,
+tillsammans med padding `1px 7px` och border-radius `8px` från `lopa_category_badge_stylesheet()`.
+
+**Genomfört:** Göra badges kompakta och proportionella:
+- Ta bort `layout.addStretch(1)` så badgen bara tar den plats texten behöver
+- Ändra layout-marginaler från `(2, 1, 2, 1)` till `(0, 0, 0, 0)`
+- Minska padding från `1px 7px` till `0px 5px` i style-funktionen
+- Minska font-size från `8pt` till `7pt`
+- Minska border-radius från `8px` till `4px` för visuell konsistens med övriga LOPA
+
+Resultatet: diskreta, läsliga kategoribadgar som inte dominerar tabellrader.
+
 ## LOPA: Ta bort "Värsta representativa konsekvens", expandera scenario till 100% (2026-09-02, fjärde uppföljningen)
 
 Efter att ha implementerat ghost/secondary-knapphierarki såg sidan mycket bättre
