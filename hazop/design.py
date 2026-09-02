@@ -65,7 +65,9 @@ RISK_COLUMN_DEFAULT_WIDTH = 52
 # Scenario table.  Keep its calm cards and status chips here so the page can
 # follow the same design contract as the rest of the application.
 LOPA_CARD_RADIUS = 6
-LOPA_CARD_PADDING = 10
+# The LOPA page is a working sheet with many related records.  Keep cards
+# visibly separated but compact enough for a complete analysis on one screen.
+LOPA_CARD_PADDING = 7
 
 
 def app_stylesheet() -> str:

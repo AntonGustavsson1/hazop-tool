@@ -1,5 +1,26 @@
 # NOTES.md — Beslut och kontext
 
+## Kompakt LOPA-arbetsblad och stabil dokumentgeometri (2026-09-02)
+
+LOPA-gränssnittet är nu ombyggt till ett tätare, dokumentlikt arbetsblad.
+Dokumenthuvudet använder två rader, givardel och manöverdel ligger sida vid
+sida före scenario och dimensionerande konsekvens, och HAZOP-källan ligger
+samlat i scenarioblocket i stället för som ett separat helbreddskort.
+Beräkning, ytterligare åtgärder/krav och kommentarer delar den nedre raden.
+
+Tabeller anpassar nu sin höjd efter antal rader med intern scrollning för
+ovanligt stora analyser. Sidoställda kort får krympa inom arbetsytan så att
+långa HAZOP-texter inte längre ger en horisontellt rullbar LOPA-sida.
+När en LOPA eller revision öppnas återställs vyn till dokumenthuvudet.
+Kärninnehållet ryms i ett 1720×1040-fönster med högst en liten vertikal
+restscroll för ett importerat scenario.
+
+Verifierat med 34 riktade LOPA-, export-, design- och smoke-tester,
+`py_compile`, `git diff --check` och headless-rendering av ett importerat
+LOPA-ark. Offscreen-Qt saknar textfonter, så den visuella geometri-kontrollen
+är gjord utan läsbar typografi; normal GUI-kontroll på skärm är fortsatt sista
+manuella acceptanspunkt.
+
 ## Komplett LOPA-arbetsyta, dokumentexport och HAZOP-granskning (2026-09-02)
 
 LOPA är nu en egen komplett arbetsyta med dokumenthuvud (LOPA-nr, separat

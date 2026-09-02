@@ -187,6 +187,15 @@ class SmokeTests(unittest.TestCase):
         p = LopaPanel(self.db)
         try:
             p.activate_lopa(created['lopa_id'], created['revision_id'])
+            # A populated LOPA is a working sheet, not a dashboard wider or
+            # multiple screens taller than a normal desktop workspace.
+            p.resize(1720, 1040)
+            p.show()
+            self.app.processEvents()
+            self.app.processEvents()
+            self.assertEqual(0, p._detail_scroll.horizontalScrollBar().maximum())
+            self.assertLessEqual(p._detail_scroll.verticalScrollBar().maximum(), 220)
+            self.assertEqual(0, p._detail_scroll.verticalScrollBar().value())
             self.assertEqual(1, p._sources.rowCount())
             self.assertEqual(1, p._consequences.rowCount())
             self.assertEqual(1, p._sensor_members.rowCount())

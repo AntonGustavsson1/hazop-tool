@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHeaderView,
     QHBoxLayout,
     QInputDialog,
@@ -31,6 +32,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -85,10 +87,37 @@ class LopaPanel(QWidget):
         card.setStyleSheet(lopa_card_stylesheet())
         return card
 
+    @staticmethod
+    def _configure_compact_table(table, minimum_height: int, maximum_height: int):
+        """Bound each document table to the space its data actually needs."""
+        table.setMinimumHeight(minimum_height)
+        table.setMaximumHeight(maximum_height)
+        table.horizontalHeader().setFixedHeight(22)
+        table.verticalHeader().setDefaultSectionSize(22)
+
+    @staticmethod
+    def _fit_table_height(table, minimum_height: int, maximum_height: int):
+        """Fit a table to its rows while retaining internal scrolling for long lists."""
+        header_height = max(22, table.horizontalHeader().height())
+        row_height = sum(table.rowHeight(index) for index in range(table.rowCount()))
+        frame = table.frameWidth() * 2 + 2
+        table.setFixedHeight(max(minimum_height, min(maximum_height,
+                                                     header_height + row_height + frame)))
+
+    @staticmethod
+    def _allow_card_to_shrink(card):
+        """Let side-by-side document cards share the available work area.
+
+        Table contents keep their own horizontal scrollbars; they must not
+        force the complete LOPA page wider than the current screen.
+        """
+        card.setMinimumWidth(0)
+        card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
     def _build(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(8)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
 
         heading = QHBoxLayout()
         title = QLabel('LOPA')
@@ -115,7 +144,8 @@ class LopaPanel(QWidget):
         outer.addWidget(splitter, 1)
 
         left = self._card()
-        left.setMinimumWidth(215)
+        left.setMinimumWidth(205)
+        left.setMaximumWidth(250)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                        LOPA_CARD_PADDING, LOPA_CARD_PADDING)
@@ -138,7 +168,9 @@ class LopaPanel(QWidget):
         detail_body = QWidget()
         detail_layout = QVBoxLayout(detail_body)
         detail_layout.setContentsMargins(0, 0, 0, 0)
-        detail_layout.setSpacing(8)
+        detail_layout.setSpacing(6)
+        self._detail_scroll = detail
+        self._detail_body = detail_body
 
         header = self._card()
         header_layout = QVBoxLayout(header)
@@ -163,8 +195,9 @@ class LopaPanel(QWidget):
         top.addWidget(self._archive_btn)
         header_layout.addLayout(top)
 
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form = QGridLayout()
+        form.setHorizontalSpacing(6)
+        form.setVerticalSpacing(3)
         self._number = QLineEdit()
         self._number.setPlaceholderText('001')
         self._number.editingFinished.connect(self._save_header)
@@ -190,30 +223,41 @@ class LopaPanel(QWidget):
         self._document_date.editingFinished.connect(self._save_revision_details)
         self._revision = QComboBox()
         self._revision.currentIndexChanged.connect(self._on_revision_changed)
-        form.addRow('LOPA-nr', self._number)
-        form.addRow('SIF-nr', self._sif_number)
-        form.addRow('SIF-namn', self._sif_name)
-        form.addRow('SIS', self._sis_name)
-        form.addRow('Revision', self._revision)
-        form.addRow('Datum', self._document_date)
+        def add_header_field(row, column, label, field, stretch=1):
+            field_label = QLabel(label)
+            field_label.setStyleSheet(lopa_note_stylesheet())
+            form.addWidget(field_label, row, column * 2)
+            form.addWidget(field, row, column * 2 + 1)
+            form.setColumnStretch(column * 2 + 1, stretch)
+
+        add_header_field(0, 0, 'LOPA-nr', self._number)
+        add_header_field(0, 1, 'SIF-nr', self._sif_number)
+        add_header_field(0, 2, 'SIF-namn', self._sif_name, 2)
+        add_header_field(0, 3, 'SIS', self._sis_name)
+        add_header_field(1, 0, 'Revision', self._revision)
+        add_header_field(1, 1, 'Datum', self._document_date)
         performed_row = QWidget()
         performed_layout = QHBoxLayout(performed_row)
         performed_layout.setContentsMargins(0, 0, 0, 0)
         performed_layout.addWidget(self._performed_by, 1)
         performed_layout.addWidget(self._choose_performed_btn)
-        form.addRow('Utförd av', performed_row)
-        form.addRow('Godkänd av', self._approved_by)
+        add_header_field(1, 2, 'Utförd av', performed_row, 2)
+        add_header_field(1, 3, 'Godkänd av', self._approved_by, 2)
         header_layout.addLayout(form)
         self._sync_note = QLabel('Tom LOPA: koppla en HAZOP-barriär för att importera källscenario och givardel.')
         self._sync_note.setWordWrap(True)
+        self._sync_note.setMaximumHeight(34)
+        self._sync_note.setMinimumWidth(0)
         self._sync_note.setStyleSheet(lopa_note_stylesheet())
         header_layout.addWidget(self._sync_note)
         detail_layout.addWidget(header)
 
-        source_card = self._card()
+        # This is part of the Scenario block rather than a separate document
+        # card.  It is kept visually flat so a LOPA reads like the original
+        # analysis sheet instead of a stack of independent dashboards.
+        source_card = QWidget()
         source_layout = QVBoxLayout(source_card)
-        source_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
-                                         LOPA_CARD_PADDING, LOPA_CARD_PADDING)
+        source_layout.setContentsMargins(0, 2, 0, 2)
         source_label = QLabel('Källscenarier från HAZOP')
         source_label.setStyleSheet(lopa_section_title_stylesheet())
         source_layout.addWidget(source_label)
@@ -227,7 +271,7 @@ class LopaPanel(QWidget):
         self._sources.setWordWrap(True)
         self._sources.horizontalHeader().setStretchLastSection(True)
         self._sources.setStyleSheet(lopa_table_stylesheet())
-        self._sources.setMinimumHeight(150)
+        self._configure_compact_table(self._sources, 48, 112)
         self._sources.itemChanged.connect(self._on_source_item_changed)
         self._sources.itemSelectionChanged.connect(self._on_source_selection_changed)
         source_layout.addWidget(self._sources)
@@ -237,12 +281,15 @@ class LopaPanel(QWidget):
         source_actions.addWidget(self._sync_sources_btn)
         source_actions.addStretch(1)
         self._source_sync_note = QLabel('')
+        self._source_sync_note.setWordWrap(True)
+        self._source_sync_note.setMinimumWidth(0)
+        self._source_sync_note.setMaximumHeight(32)
         self._source_sync_note.setStyleSheet(lopa_note_stylesheet())
         source_actions.addWidget(self._source_sync_note)
         source_layout.addLayout(source_actions)
-        detail_layout.addWidget(source_card, 2)
 
         scenario_card = self._card()
+        self._allow_card_to_shrink(scenario_card)
         scenario_layout = QVBoxLayout(scenario_card)
         scenario_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                            LOPA_CARD_PADDING, LOPA_CARD_PADDING)
@@ -251,11 +298,14 @@ class LopaPanel(QWidget):
         scenario_layout.addWidget(scenario_title)
         self._scenario_note = QLabel('Välj ett källscenario för att beskriva vad som händer i processen.')
         self._scenario_note.setWordWrap(True)
+        self._scenario_note.setMaximumHeight(34)
+        self._scenario_note.setMinimumWidth(0)
         self._scenario_note.setStyleSheet(lopa_note_stylesheet())
         scenario_layout.addWidget(self._scenario_note)
+        scenario_layout.addWidget(source_card)
         self._scenario_text = QPlainTextEdit()
         self._scenario_text.setPlaceholderText('Vad händer i processen?')
-        self._scenario_text.setFixedHeight(72)
+        self._scenario_text.setFixedHeight(50)
         scenario_layout.addWidget(self._scenario_text)
         scenario_actions = QHBoxLayout()
         self._goto_hazop_btn = QPushButton('Gå till HAZOP')
@@ -268,6 +318,7 @@ class LopaPanel(QWidget):
         scenario_layout.addLayout(scenario_actions)
 
         worst_card = self._card()
+        self._allow_card_to_shrink(worst_card)
         worst_layout = QVBoxLayout(worst_card)
         worst_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                         LOPA_CARD_PADDING, LOPA_CARD_PADDING)
@@ -276,6 +327,8 @@ class LopaPanel(QWidget):
         worst_layout.addWidget(worst_title)
         self._worst_note = QLabel('Visar den aktiva konsekvens som är dimensionerande per kategori.')
         self._worst_note.setWordWrap(True)
+        self._worst_note.setMaximumHeight(34)
+        self._worst_note.setMinimumWidth(0)
         self._worst_note.setStyleSheet(lopa_note_stylesheet())
         worst_layout.addWidget(self._worst_note)
         self._worst_consequences = QTableWidget(0, 4)
@@ -286,20 +339,21 @@ class LopaPanel(QWidget):
         self._worst_consequences.horizontalHeader().setStretchLastSection(True)
         self._worst_consequences.setWordWrap(True)
         self._worst_consequences.setStyleSheet(lopa_table_stylesheet())
-        self._worst_consequences.setMinimumHeight(132)
+        self._configure_compact_table(self._worst_consequences, 56, 112)
         worst_layout.addWidget(self._worst_consequences)
 
-        consequence_card = self._card()
-        consequence_layout = QVBoxLayout(consequence_card)
-        consequence_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
-                                              LOPA_CARD_PADDING, LOPA_CARD_PADDING)
+        # Consequences belong to the selected scenario.  Keeping them in the
+        # same document block avoids a redundant full-width card.
+        consequence_layout = scenario_layout
         consequence_title = QLabel('Konsekvenser från HAZOP')
         consequence_title.setStyleSheet(lopa_section_title_stylesheet())
         consequence_layout.addWidget(consequence_title)
         self._consequence_note = QLabel('Kryssa ur en konsekvens om den inte ska dimensionera just denna LOPA.')
-        self._consequence_note.setWordWrap(True)
+        self._consequence_note.setWordWrap(False)
+        self._consequence_note.setMaximumHeight(18)
         self._consequence_note.setStyleSheet(lopa_note_stylesheet())
-        consequence_layout.addWidget(self._consequence_note)
+        self._consequence_note.setToolTip(self._consequence_note.text())
+        self._consequence_note.hide()
         self._consequences = QTableWidget(0, 6)
         self._consequences.setHorizontalHeaderLabels(
             ['Aktiv', 'Kategori', 'Nivå', 'Beskrivning', 'HAZOP-koppling', 'Status'])
@@ -308,7 +362,7 @@ class LopaPanel(QWidget):
         self._consequences.setWordWrap(True)
         self._consequences.horizontalHeader().setStretchLastSection(True)
         self._consequences.setStyleSheet(lopa_table_stylesheet())
-        self._consequences.setMinimumHeight(145)
+        self._configure_compact_table(self._consequences, 56, 132)
         self._consequences.itemChanged.connect(self._on_consequence_item_changed)
         consequence_layout.addWidget(self._consequences)
         consequence_actions = QHBoxLayout()
@@ -324,12 +378,11 @@ class LopaPanel(QWidget):
         overview_layout = QHBoxLayout(overview_row)
         overview_layout.setContentsMargins(0, 0, 0, 0)
         overview_layout.setSpacing(8)
-        overview_layout.addWidget(scenario_card, 1)
-        overview_layout.addWidget(worst_card, 1)
-        detail_layout.addWidget(overview_row)
-        detail_layout.addWidget(consequence_card)
+        overview_layout.addWidget(scenario_card, 3)
+        overview_layout.addWidget(worst_card, 2)
 
         sensor_card = self._card()
+        self._allow_card_to_shrink(sensor_card)
         sensor_layout = QVBoxLayout(sensor_card)
         sensor_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                          LOPA_CARD_PADDING, LOPA_CARD_PADDING)
@@ -337,9 +390,11 @@ class LopaPanel(QWidget):
         sensor_title.setStyleSheet(lopa_section_title_stylesheet())
         sensor_layout.addWidget(sensor_title)
         self._sensor_note = QLabel('Givare kommer från den kopplade HAZOP-barriären. Flera givare kräver att voting bekräftas.')
-        self._sensor_note.setWordWrap(True)
+        self._sensor_note.setWordWrap(False)
+        self._sensor_note.setMaximumHeight(18)
         self._sensor_note.setStyleSheet(lopa_note_stylesheet())
-        sensor_layout.addWidget(self._sensor_note)
+        self._sensor_note.setToolTip(self._sensor_note.text())
+        self._sensor_note.hide()
         sensor_controls = QHBoxLayout()
         sensor_controls.addWidget(QLabel('Givargrupp'))
         self._sensor_group = QComboBox()
@@ -363,7 +418,7 @@ class LopaPanel(QWidget):
         self._sensor_members.horizontalHeader().setStretchLastSection(True)
         self._sensor_members.setStyleSheet(lopa_table_stylesheet())
         self._sensor_members.itemChanged.connect(self._on_sensor_member_item_changed)
-        self._sensor_members.setMinimumHeight(115)
+        self._configure_compact_table(self._sensor_members, 48, 92)
         sensor_layout.addWidget(self._sensor_members)
         sensor_add = QHBoxLayout()
         sensor_add.addWidget(QLabel('Lägg till givare'))
@@ -382,6 +437,7 @@ class LopaPanel(QWidget):
         sensor_add.addWidget(self._add_sensor_btn)
         sensor_layout.addLayout(sensor_add)
         final_card = self._card()
+        self._allow_card_to_shrink(final_card)
         final_layout = QVBoxLayout(final_card)
         final_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                         LOPA_CARD_PADDING, LOPA_CARD_PADDING)
@@ -391,9 +447,11 @@ class LopaPanel(QWidget):
         self._final_note = QLabel(
             'Manöverobjekt och voting är LOPA-specifika. Flera aktiva objekt '
             'kräver att voting bekräftas.')
-        self._final_note.setWordWrap(True)
+        self._final_note.setWordWrap(False)
+        self._final_note.setMaximumHeight(18)
         self._final_note.setStyleSheet(lopa_note_stylesheet())
-        final_layout.addWidget(self._final_note)
+        self._final_note.setToolTip(self._final_note.text())
+        self._final_note.hide()
         final_controls = QHBoxLayout()
         final_controls.addWidget(QLabel('Manövergrupp'))
         self._final_group = QComboBox()
@@ -418,7 +476,7 @@ class LopaPanel(QWidget):
         self._final_members.setStyleSheet(lopa_table_stylesheet())
         self._final_members.itemChanged.connect(self._on_final_member_item_changed)
         self._final_members.cellDoubleClicked.connect(self._edit_final_member)
-        self._final_members.setMinimumHeight(115)
+        self._configure_compact_table(self._final_members, 48, 92)
         final_layout.addWidget(self._final_members)
         final_add = QHBoxLayout()
         final_add.addWidget(QLabel('Lägg till objekt'))
@@ -442,6 +500,10 @@ class LopaPanel(QWidget):
         drive_layout.addWidget(sensor_card, 1)
         drive_layout.addWidget(final_card, 1)
         detail_layout.addWidget(drive_row)
+        # Keep the document order close to the original LOPA sheet: first
+        # the SIF's givardel/manöverdel, then the linked scenario and its
+        # dimensionerande consequence picture.
+        detail_layout.addWidget(overview_row)
 
         barrier_card = self._card()
         barrier_layout = QVBoxLayout(barrier_card)
@@ -451,16 +513,18 @@ class LopaPanel(QWidget):
         barrier_title.setStyleSheet(lopa_section_title_stylesheet())
         barrier_layout.addWidget(barrier_title)
         self._barrier_note = QLabel('HAZOP-barriärer speglas som underlag. Lokala ändringar påverkar inte HAZOP.')
-        self._barrier_note.setWordWrap(True)
+        self._barrier_note.setWordWrap(False)
+        self._barrier_note.setMaximumHeight(18)
         self._barrier_note.setStyleSheet(lopa_note_stylesheet())
-        barrier_layout.addWidget(self._barrier_note)
+        self._barrier_note.setToolTip(self._barrier_note.text())
+        self._barrier_note.hide()
         self._barrier_matrix = QTableWidget(0, 0)
         self._barrier_matrix.verticalHeader().setVisible(False)
         self._barrier_matrix.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._barrier_matrix.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._barrier_matrix.setWordWrap(True)
         self._barrier_matrix.setStyleSheet(lopa_table_stylesheet())
-        self._barrier_matrix.setMinimumHeight(118)
+        self._configure_compact_table(self._barrier_matrix, 48, 104)
         barrier_layout.addWidget(self._barrier_matrix)
         self._barriers = QTableWidget(0, 6)
         self._barriers.setHorizontalHeaderLabels(
@@ -471,7 +535,7 @@ class LopaPanel(QWidget):
         self._barriers.setWordWrap(True)
         self._barriers.setStyleSheet(lopa_table_stylesheet())
         self._barriers.itemChanged.connect(self._on_barrier_item_changed)
-        self._barriers.setMinimumHeight(145)
+        self._configure_compact_table(self._barriers, 48, 106)
         barrier_layout.addWidget(self._barriers)
         barrier_actions = QHBoxLayout()
         self._add_barrier_btn = QPushButton('+ Manuell barriär')
@@ -502,6 +566,8 @@ class LopaPanel(QWidget):
         barrier_layout.addLayout(barrier_footer)
         self._barrier_summary = QLabel('')
         self._barrier_summary.setWordWrap(True)
+        self._barrier_summary.setMinimumWidth(0)
+        self._barrier_summary.setMaximumHeight(34)
         self._barrier_summary.setStyleSheet(lopa_note_stylesheet())
         barrier_layout.addWidget(self._barrier_summary)
         detail_layout.addWidget(barrier_card)
@@ -514,20 +580,23 @@ class LopaPanel(QWidget):
         escalation_title.setStyleSheet(lopa_section_title_stylesheet())
         escalation_layout.addWidget(escalation_title)
         self._escalation_note = QLabel('Procentfaktorer är LOPA-specifika och multipliceras med återstående frekvens.')
-        self._escalation_note.setWordWrap(True)
+        self._escalation_note.setWordWrap(False)
+        self._escalation_note.setMaximumHeight(18)
         self._escalation_note.setStyleSheet(lopa_note_stylesheet())
-        escalation_layout.addWidget(self._escalation_note)
+        self._escalation_note.setToolTip(self._escalation_note.text())
+        self._escalation_note.hide()
         self._escalation = QTableWidget(0, 0)
         self._escalation.verticalHeader().setVisible(False)
         self._escalation.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._escalation.setWordWrap(True)
         self._escalation.setStyleSheet(lopa_table_stylesheet())
         self._escalation.itemChanged.connect(self._on_escalation_item_changed)
-        self._escalation.setMinimumHeight(125)
+        self._configure_compact_table(self._escalation, 48, 112)
         escalation_layout.addWidget(self._escalation)
         detail_layout.addWidget(escalation_card)
 
         calculation_card = self._card()
+        self._allow_card_to_shrink(calculation_card)
         calculation_layout = QVBoxLayout(calculation_card)
         calculation_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                               LOPA_CARD_PADDING, LOPA_CARD_PADDING)
@@ -542,38 +611,38 @@ class LopaPanel(QWidget):
         self._calculation.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._calculation.horizontalHeader().setStretchLastSection(True)
         self._calculation.setStyleSheet(lopa_table_stylesheet())
-        self._calculation.setMinimumHeight(120)
+        self._configure_compact_table(self._calculation, 48, 92)
         calculation_layout.addWidget(self._calculation)
         self._dimensioning_summary = QLabel('')
         self._dimensioning_summary.setWordWrap(True)
+        self._dimensioning_summary.setMinimumWidth(0)
+        self._dimensioning_summary.setMaximumHeight(34)
         self._dimensioning_summary.setStyleSheet(lopa_note_stylesheet())
         calculation_layout.addWidget(self._dimensioning_summary)
-        detail_layout.addWidget(calculation_card, 1)
 
         document_card = self._card()
+        self._allow_card_to_shrink(document_card)
         document_layout = QVBoxLayout(document_card)
         document_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                            LOPA_CARD_PADDING, LOPA_CARD_PADDING)
         document_title = QLabel('Ytterligare åtgärder och krav')
         document_title.setStyleSheet(lopa_section_title_stylesheet())
         document_layout.addWidget(document_title)
-        document_hint = QLabel('Dessa fält hör till den öppna LOPA-revisionen och följer med i revisionshistoriken.')
-        document_hint.setWordWrap(True)
-        document_hint.setStyleSheet(lopa_note_stylesheet())
-        document_layout.addWidget(document_hint)
+        document_title.setToolTip(
+            'Dessa fält hör till den öppna LOPA-revisionen och följer med i revisionshistoriken.')
         document_row = QHBoxLayout()
         action_column = QVBoxLayout()
         action_column.addWidget(QLabel('Ytterligare åtgärder'))
         self._additional_actions = QPlainTextEdit()
         self._additional_actions.setPlaceholderText('Åtgärder som behöver genomföras …')
-        self._additional_actions.setFixedHeight(92)
+        self._additional_actions.setFixedHeight(52)
         action_column.addWidget(self._additional_actions)
         document_row.addLayout(action_column, 1)
         requirement_column = QVBoxLayout()
         requirement_column.addWidget(QLabel('Ytterligare säkerhetskrav'))
         self._additional_requirements = QPlainTextEdit()
         self._additional_requirements.setPlaceholderText('Krav för konstruktion, drift eller SRS …')
-        self._additional_requirements.setFixedHeight(92)
+        self._additional_requirements.setFixedHeight(52)
         requirement_column.addWidget(self._additional_requirements)
         document_row.addLayout(requirement_column, 1)
         document_layout.addLayout(document_row)
@@ -588,9 +657,9 @@ class LopaPanel(QWidget):
         self._save_document_btn.clicked.connect(self._save_document_details)
         safety_time_row.addWidget(self._save_document_btn)
         document_layout.addLayout(safety_time_row)
-        detail_layout.addWidget(document_card)
 
         comments_card = self._card()
+        self._allow_card_to_shrink(comments_card)
         comments_layout = QVBoxLayout(comments_card)
         comments_layout.setContentsMargins(LOPA_CARD_PADDING, LOPA_CARD_PADDING,
                                            LOPA_CARD_PADDING, LOPA_CARD_PADDING)
@@ -605,7 +674,7 @@ class LopaPanel(QWidget):
         self._comments.horizontalHeader().setStretchLastSection(True)
         self._comments.setWordWrap(True)
         self._comments.setStyleSheet(lopa_table_stylesheet())
-        self._comments.setMinimumHeight(105)
+        self._configure_compact_table(self._comments, 48, 82)
         comments_layout.addWidget(self._comments)
         comment_add = QHBoxLayout()
         self._comment_author = QLineEdit()
@@ -619,7 +688,14 @@ class LopaPanel(QWidget):
         self._add_comment_btn.clicked.connect(self._add_comment)
         comment_add.addWidget(self._add_comment_btn)
         comments_layout.addLayout(comment_add)
-        detail_layout.addWidget(comments_card)
+        bottom_row = QWidget()
+        bottom_layout = QHBoxLayout(bottom_row)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(6)
+        bottom_layout.addWidget(calculation_card, 1)
+        bottom_layout.addWidget(document_card, 2)
+        bottom_layout.addWidget(comments_card, 2)
+        detail_layout.addWidget(bottom_row)
         detail_layout.addStretch(1)
         detail.setWidget(detail_body)
         splitter.addWidget(detail)
@@ -725,6 +801,7 @@ class LopaPanel(QWidget):
         self._save_source_analysis_btn.setEnabled(False)
         self._barrier_summary.clear()
         self._sync_note.setText('Skapa en tom LOPA eller koppla en HAZOP-barriär när den funktionen används.')
+        self._sync_note.show()
 
     def _on_lopa_selected(self, current, _previous):
         if self._loading:
@@ -735,6 +812,11 @@ class LopaPanel(QWidget):
             return
         self._lopa_id = lopa_id
         self._load_record()
+        self._reset_detail_scroll()
+
+    def _reset_detail_scroll(self):
+        """Open another LOPA at its document header, never mid-sheet."""
+        QTimer.singleShot(0, lambda: self._detail_scroll.verticalScrollBar().setValue(0))
 
     def _load_record(self, revision_id=None):
         record = self.db.get_lopa_record(self._lopa_id)
@@ -882,6 +964,7 @@ class LopaPanel(QWidget):
         if selected_row >= 0:
             self._sources.selectRow(selected_row)
         self._sources.resizeRowsToContents()
+        self._fit_table_height(self._sources, 48, 112)
         self._loading = old_loading
         self._source_id = selected
         self._sync_sources_btn.setEnabled(bool(rows))
@@ -893,6 +976,9 @@ class LopaPanel(QWidget):
         self._sync_note.setText(
             'Aktiva rader följer HAZOP tills de uttryckligen kopplas loss. '
             'Låsta revisioner behåller sin egen riskmatris och sitt underlag.')
+        # The source table gives the same status once a LOPA has content.
+        # Retain this onboarding note only for a genuinely empty document.
+        self._sync_note.setVisible(not bool(rows))
         self._load_source_detail()
 
     def _check_hazop_links(self):
@@ -1050,6 +1136,7 @@ class LopaPanel(QWidget):
                     if consequence['hazop_consequence_id'] else 'Lokal LOPA-rad'))
             self._consequences.setItem(row_index, 5, self._readonly_cell(status))
         self._consequences.resizeRowsToContents()
+        self._fit_table_height(self._consequences, 56, 132)
         self._edit_consequence_btn.setEnabled(bool(rows) and self._revision_is_editable())
         self._add_consequence_btn.setEnabled(bool(self._source_id) and self._revision_is_editable())
         self._loading = old_loading
@@ -1059,6 +1146,7 @@ class LopaPanel(QWidget):
         if not self._source_id:
             self._worst_consequences.setRowCount(0)
             self._worst_note.setText('Välj ett källscenario för att se representativa konsekvenser.')
+            self._worst_note.show()
             return
         result = self.db.lopa_source_calculation(self._source_id)
         candidates = {}
@@ -1089,8 +1177,10 @@ class LopaPanel(QWidget):
             self._worst_consequences.setItem(
                 index, 3, self._readonly_cell('—' if row['tel'] is None else f"{row['tel']:.6g}"))
         self._worst_consequences.resizeRowsToContents()
+        self._fit_table_height(self._worst_consequences, 56, 112)
         self._worst_note.setText(
             'Aktiva LOPA-rader visas. Saknad TEL markeras med — och ger ingen beräknad SIL.')
+        self._worst_note.setVisible(any(row['tel'] is None for row in rows))
         self._loading = old_loading
 
     def _on_consequence_item_changed(self, item):
@@ -1223,14 +1313,18 @@ class LopaPanel(QWidget):
                       if member.get('origin_safeguard_id') else 'Lokal LOPA-givare')
             self._sensor_members.setItem(row_index, 3, self._readonly_cell(origin))
         self._sensor_members.resizeRowsToContents()
+        self._fit_table_height(self._sensor_members, 48, 92)
         if group:
             self._sensor_voting.setCurrentText(group['voting'])
             self._sensor_note.setText(
                 'Flera aktiva givare kräver bekräftad voting.' if group['needs_voting_review'] else
                 'Givardel från HAZOP. Voting och givare sparas på denna LOPA-revision.')
+            self._sensor_note.setVisible(bool(group['needs_voting_review']))
         else:
             self._sensor_voting.setCurrentText('1oo1')
             self._sensor_note.setText('Lägg till en givargrupp när LOPA:n behöver en definierad givardel.')
+            self._sensor_note.hide()
+        self._sensor_note.setToolTip(self._sensor_note.text())
         self._loading = old_loading
 
     def _save_sensor_voting(self, *_args):
@@ -1364,14 +1458,18 @@ class LopaPanel(QWidget):
             origin = 'Objektdatabas' if member.get('equipment_id') else 'Lokalt LOPA-objekt'
             self._final_members.setItem(row_index, 3, self._readonly_cell(origin))
         self._final_members.resizeRowsToContents()
+        self._fit_table_height(self._final_members, 48, 92)
         if group:
             self._final_voting.setCurrentText(group['voting'])
             self._final_note.setText(
                 'Flera aktiva manöverobjekt kräver bekräftad voting.' if group['needs_voting_review'] else
                 'Manöverdel sparas på denna LOPA-revision. Dubbelklicka på en rad för att ändra objekt eller åtgärd.')
+            self._final_note.setVisible(bool(group['needs_voting_review']))
         else:
             self._final_voting.setCurrentText('1oo1')
             self._final_note.setText('Lägg till en manövergrupp när LOPA:n behöver en definierad manöverdel.')
+            self._final_note.hide()
+        self._final_note.setToolTip(self._final_note.text())
         self._loading = old_loading
 
     def _save_final_voting(self, *_args):
@@ -1497,6 +1595,7 @@ class LopaPanel(QWidget):
             self._barriers.setItem(row_index, 4, self._readonly_cell(applies))
             self._barriers.setItem(row_index, 5, self._readonly_cell(status))
         self._barriers.resizeRowsToContents()
+        self._fit_table_height(self._barriers, 48, 106)
         enabled = bool(self._source_id) and self._revision_is_editable()
         self._add_barrier_btn.setEnabled(enabled)
         self._edit_barrier_btn.setEnabled(bool(rows) and enabled)
@@ -1558,6 +1657,7 @@ class LopaPanel(QWidget):
             self._barrier_matrix.setItem(row_index, len(headers) - 1, self._readonly_cell(text))
         self._barrier_matrix.resizeRowsToContents()
         self._barrier_matrix.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self._fit_table_height(self._barrier_matrix, 48, 104)
         self._loading = old_loading
 
     def _on_barrier_item_changed(self, item):
@@ -1716,6 +1816,7 @@ class LopaPanel(QWidget):
                 self._readonly_cell('—' if rrf is None else f'{rrf:.6g}'))
         self._escalation.resizeRowsToContents()
         self._escalation.resizeColumnsToContents()
+        self._fit_table_height(self._escalation, 48, 112)
         self._loading = old_loading
 
     def _on_escalation_item_changed(self, item):
@@ -1774,6 +1875,7 @@ class LopaPanel(QWidget):
             self._calculation.setItem(index, 3, self._cell(result['sil'] if source['active'] else '—'))
             self._calculation.setItem(index, 4, self._cell(evidence))
         self._calculation.resizeRowsToContents()
+        self._fit_table_height(self._calculation, 48, 92)
         governing = []
         for source in rows:
             if not source['active']:
@@ -1804,6 +1906,7 @@ class LopaPanel(QWidget):
             self._comments.setItem(index, 1, self._readonly_cell(comment.get('author') or '—'))
             self._comments.setItem(index, 2, self._readonly_cell(comment.get('body') or ''))
         self._comments.resizeRowsToContents()
+        self._fit_table_height(self._comments, 48, 82)
         self._loading = old_loading
 
     def _save_document_details(self):
@@ -1971,6 +2074,7 @@ class LopaPanel(QWidget):
         self._lopa_id = lopa_id
         self._revision_id = revision_id
         self.refresh()
+        self._reset_detail_scroll()
 
 
 class LopaConsequenceDialog(QDialog):
