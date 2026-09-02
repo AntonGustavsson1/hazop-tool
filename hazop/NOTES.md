@@ -5294,3 +5294,13 @@ Verifierat med riktade databas-, MainWindow-, träd-, integrations-, P&ID-
 placerings-, markeringsgransknings- och global-ersättningstester, inklusive
 ett faktiskt Qt-tangenttryck för Ctrl+Z/Ctrl+Y, samt `py_compile` och
 `git diff --check`. Ingen manuell visuell GUI-genomgång är gjord.
+
+## Omedelbar etikett efter gummibandsplacering (2026-09-02)
+
+Den förenklade popupen efter gummibandsdragning sparar tagg och objekttyp i
+`equipment_catalog`, men skickade tidigare ingen uppdateringssignal till
+P&ID-vyn. Popupen signalerar nu tagg-/typändringar via PIDPanelens befintliga
+overlay-refresh, så den nya etiketten visas direkt efter redigering.
+
+Verifierat med riktat test för gummibands-popupens tagg- och typändring samt
+de befintliga placerings- och asynkrona taggsökningstesterna.

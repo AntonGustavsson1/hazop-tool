@@ -851,6 +851,7 @@ class EquipmentPlacementPopup(QWidget):
 
     deviation_added   = pyqtSignal(int, int)   # (deviation_id, equipment_id)
     deviation_removed = pyqtSignal(int, int)   # (deviation_id, equipment_id)
+    equipment_updated = pyqtSignal(int)        # tag/type changed in this popup
 
     def __init__(self, db, equipment_id, marker_id, parent=None, simple=False):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -1227,6 +1228,10 @@ class EquipmentPlacementPopup(QWidget):
         self.db.update_equipment_item(
             self._equipment_id, tag, _equip_prefix_from_tag(tag) if tag else (eq.get('prefix') or ''),
             eq.get('equipment_type') or '', eq.get('description') or '')
+        # The catalog is the live source for P&ID labels, but this popup is
+        # opened after the marker was already drawn.  Refresh the overlays
+        # immediately after a tag commit so the new label is visible now.
+        self.equipment_updated.emit(self._equipment_id)
 
     def _add_new_type(self):
         """Same behavior as EquipmentTagPopup._add_new_type — also
@@ -1274,6 +1279,7 @@ class EquipmentPlacementPopup(QWidget):
                     self, "Objekt finns redan",
                     f"Ett objekt med taggnummer {tag} finns redan på denna P&ID.")
             self._reassign_to_existing(existing['id'])
+            self.equipment_updated.emit(self._equipment_id)
             return
 
         self._dup_hint.setText("")
@@ -1281,6 +1287,7 @@ class EquipmentPlacementPopup(QWidget):
         self.db.update_equipment_item(
             self._equipment_id, tag, _equip_prefix_from_tag(tag) if tag else (eq.get('prefix') or ''),
             eq.get('equipment_type') or '', eq.get('description') or '')
+        self.equipment_updated.emit(self._equipment_id)
 
     def _commit_type(self):
         eq = self.db.get_equipment_by_id(self._equipment_id)
@@ -1290,6 +1297,7 @@ class EquipmentPlacementPopup(QWidget):
         self.db.update_equipment_item(
             self._equipment_id, eq.get('tag') or '', eq.get('prefix') or '',
             comp_type, eq.get('description') or '')
+        self.equipment_updated.emit(self._equipment_id)
         if comp_type and eq.get('tag'):
             try:
                 self.db.upsert_tag_memory(eq.get('tag'), comp_type, comp_tag=eq.get('tag'))
@@ -3735,6 +3743,10 @@ class PIDPanel(QWidget):
         simple = pdf_rect is not None
         popup = EquipmentPlacementPopup(self.db, equipment_id, marker_id,
                                         parent=self.viewer, simple=simple)
+        # A rubber-band popup edits the same live equipment row as the
+        # existing-marker popup.  Reuse PIDPanel's normal refresh path so a
+        # newly entered tag/type is rendered on the P&ID immediately.
+        popup.equipment_updated.connect(self._on_equipment_bar_updated)
         if not simple:
             popup.create_cause_fn = (
                 lambda dev_id, ct, cmp_tag, desc, freq=None:

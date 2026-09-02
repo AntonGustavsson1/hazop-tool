@@ -729,6 +729,30 @@ class EquipmentPlacementRubberBandSimplePopupTests(unittest.TestCase):
         self.assertIn("Objekt:", labels)
         self.assertIn("Objekttyp:", labels)
 
+    def test_tag_and_type_edits_request_immediate_marker_refresh(self):
+        """A rubber-band popup must redraw its already-created marker as
+        soon as the user commits the tag/type, not only on a later reload."""
+        popup = self._place_with_rect(tag="", comp_type="")
+        updated = []
+        popup.equipment_updated.connect(updated.append)
+
+        with unittest.mock.patch.object(
+                self.panel, '_refresh_equipment_marker_visual') as refresh:
+            popup._tag_edit.setText("PV-101")
+            popup._commit_tag()
+            type_index = popup._type_cb.findText("Ventil")
+            if type_index < 0:
+                popup._type_cb.addItem("Ventil")
+                type_index = popup._type_cb.count() - 1
+            popup._type_cb.setCurrentIndex(type_index)
+            popup._commit_type()
+
+        self.assertEqual(updated, [popup._equipment_id, popup._equipment_id])
+        self.assertEqual(refresh.call_count, 2)
+        self.assertEqual(self.db.get_equipment_by_id(popup._equipment_id)['tag'], "PV-101")
+        self.assertEqual(
+            self.db.get_equipment_by_id(popup._equipment_id)['equipment_type'], "Ventil")
+
     def test_show_near_rect_positions_beside_not_over_the_rect(self):
         from pid_panel_mod import EquipmentPlacementPopup
         from PyQt6.QtCore import QRect
