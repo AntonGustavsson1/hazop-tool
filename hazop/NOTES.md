@@ -1,5 +1,40 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: knappstorlek, dödyta och ytterligare typsnittsminskning (2026-09-02, andra uppföljningen)
+
+Med riktiga typsnitt påslagna (headless-renderingen ovan körde tidigare
+`QT_QPA_PLATFORM=offscreen`, som saknar riktiga typsnitt helt — utan den
+flaggan använder Qt Windows riktiga systemtypsnitt även i ett skript, vilket
+gjorde det möjligt att faktiskt SE problemen för första gången) hittades och
+åtgärdades grundorsaken till det stora "onödiga storleksavståndet" vid
+"Värsta representativa konsekvens":
+
+**Grundorsak:** `Scenario`- och `Värsta konsekvens`-korten ligger sida vid
+sida i en `QHBoxLayout` utan `AlignTop`. Qt sträcker då båda korten till
+samma höjd som det högsta (Scenario-kortet, med mycket mer innehåll). Inuti
+det kortare kortet har både not-texten och tabellen redan en satt
+maxhöjd — så det enda som kan växa för att fylla ut den framtvingade extra
+höjden är kortets EGEN rubriketikett, som därför blåstes upp till att bli
+~260 px hög i stället för en enda textrad. Samma mönster fanns latent i
+`_set_row_direction()` (den delade hjälpmetoden för alla tre responsiva
+rader: Givardel/Manöverdel, Scenario/Värsta konsekvens, samt
+Beräkning/Krav/Kommentarer) och i motsvarande initiala `addWidget()`-anrop
+vid uppbyggnaden. Fixat genom att lägga till `Qt.AlignmentFlag.AlignTop` på
+samtliga sju platser — varje kort behåller nu sin egen naturliga höjd i
+stället för att sträckas till syskonets.
+
+Dessutom: alla knappar i `LopaPanel` får nu en delad minsta bredd
+(`QPushButton{min-width:84px}`, sidscopat) så att t.ex. `+ Lägg till` och
+`+ Egen LOPA-konsekvens` läser som samma sorts kontroll i stället för att
+variera ~2× i bredd — knapparnas HÖJD var redan enhetlig (25 px), det var
+bredden som gav intrycket av "olika stora knappar". Sid- och posttitel
+(`lopa_title_stylesheet`, `_record_title`) minskades ytterligare (16→14px,
+13→12px).
+
+Verifierat med samma 35 LOPA-/export-/design-/smoke-tester samt en ny
+headless-skärmdump MED riktiga Windows-typsnitt (inte bara tomma rutor) som
+bekräftar att dödytan är borta och knapparna är jämnstora.
+
 ## LOPA-sidans typografi och överblickbarhet (2026-09-02, uppföljning)
 
 Efter att en riktig skärmdump av LOPA-sidan äntligen kunde jämföras mot de

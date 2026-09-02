@@ -334,7 +334,7 @@ def lopa_title_stylesheet() -> str:
     a dense, document-like worksheet where many small cards need to be
     scannable at once; a large title competes with that for space and
     attention without adding information."""
-    return f'font-size:16px;font-weight:700;color:{TEXT};'
+    return f'font-size:14px;font-weight:700;color:{TEXT};'
 
 
 def lopa_section_title_stylesheet() -> str:

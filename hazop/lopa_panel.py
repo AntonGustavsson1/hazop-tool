@@ -148,7 +148,17 @@ class LopaPanel(QWidget):
 
     @staticmethod
     def _set_row_direction(layout, cards, horizontal_stretches, stacked: bool):
-        """Switch a document row between proportional columns and a stack."""
+        """Switch a document row between proportional columns and a stack.
+
+        Side-by-side cards (e.g. Scenario/Varsta konsekvens) rarely have the
+        same natural content height. Without AlignTop, QHBoxLayout stretches
+        every card to match the tallest sibling -- and since each card's own
+        table/note already has a fixed max-height, the only widget left to
+        absorb that leftover space is its section-title label, which then
+        stretches into a huge gap between the title and its own content
+        (2026-09-02 overview pass -- this was the "onodig storleksavstand"
+        bug). AlignTop lets each card keep its own preferred height instead.
+        """
         direction = (QBoxLayout.Direction.TopToBottom if stacked else
                      QBoxLayout.Direction.LeftToRight)
         if layout.direction() == direction:
@@ -157,7 +167,11 @@ class LopaPanel(QWidget):
             layout.takeAt(0)
         layout.setDirection(direction)
         for index, card in enumerate(cards):
-            layout.addWidget(card, 0 if stacked else horizontal_stretches[index])
+            if stacked:
+                layout.addWidget(card, 0)
+            else:
+                layout.addWidget(card, horizontal_stretches[index],
+                                 Qt.AlignmentFlag.AlignTop)
 
     def _toggle_analysis_panel(self, visible: bool):
         """Show the compact analysis picker only when the narrow view asks for it."""
@@ -219,7 +233,12 @@ class LopaPanel(QWidget):
         # size, and every LOPA-specific label already sets its own explicit
         # font-size (lopa_title_stylesheet/lopa_section_title_stylesheet/
         # lopa_note_stylesheet/...), which continues to take precedence.
-        self.setStyleSheet('QWidget{font-size:8pt;}')
+        # A shared min-width keeps every action button reading as the same
+        # kind of control ("+ Lagg till" vs "+ Egen LOPA-konsekvens" was a
+        # ~2x width spread) instead of auto-sizing purely to label length,
+        # which is what read as "buttons of different sizes" in practice --
+        # actual button HEIGHT was already uniform across the page.
+        self.setStyleSheet('QWidget{font-size:8pt;}QPushButton{min-width:84px;}')
         outer = QVBoxLayout(self)
         # Responsive rules, not a desktop size hint, decide how small the
         # page may become.  Without this Qt freezes the panel at the sum of
@@ -301,7 +320,7 @@ class LopaPanel(QWidget):
                                          LOPA_CARD_PADDING, LOPA_CARD_PADDING)
         top = QHBoxLayout()
         self._record_title = QLabel('Välj eller skapa en LOPA')
-        self._record_title.setStyleSheet('font-size:13px;font-weight:700;')
+        self._record_title.setStyleSheet('font-size:12px;font-weight:700;')
         top.addWidget(self._record_title)
         top.addStretch(1)
         self._status = QLabel('')
@@ -514,8 +533,8 @@ class LopaPanel(QWidget):
         overview_layout = QHBoxLayout(overview_row)
         overview_layout.setContentsMargins(0, 0, 0, 0)
         overview_layout.setSpacing(8)
-        overview_layout.addWidget(scenario_card, 3)
-        overview_layout.addWidget(worst_card, 2)
+        overview_layout.addWidget(scenario_card, 3, Qt.AlignmentFlag.AlignTop)
+        overview_layout.addWidget(worst_card, 2, Qt.AlignmentFlag.AlignTop)
 
         sensor_card = self._card()
         self._allow_card_to_shrink(sensor_card)
@@ -633,8 +652,8 @@ class LopaPanel(QWidget):
         drive_layout = QHBoxLayout(drive_row)
         drive_layout.setContentsMargins(0, 0, 0, 0)
         drive_layout.setSpacing(8)
-        drive_layout.addWidget(sensor_card, 1)
-        drive_layout.addWidget(final_card, 1)
+        drive_layout.addWidget(sensor_card, 1, Qt.AlignmentFlag.AlignTop)
+        drive_layout.addWidget(final_card, 1, Qt.AlignmentFlag.AlignTop)
         self._drive_layout = drive_layout
         self._drive_cards = (sensor_card, final_card)
         detail_layout.addWidget(drive_row)
@@ -847,9 +866,9 @@ class LopaPanel(QWidget):
         bottom_layout = QHBoxLayout(bottom_row)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(6)
-        bottom_layout.addWidget(calculation_card, 1)
-        bottom_layout.addWidget(document_card, 2)
-        bottom_layout.addWidget(comments_card, 2)
+        bottom_layout.addWidget(calculation_card, 1, Qt.AlignmentFlag.AlignTop)
+        bottom_layout.addWidget(document_card, 2, Qt.AlignmentFlag.AlignTop)
+        bottom_layout.addWidget(comments_card, 2, Qt.AlignmentFlag.AlignTop)
         self._bottom_layout = bottom_layout
         self._bottom_cards = (calculation_card, document_card, comments_card)
         detail_layout.addWidget(bottom_row)
