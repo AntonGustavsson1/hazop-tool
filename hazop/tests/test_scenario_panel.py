@@ -3418,6 +3418,45 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_empty_safeguard_spans_all_category_rows(self):
+        """Extra risk-category rows must not split an empty safeguard cell."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, likelihood=3)
+        cons_id = self.db.add_consequence(cause_id)
+        cats = self.db.consequence_categories()
+        self.db.set_consequence_severity(cons_id, cats[0]['id'], 3)
+        if len(cats) == 1:
+            second_cat = self.db.add_category('Testkategori')
+        else:
+            second_cat = cats[1]['id']
+        self.db.set_consequence_severity(cons_id, second_cat, 4)
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            rows = [r for r, meta in enumerate(panel._row_meta)
+                    if meta[2] == cons_id]
+            self.assertEqual(len(rows), 2)
+            # Qt returns the anchor's span for covered coordinates too.
+            self.assertEqual([panel._table.rowSpan(r, panel._C_SG)
+                              for r in rows], [2, 2])
+        finally:
+            panel.deleteLater()
+
+    def test_all_scenario_headers_are_right_aligned(self):
+        from hazop import ScenarioTablePanel
+        from PyQt6.QtCore import Qt
+        panel = ScenarioTablePanel(self.db)
+        try:
+            expected = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            for col in range(panel._table.columnCount()):
+                self.assertEqual(panel._table.horizontalHeaderItem(col).textAlignment(), expected)
+        finally:
+            panel.deleteLater()
+
 
 class RecommendationInlineAddRowTests(unittest.TestCase):
     """The temporary blank recommendation row must not be covered by the

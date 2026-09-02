@@ -5372,3 +5372,16 @@ Enablers-knappen i HAZOP Scenario tar inte längre fokus från tabellen. Vid
 markering sparas och återställs både vertikal och horisontell scrollposition,
 även efter popupens extra event-loop, så att protokollet inte hoppar till raden
 som klickades.
+
+## Enhetlig HAZOP-cell- och rubrikdesign (2026-09-02)
+
+RRF och frekvens använder nu samma platta sammanfattningsstil som Enablers,
+med samma neutrala/markerade ytor. Separatorerna i Orsak och Safeguard använder
+den gemensamma separatorfärgen. Tom Safeguard spänner över konsekvensens hela
+riskblock även när flera riskkategorier skapar extra rader, och samtliga
+Scenario/Worksheet-rubriker är explicit högerställda. Tomma markerade celler
+har ingen extra fokusram.
+
+Verifierat med 26 riktade smoke-/scenario-/integrations- och layouttester,
+`py_compile` och `git diff --check`. Headless Qt visar fortfarande de
+förväntade font-/OpenGL-varningarna.

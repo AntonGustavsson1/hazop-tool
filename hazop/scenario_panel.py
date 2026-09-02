@@ -2751,6 +2751,8 @@ _PID_ICON_W  = 22          # pixels reserved on the left for the pin icon
 _ORS_FIRST_LINE_H = 17
 
 _RRF_W       = 32          # compact width shared by RRF and Orsak frequency badges
+_SUMMARY_BADGE_BG = '#F5F5F3'
+_SUMMARY_SEPARATOR = '#E2E3E1'
 _PID_ICON_RE = re.compile(r'^[🟢📌]\s*')   # strip any old emoji prefix
 
 
@@ -3419,7 +3421,7 @@ class _PidDelegate(_ScenarioDelegate):
 
                 # RRF badge (right column)
                 badge_bg = (QColor(_SCENARIO_SELECTION_BG) if sel
-                            else QColor('#F5F5F3'))
+                            else QColor(_SUMMARY_BADGE_BG))
                 painter.fillRect(rrf_rect, badge_bg)
                 badge_tc = (QColor(_SCENARIO_SELECTION_FG) if sel
                             else QColor('#17191C'))
@@ -3441,7 +3443,7 @@ class _PidDelegate(_ScenarioDelegate):
                                  rrf_text)
 
                 # Separator line between description and badge
-                painter.setPen(QPen(QColor('#bcd'), 1))
+                painter.setPen(QPen(QColor(_SUMMARY_SEPARATOR), 1))
                 painter.drawLine(rrf_rect.left(), r.top(), rrf_rect.left(), r.bottom())
 
                 # Amber ○ indicator when safeguard excluded from any
@@ -3618,7 +3620,7 @@ class _PidDelegate(_ScenarioDelegate):
                     chip_rect = QRect(freq_zone_x, r.top(), freq_zone_w,
                                       min(_ORS_FIRST_LINE_H, r.height()))
                     chip_bg = (QColor(_SCENARIO_SELECTION_BG) if sel
-                               else QColor('#F5F5F3'))
+                               else QColor(_SUMMARY_BADGE_BG))
                     painter.fillRect(chip_rect, chip_bg)
                     painter.setFont(ff)
                     f_tc = (QColor(_SCENARIO_SELECTION_FG) if sel
@@ -3628,7 +3630,7 @@ class _PidDelegate(_ScenarioDelegate):
                                      Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
                                      ffm.elidedText(freq_str, Qt.TextElideMode.ElideRight,
                                                     max(1, freq_zone_w - 2)))
-                    painter.setPen(QPen(QColor('#bcd'), 1))
+                    painter.setPen(QPen(QColor(_SUMMARY_SEPARATOR), 1))
                     painter.drawLine(chip_rect.left(), r.top(),
                                      chip_rect.left(), r.bottom())
 
@@ -4415,7 +4417,7 @@ class _LopaWidget(QWidget):
 
     def _apply_button_style(self):
         background = (_SCENARIO_SELECTION_BG if self._selected
-                      else '#F5F5F3')
+                      else _SUMMARY_BADGE_BG)
         hover = ('#C8CCC8' if self._selected else '#E8E9E6')
         self._extra_btn.setStyleSheet(
             f'QPushButton#enablerSummaryButton{{background:{background};'
@@ -4609,9 +4611,19 @@ class ScenarioTablePanel(QWidget):
             "QTableWidget{border-radius:0px;}"
             "QTableWidget::item{padding:2px 3px;border:none;}"
             f"QTableWidget::item:selected{{background:{_SCENARIO_SELECTION_BG};"
-            f"color:{_SCENARIO_SELECTION_FG};border:none;}}"
+            f"color:{_SCENARIO_SELECTION_FG};border:none;outline:none;}}"
+            "QTableWidget::item:focus{border:none;outline:none;}"
             "QHeaderView::section{background:#F5F5F3;color:#8D9299;"
             "font-weight:600;padding:3px;border-radius:0px;}")
+        # All headers, including columns revealed in Worksheet mode, use the
+        # same right-aligned compact presentation.
+        header_alignment = (Qt.AlignmentFlag.AlignRight |
+                             Qt.AlignmentFlag.AlignVCenter)
+        h.setDefaultAlignment(header_alignment)
+        for col in range(self._table.columnCount()):
+            header_item = self._table.horizontalHeaderItem(col)
+            if header_item is not None:
+                header_item.setTextAlignment(header_alignment)
         self._table.cellChanged.connect(self._on_cell_changed)
         self._table.cellClicked.connect(self._on_cell_clicked)
         self._table.itemDoubleClicked.connect(self._on_cell_double_clicked)
@@ -5686,7 +5698,16 @@ class ScenarioTablePanel(QWidget):
             _span_col(col, _risk_key)
         # Safeguards have their own independent row blocks.  Repeated ids
         # are intentional when the shared grid is taller than the list.
-        _span_col(self._C_SG, lambda r: _meta(r, 3))
+        # An empty safeguard is one shared empty cell for the complete
+        # consequence block. Category-specific risk rows must not create
+        # several visually separate blank safeguard cells.
+        def _sg_key(r):
+            sg_id = _meta(r, 3)
+            if sg_id is not None:
+                return ('safeguard', sg_id)
+            cons_id = _meta(r, 2)
+            return ('empty_safeguard', cons_id) if cons_id is not None else None
+        _span_col(self._C_SG, _sg_key)
         logging.info('_apply_spans: J6 — RFORE/SLUT/SG columns spanned, done')
 
     def _compute_row_height(self, row, fm=None):
@@ -7548,7 +7569,13 @@ class ScenarioTablePanel(QWidget):
         if len(tags) < 2:
             return 'OR'
         meta = item.data(Qt.ItemDataRole.UserRole) if item else None
-        cause = self.db.get_cause(meta[1]) if meta else None
+        try:
+            cause = self.db.get_cause(meta[1]) if meta else None
+        except Exception:
+            # A queued repaint may arrive while a temporary test/window is
+            # being torn down and its SQLite connection has just closed.
+            # Group rendering must remain harmless in that short window.
+            cause = None
         raw = (cause.get('comp_tag') or '') if cause else ''
         match = re.search(r'\s(&|OR|<>|->|\+)\s', raw, re.IGNORECASE)
         if not match:
