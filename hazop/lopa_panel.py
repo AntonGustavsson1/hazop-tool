@@ -481,9 +481,6 @@ class LopaPanel(QWidget):
         self._hazop_hierarchy.currentCellChanged.connect(self._on_hazop_hierarchy_selection_changed)
         source_layout.addWidget(self._hazop_hierarchy)
         source_actions = QHBoxLayout()
-        self._sync_sources_btn = QPushButton('Kontrollera HAZOP-kopplingar')
-        self._sync_sources_btn.clicked.connect(self._check_hazop_links)
-        source_actions.addWidget(self._sync_sources_btn)
         source_actions.addStretch(1)
         self._source_sync_note = QLabel('')
         self._source_sync_note.setWordWrap(True)
@@ -513,9 +510,6 @@ class LopaPanel(QWidget):
         self._scenario_text.setFixedHeight(50)
         scenario_layout.addWidget(self._scenario_text)
         scenario_actions = QHBoxLayout()
-        self._goto_hazop_btn = QPushButton('Gå till HAZOP')
-        self._goto_hazop_btn.clicked.connect(self._go_to_hazop)
-        scenario_actions.addWidget(self._goto_hazop_btn)
         scenario_actions.addStretch()
         self._save_scenario_btn = QPushButton('Spara lokal scenariotext')
         self._save_scenario_btn.clicked.connect(self._save_scenario_text)
@@ -956,7 +950,6 @@ class LopaPanel(QWidget):
         self._choose_performed_btn.setEnabled(False)
         self._hazop_hierarchy.clearContents()
         self._hazop_hierarchy.setRowCount(0)
-        self._sync_sources_btn.setEnabled(False)
         self._source_sync_note.clear()
         self._sensor_group.clear()
         self._sensor_members.setRowCount(0)
@@ -986,7 +979,6 @@ class LopaPanel(QWidget):
         self._scenario_text.clear()
         self._scenario_text.setEnabled(False)
         self._save_scenario_btn.setEnabled(False)
-        self._goto_hazop_btn.setEnabled(False)
         self._edit_consequence_btn.setEnabled(False)
         self._sensor_voting.setEnabled(False)
         self._add_sensor_group_btn.setEnabled(False)
@@ -1334,7 +1326,6 @@ class LopaPanel(QWidget):
         self._hazop_hierarchy.resizeRowsToContents()
         self._fit_table_height(self._hazop_hierarchy, 72, 192)
         self._source_id = selected_source
-        self._sync_sources_btn.setEnabled(bool(sources))
         changed = sum(1 for source in sources
                       if self.db.lopa_source_sync_state(source['id'])['state'] == 'changed')
         self._source_sync_note.setText(
@@ -1346,10 +1337,6 @@ class LopaPanel(QWidget):
         self._sync_note.setVisible(not bool(sources))
         self._loading = old_loading
         self._load_source_detail()
-
-    def _check_hazop_links(self):
-        """Re-evaluate sync state without changing any revision snapshot."""
-        self._populate_hazop_hierarchy()
 
     def _on_hazop_hierarchy_selection_changed(self, current_row, _current_column,
                                               _previous_row, _previous_column):
@@ -1404,7 +1391,6 @@ class LopaPanel(QWidget):
             self._scenario_text.clear()
             self._scenario_text.setEnabled(False)
             self._save_scenario_btn.setEnabled(False)
-            self._goto_hazop_btn.setEnabled(False)
             self._scenario_note.setText('Välj ett källscenario för att beskriva vad som händer i processen.')
             self._barriers.setRowCount(0)
             self._barrier_matrix.setRowCount(0)
@@ -1427,7 +1413,6 @@ class LopaPanel(QWidget):
         self._scenario_text.setPlainText(source.get('scenario_text') or '')
         self._scenario_text.setEnabled(editable)
         self._save_scenario_btn.setEnabled(editable)
-        self._goto_hazop_btn.setEnabled(bool(source.get('hazop_cause_id')))
         self._control_frequency.setText(source.get('control_frequency') or '')
         self._control_frequency.setEnabled(editable)
         self._assumption_percent.setValue(float(source.get('assumption_percent') or 0.0))
@@ -1473,16 +1458,6 @@ class LopaPanel(QWidget):
             return
         self._populate_hazop_hierarchy()
         self.changed.emit()
-
-    def _go_to_hazop(self):
-        source = next((row for row in self.db.lopa_sources(self._revision_id)
-                       if row['id'] == self._source_id), None) if self._source_id else None
-        cause_id = source.get('hazop_cause_id') if source else None
-        if not cause_id:
-            QMessageBox.information(self, 'HAZOP-källa saknas',
-                                    'Det valda scenariot har ingen aktiv HAZOP-orsak att gå till.')
-            return
-        self.hazop_navigation_requested.emit(int(cause_id))
 
     def _save_source_analysis_details(self):
         """Save LOPA-only frequency assumptions for the selected source."""

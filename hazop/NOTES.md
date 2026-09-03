@@ -1,5 +1,17 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: ta bort redundanta HAZOP-knappar (2026-09-03)
+
+Knapparna **Kontrollera HAZOP-kopplingar** och **Gå till HAZOP** är borttagna
+från LOPA-modulen. Kopplingsstatusen visas fortfarande som information, och
+orsaksreferensen i HAZOP-SCENARIER är den enda tydliga vägen tillbaka till
+den exakta HAZOP-orsaken. Därmed finns inte två parallella sätt att öppna
+eller kontrollera samma HAZOP-källa.
+
+Verifierat med LOPA-smoke-test som kontrollerar att referensen fungerar och
+att de borttagna kontrollerna inte längre skapas. Visuell kontroll i vanliga
+Qt-appen återstår.
+
 ## LOPA: eskaleringstabellen fyller hela raden (2026-09-03)
 
 Eskaleringstabellen behåller sina kompakta sifferkolumner men låter den

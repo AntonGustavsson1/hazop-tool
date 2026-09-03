@@ -304,8 +304,8 @@ class SmokeTests(unittest.TestCase):
             p.hazop_navigation_requested.connect(navigated.append)
             source_reference.click()
             self.assertEqual([cause_id], navigated)
-            p._go_to_hazop()
-            self.assertEqual([cause_id, cause_id], navigated)
+            self.assertFalse(hasattr(p, '_sync_sources_btn'))
+            self.assertFalse(hasattr(p, '_goto_hazop_btn'))
         finally:
             p.deleteLater()
 
