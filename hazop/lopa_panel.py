@@ -74,9 +74,10 @@ from design import (
 class _BarrierMatrixHeaderWidget(QWidget):
     """Custom hierarchical header for barrier matrix: type → (Barriär, RRF)."""
 
-    def __init__(self, barrier_types: list, parent=None):
+    def __init__(self, barrier_types: list, column_widths=None, parent=None):
         super().__init__(parent)
         self.barrier_types = barrier_types
+        self.column_widths = column_widths or []
         self._build()
 
     def _build(self):
@@ -84,16 +85,23 @@ class _BarrierMatrixHeaderWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        col_idx = 0
         # Fixed columns
         for label_text in ['Källscenario', 'Grundfrekvens']:
             label = QLabel(label_text)
             label.setStyleSheet(f'font-weight: 600; padding: 8px; border-right: 1px solid #ddd;')
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(label, 1)
+            if col_idx < len(self.column_widths):
+                label.setFixedWidth(self.column_widths[col_idx])
+            layout.addWidget(label, 0)
+            col_idx += 1
 
         # Barrier types with sub-headers
         for barrier_type in self.barrier_types:
+            type_width = sum(self.column_widths[col_idx:col_idx+2]) if col_idx+1 < len(self.column_widths) else 0
             type_container = QWidget()
+            if type_width > 0:
+                type_container.setFixedWidth(type_width)
             type_layout = QVBoxLayout(type_container)
             type_layout.setContentsMargins(0, 0, 0, 0)
             type_layout.setSpacing(0)
@@ -117,17 +125,22 @@ class _BarrierMatrixHeaderWidget(QWidget):
                     'font-weight: 500; font-size: 11px; padding: 4px; text-align: center; '
                     'border-right: 1px solid #ddd; color: #666;')
                 sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                sub_layout.addWidget(sub_label, 1)
+                if col_idx < len(self.column_widths):
+                    sub_label.setFixedWidth(self.column_widths[col_idx])
+                sub_layout.addWidget(sub_label, 0)
+                col_idx += 1
 
             type_layout.addLayout(sub_layout)
-            layout.addWidget(type_container, 2)
+            layout.addWidget(type_container, 0)
 
         # Fixed column: Återstående frekvens
         remaining_label = QLabel('Återstående\nfrekvens')
         remaining_label.setStyleSheet('font-weight: 600; padding: 8px; text-align: center;')
         remaining_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         remaining_label.setWordWrap(True)
-        layout.addWidget(remaining_label, 1)
+        if col_idx < len(self.column_widths):
+            remaining_label.setFixedWidth(self.column_widths[col_idx])
+        layout.addWidget(remaining_label, 0)
 
         self.setFixedHeight(50)
 
@@ -1410,7 +1423,7 @@ class LopaPanel(QWidget):
             self._populate_hazop_hierarchy()
 
     def _add_local_scenario(self):
-        """Create a new local (non-HAZOP) LOPA scenario."""
+        """Create a new local (non-HAZOP) LOPA scenario and prompt for first consequence."""
         if not self._revision_id:
             return
 
@@ -1418,6 +1431,8 @@ class LopaPanel(QWidget):
             source_id = self.db.add_lopa_local_source(self._revision_id)
             self._source_id = source_id
             self._populate_hazop_hierarchy(select_consequence_id=None)
+            # Automatically open consequence dialog for new local scenario
+            QTimer.singleShot(100, self._add_custom_consequence)
             self.changed.emit()
         except Exception as exc:
             QMessageBox.warning(self, 'Kunde inte skapa scenario', str(exc))
@@ -2167,18 +2182,6 @@ class LopaPanel(QWidget):
             self._barrier_summary.clear()
         self._loading = old_loading
 
-    def _sync_barrier_matrix_header_width(self):
-        """Sync header widget column widths to match table column widths."""
-        if not self._barrier_matrix_header or self._barrier_matrix.columnCount() == 0:
-            return
-
-        # Set header widget to match table width
-        total_width = sum(
-            self._barrier_matrix.columnWidth(col)
-            for col in range(self._barrier_matrix.columnCount()))
-        self._barrier_matrix_header.setMinimumWidth(total_width)
-        self._barrier_matrix_header.setMaximumWidth(total_width + 50)
-
     def _populate_barrier_matrix(self):
         """Show the screen-wide LOPA barrier picture without duplicating HAZOP.
 
@@ -2196,12 +2199,16 @@ class LopaPanel(QWidget):
         old_loading = self._loading
         self._loading = True
         self._barrier_matrix.setColumnCount(len(headers))
-        # Update custom hierarchical header
+        # Set default column widths before rendering
+        for col in range(len(headers)):
+            self._barrier_matrix.setColumnWidth(col, 100)
+        # Create placeholder header (will be synced after column widths are determined)
         if self._barrier_matrix_header:
             self._barrier_container_layout.removeWidget(self._barrier_matrix_header)
             self._barrier_matrix_header.deleteLater()
         self._barrier_matrix_header = _BarrierMatrixHeaderWidget(types, parent=self)
         self._barrier_container_layout.insertWidget(0, self._barrier_matrix_header)
+
         self._barrier_matrix.setRowCount(len(sources))
         for row_index, source in enumerate(sources):
             cause = source.get('cause_text') or f"Källscenario {source['id']}"
@@ -2241,18 +2248,27 @@ class LopaPanel(QWidget):
         self._fit_table_height(self._barrier_matrix, 48, 104)
 
         # Sync header width with table columns
-        self._sync_barrier_matrix_header_width()
+        self._sync_barrier_matrix_header_width(types)
 
         self._loading = old_loading
 
-    def _sync_barrier_matrix_header_width(self):
-        """Synchronize custom header widget width with table column widths."""
-        if not self._barrier_matrix_header:
+    def _sync_barrier_matrix_header_width(self, barrier_types):
+        """Synchronize custom header widget widths to table column widths."""
+        if self._barrier_matrix.columnCount() == 0:
             return
-        total_width = sum(self._barrier_matrix.columnWidth(i)
-                         for i in range(self._barrier_matrix.columnCount()))
-        self._barrier_matrix_header.setMinimumWidth(total_width)
-        self._barrier_matrix_header.setMaximumWidth(total_width)
+
+        # Collect actual column widths from table
+        column_widths = [self._barrier_matrix.columnWidth(i)
+                        for i in range(self._barrier_matrix.columnCount())]
+
+        # Recreate header with correct widths
+        if self._barrier_matrix_header:
+            self._barrier_container_layout.removeWidget(self._barrier_matrix_header)
+            self._barrier_matrix_header.deleteLater()
+
+        self._barrier_matrix_header = _BarrierMatrixHeaderWidget(
+            barrier_types, column_widths=column_widths, parent=self)
+        self._barrier_container_layout.insertWidget(0, self._barrier_matrix_header)
 
     def _on_barrier_item_changed(self, item):
         if self._loading or item.column() != 0:
