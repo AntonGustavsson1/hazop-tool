@@ -9,6 +9,11 @@ sedan en gång indragen under rätt orsak, även om den ännu saknar en
 konsekvensbedömning. Kategori- och riskbedömningarna ligger under sin egen
 konsekvensrad och upprepar alltså aldrig konsekvenstexten.
 
+Tabellen har separata kolumner för **Orsak** och **Konsekvens**. Orsaken
+fylls bara på föräldraraden, konsekvensen bara på dess barnrad och
+**Kategori / riskbedömning** används enbart för nivå/RRF/SIL. Grundfrekvens
+har en egen kolumn, så den blandas inte ihop med riskbedömningen.
+
 Detta är viktigt eftersom `lopa_source_consequences` i databasen medvetet
 lagrar en rad per **konsekvens × kategori**, inte en rad per konsekvens.
 En ny läsmodell grupperar nu de sparade bedömningarna under den korrekta

@@ -246,10 +246,17 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(2, source_item.child(0).childCount())
             self.assertEqual(2, source_item.child(1).childCount())
             self.assertEqual(0, source_item.child(2).childCount())
-            self.assertEqual('Överfyllnad', source_item.child(0).text(2))
-            self.assertNotEqual('Överfyllnad', source_item.child(0).child(0).text(2))
+            self.assertEqual('', source_item.child(0).text(2))
+            self.assertEqual('Överfyllnad', source_item.child(0).text(3))
+            self.assertEqual('', source_item.child(0).child(0).text(3))
+            self.assertIn('Nivå', source_item.child(0).child(0).text(4))
             self.assertEqual(unassessed_cons_id, source_item.child(2).data(
                 0, p._ROLE_HAZOP_CONSEQUENCE_ID))
+            self.assertEqual(
+                ['Aktiv', 'HAZOP-hierarki', 'Orsak', 'Konsekvens',
+                 'Kategori / riskbedömning', 'Grundfrekvens'],
+                [p._hazop_hierarchy.headerItem().text(index)
+                 for index in range(p._hazop_hierarchy.columnCount())])
             self.assertNotIn('Status', [
                 p._hazop_hierarchy.headerItem().text(index)
                 for index in range(p._hazop_hierarchy.columnCount())])

@@ -456,9 +456,10 @@ class LopaPanel(QWidget):
         source_label.setStyleSheet(lopa_section_title_stylesheet())
         source_layout.addWidget(source_label)
         self._hazop_hierarchy = QTreeWidget()
-        self._hazop_hierarchy.setColumnCount(4)
+        self._hazop_hierarchy.setColumnCount(6)
         self._hazop_hierarchy.setHeaderLabels([
-            'Aktiv', 'HAZOP-hierarki', 'Orsak / konsekvens', 'Kategori / riskbedömning',
+            'Aktiv', 'HAZOP-hierarki', 'Orsak', 'Konsekvens',
+            'Kategori / riskbedömning', 'Grundfrekvens',
         ])
         self._hazop_hierarchy.setRootIsDecorated(True)
         self._hazop_hierarchy.setItemsExpandable(True)
@@ -472,7 +473,9 @@ class LopaPanel(QWidget):
         hierarchy_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         hierarchy_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         hierarchy_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        hierarchy_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hierarchy_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        hierarchy_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        hierarchy_header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self._configure_compact_tree(self._hazop_hierarchy, 72, 192)
         self._hazop_hierarchy.itemChanged.connect(self._on_hazop_hierarchy_item_changed)
         self._hazop_hierarchy.currentItemChanged.connect(self._on_hazop_hierarchy_selection_changed)
@@ -1265,7 +1268,7 @@ class LopaPanel(QWidget):
             source_item.setText(2, ' — '.join(part for part in (
                 object_trigger, source.get('cause_text') or 'Orsak utan text') if part))
             source_item.setText(
-                3, f"{source['base_frequency']:.3g} /år"
+                5, f"{source['base_frequency']:.3g} /år"
                 if source.get('base_frequency') is not None else 'Frekvens saknas')
             source_reference = self.db.hazop_hierarchy_reference(cause_id=cause_id)
             self._hazop_hierarchy.addTopLevelItem(source_item)
@@ -1280,10 +1283,10 @@ class LopaPanel(QWidget):
                     kind=self._HIERARCHY_HAZOP_CONSEQUENCE, cause_id=cause_id,
                     consequence_id=consequence_id, checkable=False)
                 description = consequence.get('description') or 'Beskrivning saknas'
-                child_item.setText(2, description)
+                child_item.setText(3, description)
                 assessments = consequence.get('assessments') or []
                 child_item.setText(
-                    3, (f"{len(assessments)} kategoribedömning(ar)" if assessments else
+                    4, (f"{len(assessments)} kategoribedömning(ar)" if assessments else
                         'Ingen kategoribedömning'))
                 consequence_reference = self.db.hazop_hierarchy_reference(
                     consequence_id=consequence_id)
@@ -1300,10 +1303,11 @@ class LopaPanel(QWidget):
                         kind=self._HIERARCHY_CONSEQUENCE, cause_id=cause_id,
                         consequence_id=consequence_id)
                     assessment_item.setText(
-                        2, assessment.get('category_name') or 'Konsekvenskategori')
-                    assessment_item.setText(
-                        3, self._risk_assessment_summary(
-                            assessment, calculations_by_assessment.get(assessment['id'])))
+                        4, ' — '.join(part for part in (
+                            assessment.get('category_name') or 'Konsekvenskategori',
+                            self._risk_assessment_summary(
+                                assessment, calculations_by_assessment.get(assessment['id'])))
+                            if part))
                     child_item.addChild(assessment_item)
                     if assessment['id'] == select_consequence_id:
                         selected_item = assessment_item
@@ -1318,7 +1322,7 @@ class LopaPanel(QWidget):
             self._hazop_hierarchy.setCurrentItem(selected_item)
         self._hazop_hierarchy.resizeColumnToContents(0)
         self._hazop_hierarchy.resizeColumnToContents(1)
-        self._hazop_hierarchy.resizeColumnToContents(3)
+        self._hazop_hierarchy.resizeColumnToContents(5)
         self._fit_tree_height(self._hazop_hierarchy, 72, 192)
         self._source_id = selected_source
         self._sync_sources_btn.setEnabled(bool(sources))
