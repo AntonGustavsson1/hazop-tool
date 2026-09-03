@@ -5865,3 +5865,20 @@ storlek.
 Verifierat med 68 smoke-/P&ID-/paneltester, `py_compile` och
 `git diff --check`. Visuell kontroll av hela draggesten återstår i en riktig
 Qt-display eftersom testmiljön är headless.
+
+## LOPA: konsekvenskategori per kolumn (2026-09-03)
+
+Tabellen `HAZOP-SCENARIER` visar nu en rad per konsekvens. Varje aktiv
+konsekvenskategori i LOPA-riskmatrisen får en egen kolumn, exempelvis Person
+och Miljö. Cellen visar den importerade HAZOP-nivån och innehåller samtidigt
+en egen Aktiv-kryssruta; kategorier utan angiven HAZOP-nivå visas som `—`.
+Äldre importer med en kategori som inte längre finns i riskmatrisens
+inställningar behålls också som egen kolumn.
+
+Aktiv-ändringen är fortsatt revisionslokal. Vid både bekräftat och avbrutet
+val återställs tabellens höjd, rad- och kolumnbredder, så den tidigare
+tabellförskjutningen inte återkommer i detta flöde.
+
+Verifierat med `py_compile`, hela `tests.test_smoke` (14 tester), den riktade
+LOPA-smoke-regressionen och `git diff --check`. GUI-flödet är testat headless;
+visuell kontroll i en riktig Qt-display återstår.
