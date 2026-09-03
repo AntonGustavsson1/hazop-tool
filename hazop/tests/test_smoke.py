@@ -48,7 +48,7 @@ for _p in (_HAZOP_DIR, _TEST_DIR):
         sys.path.insert(0, str(_p))
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QBoxLayout
+from PyQt6.QtWidgets import QApplication, QBoxLayout, QHeaderView
 
 
 def _ensure_qapp():
@@ -286,6 +286,8 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(1, p._barriers.rowCount())
             # Every actual consequence/category pair has its own risk row.
             self.assertEqual(4, p._escalation.rowCount())
+            self.assertEqual(QHeaderView.ResizeMode.Stretch,
+                             p._escalation.horizontalHeader().sectionResizeMode(1))
             self.assertEqual('Överfyllnad', p._escalation.item(0, 1).text())
             self.assertEqual('Utsläpp till mark', p._escalation.item(2, 1).text())
             self.assertIsNotNone(p._sensor_group.currentData())

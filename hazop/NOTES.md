@@ -1,5 +1,17 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: eskaleringstabellen fyller hela raden (2026-09-03)
+
+Eskaleringstabellen behåller sina kompakta sifferkolumner men låter den
+beskrivande kolumnen **Konsekvens** ta all återstående bredd. Tabellen och
+dess kort använder expanderande storlekspolicy, så eskaleringsdelen fyller
+hela den tillgängliga raden utan en tom högermarginal. Den dynamiska
+faktorkolumnen och beräkningsresultaten påverkas inte.
+
+Verifierat med LOPA-smoke-testets riktiga datavy och kontroll av
+Konsekvens-kolumnens stretch-läge. Visuell kontroll i den vanliga Qt-appen
+återstår.
+
 ## LOPA: kompakt HAZOP-scenariotabell med mergade källceller (2026-09-03)
 
 LOPA-modulens tabell **HAZOP-SCENARIER** är nu en dokumenttabell i stället

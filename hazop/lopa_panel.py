@@ -769,6 +769,8 @@ class LopaPanel(QWidget):
         self._escalation.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._escalation.setWordWrap(True)
         self._escalation.setStyleSheet(lopa_table_stylesheet())
+        self._escalation.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                       QSizePolicy.Policy.Preferred)
         self._escalation.itemChanged.connect(self._on_escalation_item_changed)
         self._configure_compact_table(self._escalation, 48, 112)
         escalation_layout.addWidget(self._escalation)
@@ -2056,6 +2058,13 @@ class LopaPanel(QWidget):
         self._loading = True
         self._escalation.setColumnCount(len(headers))
         self._escalation.setHorizontalHeaderLabels(headers)
+        escalation_header = self._escalation.horizontalHeader()
+        for column in range(len(headers)):
+            escalation_header.setSectionResizeMode(
+                column, QHeaderView.ResizeMode.ResizeToContents)
+        # The consequence is the only descriptive column.  Let it absorb
+        # remaining space so the escalation table reads as a full-width row.
+        escalation_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._escalation.setRowCount(len(assessments))
         editable = self._revision_is_editable()
         raw_assessments = {
