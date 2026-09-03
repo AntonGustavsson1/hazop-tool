@@ -1,5 +1,33 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: Visa ursprungsorsaken från HAZOP (Objekt + Orsakshändelse) (2026-09-03)
+
+I LOPA HAZOP-scenarier-tabellen visas nu **ursprungsorsaken från HAZOP** istället för 
+LOPA-källbeskrivningen. Format:
+
+**Innan:** "Låg omgivandstemp"  
+**Nu:** "V-1 - Högt tryck" (Objekt - Orsakshändelse/Deviation)
+
+**Exempel:**
+- "FI-1 - Lågt flöde" (enkel orsak)
+- "V-1, FV-2 - Högt tryck" (flerobjektssystem)
+- "Högt tryck" (om inget objekt finns)
+
+**Implementering:**
+- Ny `_build_original_cause_text()` hämtar från HAZOP-tabellen
+- Objekt från `equipment_catalog.tag` (via `equipment_id`)
+- Orsakshändelse från `deviations.description` (guide word)
+- Stöd för `group_equipment_ids` för flerorsakersystem
+- Fallback till endast orsakshändelse om objekt saknas
+
+**Fördelar:**
+✓ Ursprungsorsaken är omedelbar synlig
+✓ Länken till HAZOP-källan är tydlig
+✓ Flerorsakersystem stödjs automatiskt
+✓ Gör LOPA-analysen mer traceable
+
+Testad med smoke-test (14/14 pass). Visuell verifiering i Qt-appen återstår.
+
 ## LOPA: Oberoende barriärer-tabell med hierarkisk header (2026-09-03)
 
 Omstrukturerad barriärmatrisen för bättre läsbarhet med **hierarkisk header**:
