@@ -140,6 +140,33 @@ class DatabaseLayerTests(unittest.TestCase):
         self.assertIsNotNone(self.db.get_consequence(ids['cons_id']))
         self.assertIsNotNone(self.db.get_safeguard(ids['sg_id']))
 
+    def test_hazop_hierarchy_reference_follows_visible_tree_order(self):
+        """LOPA links must expose tree paths, never internal row IDs."""
+        node_id = self.db.nodes()[0]['id']
+        deviation_id = self.db.deviations(node_id)[0]['id']
+        first_cause = self.db.add_cause(deviation_id)
+        second_cause = self.db.add_cause(deviation_id)
+        first_consequence = self.db.add_consequence(first_cause)
+        second_consequence = self.db.add_consequence(first_cause)
+
+        self.assertEqual('1.1.1.1.1', self.db.hazop_hierarchy_reference(
+            cause_id=first_cause))
+        self.assertEqual('1.1.1.1.2', self.db.hazop_hierarchy_reference(
+            cause_id=second_cause))
+        self.assertEqual('1.1.1.1.1.1', self.db.hazop_hierarchy_reference(
+            consequence_id=first_consequence))
+        self.assertEqual('1.1.1.1.1.2', self.db.hazop_hierarchy_reference(
+            consequence_id=second_consequence))
+
+        self.db.set_sibling_order(
+            'causes', 'deviation_id', deviation_id, [second_cause, first_cause])
+        self.assertEqual('1.1.1.1.2', self.db.hazop_hierarchy_reference(
+            cause_id=first_cause))
+        self.assertEqual('1.1.1.1.1', self.db.hazop_hierarchy_reference(
+            cause_id=second_cause))
+        self.assertEqual('1.1.1.1.2.1', self.db.hazop_hierarchy_reference(
+            consequence_id=first_consequence))
+
     # ── orphaned-data crash class (bug #1) ───────────────────────────────
 
     def test_delete_cause_then_access_orphaned_consequence_and_safeguard(self):

@@ -5912,6 +5912,114 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM consequences WHERE cause_id=? ORDER BY sort_order, id", (cause_id,)).fetchall()
 
+    def hazop_hierarchy_reference(self, *, cause_id=None, consequence_id=None):
+        """Return the visible HAZOP-tree reference for a cause/consequence.
+
+        The value deliberately follows the *presentation* hierarchy (study,
+        optional system, node, guide word, cause and consequence) instead of
+        exposing mutable database IDs.  That makes a LOPA reference readable
+        in a report and keeps it aligned with the ordering users see after
+        reordering items in the HAZOP tree.
+
+        The study is always level ``1``.  A system is included only when the
+        node belongs to one; ungrouped legacy nodes therefore have a shorter,
+        but still unambiguous, path.  ``None`` is returned when the stored
+        HAZOP source no longer exists, preserving historic LOPA rows without
+        inventing a misleading reference.
+        """
+        consequence = None
+        if consequence_id is not None:
+            consequence = self.get_consequence(consequence_id)
+            if not consequence:
+                return None
+            cause_id = consequence.get('cause_id')
+        if cause_id is None:
+            return None
+        cause = self.get_cause(cause_id)
+        if not cause:
+            return None
+        node = self.get_node(cause.get('node_id'))
+        if not node:
+            return None
+
+        reference = ['1']  # one HAZOP study in the current project document
+        node_id = node['id']
+        system_id = node.get('system_id')
+        if system_id is not None:
+            systems = [dict(row) for row in self.systems()]
+            system_index = next(
+                (index for index, system in enumerate(systems, start=1)
+                 if system['id'] == system_id), None)
+            if system_index is None:
+                return None
+            nodes_in_system = [dict(row) for row in self.nodes()
+                               if row['system_id'] == system_id]
+            node_index = next(
+                (index for index, item in enumerate(nodes_in_system, start=1)
+                 if item['id'] == node_id), None)
+            if node_index is None:
+                return None
+            reference.extend((str(system_index), str(node_index)))
+        else:
+            ungrouped_nodes = [dict(row) for row in self.nodes()
+                               if row['system_id'] is None]
+            node_index = next(
+                (index for index, item in enumerate(ungrouped_nodes, start=1)
+                 if item['id'] == node_id), None)
+            if node_index is None:
+                return None
+            reference.append(str(node_index))
+
+        deviation_id = cause.get('deviation_id')
+        deviations = [dict(row) for row in self.deviations(node_id)]
+        groups = []
+        for deviation in deviations:
+            group = next((items for key, items in groups
+                          if key == deviation['description']), None)
+            if group is None:
+                group = []
+                groups.append((deviation['description'], group))
+            group.append(deviation)
+
+        cause_group = None
+        deviation_index = None
+        for index, (_description, members) in enumerate(groups, start=1):
+            if any(member['id'] == deviation_id for member in members):
+                deviation_index = index
+                cause_group = members
+                break
+        if cause_group is None:
+            # Old files can contain a cause without a retained deviation.
+            # Keep its LOPA source readable while still avoiding database IDs.
+            deviation_index = len(groups) + 1
+            cause_group = []
+        reference.append(str(deviation_index))
+
+        ordered_causes = []
+        if cause_group:
+            for deviation in cause_group:
+                ordered_causes.extend(
+                    dict(row) for row in self.causes_for_deviation(deviation['id']))
+        else:
+            ordered_causes = [dict(row) for row in self.causes(node_id)
+                              if row.get('deviation_id') is None]
+        cause_index = next(
+            (index for index, item in enumerate(ordered_causes, start=1)
+             if item['id'] == cause['id']), None)
+        if cause_index is None:
+            return None
+        reference.append(str(cause_index))
+
+        if consequence is not None:
+            consequences = [dict(row) for row in self.consequences(cause['id'])]
+            consequence_index = next(
+                (index for index, item in enumerate(consequences, start=1)
+                 if item['id'] == consequence['id']), None)
+            if consequence_index is None:
+                return None
+            reference.append(str(consequence_index))
+        return '.'.join(reference)
+
     def safeguards_for_cause(self, cause_id):
         """Return all safeguards attached to any consequence of cause_id."""
         return self.conn.execute(

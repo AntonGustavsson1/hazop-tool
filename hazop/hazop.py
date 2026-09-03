@@ -1469,6 +1469,8 @@ class MainWindow(QMainWindow):
         # to Worksheet where users naturally expect it.
         self.lopa_panel = LopaPanel(self.db)
         self.lopa_panel.hazop_navigation_requested.connect(self._open_lopa_source_in_hazop)
+        self.lopa_panel.hazop_consequence_navigation_requested.connect(
+            self._open_lopa_consequence_in_hazop)
         self.view_stack.addWidget(self.lopa_panel)
 
         # The tools are now available from Beta; keep the equipment register
@@ -1892,6 +1894,18 @@ class MainWindow(QMainWindow):
         self.tree_panel.refresh(CAUSE_T, cause_id, emit_selection=False)
         self._on_selected(CAUSE_T, cause_id)
         self.scenario_panel.select_item(CAUSE_T, cause_id)
+
+    def _open_lopa_consequence_in_hazop(self, consequence_id):
+        """Return from a LOPA consequence child to that exact HAZOP row."""
+        if not self.db.get_consequence(consequence_id):
+            QMessageBox.information(self, 'HAZOP-källa saknas',
+                                    'Konsekvensen finns inte längre i HAZOP.')
+            return
+        self._switch_view(1)
+        self.tree_panel.refresh(CONS_T, consequence_id, emit_selection=False)
+        self._on_selected(CONS_T, consequence_id)
+        self.scenario_panel.load_consequence(consequence_id)
+        self.scenario_panel.select_item(CONS_T, consequence_id)
 
     def _on_props_changed(self):
         """PropertiesRibbon saved a field — refresh tree + scenario."""

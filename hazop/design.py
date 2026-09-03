@@ -407,6 +407,38 @@ def lopa_table_stylesheet() -> str:
     )
 
 
+def lopa_hierarchy_stylesheet() -> str:
+    """Return the compact, readable HAZOP source hierarchy style for LOPA.
+
+    A LOPA source is a small hierarchy rather than two unrelated lists:
+    cause rows are parents and their assessed consequences are children.  The
+    tree keeps that relationship visible without reintroducing a dashboard
+    card or a second set of status columns.
+    """
+    return (
+        f'QTreeWidget{{background:{SURFACE};border:1px solid {SEPARATOR};'
+        'border-radius:4px;alternate-background-color:#FAFBFC;}'
+        f'QTreeWidget::item{{padding:2px 4px;color:{TEXT};}}'
+        f'QTreeWidget::item:selected{{background:{ACCENT_SELECTION};color:{TEXT};}}'
+        f'QHeaderView::section{{background:{SUBTLE_SURFACE};color:{TEXT};'
+        f'border:none;border-bottom:1px solid {SEPARATOR};padding:4px;font-weight:600;}}'
+    )
+
+
+def lopa_hierarchy_reference_stylesheet(
+        object_name: str = 'lopaHierarchyReference') -> str:
+    """Return the compact link treatment for a HAZOP hierarchy reference."""
+    return (
+        f'QPushButton#{object_name}{{min-width:0px;max-width:110px;'
+        f'padding:0px 2px;border:none;background:transparent;color:{ACCENT};'
+        'font-size:8pt;text-align:left;text-decoration:underline;}'
+        f'QPushButton#{object_name}:hover{{color:{ACCENT_HOVER};'
+        f'background:{ACCENT_SELECTION};}}'
+        f'QPushButton#{object_name}:disabled{{color:{MUTED_TEXT};'
+        'text-decoration:none;}'
+    )
+
+
 def summary_badge_colors(selected: bool = False,
                          hovered: bool = False) -> tuple[str, str]:
     """Return ``(background, text)`` for painted summary badges."""

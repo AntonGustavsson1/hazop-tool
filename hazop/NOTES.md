@@ -1,5 +1,33 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: gemensam klickbar HAZOP-hierarki för orsak och konsekvens (2026-09-03)
+
+LOPA-sidans tidigare separata tabeller **Källscenarier från HAZOP** och
+**Konsekvenser från HAZOP** är ersatta med en gemensam, kompakt trädtabell.
+Varje orsaksrad är en förälder och de importerade HAZOP-konsekvenserna visas
+indragna direkt under rätt orsak. Den tar därför inte längre upp samma
+HAZOP-kedja två gånger på LOPA-arket.
+
+Kolumnerna **Status** och **HAZOP-koppling** är borttagna. I stället visas en
+kort, klickbar hierarkireferens, till exempel `1.2.3.1.1.1`, byggd från den
+synliga HAZOP-ordningen (studie → system när det finns → nod → avvikelse →
+orsak → konsekvens). Referensen använder aldrig databassiffror. Klick på en
+orsaksreferens öppnar den orsaken i HAZOP; klick på en konsekvensreferens
+öppnar den exakta konsekvensraden. Lokala LOPA-rader markeras tydligt som
+lokala och saknar avsiktligt en HAZOP-länk.
+
+Aktiva kryssrutor och lokal konsekvensredigering är bevarade i samma träd.
+Val av en underliggande konsekvens väljer samtidigt dess förälder som aktuellt
+LOPA-scenario för barriärer, eskalering och beräkning.
+
+Verifierat med nytt databasregressionstest för hierarkireferensens ordning,
+LOPA-smoke-test med en orsak och två konsekvenser, klicktest för både orsaks-
+och konsekvensnavigering, designtester, `py_compile`, `git diff --check` och
+en normal Qt-rendering av en verklig LOPA. Den normala renderingen bekräftar
+att status-/ID-kolumnerna är borta och att den nya hierarkitabellen ryms i
+scenariokortet. Offscreen-Qt saknar fortsatt full fontmiljö, så slutlig
+typografisk acceptans sker som vanligt i den vanliga appen.
+
 ## LOPA: Justera kategoribadgens storlek för bättre proportioner (2026-09-02, femte uppföljningen)
 
 Efter att scenario-kortet expanderades till 100% bredd blev kategoribadgarna

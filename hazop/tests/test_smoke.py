@@ -47,6 +47,7 @@ for _p in (_HAZOP_DIR, _TEST_DIR):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QBoxLayout
 
 
@@ -164,6 +165,9 @@ class SmokeTests(unittest.TestCase):
         self.db.update_consequence(cons_id, 'Överfyllnad', 3, '')
         category = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(cons_id, category['id'], 3)
+        second_cons_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(second_cons_id, 'Utsläpp till mark', 2, '')
+        self.db.set_consequence_severity(second_cons_id, category['id'], 2)
         sensor_sg = self.db.add_safeguard(cons_id)
         self.db.update_safeguard(sensor_sg, description='LSHH', rrf=100, sg_type='SIS')
         other_sg = self.db.add_safeguard(cons_id)
@@ -228,8 +232,33 @@ class SmokeTests(unittest.TestCase):
             self.app.processEvents()
             self.app.processEvents()
             self.assertEqual(1, p._header_columns)
-            self.assertEqual(1, p._sources.rowCount())
-            self.assertEqual(1, p._consequences.rowCount())
+            self.assertEqual(1, p._hazop_hierarchy.topLevelItemCount())
+            source_item = p._hazop_hierarchy.topLevelItem(0)
+            self.assertEqual(2, source_item.childCount())
+            self.assertNotIn('Status', [
+                p._hazop_hierarchy.headerItem().text(index)
+                for index in range(p._hazop_hierarchy.columnCount())])
+            self.assertNotIn('HAZOP-koppling', [
+                p._hazop_hierarchy.headerItem().text(index)
+                for index in range(p._hazop_hierarchy.columnCount())])
+            source_reference = p._hazop_hierarchy.itemWidget(source_item, 1)
+            consequence_item = source_item.child(0)
+            consequence_reference = p._hazop_hierarchy.itemWidget(consequence_item, 1)
+            self.assertRegex(source_reference.text(), r'^\d+(\.\d+){3,}$')
+            self.assertRegex(consequence_reference.text(), r'^\d+(\.\d+){4,}$')
+            self.assertEqual(cons_id, consequence_item.data(
+                0, p._ROLE_HAZOP_CONSEQUENCE_ID))
+            # The unified tree retains the old per-consequence include
+            # control; it must update the revision-local record, never HAZOP.
+            p._confirm_lopa_only = lambda _text: True
+            consequence_item.setCheckState(0, Qt.CheckState.Unchecked)
+            self.app.processEvents()
+            self.assertFalse(self.db.lopa_source_consequences(
+                imported['source_id'])[0]['active'])
+            source_item = p._hazop_hierarchy.topLevelItem(0)
+            consequence_item = source_item.child(0)
+            source_reference = p._hazop_hierarchy.itemWidget(source_item, 1)
+            consequence_reference = p._hazop_hierarchy.itemWidget(consequence_item, 1)
             self.assertEqual(1, p._sensor_members.rowCount())
             self.assertEqual(1, p._barriers.rowCount())
             self.assertGreaterEqual(p._escalation.rowCount(), 1)
@@ -244,9 +273,15 @@ class SmokeTests(unittest.TestCase):
             self.assertIn('Verifiera ventilen', p._additional_actions.toPlainText())
             self.assertEqual(1, p._comments.rowCount())
             navigated = []
+            consequence_navigated = []
             p.hazop_navigation_requested.connect(navigated.append)
-            p._go_to_hazop()
+            p.hazop_consequence_navigation_requested.connect(consequence_navigated.append)
+            source_reference.click()
             self.assertEqual([cause_id], navigated)
+            p._go_to_hazop()
+            self.assertEqual([cause_id, cause_id], navigated)
+            consequence_reference.click()
+            self.assertEqual([cons_id], consequence_navigated)
         finally:
             p.deleteLater()
 

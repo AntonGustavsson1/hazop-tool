@@ -140,6 +140,7 @@ class DesignSystemTests(unittest.TestCase):
         from design import (
             ACCENT_SELECTION, MUTED_TEXT, SECONDARY_TEXT, SEPARATOR, SURFACE, TEXT,
             lopa_card_stylesheet, lopa_note_stylesheet, lopa_section_title_stylesheet,
+            lopa_hierarchy_reference_stylesheet, lopa_hierarchy_stylesheet,
             lopa_table_stylesheet, lopa_title_stylesheet,
         )
 
@@ -153,6 +154,8 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn(MUTED_TEXT, lopa_section_title_stylesheet())
         self.assertIn(SECONDARY_TEXT, lopa_note_stylesheet())
         self.assertIn(ACCENT_SELECTION, lopa_table_stylesheet())
+        self.assertIn(ACCENT_SELECTION, lopa_hierarchy_stylesheet())
+        self.assertIn('lopaHierarchyReference', lopa_hierarchy_reference_stylesheet())
 
     def test_lopa_responsive_geometry_is_centralized_in_design(self):
         from design import (
