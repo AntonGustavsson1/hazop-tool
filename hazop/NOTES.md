@@ -1,18 +1,36 @@
 # NOTES.md — Beslut och kontext
 
-## LOPA: Oberoende barriärer-tabell med RRF per kolumn (2026-09-03)
+## LOPA: Oberoende barriärer-tabell med hierarkisk header (2026-09-03)
 
-Omstrukturerad barriärmatrisen för bättre läsbarhet. Istället för att visa 
-"Nivågivare + alarm (RRF 10)" i en cell, är nu varje barriärtyp två kolumner:
+Omstrukturerad barriärmatrisen för bättre läsbarhet med **hierarkisk header**:
 
-**Tidigare:** Källscenario | Grundfrekvens | Givare | Återstående
-**Nu:**      Källscenario | Grundfrekvens | Givare | Givare RRF | Ventiler | Ventiler RRF | Återstående
+**Tidigare layout:**
+```
+Källscenario | Grundfrekvens | Givare | Givare RRF | Ventiler | Ventiler RRF | Återstående
+```
 
-Fördelar:
-- RRF-värdet är synligt och lätt att jämföra
-- Barriärbeskrivning och risk-reduktion är visuellt separerad
-- Möjliggör framtida redigering av RRF direkt i tabellen
-- Tydligare struktur för alla barriärtyper
+**Ny layout med custom header:**
+```
+┌──────────────┬──────────────┬──────────────────────┬──────────────────────┬──────────────┐
+│ KÄLLSCENARIO │ GRUNDFREKVENS│       GIVARE         │      VENTILER        │ ÅTERSTÅENDE  │
+│              │              ├──────────┬──────────┼──────────┬──────────┤ FREKVENS     │
+│              │              │ Barriär  │ RRF      │ Barriär  │ RRF      │              │
+└──────────────┴──────────────┴──────────┴──────────┴──────────┴──────────┴──────────────┘
+```
+
+**Implementering:**
+- Custom _BarrierMatrixHeaderWidget med två nivåer
+- Barriärtyp högst upp (dubbel höjd för tydlighet)
+- Sub-headers: "Barriär" och "RRF" för varje typ
+- RRF-värden är höger-justerade för lätt scanning
+- Standard table header är dold för att undvika dubblering
+
+**Fördelar:**
+✓ Tydlig visuell hierarki
+✓ Barriärtypen är explicit grupperad
+✓ RRF-värdena är lätta att jämföra
+✓ Framtida redigering av RRF direkt i cellen möjlig
+✓ Professionell layout passar bättre för LOPA-worksheets
 
 Testad med smoke-test (14/14 pass). Visuell verifiering i Qt-appen återstår.
 
