@@ -1218,7 +1218,7 @@ class LopaPanel(QWidget):
             self.hazop_navigation_requested.emit(int(cause_id))
 
     def _populate_hazop_hierarchy(self, *, select_consequence_id=None,
-                                  preserve_height=None):
+                                  preserve_geometry=None):
         """Render the approved merged-cell HAZOP scenarios table.
 
         One visual scenario consists of its HAZOP cause, base frequency and
@@ -1323,12 +1323,20 @@ class LopaPanel(QWidget):
 
         if selected_row is not None:
             self._hazop_hierarchy.setCurrentCell(selected_row, self._HAZOP_CATEGORY_COL)
-        self._hazop_hierarchy.resizeColumnsToContents()
-        self._hazop_hierarchy.resizeRowsToContents()
-        if preserve_height is None:
-            self._fit_table_height(self._hazop_hierarchy, 72, 192)
+        can_restore_geometry = (
+            preserve_geometry is not None and
+            len(preserve_geometry['row_heights']) == self._hazop_hierarchy.rowCount() and
+            len(preserve_geometry['column_widths']) == self._hazop_hierarchy.columnCount())
+        if can_restore_geometry:
+            for column, width in enumerate(preserve_geometry['column_widths']):
+                self._hazop_hierarchy.setColumnWidth(column, width)
+            for row, height in enumerate(preserve_geometry['row_heights']):
+                self._hazop_hierarchy.setRowHeight(row, height)
+            self._hazop_hierarchy.setFixedHeight(preserve_geometry['height'])
         else:
-            self._hazop_hierarchy.setFixedHeight(preserve_height)
+            self._hazop_hierarchy.resizeColumnsToContents()
+            self._hazop_hierarchy.resizeRowsToContents()
+            self._fit_table_height(self._hazop_hierarchy, 72, 192)
         self._source_id = selected_source
         changed = sum(1 for source in sources
                       if self.db.lopa_source_sync_state(source['id'])['state'] == 'changed')
@@ -1361,11 +1369,17 @@ class LopaPanel(QWidget):
         if not entity_id:
             return
         active = item.checkState() == Qt.CheckState.Checked
-        table_height = self._hazop_hierarchy.height()
+        table_geometry = {
+            'height': self._hazop_hierarchy.height(),
+            'column_widths': [self._hazop_hierarchy.columnWidth(column)
+                              for column in range(self._hazop_hierarchy.columnCount())],
+            'row_heights': [self._hazop_hierarchy.rowHeight(row)
+                            for row in range(self._hazop_hierarchy.rowCount())],
+        }
         if not self._confirm_lopa_only(
                 'Ska kategori-/riskbedömningen inkluderas i just denna LOPA-beräkning?'):
             self._populate_hazop_hierarchy(
-                select_consequence_id=entity_id, preserve_height=table_height)
+                select_consequence_id=entity_id, preserve_geometry=table_geometry)
             return
         try:
             source_id = item.data(self._ROLE_SOURCE_ID)
@@ -1377,7 +1391,7 @@ class LopaPanel(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, 'Kunde inte ändra kategori-/riskbedömning', str(exc))
         self._populate_hazop_hierarchy(
-            select_consequence_id=entity_id, preserve_height=table_height)
+            select_consequence_id=entity_id, preserve_geometry=table_geometry)
         self._populate_escalation()
         self._populate_calculation()
         self.changed.emit()
