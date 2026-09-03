@@ -107,6 +107,7 @@ class LopaPanel(QWidget):
         self._sensor_group_id = None
         self._final_group_id = None
         self._loading = False
+        self._hazop_category_column_layout = []
         self._build()
         self.refresh()
 
@@ -260,6 +261,9 @@ class LopaPanel(QWidget):
         # Defer one event turn so QSplitter and QScrollArea have their final
         # width before cards are moved between responsive layouts.
         QTimer.singleShot(0, self._apply_responsive_layout)
+        QTimer.singleShot(
+            0, lambda: self._finalize_hazop_hierarchy_geometry(
+                self._hazop_category_column_layout))
 
     def _build(self):
         # LOPA is a dense, document-like worksheet (many small cards meant
@@ -1238,7 +1242,33 @@ class LopaPanel(QWidget):
         hierarchy_header.setSectionResizeMode(
             self._HAZOP_CONSEQUENCE_COL, QHeaderView.ResizeMode.Stretch)
         for column in range(self._HAZOP_CATEGORY_START_COL, len(headers)):
-            hierarchy_header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+            # The category cells contain full-cell QCheckBoxes.  Their size
+            # hint is not included by QTableWidget.resizeColumnsToContents(),
+            # so keep these columns under our explicit, deterministic sizing.
+            hierarchy_header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+
+    def _fit_hazop_category_columns(self, category_columns):
+        """Give every category enough stable room for its full-cell toggle."""
+        header = self._hazop_hierarchy.horizontalHeader()
+        for offset, (_category_key, category_name) in enumerate(category_columns):
+            column = self._HAZOP_CATEGORY_START_COL + offset
+            header_width = header.fontMetrics().horizontalAdvance(category_name) + 16
+            toggle_width = max(
+                (self._hazop_hierarchy.cellWidget(row, column).sizeHint().width() + 12
+                 for row in range(self._hazop_hierarchy.rowCount())
+                 if self._hazop_hierarchy.cellWidget(row, column) is not None),
+                default=0)
+            self._hazop_hierarchy.setColumnWidth(
+                column, max(72, header_width, toggle_width))
+
+    def _finalize_hazop_hierarchy_geometry(self, category_columns):
+        """Reapply section sizing after the panel has received its real width."""
+        if self._loading:
+            return
+        self._configure_hazop_hierarchy_columns(category_columns)
+        self._hazop_hierarchy.resizeColumnsToContents()
+        self._fit_hazop_category_columns(category_columns)
+        self._hazop_hierarchy.doItemsLayout()
 
     def _hazop_category_columns(self, source_groups):
         """Keep configured category order and retain legacy imported values."""
@@ -1269,6 +1299,7 @@ class LopaPanel(QWidget):
             for source in sources
         ]
         category_columns = self._hazop_category_columns(source_groups)
+        self._hazop_category_column_layout = category_columns
 
         old_loading = self._loading
         self._loading = True
@@ -1349,8 +1380,10 @@ class LopaPanel(QWidget):
             self._hazop_hierarchy.setFixedHeight(preserve_geometry['height'])
         else:
             self._hazop_hierarchy.resizeColumnsToContents()
+            self._fit_hazop_category_columns(category_columns)
             self._hazop_hierarchy.resizeRowsToContents()
             self._fit_table_height(self._hazop_hierarchy, 72, 192)
+        self._hazop_hierarchy.doItemsLayout()
         self._source_id = selected_source
         changed = sum(1 for source in sources
                       if self.db.lopa_source_sync_state(source['id'])['state'] == 'changed')
@@ -1362,6 +1395,13 @@ class LopaPanel(QWidget):
             'Låsta revisioner behåller sin egen riskmatris och sitt underlag.')
         self._sync_note.setVisible(not bool(sources))
         self._loading = old_loading
+        if preserve_geometry is None:
+            # During a LOPA switch this method runs before the detail panel has
+            # its final viewport width.  A queued second sizing pass prevents
+            # the Stretch columns from staying at their temporary 15 px width.
+            QTimer.singleShot(
+                0, lambda columns=list(category_columns):
+                self._finalize_hazop_hierarchy_geometry(columns))
         self._load_source_detail()
 
     def _on_hazop_hierarchy_selection_changed(self, current_row, _current_column,

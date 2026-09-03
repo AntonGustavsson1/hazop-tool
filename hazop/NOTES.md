@@ -5893,3 +5893,18 @@ fortfarande.
 
 Verifierat med riktat LOPA-test som kontrollerar full cellstorlek före klick,
 `py_compile`, hela `tests.test_smoke` (14 tester) och `git diff --check`.
+
+### Stabil första kolumnlayout vid LOPA-byte (2026-09-03)
+
+Efter byte mellan LOPA-poster kunde första renderingen ske innan detaljpanelen
+hade fått sin slutliga bredd. Qt lämnade då de sträckta Orsak- och
+Konsekvenskolumnerna på 15 px tills nästa omladdning, vilket gjorde att
+tabellen såg smal ut och verkade rätta till sig efter ett klick.
+
+Tabellen gör nu en andra storlekspassning efter den responsiva layoutcykeln.
+Kategori-kolumnerna använder samtidigt explicita bredder som inkluderar den
+inbäddade kryssrutans storlek. Regressionstestet växlar/återrenderar tabellen
+och kräver att Orsak och Konsekvens redan i första vyn är bredare än 100 px.
+
+Verifierat med `py_compile`, hela `tests.test_smoke` (14 tester) och
+`git diff --check`. Visuell kontroll i en riktig Qt-display återstår.

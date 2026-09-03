@@ -277,6 +277,8 @@ class SmokeTests(unittest.TestCase):
             # Each category cell has its own revision-local include control.
             p._confirm_lopa_only = lambda _text: True
             self.app.processEvents()
+            self.assertGreater(p._hazop_hierarchy.columnWidth(p._HAZOP_CAUSE_COL), 100)
+            self.assertGreater(p._hazop_hierarchy.columnWidth(p._HAZOP_CONSEQUENCE_COL), 100)
             hierarchy_geometry = {
                 'height': p._hazop_hierarchy.height(),
                 'column_widths': [p._hazop_hierarchy.columnWidth(column)
@@ -290,6 +292,21 @@ class SmokeTests(unittest.TestCase):
                 p._hazop_hierarchy.columnWidth(category_column) - 2)
             self.assertGreaterEqual(assessment_toggle.height(),
                                     p._hazop_hierarchy.rowHeight(0) - 2)
+            initial_category_widths = [
+                p._hazop_hierarchy.columnWidth(column)
+                for column in range(p._HAZOP_CATEGORY_START_COL,
+                                    p._hazop_hierarchy.columnCount())]
+            # Switching records rebuilds this table. Category widths must not
+            # shrink because Qt does not include embedded checkboxes when it
+            # auto-fits ordinary QTableWidget items.
+            p._populate_hazop_hierarchy()
+            self.app.processEvents()
+            self.assertEqual(
+                initial_category_widths,
+                [p._hazop_hierarchy.columnWidth(column)
+                 for column in range(p._HAZOP_CATEGORY_START_COL,
+                                     p._hazop_hierarchy.columnCount())])
+            assessment_toggle = p._hazop_hierarchy.cellWidget(0, category_column)
             assessment_id = assessment_toggle.property('lopa_assessment_id')
             assessment_toggle.setChecked(False)
             self.app.processEvents()
