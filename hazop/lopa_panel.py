@@ -2167,6 +2167,18 @@ class LopaPanel(QWidget):
             self._barrier_summary.clear()
         self._loading = old_loading
 
+    def _sync_barrier_matrix_header_width(self):
+        """Sync header widget column widths to match table column widths."""
+        if not self._barrier_matrix_header or self._barrier_matrix.columnCount() == 0:
+            return
+
+        # Set header widget to match table width
+        total_width = sum(
+            self._barrier_matrix.columnWidth(col)
+            for col in range(self._barrier_matrix.columnCount()))
+        self._barrier_matrix_header.setMinimumWidth(total_width)
+        self._barrier_matrix_header.setMaximumWidth(total_width + 50)
+
     def _populate_barrier_matrix(self):
         """Show the screen-wide LOPA barrier picture without duplicating HAZOP.
 
@@ -2227,6 +2239,10 @@ class LopaPanel(QWidget):
         self._barrier_matrix.resizeRowsToContents()
         self._barrier_matrix.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self._fit_table_height(self._barrier_matrix, 48, 104)
+
+        # Sync header width with table columns
+        self._sync_barrier_matrix_header_width()
+
         self._loading = old_loading
 
     def _on_barrier_item_changed(self, item):
