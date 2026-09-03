@@ -1,5 +1,22 @@
 # NOTES.md — Beslut och kontext
 
+## Crash-fixar: sqlite3.Row och stängd databas (2026-09-03)
+
+Genomgång av 100 crash-rapporter identifierade två återkommande problem:
+
+1. **equipment_items() returnerade sqlite3.Row istället för dict**: Crash när 
+   lopa_panel försökte anropa `.get()` på Row-objekt. Fixat genom att konvertera
+   alla resultat till dict i database.py.
+
+2. **Stängd databas under rendering**: 22 crash-rapporter från scenariopanelen
+   när rendering försökte slå upp data från en stängd databas (under window 
+   teardown). Fixat genom att lägga till try/except i get_cause() och 
+   get_equipment_by_id() för att returnera None istället för att kasta.
+
+Status: De två huvudsakliga crash-typerna är lösta. Ytterligare crash-åtgärder
+kan behövas för andra getter-funktioner som anropas från rendering (deviations,
+etc), men dessa är sällsyntare.
+
 ## LOPA: Aktiv-kryssruta ändrar inte tabellgeometri (2026-09-03)
 
 När en kategori-/riskbedömning aktiveras eller avaktiveras öppnar LOPA först
