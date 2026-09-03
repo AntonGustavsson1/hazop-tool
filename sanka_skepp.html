@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sänka Skepp</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      background: #0a1628;
+      font-family: 'Segoe UI', sans-serif;
+      color: #cde;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+
+    h1 {
+      font-size: 2.2rem;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      color: #4fc3f7;
+      margin-bottom: 6px;
+      text-shadow: 0 0 20px #4fc3f755;
+    }
+
+    #phase-label {
+      font-size: 0.9rem;
+      color: #7a9bb5;
+      letter-spacing: 2px;
+      margin-bottom: 16px;
+    }
+
+    #status-bar {
+      background: #0d2137;
+      border: 1px solid #1e3a5f;
+      border-radius: 8px;
+      padding: 10px 24px;
+      margin-bottom: 18px;
+      font-size: 1.05rem;
+      color: #a8d8ea;
+      text-align: center;
+      min-width: 400px;
+    }
+
+    .arenas {
+      display: flex;
+      gap: 40px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .arena {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .arena h2 {
+      font-size: 1rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #7ab8d4;
+    }
+
+    .grid-wrap {
+      position: relative;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(10, 38px);
+      grid-template-rows: repeat(10, 38px);
+      gap: 3px;
+      border: 2px solid #1e3a5f;
+      border-radius: 6px;
+      padding: 3px;
+      background: #091526;
+    }
+
+    .cell {
+      width: 38px;
+      height: 38px;
+      background: #0d2a44;
+      border-radius: 4px;
+      cursor: default;
+      transition: background 0.15s;
+      position: relative;
+    }
+
+    /* Player grid during placement */
+    .place-mode .cell:hover { background: #1a4a6e; cursor: pointer; }
+    .place-mode .cell.preview { background: #2a6a8e; }
+    .place-mode .cell.preview.invalid { background: #6e2a2a; }
+
+    /* Ship cells */
+    .cell.ship { background: #1e5080; }
+    .place-mode .cell.ship:hover { background: #2a6a9e; cursor: pointer; }
+
+    /* Hit & Miss */
+    .cell.hit { background: #c0392b !important; cursor: default; }
+    .cell.hit::after {
+      content: '✕';
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.3rem;
+      color: #ff6b6b;
+      font-weight: bold;
+    }
+    .cell.miss { background: #0d2a44 !important; cursor: default; }
+    .cell.miss::after {
+      content: '·';
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2rem;
+      color: #4a7a9b;
+    }
+    .cell.sunk { background: #7b1c1c !important; }
+
+    /* Enemy grid during game */
+    .attack-mode .cell:not(.hit):not(.miss):hover {
+      background: #1e5080;
+      cursor: crosshair;
+    }
+
+    /* Row/col labels */
+    .labels-row {
+      display: flex;
+      gap: 3px;
+      padding: 0 3px;
+      margin-left: 3px;
+    }
+    .labels-col {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding: 3px 0;
+      margin-top: 3px;
+    }
+    .lbl {
+      width: 38px;
+      height: 16px;
+      text-align: center;
+      font-size: 0.65rem;
+      color: #456;
+    }
+    .lbl-c {
+      width: 16px;
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: right;
+      padding-right: 4px;
+      font-size: 0.65rem;
+      color: #456;
+    }
+
+    .grid-with-labels {
+      display: flex;
+    }
+
+    /* Ship dock */
+    #ship-dock {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: #0d2137;
+      border: 1px solid #1e3a5f;
+      border-radius: 10px;
+      padding: 14px 18px;
+    }
+
+    #ship-dock h3 {
+      font-size: 0.8rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #456;
+      margin-bottom: 4px;
+    }
+
+    .dock-ship {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 6px;
+      transition: background 0.1s;
+    }
+    .dock-ship:hover { background: #1a3a5a; }
+    .dock-ship.selected { background: #1e5080; }
+    .dock-ship.placed { opacity: 0.3; cursor: default; pointer-events: none; }
+
+    .dock-cells {
+      display: flex;
+      gap: 3px;
+    }
+    .dock-cell {
+      width: 20px;
+      height: 20px;
+      background: #1e5080;
+      border-radius: 3px;
+    }
+    .dock-ship-name {
+      font-size: 0.82rem;
+      color: #8ab;
+      white-space: nowrap;
+    }
+
+    /* Buttons */
+    .btn {
+      padding: 10px 28px;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      cursor: pointer;
+      letter-spacing: 1px;
+      transition: background 0.2s, transform 0.1s;
+    }
+    .btn:hover { transform: scale(1.04); }
+    .btn:disabled { opacity: 0.4; cursor: default; transform: none; }
+
+    .btn-primary { background: #1a7fc4; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #1565a0; }
+    .btn-danger { background: #c0392b; color: #fff; }
+    .btn-danger:hover { background: #962d22; }
+    .btn-secondary { background: #1e3a5f; color: #cde; }
+    .btn-secondary:hover { background: #2a5080; }
+
+    #controls {
+      display: flex;
+      gap: 12px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    /* Sunk ships display */
+    #sunk-display {
+      display: flex;
+      gap: 30px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .sunk-side { text-align: center; }
+    .sunk-side h4 { font-size: 0.75rem; color: #456; letter-spacing: 1px; margin-bottom: 6px; }
+    .sunk-list { display: flex; flex-direction: column; gap: 4px; }
+    .sunk-item {
+      display: flex;
+      gap: 2px;
+      justify-content: center;
+    }
+    .sunk-item .s { width: 14px; height: 14px; border-radius: 2px; background: #7b1c1c; }
+    .sunk-item.alive .s { background: #1e5080; }
+
+    /* Overlay */
+    #overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #0a1628cc;
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    #overlay.show { display: flex; }
+    #overlay-box {
+      background: #0d2137;
+      border: 2px solid #1e3a5f;
+      border-radius: 16px;
+      padding: 40px 60px;
+      text-align: center;
+    }
+    #overlay-title { font-size: 2.5rem; font-weight: bold; margin-bottom: 12px; }
+    #overlay-sub { color: #7ab; margin-bottom: 28px; font-size: 1.1rem; }
+  </style>
+</head>
+<body>
+
+<h1>Sänka Skepp</h1>
+<div id="phase-label">PLACERA DINA SKEPP</div>
+<div id="status-bar">Välj ett skepp och klicka på din spelplan för att placera det.</div>
+
+<div class="arenas">
+  <!-- Ship dock -->
+  <div style="display:flex;flex-direction:column;gap:12px;align-items:center;">
+    <div id="ship-dock">
+      <h3>Dina skepp</h3>
+    </div>
+    <button class="btn btn-secondary" id="btn-rotate">Rotera (R)</button>
+    <button class="btn btn-secondary" id="btn-random">Slumpa placering</button>
+  </div>
+
+  <!-- Player grid -->
+  <div class="arena">
+    <h2>Din flotta</h2>
+    <div class="grid-with-labels">
+      <div>
+        <div style="height:16px"></div>
+        <div class="labels-col" id="col-labels-player"></div>
+      </div>
+      <div>
+        <div class="labels-row" id="row-labels-player"></div>
+        <div class="grid place-mode" id="player-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Enemy grid -->
+  <div class="arena">
+    <h2>Fiendens vatten</h2>
+    <div class="grid-with-labels">
+      <div>
+        <div style="height:16px"></div>
+        <div class="labels-col" id="col-labels-enemy"></div>
+      </div>
+      <div>
+        <div class="labels-row" id="row-labels-enemy"></div>
+        <div class="grid" id="enemy-grid"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="controls">
+  <button class="btn btn-primary" id="btn-start" disabled>Starta spelet</button>
+  <button class="btn btn-danger" id="btn-restart" style="display:none">Nytt spel</button>
+</div>
+
+<div id="sunk-display">
+  <div class="sunk-side">
+    <h4>SÄNKTA (DINA)</h4>
+    <div class="sunk-list" id="sunk-player"></div>
+  </div>
+  <div class="sunk-side">
+    <h4>SÄNKTA (FIENDENS)</h4>
+    <div class="sunk-list" id="sunk-enemy"></div>
+  </div>
+</div>
+
+<div id="overlay">
+  <div id="overlay-box">
+    <div id="overlay-title"></div>
+    <div id="overlay-sub"></div>
+    <button class="btn btn-primary" onclick="newGame()">Spela igen</button>
+  </div>
+</div>
+
+<script>
+const SHIPS = [
+  { name: 'Hangarfartyg', size: 5 },
+  { name: 'Slagskepp',    size: 4 },
+  { name: 'Kryssare',     size: 3 },
+  { name: 'Ubåt',         size: 3 },
+  { name: 'Jagare',       size: 2 },
+];
+
+const COLS = 'ABCDEFGHIJ'.split('');
+const ROWS = [1,2,3,4,5,6,7,8,9,10];
+
+let playerBoard, enemyBoard;
+let selectedShip = null;
+let horizontal = true;
+let phase = 'place'; // place | game | over
+let playerTurn = true;
+let aiMemory = { mode: 'hunt', hits: [], queue: [] };
+
+// ── Init ─────────────────────────────────────────────────────────────
+function newGame() {
+  document.getElementById('overlay').classList.remove('show');
+  playerBoard = createBoard();
+  enemyBoard  = createBoard();
+  selectedShip = null;
+  horizontal = true;
+  phase = 'place';
+  playerTurn = true;
+  aiMemory = { mode: 'hunt', hits: [], queue: [] };
+
+  renderGrid('player-grid', playerBoard, true);
+  renderGrid('enemy-grid', enemyBoard, false);
+  renderDock();
+  renderLabels();
+  renderSunk();
+
+  document.getElementById('player-grid').className = 'grid place-mode';
+  document.getElementById('enemy-grid').className = 'grid';
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-start').style.display = '';
+  document.getElementById('btn-restart').style.display = 'none';
+  document.getElementById('phase-label').textContent = 'PLACERA DINA SKEPP';
+  setStatus('Välj ett skepp och klicka på din spelplan för att placera det.');
+
+  placeShipsRandom(enemyBoard);
+}
+
+function createBoard() {
+  return {
+    cells: Array.from({length: 10}, () => Array(10).fill(null)),
+    ships: SHIPS.map((s, i) => ({ ...s, id: i, placed: false, cells: [], sunk: false })),
+    shots: new Set(),
+  };
+}
+
+// ── Rendering ─────────────────────────────────────────────────────────
+function renderLabels() {
+  for (const side of ['player', 'enemy']) {
+    const rowEl = document.getElementById(`row-labels-${side}`);
+    const colEl = document.getElementById(`col-labels-${side}`);
+    rowEl.innerHTML = COLS.map(c => `<div class="lbl">${c}</div>`).join('');
+    colEl.innerHTML = ROWS.map(r => `<div class="lbl-c">${r}</div>`).join('');
+  }
+}
+
+function renderGrid(id, board, isPlayer) {
+  const grid = document.getElementById(id);
+  grid.innerHTML = '';
+  for (let r = 0; r < 10; r++) {
+    for (let c = 0; c < 10; c++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      cell.dataset.r = r;
+      cell.dataset.c = c;
+
+      const val = board.cells[r][c];
+      const key = `${r},${c}`;
+      const shot = board.shots.has(key);
+
+      if (shot) {
+        if (val !== null) {
+          const ship = board.ships[val];
+          cell.classList.add(ship.sunk ? 'sunk' : 'hit');
+        } else {
+          cell.classList.add('miss');
+        }
+      } else if (isPlayer && val !== null) {
+        cell.classList.add('ship');
+      }
+
+      grid.appendChild(cell);
+    }
+  }
+}
+
+function renderDock() {
+  const dock = document.getElementById('ship-dock');
+  dock.innerHTML = '<h3>Dina skepp</h3>';
+  playerBoard.ships.forEach((ship, i) => {
+    const el = document.createElement('div');
+    el.className = 'dock-ship' + (ship.placed ? ' placed' : '');
+    if (selectedShip === i && !ship.placed) el.classList.add('selected');
+    el.innerHTML = `
+      <div class="dock-cells">${Array(ship.size).fill('<div class="dock-cell"></div>').join('')}</div>
+      <div class="dock-ship-name">${ship.name} (${ship.size})</div>
+    `;
+    if (!ship.placed) {
+      el.addEventListener('click', () => {
+        selectedShip = i;
+        renderDock();
+        setStatus(`${ship.name} vald. Klicka på spelplanen för att placera.`);
+      });
+    }
+    dock.appendChild(el);
+  });
+}
+
+function renderSunk() {
+  for (const [side, board] of [['player', playerBoard], ['enemy', enemyBoard]]) {
+    const el = document.getElementById(`sunk-${side}`);
+    el.innerHTML = board.ships.map(ship => `
+      <div class="sunk-item ${ship.sunk ? '' : 'alive'}">
+        ${Array(ship.size).fill('<div class="s"></div>').join('')}
+      </div>
+    `).join('');
+  }
+}
+
+function setStatus(msg) {
+  document.getElementById('status-bar').textContent = msg;
+}
+
+// ── Placement ─────────────────────────────────────────────────────────
+function canPlace(board, r, c, size, horiz) {
+  for (let i = 0; i < size; i++) {
+    const rr = horiz ? r : r + i;
+    const cc = horiz ? c + i : c;
+    if (rr < 0 || rr >= 10 || cc < 0 || cc >= 10) return false;
+    // Check surrounding cells
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        const nr = rr + dr, nc = cc + dc;
+        if (nr >= 0 && nr < 10 && nc >= 0 && nc < 10 && board.cells[nr][nc] !== null) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function placeShip(board, ship, r, c, horiz) {
+  ship.cells = [];
+  for (let i = 0; i < ship.size; i++) {
+    const rr = horiz ? r : r + i;
+    const cc = horiz ? c + i : c;
+    board.cells[rr][cc] = ship.id;
+    ship.cells.push([rr, cc]);
+  }
+  ship.placed = true;
+}
+
+function placeShipsRandom(board) {
+  board.ships.forEach(ship => {
+    ship.placed = false;
+    ship.cells = [];
+    ship.sunk = false;
+  });
+  board.cells = Array.from({length:10}, () => Array(10).fill(null));
+
+  for (const ship of board.ships) {
+    let placed = false;
+    while (!placed) {
+      const horiz = Math.random() < 0.5;
+      const r = Math.floor(Math.random() * 10);
+      const c = Math.floor(Math.random() * 10);
+      if (canPlace(board, r, c, ship.size, horiz)) {
+        placeShip(board, ship, r, c, horiz);
+        placed = true;
+      }
+    }
+  }
+}
+
+// Hover preview
+function setupPlacementListeners() {
+  const grid = document.getElementById('player-grid');
+
+  grid.addEventListener('mouseover', e => {
+    if (phase !== 'place' || selectedShip === null) return;
+    const cell = e.target.closest('.cell');
+    if (!cell) return;
+    clearPreview();
+    const r = +cell.dataset.r, c = +cell.dataset.c;
+    const ship = playerBoard.ships[selectedShip];
+    highlightPreview(r, c, ship.size, horizontal);
+  });
+
+  grid.addEventListener('mouseleave', () => clearPreview());
+
+  grid.addEventListener('click', e => {
+    if (phase !== 'place' || selectedShip === null) return;
+    const cell = e.target.closest('.cell');
+    if (!cell) return;
+    const r = +cell.dataset.r, c = +cell.dataset.c;
+    const ship = playerBoard.ships[selectedShip];
+    if (!canPlace(playerBoard, r, c, ship.size, horizontal)) return;
+    placeShip(playerBoard, ship, r, c, horizontal);
+    renderGrid('player-grid', playerBoard, true);
+    renderDock();
+    clearPreview();
+
+    const next = playerBoard.ships.find(s => !s.placed);
+    if (next) {
+      selectedShip = playerBoard.ships.indexOf(next);
+      renderDock();
+      setStatus(`${next.name} vald. Klicka på spelplanen för att placera.`);
+    } else {
+      selectedShip = null;
+      renderDock();
+      setStatus('Alla skepp placerade! Starta spelet när du är redo.');
+      document.getElementById('btn-start').disabled = false;
+    }
+  });
+}
+
+function highlightPreview(r, c, size, horiz) {
+  const valid = canPlace(playerBoard, r, c, size, horiz);
+  const grid = document.getElementById('player-grid');
+  for (let i = 0; i < size; i++) {
+    const rr = horiz ? r : r + i;
+    const cc = horiz ? c + i : c;
+    if (rr < 0 || rr >= 10 || cc < 0 || cc >= 10) continue;
+    const idx = rr * 10 + cc;
+    grid.children[idx].classList.add('preview');
+    if (!valid) grid.children[idx].classList.add('invalid');
+  }
+}
+
+function clearPreview() {
+  document.querySelectorAll('#player-grid .preview').forEach(el => {
+    el.classList.remove('preview', 'invalid');
+  });
+}
+
+// ── Game phase ────────────────────────────────────────────────────────
+function startGame() {
+  phase = 'game';
+  document.getElementById('phase-label').textContent = 'SPELET PÅGÅR';
+  document.getElementById('player-grid').className = 'grid';
+  document.getElementById('enemy-grid').className = 'grid attack-mode';
+  document.getElementById('btn-start').style.display = 'none';
+  document.getElementById('btn-restart').style.display = '';
+  document.getElementById('btn-rotate').style.display = 'none';
+  document.getElementById('btn-random').style.display = 'none';
+  document.getElementById('ship-dock').style.opacity = '0.4';
+  setStatus('Din tur — klicka på fiendens vatten för att skjuta!');
+  setupAttackListeners();
+}
+
+function setupAttackListeners() {
+  const grid = document.getElementById('enemy-grid');
+  grid.addEventListener('click', e => {
+    if (phase !== 'game' || !playerTurn) return;
+    const cell = e.target.closest('.cell');
+    if (!cell) return;
+    const r = +cell.dataset.r, c = +cell.dataset.c;
+    const key = `${r},${c}`;
+    if (enemyBoard.shots.has(key)) return;
+
+    playerTurn = false;
+    shoot(enemyBoard, r, c, 'enemy-grid', false);
+    renderSunk();
+
+    if (checkWin(enemyBoard)) {
+      endGame(true);
+      return;
+    }
+
+    setStatus('Datorn siktar...');
+    setTimeout(aiTurn, 900);
+  });
+}
+
+function shoot(board, r, c, gridId, isPlayer) {
+  const key = `${r},${c}`;
+  board.shots.add(key);
+  const val = board.cells[r][c];
+  const grid = document.getElementById(gridId);
+  const idx = r * 10 + c;
+  const cell = grid.children[idx];
+
+  if (val !== null) {
+    const ship = board.ships[val];
+    const allHit = ship.cells.every(([sr, sc]) => board.shots.has(`${sr},${sc}`));
+    if (allHit) {
+      ship.sunk = true;
+      ship.cells.forEach(([sr, sc]) => {
+        grid.children[sr * 10 + sc].className = 'cell sunk';
+      });
+    } else {
+      cell.className = 'cell hit';
+    }
+    return true;
+  } else {
+    cell.className = 'cell miss';
+    return false;
+  }
+}
+
+function checkWin(board) {
+  return board.ships.every(s => s.sunk);
+}
+
+// ── AI ────────────────────────────────────────────────────────────────
+function aiTurn() {
+  if (phase !== 'game') return;
+
+  let r, c;
+
+  if (aiMemory.queue.length > 0) {
+    [r, c] = aiMemory.queue.shift();
+    while (playerBoard.shots.has(`${r},${c}`) && aiMemory.queue.length > 0) {
+      [r, c] = aiMemory.queue.shift();
+    }
+    if (playerBoard.shots.has(`${r},${c}`)) {
+      [r, c] = randomShot();
+    }
+  } else {
+    [r, c] = randomShot();
+  }
+
+  const hit = shoot(playerBoard, r, c, 'player-grid', true);
+  renderSunk();
+
+  if (hit) {
+    const val = playerBoard.cells[r][c];
+    const ship = playerBoard.ships[val];
+    if (ship.sunk) {
+      aiMemory.queue = [];
+      aiMemory.hits = [];
+    } else {
+      aiMemory.hits.push([r, c]);
+      enqueueNeighbors(r, c);
+    }
+  }
+
+  if (checkWin(playerBoard)) {
+    endGame(false);
+    return;
+  }
+
+  playerTurn = true;
+  setStatus('Din tur — klicka på fiendens vatten för att skjuta!');
+}
+
+function randomShot() {
+  let r, c;
+  do {
+    r = Math.floor(Math.random() * 10);
+    c = Math.floor(Math.random() * 10);
+  } while (playerBoard.shots.has(`${r},${c}`));
+  return [r, c];
+}
+
+function enqueueNeighbors(r, c) {
+  const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+  for (const [dr, dc] of dirs) {
+    const nr = r + dr, nc = c + dc;
+    if (nr >= 0 && nr < 10 && nc >= 0 && nc < 10 && !playerBoard.shots.has(`${nr},${nc}`)) {
+      if (!aiMemory.queue.some(([qr, qc]) => qr === nr && qc === nc)) {
+        aiMemory.queue.push([nr, nc]);
+      }
+    }
+  }
+  // If 2+ hits, prioritize axis
+  if (aiMemory.hits.length >= 2) {
+    const h = aiMemory.hits;
+    const sameRow = h.every(([hr]) => hr === h[0][0]);
+    aiMemory.queue = aiMemory.queue.filter(([qr, qc]) => {
+      return sameRow ? qr === h[0][0] : qc === h[0][1];
+    });
+  }
+}
+
+// ── End game ──────────────────────────────────────────────────────────
+function endGame(playerWon) {
+  phase = 'over';
+  document.getElementById('enemy-grid').className = 'grid';
+  // Reveal enemy ships
+  const grid = document.getElementById('enemy-grid');
+  for (let r = 0; r < 10; r++) {
+    for (let c = 0; c < 10; c++) {
+      const val = enemyBoard.cells[r][c];
+      const key = `${r},${c}`;
+      if (val !== null && !enemyBoard.shots.has(key)) {
+        grid.children[r * 10 + c].classList.add('ship');
+      }
+    }
+  }
+  const overlay = document.getElementById('overlay');
+  document.getElementById('overlay-title').textContent = playerWon ? '🏆 Du vann!' : '💀 Du förlorade!';
+  document.getElementById('overlay-title').style.color = playerWon ? '#4fc3f7' : '#e74c3c';
+  document.getElementById('overlay-sub').textContent = playerWon
+    ? 'Alla fiendens skepp är sänkta!'
+    : 'Din flotta är förstörd!';
+  overlay.classList.add('show');
+}
+
+// ── Keyboard ──────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') {
+    horizontal = !horizontal;
+    document.getElementById('btn-rotate').textContent = `Rotera (R) — ${horizontal ? 'Horisontell' : 'Vertikal'}`;
+  }
+});
+
+// ── Button wiring ─────────────────────────────────────────────────────
+document.getElementById('btn-rotate').addEventListener('click', () => {
+  horizontal = !horizontal;
+  document.getElementById('btn-rotate').textContent = `Rotera (R) — ${horizontal ? 'Horisontell' : 'Vertikal'}`;
+});
+
+document.getElementById('btn-random').addEventListener('click', () => {
+  placeShipsRandom(playerBoard);
+  selectedShip = null;
+  renderGrid('player-grid', playerBoard, true);
+  renderDock();
+  document.getElementById('btn-start').disabled = false;
+  setStatus('Skepp slumpmässigt placerade! Starta spelet när du är redo.');
+});
+
+document.getElementById('btn-start').addEventListener('click', startGame);
+document.getElementById('btn-restart').addEventListener('click', newGame);
+
+// ── Boot ──────────────────────────────────────────────────────────────
+newGame();
+setupPlacementListeners();
+renderLabels();
+</script>
+</body>
+</html>

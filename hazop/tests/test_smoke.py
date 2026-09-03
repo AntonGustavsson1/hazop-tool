@@ -269,7 +269,7 @@ class SmokeTests(unittest.TestCase):
             self.assertNotIn('Aktiv', headers)
             source_reference = p._hazop_hierarchy.cellWidget(
                 0, p._HAZOP_REFERENCE_COL)
-            self.assertRegex(source_reference.text(), r'^\d+(\.\d+){3,}$')
+            self.assertRegex(source_reference.text(), r'^[HL]-[\d.]+$')
             self.assertIsNotNone(p._hazop_hierarchy.cellWidget(
                 1, p._HAZOP_REFERENCE_COL))
             self.assertEqual(cons_id, p._hazop_hierarchy.item(

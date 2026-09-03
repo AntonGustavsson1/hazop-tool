@@ -1,0 +1,296 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Project Lumen startup animation</title>
+  <desc id="desc">A calm 3 second looping P&amp;ID engineering startup animation for Project Lumen, P&amp;ID Risk Platform.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071821"/>
+      <stop offset="0.52" stop-color="#0a202b"/>
+      <stop offset="1" stop-color="#07151d"/>
+    </linearGradient>
+
+    <radialGradient id="centerGlow" cx="50%" cy="45%" r="48%">
+      <stop offset="0" stop-color="#2ee6e6" stop-opacity=".10"/>
+      <stop offset=".55" stop-color="#2ee6e6" stop-opacity=".025"/>
+      <stop offset="1" stop-color="#2ee6e6" stop-opacity="0"/>
+    </radialGradient>
+
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#6f8792" stroke-opacity=".08" stroke-width="1"/>
+    </pattern>
+
+    <filter id="softGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <style>
+      .bg { fill:url(#bg); }
+      .grid { fill:url(#grid); opacity:.75; }
+      .glow { fill:url(#centerGlow); }
+
+      .pid {
+        fill:none;
+        stroke:#9cafb8;
+        stroke-opacity:.42;
+        stroke-width:2;
+        stroke-linecap:round;
+        stroke-linejoin:round;
+        vector-effect:non-scaling-stroke;
+      }
+
+      .pid-soft {
+        fill:none;
+        stroke:#8fa5af;
+        stroke-opacity:.20;
+        stroke-width:1.2;
+        stroke-dasharray:7 8;
+        vector-effect:non-scaling-stroke;
+      }
+
+      .inst {
+        fill:#0a202b;
+        stroke:#a9bcc5;
+        stroke-opacity:.58;
+        stroke-width:1.6;
+        vector-effect:non-scaling-stroke;
+      }
+
+      .flow {
+        fill:none;
+        stroke:#39d9da;
+        stroke-width:2.4;
+        stroke-linecap:round;
+        stroke-dasharray:10 24;
+        stroke-dashoffset:0;
+        opacity:.35;
+        vector-effect:non-scaling-stroke;
+        animation: flow 3s linear infinite;
+      }
+
+      .flow2 { animation-delay:-1.35s; opacity:.24; }
+
+      .mark {
+        fill:none;
+        stroke:#75f1ef;
+        stroke-width:4;
+        stroke-linecap:round;
+        stroke-linejoin:round;
+        filter:url(#softGlow);
+        opacity:.94;
+        animation: breathe 3s ease-in-out infinite;
+      }
+
+      .halo {
+        fill:#42dedc;
+        opacity:.035;
+        transform-origin:800px 330px;
+        animation: halo 3s ease-in-out infinite;
+      }
+
+      .title {
+        font-family:Inter,Segoe UI,Arial,sans-serif;
+        font-size:58px;
+        font-weight:600;
+        letter-spacing:12px;
+        text-anchor:middle;
+        fill:#eef7f8;
+      }
+
+      .title-accent { fill:#59e6e4; }
+
+      .subtitle {
+        font-family:Inter,Segoe UI,Arial,sans-serif;
+        font-size:17px;
+        font-weight:500;
+        letter-spacing:9px;
+        text-anchor:middle;
+        fill:#5ee1df;
+        opacity:.92;
+      }
+
+      .tag {
+        font-family:Consolas,Menlo,monospace;
+        font-size:17px;
+        fill:#b6c7ce;
+        text-anchor:middle;
+      }
+
+      .small {
+        font-family:Consolas,Menlo,monospace;
+        font-size:15px;
+        fill:#9eb4bd;
+        letter-spacing:1.5px;
+      }
+
+      .status {
+        font-family:Inter,Segoe UI,Arial,sans-serif;
+        font-size:16px;
+        fill:#62dcda;
+        text-anchor:middle;
+        letter-spacing:3px;
+        opacity:.72;
+        animation: statusPulse 3s ease-in-out infinite;
+      }
+
+      .progress-base {
+        stroke:#45636e;
+        stroke-opacity:.34;
+        stroke-width:2;
+        stroke-linecap:round;
+      }
+
+      .progress {
+        stroke:#43e3e1;
+        stroke-width:3;
+        stroke-linecap:round;
+        stroke-dasharray:210 400;
+        stroke-dashoffset:280;
+        opacity:.85;
+        filter:url(#softGlow);
+        animation: progress 3s ease-in-out infinite;
+      }
+
+      .micro {
+        fill:#3edcda;
+        opacity:.42;
+        animation: micro 3s ease-in-out infinite;
+      }
+
+      @keyframes flow {
+        0%   { stroke-dashoffset:0; opacity:.16; }
+        25%  { opacity:.38; }
+        75%  { opacity:.28; }
+        100% { stroke-dashoffset:-136; opacity:.16; }
+      }
+
+      @keyframes breathe {
+        0%,100% { opacity:.78; }
+        50%     { opacity:1; }
+      }
+
+      @keyframes halo {
+        0%,100% { opacity:.025; transform:scale(.94); }
+        50%     { opacity:.075; transform:scale(1.04); }
+      }
+
+      @keyframes statusPulse {
+        0%,100% { opacity:.48; }
+        50%     { opacity:.82; }
+      }
+
+      @keyframes progress {
+        0%   { stroke-dashoffset:280; opacity:.38; }
+        45%  { opacity:.88; }
+        100% { stroke-dashoffset:-330; opacity:.38; }
+      }
+
+      @keyframes micro {
+        0%,100% { opacity:.22; }
+        50%     { opacity:.58; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        * { animation:none !important; }
+        .flow { opacity:.24; }
+        .status { opacity:.65; }
+      }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="900"/>
+  <rect class="grid" width="1600" height="900"/>
+  <rect class="glow" width="1600" height="900"/>
+
+  <!-- LEFT P&ID -->
+  <g aria-hidden="true">
+    <path class="pid" d="M70 215H250V176H412V215H525"/>
+    <path class="pid-soft" d="M250 215V116H330"/>
+    <path class="pid" d="M70 605H238V548H395V605H530"/>
+    <path class="pid-soft" d="M238 605V690H335"/>
+    <path class="flow" d="M72 215H520"/>
+    <path class="flow flow2" d="M72 605H520"/>
+
+    <rect class="inst" x="130" y="190" width="86" height="50" rx="3"/>
+    <text class="small" x="173" y="210" text-anchor="middle">P-101</text>
+    <text class="small" x="173" y="230" text-anchor="middle" style="font-size:11px">PUMP</text>
+
+    <circle class="inst" cx="330" cy="116" r="31"/>
+    <text class="tag" x="330" y="112">PI</text>
+    <text class="tag" x="330" y="132">101</text>
+
+    <!-- valves -->
+    <path class="pid" d="M286 202l18 13-18 13zM322 202l-18 13 18 13z"/>
+    <path class="pid" d="M382 592l18 13-18 13zM418 592l-18 13 18 13z"/>
+
+    <!-- vessel -->
+    <rect class="pid" x="112" y="505" width="84" height="150" rx="38"/>
+    <path class="pid" d="M112 550H196M112 615H196"/>
+    <text class="small" x="154" y="687" text-anchor="middle">V-101</text>
+    <text class="small" x="154" y="708" text-anchor="middle" style="font-size:11px">SEPARATOR</text>
+
+    <circle class="inst" cx="335" cy="690" r="29"/>
+    <text class="tag" x="335" y="686">LIC</text>
+    <text class="tag" x="335" y="706">101</text>
+  </g>
+
+  <!-- RIGHT P&ID -->
+  <g aria-hidden="true">
+    <path class="pid" d="M1075 215H1190V170H1350V215H1530"/>
+    <path class="pid-soft" d="M1350 215V126H1425"/>
+    <path class="pid" d="M1070 605H1185V650H1375V605H1530"/>
+    <path class="flow" d="M1528 215H1078"/>
+    <path class="flow flow2" d="M1528 605H1078"/>
+
+    <path class="pid" d="M1198 202l18 13-18 13zM1234 202l-18 13 18 13 18-13z"/>
+    <circle class="inst" cx="1216" cy="125" r="31"/>
+    <text class="tag" x="1216" y="121">PCV</text>
+    <text class="tag" x="1216" y="141">201</text>
+
+    <rect class="pid" x="1330" y="320" width="98" height="196" rx="46"/>
+    <path class="pid" d="M1330 414H1428"/>
+    <path class="pid-soft" d="M1379 320V275M1428 418H1490"/>
+    <text class="small" x="1475" y="492">V-201</text>
+    <text class="small" x="1475" y="515" style="font-size:11px">FLASH DRUM</text>
+
+    <circle class="inst" cx="1465" cy="275" r="29"/>
+    <text class="tag" x="1465" y="271">PT</text>
+    <text class="tag" x="1465" y="291">201</text>
+
+    <circle class="inst" cx="1260" cy="690" r="29"/>
+    <text class="tag" x="1260" y="686">FI</text>
+    <text class="tag" x="1260" y="706">301</text>
+  </g>
+
+  <!-- CENTER BRAND -->
+  <g>
+    <circle class="halo" cx="800" cy="330" r="112"/>
+    <path class="mark" d="M760 308V258l40-24 40 24v50l-40 24z"/>
+    <path class="mark" d="M780 270v50l40 24 28-17"/>
+    <path class="mark" d="M800 234v74l40 24"/>
+
+    <text class="title" x="800" y="452">
+      PROJECT <tspan class="title-accent">LUMEN</tspan>
+    </text>
+    <text class="subtitle" x="800" y="500">P&amp;ID RISK PLATFORM</text>
+
+    <line x1="635" y1="545" x2="765" y2="545" stroke="#5cdedc" stroke-opacity=".28" stroke-width="1.5"/>
+    <circle class="micro" cx="800" cy="545" r="4"/>
+    <line x1="835" y1="545" x2="965" y2="545" stroke="#5cdedc" stroke-opacity=".28" stroke-width="1.5"/>
+
+    <text class="status" x="800" y="690">INITIALIZING P&amp;ID RISK WORKSPACE</text>
+    <line class="progress-base" x1="620" y1="730" x2="980" y2="730"/>
+    <line class="progress" x1="620" y1="730" x2="980" y2="730"/>
+  </g>
+
+  <!-- subtle technical marks, no frame -->
+  <g aria-hidden="true" opacity=".35">
+    <circle cx="570" cy="120" r="3" fill="#58d8d6"/>
+    <circle cx="1030" cy="120" r="3" fill="#58d8d6"/>
+    <path d="M545 120H585M1015 120H1055" stroke="#58d8d6" stroke-opacity=".25"/>
+    <path d="M770 800h60" stroke="#7f979f" stroke-opacity=".16"/>
+  </g>
+</svg>

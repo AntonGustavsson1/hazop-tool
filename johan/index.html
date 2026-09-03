@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Johans dimensioneringsprogram</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header>
+  <h1>Johans dimensioneringsprogram</h1>
+  <span class="sub">Ventilation &amp; VVS</span>
+</header>
+
+<nav class="tabs">
+  <button data-tab="kanal" class="active">Kanalberäkning</button>
+  <button data-tab="ror">Rörberäkning</button>
+  <button data-tab="kv">Kv-beräkning</button>
+  <button data-tab="effekt">Effekt / Flöde</button>
+</nav>
+
+<div id="meta-bar">
+  <div class="meta-fields">
+    <input id="meta-company"   placeholder="Företag / Konsult AB">
+    <input id="meta-project"   placeholder="Projekt">
+    <input id="meta-ref"       placeholder="Referensnr" style="max-width:110px;">
+    <input id="meta-prepby"    placeholder="Upprättad av">
+    <input id="meta-checkedby" placeholder="Granskad av">
+  </div>
+  <button id="btn-export-pdf">⬇ Exportera PDF</button>
+</div>
+
+<div id="print-area"></div>
+
+<!-- ════════════════════════════════════════════════════════════════════════════
+     FLIK 1 — KANALBERÄKNING
+     ════════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-kanal" class="tab-content active">
+
+  <!-- Inställningar alltid synliga -->
+  <div class="card" style="margin-bottom:1rem;">
+    <h3>Inställningar</h3>
+    <div class="field-row col3">
+      <div class="field">
+        <label>Enhet</label>
+        <select id="k-unit">
+          <option value="ls">l/s</option>
+          <option value="m3h">m³/h</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Kanaltyp / Ytråhet</label>
+        <select id="k-mat"></select>
+      </div>
+      <div class="field">
+        <label>Ytråhet ε (mm)</label>
+        <input id="k-eps" type="number" value="0.09" step="0.001" min="0.001">
+      </div>
+    </div>
+    <div class="field-row col2">
+      <div class="field">
+        <label>Lufttemperatur (°C)</label>
+        <input id="k-temp" type="number" value="20" min="-30" max="80">
+      </div>
+      <div class="field">
+        <label>Max sidoförhållande (rektangulär)</label>
+        <select id="k-aspect">
+          <option value="3">1:3</option>
+          <option value="4">1:4</option>
+          <option value="5" selected>1:5 (standard)</option>
+          <option value="8">1:8</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="sub-tabs">
+    <button class="active" data-sub="kanal-circ">Cirkulär — lista</button>
+    <button data-sub="kanal-circ2">Cirkulär — given dim.</button>
+    <button data-sub="kanal-circ3">Cirkulär — max flöde</button>
+    <button data-sub="kanal-rect">Rektangulär — lista</button>
+    <button data-sub="kanal-rect2">Rektangulär — given dim.</button>
+  </div>
+
+  <!-- Cirkulär — lista -->
+  <div id="kanal-circ" class="sub-section active">
+    <div class="layout">
+      <div class="card" id="form-kanal-circ">
+        <h3>Cirkulär kanal — välj dimension</h3>
+        <div class="field">
+          <label>Luftmängd</label>
+          <input id="kc-q" class="sum-expr" type="text" placeholder="t.ex. 150+50+75">
+          <div class="hint">Tip: summera med + (150+50+75 = 275)</div>
+        </div>
+        <div class="field-row col2">
+          <div class="field">
+            <label>Max hastighet (m/s) valfri</label>
+            <input id="kc-maxv" type="number" placeholder="t.ex. 6" step="0.5" min="0">
+          </div>
+          <div class="field">
+            <label>Max Pa/m valfri</label>
+            <input id="kc-maxdp" type="number" placeholder="t.ex. 1.0" step="0.1" min="0">
+          </div>
+        </div>
+        <button class="btn-primary" id="btn-kc-list">Beräkna lista</button>
+      </div>
+      <div class="card">
+        <h3>Alternativa cirkulära dimensioner</h3>
+        <table class="dim-table">
+          <thead>
+            <tr><th>Dim (mm)</th><th>Hast (m/s)</th><th>Pa/m</th><th>Strömning</th><th>Re</th></tr>
+          </thead>
+          <tbody id="kc-list-tbody"><tr><td colspan="5" style="color:#94a3b8">Ange luftmängd och klicka Beräkna</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cirkulär — given dimension -->
+  <div id="kanal-circ2" class="sub-section" style="display:none">
+    <div class="layout">
+      <div class="card" id="form-kanal-circ2">
+        <h3>Cirkulär — beräkna för given dimension</h3>
+        <div class="field">
+          <label>Luftmängd</label>
+          <input id="kc2-q" class="sum-expr" type="text" placeholder="t.ex. 250">
+        </div>
+        <div class="field">
+          <label>Diameter (mm)</label>
+          <select id="kc2-d">
+            <option value="">Välj dimension...</option>
+          </select>
+        </div>
+        <button class="btn-primary" id="btn-kc2">Beräkna</button>
+      </div>
+      <div class="card">
+        <h3>Resultat</h3>
+        <div id="kc2-result" class="result-block hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cirkulär — max flöde -->
+  <div id="kanal-circ3" class="sub-section" style="display:none">
+    <div class="layout">
+      <div class="card" id="form-kanal-circ3">
+        <h3>Cirkulär — max luftflöde</h3>
+        <div class="field">
+          <label>Diameter (mm)</label>
+          <select id="kc3-d">
+            <option value="">Välj dimension...</option>
+          </select>
+        </div>
+        <div class="field-row col2">
+          <div class="field">
+            <label>Max hastighet (m/s)</label>
+            <input id="kc3-maxv" type="number" placeholder="t.ex. 6" step="0.5">
+            <div class="hint">Ange ett av dessa</div>
+          </div>
+          <div class="field">
+            <label>Max Pa/m</label>
+            <input id="kc3-maxdp" type="number" placeholder="t.ex. 1.0" step="0.1">
+          </div>
+        </div>
+        <button class="btn-primary" id="btn-kc3">Beräkna max flöde</button>
+      </div>
+      <div class="card">
+        <h3>Resultat</h3>
+        <div id="kc3-result" class="result-block hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rektangulär — lista -->
+  <div id="kanal-rect" class="sub-section" style="display:none">
+    <div class="layout">
+      <div class="card" id="form-kanal-rect">
+        <h3>Rektangulär kanal — välj dimension</h3>
+        <div class="field">
+          <label>Luftmängd</label>
+          <input id="kr-q" class="sum-expr" type="text" placeholder="t.ex. 400+200">
+        </div>
+        <div class="field-row col2">
+          <div class="field">
+            <label>Max hastighet (m/s) valfri</label>
+            <input id="kr-maxv" type="number" placeholder="t.ex. 5" step="0.5" min="0">
+          </div>
+          <div class="field">
+            <label>Max Pa/m valfri</label>
+            <input id="kr-maxdp" type="number" placeholder="t.ex. 1.0" step="0.1" min="0">
+          </div>
+        </div>
+        <button class="btn-primary" id="btn-kr-list">Beräkna lista</button>
+      </div>
+      <div class="card">
+        <h3>Alternativa rektangulära dimensioner</h3>
+        <table class="dim-table">
+          <thead>
+            <tr><th>A×B (mm)</th><th>Hast (m/s)</th><th>Pa/m</th><th>Strömning</th><th>Dh (mm)</th></tr>
+          </thead>
+          <tbody id="kr-list-tbody"><tr><td colspan="5" style="color:#94a3b8">Ange luftmängd och klicka Beräkna</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rektangulär — given dimension -->
+  <div id="kanal-rect2" class="sub-section" style="display:none">
+    <div class="layout">
+      <div class="card" id="form-kanal-rect2">
+        <h3>Rektangulär — beräkna för given dimension</h3>
+        <div class="field">
+          <label>Luftmängd</label>
+          <input id="kr2-q" class="sum-expr" type="text" placeholder="t.ex. 500">
+        </div>
+        <div class="field-row col2">
+          <div class="field">
+            <label>Sida A (mm)</label>
+            <input id="kr2-a" type="number" placeholder="t.ex. 400" step="50">
+          </div>
+          <div class="field">
+            <label>Sida B (mm)</label>
+            <input id="kr2-b" type="number" placeholder="t.ex. 200" step="50">
+          </div>
+        </div>
+        <button class="btn-primary" id="btn-kr2">Beräkna</button>
+      </div>
+      <div class="card">
+        <h3>Resultat</h3>
+        <div id="kr2-result" class="result-block hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Historik kanal -->
+  <div class="history-panel">
+    <button class="history-toggle" id="hist-btn-kanal">Beräkningshistorik</button>
+    <div class="history-list" id="hist-kanal"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════════════
+     FLIK 2 — RÖRBERÄKNING
+     ════════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-ror" class="tab-content">
+  <div class="layout">
+    <!-- Indata -->
+    <div>
+      <div class="card" id="form-ror">
+        <h3>Indata</h3>
+
+        <!-- Material -->
+        <div class="field">
+          <label>Material</label>
+          <select id="r-mat"></select>
+          <div class="mat-info" id="r-mat-info"></div>
+        </div>
+
+        <!-- DN-väljare -->
+        <div class="field">
+          <label>DN-dimension <span id="r-od-display" style="color:#64748b;font-size:.78rem;margin-left:.5rem;"></span></label>
+          <div class="dn-row" id="r-dn-row"></div>
+          <div class="hint">Invändig diameter visas automatiskt nedan</div>
+        </div>
+
+        <div class="field">
+          <label>Invändig diameter (mm)</label>
+          <input id="r-id" type="number" step="0.1" min="1" placeholder="Välj DN ovan">
+        </div>
+
+        <!-- Medium och temperatur -->
+        <div class="field">
+          <label>Medium</label>
+          <select id="r-medium"></select>
+        </div>
+
+        <!-- Glykol-anpassning -->
+        <div id="r-glycol-custom" class="glycol-row hidden">
+          <div class="field">
+            <label>Kinem. viskositet ν (×10⁻⁶ m²/s)</label>
+            <input id="r-nu" type="number" placeholder="t.ex. 1.8" step="0.01">
+          </div>
+          <div class="field">
+            <label>Densitet ρ (kg/m³)</label>
+            <input id="r-rho" type="number" placeholder="t.ex. 1000" step="1">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Temperatur (°C)</label>
+          <input id="r-temp" type="number" value="60" min="1" max="150">
+        </div>
+
+        <div class="field">
+          <label>Vattenflöde (l/s)</label>
+          <input id="r-q" type="number" step="0.01" min="0.001" placeholder="t.ex. 0.50">
+        </div>
+
+        <!-- Begränsningar för sök -->
+        <div class="field-row col2">
+          <div class="field">
+            <label>Max hastighet m/s (opt.)</label>
+            <input id="r-maxv" type="number" step="0.1" placeholder="t.ex. 1.0">
+          </div>
+          <div class="field">
+            <label>Max Pa/m (opt.)</label>
+            <input id="r-maxdp" type="number" step="1" placeholder="t.ex. 200">
+          </div>
+        </div>
+
+        <div style="display:flex;gap:.6rem;margin-top:.4rem;">
+          <button class="btn-primary" id="btn-r-dim" style="flex:2">Beräkna</button>
+          <button class="btn-secondary" id="btn-r-maxq" style="flex:1">Max flöde</button>
+        </div>
+
+        <!-- Värmeförlust -->
+        <div class="heat-section">
+          <h4>Värmeförlust W/m (förbättring 9)</h4>
+          <div class="field-row col2">
+            <div class="field">
+              <label>Omgivningstemperatur (°C)</label>
+              <input id="r-tamb" type="number" value="20" min="-30" max="40">
+            </div>
+            <div class="field">
+              <label>Isolertjocklek (mm, 0=oisolerat)</label>
+              <input id="r-ins-thick" type="number" value="0" min="0" max="200" step="10">
+            </div>
+          </div>
+          <div class="field">
+            <label>Isoleringstyp</label>
+            <select id="r-ins-type">
+              <option>Mineralull (λ=0.040)</option>
+              <option>Glasull (λ=0.036)</option>
+              <option>PUR/PIR (λ=0.030)</option>
+              <option>Cellgummi (λ=0.040)</option>
+              <option>PEF/EPS (λ=0.033)</option>
+            </select>
+          </div>
+          <div id="r-heatloss-block" class="result-block hidden" style="margin-top:.5rem;">
+            <div class="result-row">
+              <span class="label">Värmeförlust</span>
+              <span class="value" id="r-heatloss-val">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Resultat -->
+    <div>
+      <div class="card">
+        <h3>Beräkningsresultat</h3>
+        <div id="r-result" class="result-block hidden"></div>
+      </div>
+      <div class="card" style="margin-top:1rem;">
+        <h3>Alternativa dimensioner</h3>
+        <table class="dim-table">
+          <thead>
+            <tr><th>DN</th><th>Hast (m/s)</th><th>Pa/m</th><th>Strömning</th><th>Re</th></tr>
+          </thead>
+          <tbody id="r-list-tbody"><tr><td colspan="5" style="color:#94a3b8">Klicka Beräkna</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="history-panel">
+    <button class="history-toggle" id="hist-btn-ror">Beräkningshistorik</button>
+    <div class="history-list" id="hist-ror"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════════════
+     FLIK 3 — Kv-BERÄKNING
+     ════════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-kv" class="tab-content">
+  <div class="layout">
+    <div class="card" id="form-kv">
+      <h3>Kv-beräkning</h3>
+
+      <!-- Sök -->
+      <div class="radio-group">
+        <label><input type="radio" name="kv-seek" value="kv" checked> Sök Kv</label>
+        <label><input type="radio" name="kv-seek" value="q">  Sök flöde</label>
+        <label><input type="radio" name="kv-seek" value="p">  Sök tryckfall</label>
+      </div>
+
+      <!-- Fe-läge -->
+      <div class="field" style="margin-bottom:.5rem;">
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;">
+          <input type="checkbox" id="kv-fe-mode"> Beräkna med Fe (äldre beteckning)
+        </label>
+      </div>
+
+      <!-- Standard Kv-fält -->
+      <div class="kv-std-field">
+        <div class="field">
+          <label>Kv-värde</label>
+          <input id="kv-kv" type="number" step="0.01" placeholder="t.ex. 2.50">
+        </div>
+      </div>
+
+      <!-- Fe-fält -->
+      <div class="kv-fe-field hidden">
+        <div class="field-row col2">
+          <div class="field">
+            <label>Fe-värde</label>
+            <input id="kv-fe" type="number" step="0.001" placeholder="t.ex. 0.095">
+          </div>
+          <div class="field">
+            <label>Invändig ventildiameter (mm)</label>
+            <input id="kv-fe-d" type="number" step="0.5" placeholder="t.ex. 15">
+          </div>
+        </div>
+      </div>
+
+      <!-- Gemensamma fält -->
+      <div class="field-row col2">
+        <div class="field">
+          <label>Flöde</label>
+          <div style="display:flex;gap:.4rem;">
+            <input id="kv-q" type="number" step="0.01" placeholder="Värde">
+            <select id="kv-unit-q" style="width:80px;">
+              <option value="m3h">m³/h</option>
+              <option value="ls">l/s</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Tryckfall</label>
+          <div style="display:flex;gap:.4rem;">
+            <input id="kv-p" type="number" step="0.001" placeholder="Värde">
+            <select id="kv-unit-p" style="width:80px;">
+              <option value="bar">bar</option>
+              <option value="kpa">kPa</option>
+              <option value="pa">Pa</option>
+              <option value="mh2o">mH₂O</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn-primary" id="btn-kv">Beräkna</button>
+
+      <div style="margin-top:.8rem;padding:.6rem;background:#fffbeb;border-radius:5px;font-size:.78rem;color:#78350f;">
+        <strong>Formel:</strong> Q [m³/h] = Kv × √(ΔP [bar]) &nbsp;|&nbsp;
+        Fe: Q [m³/h] = Fe × d² × √(ΔP [mH₂O])
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Resultat</h3>
+      <div id="kv-result" class="result-block hidden"></div>
+    </div>
+  </div>
+
+  <div class="history-panel">
+    <button class="history-toggle" id="hist-btn-kv">Beräkningshistorik</button>
+    <div class="history-list" id="hist-kv"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════════════
+     FLIK 4 — EFFEKT / FLÖDE
+     ════════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-effekt" class="tab-content">
+  <div class="layout">
+    <div class="card" id="form-effekt">
+      <h3>Effekt / Flöde</h3>
+
+      <div class="radio-group">
+        <label><input type="radio" name="eff-seek" value="p" checked> Beräkna effekt</label>
+        <label><input type="radio" name="eff-seek" value="q"> Beräkna flöde</label>
+      </div>
+
+      <div class="field">
+        <label>Effekt</label>
+        <div style="display:flex;gap:.4rem;">
+          <input id="eff-p" type="number" step="0.1" placeholder="Värde">
+          <select id="eff-unit-p" style="width:70px;">
+            <option value="kw">kW</option>
+            <option value="w">W</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Flöde</label>
+        <div style="display:flex;gap:.4rem;">
+          <input id="eff-q" type="number" step="0.01" placeholder="Värde">
+          <select id="eff-unit-q" style="width:70px;">
+            <option value="ls">l/s</option>
+            <option value="lh">l/h</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Temperaturskillnad ΔT (°C) &nbsp; <small style="color:#64748b">Förinställda system:</small></label>
+        <input id="eff-dt" type="number" step="1" placeholder="t.ex. 20">
+        <div class="dn-row" style="margin-top:.4rem;">
+          <div class="dn-chip dt-preset" data-dt="5">6/12°C (kyla)</div>
+          <div class="dn-chip dt-preset" data-dt="10">40/30°C (golvvärme)</div>
+          <div class="dn-chip dt-preset" data-dt="20">80/60°C (radiator)</div>
+          <div class="dn-chip dt-preset" data-dt="30">70/40°C (fjärrvärme)</div>
+          <div class="dn-chip dt-preset" data-dt="6">6/12°C (kyla Δ6)</div>
+        </div>
+      </div>
+
+      <div class="field-row col2">
+        <div class="field">
+          <label>Mediumtemperatur (°C) — för densitet</label>
+          <input id="eff-temp" type="number" value="60" min="1" max="130">
+        </div>
+        <div class="field">
+          <label>Spec. värmekapacitet cp (J/kgK)</label>
+          <input id="eff-cp" type="number" value="4186" step="1">
+          <div class="hint">Vatten ≈ 4186 | Glykol 30%: ≈ 3900</div>
+        </div>
+      </div>
+
+      <button class="btn-primary" id="btn-eff">Beräkna</button>
+    </div>
+
+    <div class="card">
+      <h3>Resultat</h3>
+      <div id="eff-result" class="result-block hidden"></div>
+      <div style="margin-top:1rem;padding:.7rem;background:#f0fdf4;border-radius:6px;font-size:.8rem;color:#15803d;">
+        <strong>Formel:</strong> P = ṁ × cp × ΔT &nbsp;|&nbsp; ṁ = Q × ρ
+      </div>
+    </div>
+  </div>
+
+  <div class="history-panel">
+    <button class="history-toggle" id="hist-btn-effekt">Beräkningshistorik</button>
+    <div class="history-list" id="hist-effekt"></div>
+  </div>
+</div>
+
+<script src="js/data.js"></script>
+<script src="js/formulas.js"></script>
+<script src="js/app.js"></script>
+
+<script>
+// Fyll dropdown-dimensioner för cirkulär kanal efter att data laddats
+document.addEventListener('DOMContentLoaded', () => {
+  ['kc2-d','kc3-d'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    CIRC_DUCTS.forEach(d => sel.add(new Option(`Ø${d} mm`, d)));
+  });
+});
+</script>
+
+</body>
+</html>

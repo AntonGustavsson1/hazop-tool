@@ -1,0 +1,103 @@
+För att verkligen förstå hur detta programmeras och modelleras i mjukvara som exSILentia, måste vi titta på dataarkitekturen bakom exidas FMEDA-databas (Safety Equipment Reliability Handbook - SERH) samt hur mjukvaran i realtid skiftar tillstånd via diskreta Markov-kedjor.  Här är en djupdykning i hur du sätter upp datastrukturen och beräkningslogiken för en "SIL-verifieringsmotor" i kod (t.ex. Python).1. Dataarkitekturen: Objektorienterad FMEDA-modellI ett riktigt system sparas inte bara en felfrekvens för en ventil. Enligt exidas White Papers delas en fysisk enhet upp i sina underliggande felmoder baserat på applikationen.  Om vi översätter exidas publika FMEDA-data (t.ex. för en typisk kulventil) till kod, ser vi hur valet av Tight Shut-Off (TSO) aktiverar felmoder relaterade till sätesslitage:  Pythonclass ValveFMEDALibrary:
+    def __init__(self):
+        # Felfrekvenser i FIT (Failures in Time = fel per 10^9 timmar)
+        # Baserat på exidas publika FMEDA-rapporter för kulventiler
+        self.database = {
+            "Ball_Valve_X_Series": {
+                "Full_Stroke_Clean": {
+                    "lambda_SD": 0, "lambda_SU": 0, "lambda_DD": 0, "lambda_DU": 479
+                },
+                "Tight_Shut_Off_Clean": {
+                    "lambda_SD": 0, "lambda_SU": 0, "lambda_DD": 0, "lambda_DU": 1370
+                },
+                "Full_Stroke_Severe": {
+                    "lambda_SD": 0, "lambda_SU": 0, "lambda_DD": 0, "lambda_DU": 858
+                },
+                "Tight_Shut_Off_Severe": {
+                    "lambda_SD": 0, "lambda_SU": 0, "lambda_DD": 0, "lambda_DU": 2615
+                }
+            }
+        }
+
+    def get_rates(self, model, application, environment):
+        key = f"{application}_{environment}"
+        return self.database[model][key]
+Varför ökar $\lambda_{DU}$ i koden?  En repa i sätet orsakar ett mikroläckage. I applikationen Full_Stroke ignoreras detta eftersom ventilen stänger. Men i Tight_Shut_Off klassas denna felmod programmeringstekniskt om från Safe/Ignored till Dangerous Undetected ($\lambda_{DU}$), vilket förklarar hoppet från 479 FIT till 1370 FIT i databasen.  2. Markov-modellering i kod (Hantering av PST på TSO)exida använder ofta diskreta Markov-kedjor istället för förenklade formler när komplex diagnostik (som PST) blandas in.  Vid en vanlig Full Stroke-ventil kan ett PST-test ha en Diagnostic Coverage (DC) på ca 70 %. Men ett PST-test kan aldrig upptäcka läckage. Därför måste din beräkningsmotor beräkna en viktad (effektiv) DC baserat på applikationskravet.  Här är en algoritm som beräknar den exakta dämpningen av $PFD_{avg}$ över tid ($t$):Pythonimport numpy as np
+
+def calculate_pfd_curve(lambda_du_base, dc_pst, interval_pst_hours, interval_fst_hours, total_years=5):
+    """
+    Simulerar PFD-utvecklingen timme för timme baserat på exidas två-nivåers testmodell.
+    """
+    total_hours = total_years * 365 * 24
+    time_axis = np.arange(0, total_hours, 1)
+    pfd_axis = np.zeros(total_hours)
+    
+    # Omvandla FIT till fel per timme
+    lambda_du = lambda_du_base * 1e-9
+    
+    # Dela upp felen i vad PST kan hitta (stroke) vs vad som förblir dolt (leakage)
+    lambda_DD_pst = lambda_du * dc_pst        # Hittas vid varje PST-intervall
+    lambda_DU_rest = lambda_du * (1 - dc_pst)   # Hittas bara vid full turnaround (FST)
+    
+    for t in time_axis:
+        # Räkna ut dötid sedan senaste testerna (så kallad sawtooth-wave)
+        time_since_pst = t % interval_pst_hours
+        time_since_fst = t % interval_fst_hours
+        
+        # PFD för de två parallella feltyperna enligt exidas modeller
+        pfd_pst_part = lambda_DD_pst * time_since_pst
+        pfd_fst_part = lambda_DU_rest * time_since_fst
+        
+        # Total PFD vid tidpunkt t
+        pfd_axis[t] = pfd_pst_part + pfd_fst_part
+        
+    return time_axis, pfd_axis, np.mean(pfd_axis)
+
+# --- SIMULERING / JÄMFÖRELSE ---
+
+# Scenario 1: Standard Full Stroke ventil med PST (DC = 70% på mekaniken)
+_, _, pfd_avg_full_stroke = calculate_pfd_curve(
+    lambda_du_base=479, dc_pst=0.70, interval_pst_hours=730, interval_fst_hours=26280
+)
+
+# Scenario 2: Tight Shut-Off ventil med PST. 
+# exidas White Paper visar att eftersom den totala lambda_du är mycket högre (1370), 
+# och PST inte kan upptäcka läckage, blir den funktionella (effektiva) DC:n dramatiskt lägre.
+# Vi simulerar detta genom att tillämpa PST-täckningen enbart på den mekaniska delen (149 FIT av 1370 FIT).
+# Effektiva DC blir då: 149 / 1370 = ~11%
+effective_dc_tso = 149 / 1370
+
+_, _, pfd_avg_tso = calculate_pfd_curve(
+    lambda_du_base=1370, dc_pst=effective_dc_tso, interval_pst_hours=730, interval_fst_hours=26280
+)
+
+print(f"Genomsnittlig PFD (Full Stroke + PST): {pfd_avg_full_stroke:.6f}")
+print(f"Genomsnittlig PFD (Tight Shut-Off + PST): {pfd_avg_tso:.6f}")
+3. Vad koden avslöjar om exidas logikOm du kör simulationen ovan kommer du att se att pfd_avg_tso blir markant mycket högre. Detta beror på två programmeringstekniska regler som exSILentia tillämpar:  Den dolda potten dominerar: Eftersom effective_dc_tso kollapsar till drygt 11 % (eftersom merparten av felen på en TSO-ventil är sätesskador som kräver FST), ackumuleras nästan hela felfrekvensen på 1370 FIT i den långsamma cykeln (interval_fst_hours = 3 år).  PST-funktionen "mättas": Att köra PST oftare (t.ex. varje vecka istället för varje månad) ger nästan ingen mätbar effekt på en TSO-ventil i programmet, eftersom kurvan styrs av sätets läckagerisk.  4. Hur man bygger "Arkitektur-spärren" (SFF/HFT-kontrollen)Mjukvaran räknar inte bara PFD, den måste också validera "Barrier 2" (Minimum Architectural Constraints) enligt IEC 61508 Route 1H. Om din kod upptäcker att SFF (Safe Failure Fraction) sjunker under en viss gräns, måste programmet kasta en varning och tvinga användaren att bygga ett redundant system (t.ex. 1oo2 d.v.s. dubbla ventiler).  Här är en enkel valideringsmodul:Pythondef verify_architectural_constraints(lambda_sd, lambda_su, lambda_dd, lambda_du, target_sil):
+    # Beräkna Safe Failure Fraction (SFF)
+    total_failures = lambda_sd + lambda_su + lambda_dd + lambda_du
+    if total_failures == 0:
+        return "Invalid Data"
+        
+    sff = (lambda_sd + lambda_su + lambda_dd) / total_failures
+    
+    # För mekaniska komponenter (Typ A-enheter enligt IEC 61508) gäller:
+    # HFT = 0 (Enkelventil) kräver:
+    # SIL 2 -> SFF mellan 60% och 90%
+    # SIL 3 -> SFF > 90%
+    
+    if target_sil == 2:
+        if sff >= 0.60:
+            return f"GODKÄND för SIL 2 med singelventil (HFT=0). SFF: {sff*100:.1f}%"
+        else:
+            return f"UNDERKÄND för SIL 2. SFF ({sff*100:.1f}%) är för låg. Kräver redundans (HFT=1, t.ex. 1oo2)!"
+            
+    elif target_sil == 3:
+        if sff >= 0.90:
+            return f"GODKÄND för SIL 3 med singelventil (HFT=0). SFF: {sff*100:.1f}%"
+        else:
+            return f"UNDERKÄND för SIL 3. SFF ({sff*100:.1f}%) är under 90%. Du MÅSTE konfigurera redundanta ventiler."
+
+# Exempel på körning för TSO-ventilen utan diagnostik (SFF blir 0% eftersom alla fel är DU)
+print(verify_architectural_constraints(0, 0, 0, 1370, target_sil=2))
+Sammanfattning för utvecklarenNär du ska koda eller fördjupa dig i exidas logik är grundregeln att kontexten förändrar datan. Du kan aldrig hårdkoda en siffra för en ventil; din applikations rullist (Full Stroke vs Tight Shut-Off) måste dynamiskt steka om hela arrayen av felmoder, justera Markov-matriserna och tvinga fram tätare manuella testintervaller i koden för att hålla slutresultatet matematiskt korrekt.  

@@ -3745,6 +3745,44 @@ class Database:
                 raise
         return {'source_id': source_id, 'created': True}
 
+    def add_lopa_local_source(self, revision_id, cause_text='', frequency=None):
+        """Create a local (non-HAZOP) LOPA scenario source.
+
+        Local sources are numbered L-001, L-002, etc. and not linked to HAZOP.
+        Returns the source_id of the created local scenario.
+        """
+        self._assert_lopa_revision_editable(revision_id)
+
+        # Get next local source number
+        max_local = self.conn.execute(
+            "SELECT MAX(CAST(SUBSTR(cause_text, 3, 3) AS INTEGER)) "
+            "FROM lopa_source_scenarios WHERE revision_id=? AND cause_text LIKE 'L-%'",
+            (revision_id,)).fetchone()
+        next_num = (max_local[0] or 0) + 1 if max_local[0] is not None else 1
+        scenario_num = f'L-{next_num:03d}'
+
+        with self.history_group():
+            try:
+                self.conn.execute('BEGIN')
+                source_id = self.conn.execute(
+                    "INSERT INTO lopa_source_scenarios(revision_id,cause_text,scenario_text,frequency_source) "
+                    "VALUES (?,?,?,?)",
+                    (revision_id, scenario_num, cause_text or '', 'manual')).lastrowid
+
+                if frequency is not None:
+                    self.conn.execute(
+                        "UPDATE lopa_source_scenarios SET base_frequency=? WHERE id=?",
+                        (frequency, source_id))
+
+                self._log_lopa(None, revision_id, 'local-source-added',
+                              f'Lokal scenario {scenario_num} skapad')
+                self.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+        return source_id
+
     def lopa_source_calculation(self, source_id):
         source = self.conn.execute(
             "SELECT * FROM lopa_source_scenarios WHERE id=?", (source_id,)).fetchone()

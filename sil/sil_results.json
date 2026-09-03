@@ -1,0 +1,645 @@
+{
+  "timestamp": "2026-07-01T08:47:57.891826",
+  "sifs": [
+    {
+      "id": "SIF-001",
+      "name": "Pressure Relief - CO2 Cooler",
+      "sil_required": 2,
+      "sil_achieved": 1,
+      "passed": false,
+      "pfd_total": 0.06763643884051507,
+      "pfh_total": 7.73822330145981e-06,
+      "str_total": 5.113888888888886e-06,
+      "mttfs_years": 22.322591206387248,
+      "deviation_percent": 99.99665600798545,
+      "components": {
+        "sensor": {
+          "pfd": 0.002294215504008067,
+          "pfh": 2.618967470328844e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 2.1899947702924585e-06,
+          "pfh": 2.4999940300142587e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.06549043062200957,
+          "pfh": 7.476076555023924e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-002",
+      "name": "Temperature Limit - Reactor",
+      "sil_required": 2,
+      "sil_achieved": 2,
+      "passed": true,
+      "pfd_total": 0.00530970728345459,
+      "pfh_total": 6.776032734577742e-07,
+      "str_total": 9.941538461538458e-06,
+      "mttfs_years": 11.48265447880055,
+      "deviation_percent": 99.96208588451822,
+      "components": {
+        "sensor": {
+          "pfd": 0.0006901925091801259,
+          "pfh": 1.4989626126885723e-07,
+          "sil": 3,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 1.751996652985619e-06,
+          "pfh": 1.9999961792073013e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.004620961430121905,
+          "pfh": 5.275070125709962e-07,
+          "sil": 2,
+          "architecture": "1oo2"
+        }
+      }
+    },
+    {
+      "id": "SIF-003",
+      "name": "Level High - Reaction Vessel",
+      "sil_required": 2,
+      "sil_achieved": 1,
+      "passed": false,
+      "pfd_total": 0.042012359739024174,
+      "pfh_total": 4.7961829798422245e-06,
+      "str_total": 5.585924369747897e-06,
+      "mttfs_years": 20.436232856963038,
+      "deviation_percent": 99.99478101246294,
+      "components": {
+        "sensor": {
+          "pfd": 5.0311211004363254e-05,
+          "pfh": 5.743288927438737e-09,
+          "sil": 4,
+          "architecture": "1oo2"
+        },
+        "logic": {
+          "pfd": 2.1899947702924585e-06,
+          "pfh": 2.4999940300142587e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.04196206169764323,
+          "pfh": 4.790189691511784e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-004",
+      "name": "Oxygen Concentration Monitor",
+      "sil_required": 1,
+      "sil_achieved": 1,
+      "passed": true,
+      "pfd_total": 0.027625468527357366,
+      "pfh_total": 3.348802957950773e-06,
+      "str_total": 2.9028947368421034e-06,
+      "mttfs_years": 39.32462644709454,
+      "deviation_percent": 99.94868668595637,
+      "components": {
+        "sensor": {
+          "pfd": 0.0020583530623071874,
+          "pfh": 4.241241184320174e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 1.313982434682812e-05,
+          "pfh": 1.499979948268053e-09,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.025607046809837473,
+          "pfh": 2.9231788595704876e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-005",
+      "name": "Flow Shutdown - Hazardous Feed",
+      "sil_required": 2,
+      "sil_achieved": 2,
+      "passed": true,
+      "pfd_total": 0.009349299035656622,
+      "pfh_total": 1.1550238717080971e-06,
+      "str_total": 6.579229393066666e-06,
+      "mttfs_years": 17.35085438149516,
+      "deviation_percent": 99.89445173976065,
+      "components": {
+        "sensor": {
+          "pfd": 0.002787574183251665,
+          "pfh": 4.0386943313282777e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 6.937871865600032e-06,
+          "pfh": 7.919945052054831e-10,
+          "sil": 4,
+          "architecture": "2oo2"
+        },
+        "final_element": {
+          "pfd": 0.0065731750100537735,
+          "pfh": 7.503624440700639e-07,
+          "sil": 2,
+          "architecture": "1oo2"
+        }
+      }
+    },
+    {
+      "id": "SIF-006",
+      "name": "Pressure High - Reactor Outlet",
+      "sil_required": 2,
+      "sil_achieved": 1,
+      "passed": false,
+      "pfd_total": 0.055727040586395216,
+      "pfh_total": 6.373589219926679e-06,
+      "str_total": 4.666363636363634e-06,
+      "mttfs_years": 24.463428064622605,
+      "deviation_percent": 99.99674788313592,
+      "components": {
+        "sensor": {
+          "pfd": 0.0019583897118238486,
+          "pfh": 2.23560469386284e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 1.751996652985619e-06,
+          "pfh": 1.9999961792073013e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.053872499858080874,
+          "pfh": 6.149828750922474e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-007",
+      "name": "Temperature Low - Exothermic Control",
+      "sil_required": 1,
+      "sil_achieved": 1,
+      "passed": true,
+      "pfd_total": 0.0387845627085206,
+      "pfh_total": 4.522566622457535e-06,
+      "str_total": 3.1446376811594185e-06,
+      "mttfs_years": 36.301559262453345,
+      "deviation_percent": 99.97921176873392,
+      "components": {
+        "sensor": {
+          "pfd": 0.0008855732162853344,
+          "pfh": 1.9232911460991424e-07,
+          "sil": 3,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 7.88393600766824e-06,
+          "pfh": 8.999926949392944e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.03792499663273749,
+          "pfh": 4.329337515152681e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-008",
+      "name": "Level Low - Reaction Pot",
+      "sil_required": 1,
+      "sil_achieved": 1,
+      "passed": true,
+      "pfd_total": 0.030983129972813717,
+      "pfh_total": 3.660553916280145e-06,
+      "str_total": 1.6134943454092391e-06,
+      "mttfs_years": 70.7503261268627,
+      "deviation_percent": 99.9567908367444,
+      "components": {
+        "sensor": {
+          "pfd": 0.0012602351056334588,
+          "pfh": 2.596717312406842e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 1.2853830995834221e-05,
+          "pfh": 4.99993483085675e-09,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.029747928511827372,
+          "pfh": 3.395882250208604e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-009",
+      "name": "Stirrer Speed High - Runaway Prevention",
+      "sil_required": 2,
+      "sil_achieved": 1,
+      "passed": false,
+      "pfd_total": 0.036248516917683604,
+      "pfh_total": 4.223697380502727e-06,
+      "str_total": 3.4001587301587285e-06,
+      "mttfs_years": 33.573506474570806,
+      "deviation_percent": 99.99984470562262,
+      "components": {
+        "sensor": {
+          "pfd": 0.002478612507795135,
+          "pfh": 3.5910643544254097e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 5.257299218781122e-08,
+          "pfh": 6.001483126462515e-12,
+          "sil": 4,
+          "architecture": "1oo2"
+        },
+        "final_element": {
+          "pfd": 0.03385376410573504,
+          "pfh": 3.864584943577059e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-010",
+      "name": "Emergency Shutdown - Global",
+      "sil_required": 3,
+      "sil_achieved": 1,
+      "passed": false,
+      "pfd_total": 0.07612582156361858,
+      "pfh_total": 8.690247958273507e-06,
+      "str_total": 6.488875210884349e-10,
+      "mttfs_years": 175924.55923650696,
+      "deviation_percent": 99.99998848545928,
+      "components": {
+        "sensor": {
+          "pfd": 9.85176103440987e-06,
+          "pfh": 1.1246302550696425e-09,
+          "sil": 4,
+          "architecture": "2oo3"
+        },
+        "logic": {
+          "pfd": 8.764489743953308e-09,
+          "pfh": 1.0005125278485578e-12,
+          "sil": 4,
+          "architecture": "2oo3"
+        },
+        "final_element": {
+          "pfd": 0.07611671158895177,
+          "pfh": 8.689122327505909e-06,
+          "sil": 1,
+          "architecture": "2oo2"
+        }
+      }
+    },
+    {
+      "id": "SIF-011",
+      "name": "Cooling Water Failure",
+      "sil_required": 1,
+      "sil_achieved": 1,
+      "passed": true,
+      "pfd_total": 0.028126797745078425,
+      "pfh_total": 3.2044587068583454e-06,
+      "str_total": 2.9387280701754373e-06,
+      "mttfs_years": 38.845122248666456,
+      "deviation_percent": 99.9315825528059,
+      "components": {
+        "sensor": {
+          "pfd": 0.002568495301325507,
+          "pfh": 2.792798829352222e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 1.7519687729085963e-05,
+          "pfh": 1.9999643526353804e-09,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.025607046809837473,
+          "pfh": 2.9231788595704876e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-012",
+      "name": "Power Loss Detection",
+      "sil_required": 1,
+      "sil_achieved": 1,
+      "passed": true,
+      "pfd_total": 0.017736333892214518,
+      "pfh_total": 2.025731753095599e-06,
+      "str_total": 4.241855670103091e-06,
+      "mttfs_years": 26.911630196691288,
+      "deviation_percent": 99.98982481943865,
+      "components": {
+        "sensor": {
+          "pfd": 0.000525323385718017,
+          "pfh": 5.99684230271708e-08,
+          "sil": 3,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 1.751996652985619e-06,
+          "pfh": 1.9999961792073013e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.017218334774746442,
+          "pfh": 1.9655633304505072e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-013",
+      "name": "Catalyst Bed Temperature Runaway",
+      "sil_required": 2,
+      "sil_achieved": 2,
+      "passed": true,
+      "pfd_total": 0.004156333573670956,
+      "pfh_total": 4.7603771627103974e-07,
+      "str_total": 1.100732323232323e-05,
+      "mttfs_years": 10.370845729898553,
+      "deviation_percent": 99.94710115864139,
+      "components": {
+        "sensor": {
+          "pfd": 1.4244279332991109e-05,
+          "pfh": 3.188702257077078e-09,
+          "sil": 4,
+          "architecture": "1oo2"
+        },
+        "logic": {
+          "pfd": 2.1899947702924585e-06,
+          "pfh": 2.4999940300142587e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.004139967367992014,
+          "pfh": 4.725990146109612e-07,
+          "sil": 2,
+          "architecture": "1oo2"
+        }
+      }
+    },
+    {
+      "id": "SIF-014",
+      "name": "Gas Detector - Toxic Leak",
+      "sil_required": 1,
+      "sil_achieved": 1,
+      "passed": true,
+      "pfd_total": 0.03454822833994686,
+      "pfh_total": 4.387311666057993e-06,
+      "str_total": 2.932186379928314e-06,
+      "mttfs_years": 38.931785483685175,
+      "deviation_percent": 99.98447448525371,
+      "components": {
+        "sensor": {
+          "pfd": 0.0007135460402175616,
+          "pfh": 5.221267257756359e-07,
+          "sil": 3,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 5.255971138411285e-06,
+          "pfh": 5.999967052980923e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.03385376410573504,
+          "pfh": 3.864584943577059e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-015",
+      "name": "Agitator Vibration High",
+      "sil_required": 1,
+      "sil_achieved": 1,
+      "passed": true,
+      "pfd_total": 0.03151688467333147,
+      "pfh_total": 3.7709501650439203e-06,
+      "str_total": 2.6720884658454636e-06,
+      "mttfs_years": 42.72135919176357,
+      "deviation_percent": 99.97791457795722,
+      "components": {
+        "sensor": {
+          "pfd": 0.001816634337061801,
+          "pfh": 3.7431791990828206e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 6.569955560820591e-06,
+          "pfh": 7.499949270343142e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.029747928511827372,
+          "pfh": 3.395882250208604e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-016",
+      "name": "Batch Cycle Timeout Watchdog",
+      "sil_required": 1,
+      "sil_achieved": 1,
+      "passed": true,
+      "pfd_total": 0.02151648587705801,
+      "pfh_total": 2.4840700735780867e-06,
+      "str_total": 3.262243589743588e-06,
+      "mttfs_years": 34.99286549307775,
+      "deviation_percent": 99.99386860878505,
+      "components": {
+        "sensor": {
+          "pfd": 8.63830331553526e-05,
+          "pfh": 3.749674470014018e-08,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 1.313998117303501e-06,
+          "pfh": 1.4999978508030807e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.02143066836285351,
+          "pfh": 2.4464233290928664e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-017",
+      "name": "Hydrogen Generation Rate High",
+      "sil_required": 2,
+      "sil_achieved": 2,
+      "passed": true,
+      "pfd_total": 0.007396389881535015,
+      "pfh_total": 9.17631549649797e-07,
+      "str_total": 5.772869743943859e-06,
+      "mttfs_years": 19.774437360432266,
+      "deviation_percent": 99.93149203285891,
+      "components": {
+        "sensor": {
+          "pfd": 0.002341232894477936,
+          "pfh": 3.392025968692823e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 3.468947966358266e-06,
+          "pfh": 3.9599862629660567e-10,
+          "sil": 4,
+          "architecture": "2oo2"
+        },
+        "final_element": {
+          "pfd": 0.005063568678390955,
+          "pfh": 5.78032954154218e-07,
+          "sil": 2,
+          "architecture": "1oo2"
+        }
+      }
+    },
+    {
+      "id": "SIF-018",
+      "name": "Process Integrity Pressure Loss",
+      "sil_required": 1,
+      "sil_achieved": 1,
+      "passed": true,
+      "pfd_total": 0.03178390337401549,
+      "pfh_total": 3.624106470925919e-06,
+      "str_total": 2.864832826747719e-06,
+      "mttfs_years": 39.8470898810338,
+      "deviation_percent": 99.96466346531348,
+      "components": {
+        "sensor": {
+          "pfd": 0.002087907912237872,
+          "pfh": 2.2702423360805627e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 1.0511887077104248e-05,
+          "pfh": 1.1999871092584785e-09,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.029747928511827372,
+          "pfh": 3.395882250208604e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-019",
+      "name": "Pump Discharge Backpressure High",
+      "sil_required": 1,
+      "sil_achieved": 1,
+      "passed": true,
+      "pfd_total": 0.040397762981262075,
+      "pfh_total": 4.608817397705824e-06,
+      "str_total": 3.858804347826086e-06,
+      "mttfs_years": 29.583062744775738,
+      "deviation_percent": 99.99538036438092,
+      "components": {
+        "sensor": {
+          "pfd": 0.002568495301325507,
+          "pfh": 2.792798829352222e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 1.751996652985619e-06,
+          "pfh": 1.9999961792073013e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.03792499663273749,
+          "pfh": 4.329337515152681e-06,
+          "sil": 1,
+          "architecture": "1oo1"
+        }
+      }
+    },
+    {
+      "id": "SIF-020",
+      "name": "Reactor Isolation on Shutdown",
+      "sil_required": 2,
+      "sil_achieved": 1,
+      "passed": false,
+      "pfd_total": 0.07769421190101611,
+      "pfh_total": 8.884039088559646e-06,
+      "str_total": 4.425060493827158e-06,
+      "mttfs_years": 25.797444193315787,
+      "deviation_percent": 99.99712284631774,
+      "components": {
+        "sensor": {
+          "pfd": 0.0017052808320604466,
+          "pfh": 1.9466676165073585e-07,
+          "sil": 2,
+          "architecture": "1oo1"
+        },
+        "logic": {
+          "pfd": 2.1899947702924585e-06,
+          "pfh": 2.4999940300142587e-10,
+          "sil": 4,
+          "architecture": "1oo1"
+        },
+        "final_element": {
+          "pfd": 0.07611671158895177,
+          "pfh": 8.689122327505909e-06,
+          "sil": 1,
+          "architecture": "2oo2"
+        }
+      }
+    }
+  ]
+}

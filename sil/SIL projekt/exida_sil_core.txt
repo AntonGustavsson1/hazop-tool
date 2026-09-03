@@ -1,0 +1,450 @@
+# -*- coding: utf-8 -*-
+"""
+=========================================================================================
+EXIDA FUNCTIONAL SAFETY SIL VERIFICATION ENGINE (CORE MATHEMATICAL IMPLEMENTATION)
+=========================================================================================
+Svenska: Fullständig produktionsredo beräkningskärna baserad på exidas metodik för
+SIL-verifiering enligt IEC 61508 / IEC 61511. 
+
+Inkluderar:
+  - Tidsberoende kontinuerliga Markov-kedjor (Continuous-Time Markov Chains)
+  - Fjärde ordningens Runge-Kutta-lösare (RK4) för matrisdifferentialekvationer
+  - Platsens säkerhetsindex (Site Safety Index - SSI 0-4) kalibrering
+  - Ofullständiga proof-tester samt de-rating för mänskliga fel (Human Error P_HE)
+  - Slitagemodellering (Wear-out) via tidsvarierande Weibull-fördelning efter Useful Life
+  - Diskontinuerlig Batch-modellering med End-of-Batch automatisk partial/full stroke-test
+  - Arkitekturer: 1oo1, 1oo2, 2oo3, 1oo2D med gemensamma orsaksfel (Beta-faktor)
+  - Beräkning av både PFD_avg (Säkerhet) och Spurious Trip Rate STR (Tillgänglighet)
+
+Användning:
+  Denna fil kan importeras som en modul i ditt huvudprogram eller köras direkt som ett skript
+  för att validera beräkningarna och exportera testscenarier.
+=========================================================================================
+"""
+
+import numpy as np
+
+
+class Component:
+    """
+    Representerar en fysisk enhet (sensor, logikenhet eller slutelement) med tillförlitlighetsdata
+    hämtat från en exida FMEDA (Failure Modes, Effects, and Diagnostics Analysis).
+    """
+    def __init__(self, name, lambda_SU, lambda_SD, lambda_DU, lambda_DD, useful_life_years, 
+                 c_proof=1.0, c_batch=0.0, default_MTTR_hours=72.0):
+        self.name = name
+        # Felfrekvenser (per timme)
+        self.lambda_SU = float(lambda_SU)  # Safe Undetected
+        self.lambda_SD = float(lambda_SD)  # Safe Detected
+        self.lambda_DU = float(lambda_DU)  # Dangerous Undetected (Kritisk för PFD)
+        self.lambda_DD = float(lambda_DD)  # Dangerous Detected (Fångas av intern diagnostik)
+        
+        # Total felfrekvens
+        self.lambda_total = self.lambda_SU + self.lambda_SD + self.lambda_DU + self.lambda_DD
+        
+        # Livslängds- och testparametrar
+        self.useful_life_hours = float(useful_life_years) * 8760.0
+        self.c_proof = float(c_proof)      # Teoretisk täckning för manuellt proof-test (0.0 - 1.0)
+        self.c_batch = float(c_batch)      # Täckning för automatiskt test vid batch-slut (t.ex. PST)
+        self.default_MTTR = float(default_MTTR_hours)
+        
+    def get_sff(self):
+        """Beräknar Safe Failure Fraction (SFF) enligt IEC 61508."""
+        if self.lambda_total == 0:
+            return 0.0
+        return (self.lambda_SU + self.lambda_SD + self.lambda_DD) / self.lambda_total
+
+    def get_diagnostic_coverage(self):
+        """Beräknar automatisk diagnostisk täckning (DC) för farliga fel."""
+        denom = self.lambda_DU + self.lambda_DD
+        if denom == 0:
+            return 0.0
+        return self.lambda_DD / denom
+
+    def __repr__(self):
+        return f"<Component {self.name} | SFF: {self.get_sff()*100:.2f}% | DC: {self.get_diagnostic_coverage()*100:.2f}%>"
+
+
+class SiteSafetyIndex:
+    """
+    Exidas verktyg för att kalibrera generiska FMEDA-data baserat på den lokala anläggningens
+    kvalitet gällande underhåll, kultur, kalibrering och rutiner (SSI 0 till SSI 4).
+    """
+    _MULTIPLIERS = {
+        0: 2.0,  # SSI 0: Dålig efterlevnad, dubblerad risk för dolda fel
+        1: 1.5,  # SSI 1: Under genomsnitt
+        2: 1.0,  # SSI 2: Standardnivå (FMEDA-data stämmer exakt)
+        3: 0.7,  # SSI 3: Mycket bra underhållsrutiner
+        4: 0.5   # SSI 4: Perfekt spårbarhet och rigorös testkultur
+    }
+
+    @staticmethod
+    def get_multiplier(ssi_level):
+        return SiteSafetyIndex._MULTIPLIERS.get(int(ssi_level), 1.0)
+
+
+class MarkovMatrixBuilder:
+    """
+    Bygger tidsinvarianta och tidsvarierande övergångsmatriser (Q-matriser) för kontinuerliga
+    Markov-kedjor. Radsumman i en Q-matris måste alltid vara exakt 0.0.
+    """
+    @staticmethod
+    def build_1oo1(l_du, l_dd, mu):
+        """
+        1oo1 Arkitektur (2 tillstånd: 0=OK, 1=Farligt haveri)
+        """
+        Q = np.zeros((2, 2))
+        Q[0, 1] = l_du + l_dd  # Övergång till felläge
+        Q[0, 0] = -Q[0, 1]
+        # Tillstånd 1 är djupt absorberande tills manuellt proof-test sker
+        return Q
+
+    @staticmethod
+    def build_1oo2(l_du, l_dd, beta, mu):
+        """
+        1oo2 Arkitektur (4 tillstånd: 0=OK, 1=1xDD, 2=1xDU, 3=Fail/Haveri)
+        Inkluderar Common Cause Failures (CCF) via Beta-faktorn.
+        """
+        l_ccf = beta * l_du
+        l_du_u = (1.0 - beta) * l_du
+        l_dd_u = (1.0 - beta) * l_dd
+        
+        Q = np.zeros((4, 4))
+        
+        # Rad 0: OK
+        Q[0, 1] = 2.0 * l_dd_u
+        Q[0, 2] = 2.0 * l_du_u
+        Q[0, 3] = l_ccf
+        Q[0, 0] = -np.sum(Q[0, :])
+        
+        # Rad 1: 1xDD (Ett fel upptäckt, komponenten repareras online med hastighet mu)
+        Q[1, 0] = mu
+        Q[1, 3] = l_du + l_dd  # Den återstående kanalen faller
+        Q[1, 1] = -np.sum(Q[1, :])
+        
+        # Rad 2: 1xDU (Ett dolt fel har uppstått, operatören är ovetande)
+        Q[2, 3] = l_du + l_dd  # Den andra kanalen faller också
+        Q[2, 2] = -np.sum(Q[2, :])
+        
+        # Rad 3: System Fail (Absorberande tillstånd under drifttid)
+        return Q
+
+    @staticmethod
+    def build_2oo3(l_du, l_dd, beta, mu):
+        """
+        2oo3 Arkitektur (4 tillstånd: 0=OK, 1=1xDD, 2=1xDU, 3=Fail/Haveri)
+        Kräver att minst 2 av 3 kanaler fungerar. Röstningslogik för t.ex. transmittrar.
+        """
+        l_ccf = beta * l_du
+        l_du_u = (1.0 - beta) * l_du
+        l_dd_u = (1.0 - beta) * l_dd
+        
+        Q = np.zeros((4, 4))
+        
+        # Rad 0: Alla 3 kanaler OK
+        Q[0, 1] = 3.0 * l_dd_u
+        Q[0, 2] = 3.0 * l_du_u
+        Q[0, 3] = l_ccf
+        Q[0, 0] = -np.sum(Q[0, :])
+        
+        # Rad 1: 1xDD (Ett fel upptäckt, systemet degraderas till 2oo2-röstning online)
+        Q[1, 0] = mu
+        Q[1, 3] = 2.0 * (l_du + l_dd)
+        Q[1, 1] = -np.sum(Q[1, :])
+        
+        # Rad 2: 1xDU (Ett fel dolt, systemet körs ovetande i sämre tillstånd)
+        Q[2, 3] = 2.0 * (l_du + l_dd)
+        Q[2, 2] = -np.sum(Q[2, :])
+        
+        # Rad 3: Fail (Minst 2 kanaler har fallit, röstning blockerad)
+        return Q
+
+    @staticmethod
+    def build_1oo2D(l_du, l_dd, beta, mu):
+        """
+        1oo2D Arkitektur (4 tillstånd: 0=OK, 1=Degraded_1oo1, 2=Vulnerable_1oo2, 3=Fail)
+        Sofistikerat tillstånd där ett DD-fel omedelbart leder till automatisk isolering 
+        och säker omkoppling till 1oo1-drift utan produktionsstopp.
+        """
+        l_ccf = beta * l_du
+        l_du_u = (1.0 - beta) * l_du
+        l_dd_u = (1.0 - beta) * l_dd
+        
+        Q = np.zeros((4, 4))
+        
+        # Rad 0: OK
+        Q[0, 1] = 2.0 * l_dd_u  # Hittas direkt -> Isoleras -> Gå till säkert degraderat läge
+        Q[0, 2] = 2.0 * l_du_u  # Hittas inte -> Sårbart läge
+        Q[0, 3] = l_ccf
+        Q[0, 0] = -np.sum(Q[0, :])
+        
+        # Rad 1: Degraded_1oo1 (Den felaktiga kanalen är isolerad, körs nu säkert som singel)
+        Q[1, 0] = mu            # Reparation färdig
+        Q[1, 3] = l_du          # Endast ett dolt farligt fel på den friska kanalen kan sänka systemet nu
+        Q[1, 1] = -np.sum(Q[1, :])
+        
+        # Rad 2: Vulnerable_1oo2 (Ett dolt farligt fel finns i systemet)
+        Q[2, 3] = l_du + l_dd   # Om den andra kanalen felar (oavsett typ) dör systemet
+        Q[2, 2] = -np.sum(Q[2, :])
+        
+        # Rad 3: Fail
+        return Q
+
+
+class RK4Solver:
+    """
+    Numerisk integrationsmotor baserad på 4th Order Runge-Kutta.
+    Löser matrisdifferentialekvationen dP/dt = P * Q med extrem numerisk precision.
+    """
+    @staticmethod
+    def compute_next_step(P_vector, Q_matrix, dt):
+        k1 = np.dot(P_vector, Q_matrix)
+        k2 = np.dot(P_vector + 0.5 * dt * k1, Q_matrix)
+        k3 = np.dot(P_vector + 0.5 * dt * k2, Q_matrix)
+        k4 = np.dot(P_vector + dt * k3, Q_matrix)
+        
+        next_P = P_vector + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        
+        # Säkerställ matematisk normalisering (sannolikheter måste summera till 1.0)
+        # samt klipp eventuella mikroskopiska flyttalsunderflöden (< 0)
+        next_P = np.clip(next_P, 0.0, 1.0)
+        return next_P / np.sum(next_P)
+
+
+class SIFVerificationEngine:
+    """
+    Huvudmotorn för SIL-verifiering. Simulerar hela SIF-kretsens livscykel timme för timme
+    och applicerar exidas samlade formel- och algoritmbibliotek.
+    """
+    def __init__(self, component, architecture="1oo1", ssi_level=2, beta_factor=0.05):
+        self.comp = component
+        self.architecture = architecture
+        self.ssi = int(ssi_level)
+        self.beta = float(beta_factor)
+        
+        # Initiera storlek på Markov-vektorn baserat på arkitektur
+        if self.architecture == "1oo1":
+            self.state_dim = 2
+        elif self.architecture in ["1oo2", "2oo3", "1oo2D"]:
+            self.state_dim = 4
+        else:
+            raise ValueError(f"Okänd arkitekturtyp: {self.architecture}")
+
+    def _get_current_rates(self, current_hour):
+        """
+        Justerar felfrekvenserna baserat på både Site Safety Index (SSI) och 
+        slitagemodellen (Weibull wear-out) om Useful Life har passerats.
+        """
+        ssi_multiplier = SiteSafetyIndex.get_multiplier(self.ssi)
+        
+        l_du_base = self.comp.lambda_DU * ssi_multiplier
+        l_dd_base = self.comp.lambda_DD * ssi_multiplier
+        
+        # Wear-out modellering (Nelson-Aalen / Weibull logik för slitagefasen)
+        if current_hour > self.comp.useful_life_hours:
+            # Exponentiell accelerationsfaktor (Shape factor beta_w = 2.5)
+            wear_factor = (current_hour / self.comp.useful_life_hours) ** 2.5
+            l_du_current = l_du_base * wear_factor
+            l_dd_current = l_dd_base * wear_factor
+        else:
+            l_du_current = l_du_base
+            l_dd_current = l_dd_base
+            
+        return l_du_current, l_dd_current
+
+    def _get_q_matrix(self, l_du, l_dd, mu):
+        """Anropar rätt Markov-byggare baserat på inställd arkitektur."""
+        if self.architecture == "1oo1":
+            return MarkovMatrixBuilder.build_1oo1(l_du, l_dd, mu)
+        elif self.architecture == "1oo2":
+            return MarkovMatrixBuilder.build_1oo2(l_du, l_dd, self.beta, mu)
+        elif self.architecture == "2oo3":
+            return MarkovMatrixBuilder.build_2oo3(l_du, l_dd, self.beta, mu)
+        elif self.architecture == "1oo2D":
+            return MarkovMatrixBuilder.build_1oo2D(l_du, l_dd, self.beta, mu)
+
+    def calculate_spurious_trip_rate(self):
+        """
+        Beräknar Spurious Trip Rate (STR) per timme baserat på exidas analytiska 
+        tillgänglighetsformler för falska processtopp.
+        """
+        l_safe = self.comp.lambda_SU + self.comp.lambda_SD
+        
+        if self.architecture == "1oo1":
+            return l_safe
+        elif self.architecture == "1oo2":
+            # Högre risk för onödiga stopp i en traditionell parallellkrets
+            return 2.0 * (1.0 - self.beta) * l_safe + (self.beta * l_safe)
+        elif self.architecture == "2oo2":
+            # Kräver båda samtidigt, mycket låg STR (använder MTTR som sammanträffandefönster)
+            return 2.0 * ((1.0 - self.beta) ** 2) * (l_safe ** 2) * self.comp.default_MTTR + (self.beta * l_safe)
+        elif self.architecture == "2oo3":
+            # Balanserad röstning
+            return 6.0 * ((1.0 - self.beta) ** 2) * (l_safe ** 2) * self.comp.default_MTTR + (self.beta * l_safe)
+        elif self.architecture == "1oo2D":
+            # Diagnostik blockerar felaktiga tripper
+            return self.beta * l_safe + 2.0 * l_safe * (l_safe * self.comp.default_MTTR)
+
+    def run_simulation(self, proof_test_interval_years, mission_time_years, 
+                       use_batch_mode=False, t_batch_hours=24.0, t_offline_hours=12.0, 
+                       p_human_error=0.02):
+        """
+        Kör den fullständiga diskreta tidssimuleringen av säkerhetsfunktionen.
+        """
+        # Omvandla tidsenheter till timmar
+        TI = int(proof_test_interval_years * 8760)
+        TM = int(mission_time_years * 8760)
+        mu = 1.0 / self.comp.default_MTTR
+        
+        # Initiera sannolikhetsvektor: Tillstånd 0 (OK) har 100% sannolikhet vid t=0
+        P = np.zeros(self.state_dim)
+        P[0] = 1.0
+        
+        pfd_integral_accumulator = 0.0
+        active_risk_hours_counter = 0
+        
+        # Variabler för batchhantering
+        batch_timer = 0
+        is_batch_active = True
+        
+        dt = 1.0  # Tidssteg: 1 timme
+        
+        for current_hour in range(1, TM + 1):
+            # 1. Hämta justerade felfrekvenser (SSI + Wear-out)
+            l_du, l_dd = self._get_current_rates(current_hour)
+            
+            # 2. Bygg den dynamiska Q-matrisen för detta tidssteg
+            Q = self._get_q_matrix(l_du, l_dd, mu)
+            
+            # 3. Hantera Batch-tillståndets diskontinuiteter (om aktiverat)
+            if use_batch_mode:
+                batch_timer += dt
+                if is_batch_active and batch_timer >= t_batch_hours:
+                    # BATCH SLUT -> Utför automatiskt sekvenstest (End-of-Batch Test, t.ex. PST)
+                    # Detektion minskar sannolikheten i det osäkra dolda tillståndet (Tillstånd 1 eller 2 baserat på dim)
+                    target_state = 1 if self.architecture == "1oo1" else 2
+                    P[target_state] = P[target_state] * (1.0 - self.comp.c_batch)
+                    
+                    # Växla system till offline-läge
+                    is_batch_active = False
+                    batch_timer = 0
+                elif not is_batch_active and batch_timer >= t_offline_hours:
+                    # OFFLINE SLUT -> Processen startar om, ny batch är aktiv
+                    is_batch_active = True
+                    batch_timer = 0
+            
+            # 4. Beräkna nästa tillstånd via RK4-lösaren
+            P = RK4Solver.compute_next_step(P, Q, dt)
+            
+            # 5. Ackumulera risk (PFD)
+            # Om anläggningen kör batch-läge ackumuleras PFD_effektiv = 0 under offline-tiden
+            if not use_batch_mode or is_batch_active:
+                fail_state_idx = 1 if self.architecture == "1oo1" else 3
+                pfd_integral_accumulator += P[fail_state_idx] * dt
+                active_risk_hours_counter += 1
+                
+            # 6. Hantera periodiskt manuellt Proof Test (med risk för mänskliga fel)
+            if current_hour % TI == 0:
+                # Beräkna effektiv testtäckning de-ratat för mänskliga misstag (Human Error)
+                c_effective = self.comp.c_proof * (1.0 - p_human_error)
+                
+                target_state = 1 if self.architecture == "1oo1" else 2
+                fail_state_idx = 1 if self.architecture == "1oo1" else 3
+                
+                # Nollställ den andel dolda fel som hittas
+                P[target_state] = P[target_state] * (1.0 - c_effective)
+                
+                # Introducera kvardröjande risk / bypass fel p.g.a. mänsklig faktor
+                P[fail_state_idx] += p_human_error * 0.005
+                
+                # Normalisera efter teststöt
+                P = P / np.sum(P)
+                
+        # Slutgiltig statistisk sammanställning
+        pfd_avg = pfd_integral_accumulator / active_risk_hours_counter if active_risk_hours_counter > 0 else 0.0
+        rrf = 1.0 / pfd_avg if pfd_avg > 0 else float('inf')
+        
+        # Beräkna årlig Spurious Trip frekvens
+        str_per_hour = self.calculate_spurious_trip_rate()
+        str_per_year = str_per_hour * 8760.0
+        mtbf_spurious_years = 1.0 / str_per_year if str_per_year > 0 else float('inf')
+        
+        # Mappa till SIL-nivå enligt IEC 61511 (Low Demand tabell)
+        if pfd_avg >= 0.1 or pfd_avg <= 0.0:
+            sil = 0
+        elif pfd_avg >= 0.01:
+            sil = 1
+        elif pfd_avg >= 0.001:
+            sil = 2
+        elif pfd_avg >= 0.0001:
+            sil = 3
+        else:
+            sil = 4
+            
+        return {
+            "Architecture": self.architecture,
+            "Site_Safety_Index": self.ssi,
+            "PFD_avg": pfd_avg,
+            "Risk_Reduction_Factor_RRF": rrf,
+            "Spurious_Trip_Rate_Per_Year": str_per_year,
+            "MTBF_Spurious_Years": mtbf_spurious_years,
+            "Achieved_SIL": sil
+        }
+
+
+# =========================================================================================
+# VALIDERINGS- OCH DEMOKÖRNING (Körs om filen exekveras direkt)
+# =========================================================================================
+if __name__ == "__main__":
+    print("="*80)
+    print("KÖR VERIFIERINGSTEST AV EXIDA MATHEMATICAL SIL ENGINE...")
+    print("="*80)
+    
+    # 1. Definiera en standard ventil baserad på typisk exida FMEDA-data
+    test_valve = Component(
+        name="Emergency_Shutdown_Valve_XY",
+        lambda_SU=1.5e-7,  # 150 FIT
+        lambda_SD=0.0,     # Ingen intern automatisk diagnostik på mekanisk safe-sida
+        lambda_DU=3.2e-7,  # 320 FIT (Farliga oupptäckta dolda fel)
+        lambda_DD=2.1e-7,  # 210 FIT (Diagnostiseras via styrsystemets gränslägen)
+        useful_life_years=10.0, # Slitagefas startar efter 10 år
+        c_proof=0.90,      # Manuellt fullt test hittar 90% av dolda fel
+        c_batch=0.60       # Automatisk partiell stängning vid batch-slut hittar 60%
+    )
+    
+    print(f"Laddad komponent: {test_valve.name}")
+    print(f"  -> Beräknad SFF: {test_valve.get_sff()*100:.2f}%")
+    print(f"  -> Beräknad Diagnostisk Täckning (DC): {test_valve.get_diagnostic_coverage()*100:.2f}%")
+    print("-"*80)
+
+    # Scenarie A: Standard 1oo1 installation på en anläggning med genomsnittligt underhåll (SSI=2)
+    engine_1oo1 = SIFVerificationEngine(test_valve, architecture="1oo1", ssi_level=2)
+    res_a = engine_1oo1.run_simulation(proof_test_interval_years=1.0, mission_time_years=15.0, use_batch_mode=False)
+    
+    print("SCENARIE A: Standard 1oo1-arkitektur (1-års Proof test, 15 års livslängd)")
+    print(f"  - Uppnådd Genomsnittlig PFD (PFD_avg): {res_a['PFD_avg']:.6f}")
+    print(f"  - Riskreduktionsfaktor (RRF): {res_a['Risk_Reduction_Factor_RRF']:.1f}")
+    print(f"  - Falska produktionsstopp (STR) per år: {res_a['Spurious_Trip_Rate_Per_Year']:.4f}")
+    print(f"  - TILLDELAD SÄKERHETSNIVÅ: SIL {res_a['Achieved_SIL']}")
+    print("-"*80)
+
+    # Scenarie B: Högsäkerhetsredundans (1oo2) på en anläggning med bristande underhållskultur (SSI=0)
+    # samt inkluderat Batch-cykler och mänskliga fel.
+    engine_1oo2 = SIFVerificationEngine(test_valve, architecture="1oo2", ssi_level=0, beta_factor=0.06)
+    res_b = engine_1oo2.run_simulation(
+        proof_test_interval_years=2.0, 
+        mission_time_years=15.0, 
+        use_batch_mode=True, 
+        t_batch_hours=120.0,  # 5 dagars batcher
+        t_offline_hours=24.0, # 1 dags offline-tvätt/vila
+        p_human_error=0.04    # 4% risk för mänskligt fel vid underhåll
+    )
+    
+    print("SCENARIE B: Avancerad 1oo2-redundans med Batch-drift, Slitageskydd & Mänskliga fel")
+    print("            OBS: Körs på en SSI=0 anläggning (Straffad felfrekvens).")
+    print(f"  - Uppnådd Genomsnittlig PFD (PFD_avg): {res_b['PFD_avg']:.6f}")
+    print(f"  - Riskreduktionsfaktor (RRF): {res_b['Risk_Reduction_Factor_RRF']:.1f}")
+    print(f"  - Falska produktionsstopp (STR) per år: {res_b['Spurious_Trip_Rate_Per_Year']:.4f}")
+    print(f"  - Förväntad tid mellan falska stopp (MTBF): {res_b['MTBF_Spurious_Years']:.1f} år")
+    print(f"  - TILLDELAD SÄKERHETSNIVÅ: SIL {res_b['Achieved_SIL']}")
+    print("="*80)

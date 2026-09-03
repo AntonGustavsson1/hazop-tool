@@ -526,17 +526,23 @@ class LopaPanel(QWidget):
         ])
         self._hazop_hierarchy.verticalHeader().setVisible(False)
         self._hazop_hierarchy.setAlternatingRowColors(True)
-        self._hazop_hierarchy.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._hazop_hierarchy.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked |
+            QAbstractItemView.EditTrigger.SelectedClicked)
         self._hazop_hierarchy.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._hazop_hierarchy.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._hazop_hierarchy.itemChanged.connect(self._on_hazop_hierarchy_item_changed)
         self._hazop_hierarchy.setWordWrap(True)
         self._hazop_hierarchy.setStyleSheet(lopa_table_stylesheet())
         self._configure_hazop_hierarchy_columns([])
         self._configure_compact_table(self._hazop_hierarchy, 72, 192)
-        self._hazop_hierarchy.itemChanged.connect(self._on_hazop_hierarchy_item_changed)
         self._hazop_hierarchy.currentCellChanged.connect(self._on_hazop_hierarchy_selection_changed)
         source_layout.addWidget(self._hazop_hierarchy)
         source_actions = QHBoxLayout()
+        self._add_scenario_btn = QPushButton('➕ Lägg till scenario')
+        self._add_scenario_btn.setStyleSheet(lopa_ghost_button_stylesheet())
+        self._add_scenario_btn.clicked.connect(self._add_local_scenario)
+        source_actions.addWidget(self._add_scenario_btn)
         source_actions.addStretch(1)
         self._source_sync_note = QLabel('')
         self._source_sync_note.setWordWrap(True)
@@ -1338,6 +1344,84 @@ class LopaPanel(QWidget):
         self._fit_hazop_category_columns(category_columns)
         self._hazop_hierarchy.doItemsLayout()
 
+    def _build_scenario_reference(self, source):
+        """Build reference: H-1.1.1.1 for HAZOP or L-001.1 for local sources."""
+        if source.get('cause_text', '').startswith('L-'):
+            # Local source: extract number from cause_text
+            return source.get('cause_text', 'L-???')
+        else:
+            # HAZOP source: get from hierarchy reference
+            cause_id = source.get('hazop_cause_id')
+            if cause_id:
+                ref = self.db.hazop_hierarchy_reference(cause_id=cause_id)
+                return f'H-{ref}' if ref else 'H-?.?.?.?'
+            return 'H-?.?.?.?'
+
+    def _on_hazop_hierarchy_item_changed(self, item):
+        """Handle inline edits in HAZOP scenarios table (cause, frequency, consequence)."""
+        if self._loading or not item:
+            return
+
+        row = self._hazop_hierarchy.row(item)
+        col = self._hazop_hierarchy.column(item)
+        source_id = item.data(self._ROLE_SOURCE_ID)
+
+        if not source_id:
+            return
+
+        try:
+            if col == self._HAZOP_CAUSE_COL:
+                # Update cause_text in lopa_source_scenarios
+                new_text = item.text()
+                self.db.conn.execute(
+                    "UPDATE lopa_source_scenarios SET cause_text=? WHERE id=?",
+                    (new_text, source_id))
+                self.db.commit()
+
+            elif col == self._HAZOP_FREQUENCY_COL:
+                # Parse frequency (format: "0.001 /år" or just number)
+                text = item.text().replace(' /år', '').strip()
+                try:
+                    freq = float(text) if text and text != '—' else None
+                    self.db.conn.execute(
+                        "UPDATE lopa_source_scenarios SET base_frequency=? WHERE id=?",
+                        (freq, source_id))
+                    self.db.commit()
+                except ValueError:
+                    QMessageBox.warning(self, 'Ogiltigt värde', 'Frekvensen måste vara ett tal (t.ex. 0.001)')
+                    self._populate_hazop_hierarchy()
+                    return
+
+            elif col == self._HAZOP_CONSEQUENCE_COL:
+                # Update scenario_text
+                new_text = item.text()
+                self.db.conn.execute(
+                    "UPDATE lopa_source_scenarios SET scenario_text=? WHERE id=?",
+                    (new_text, source_id))
+                self.db.commit()
+
+            self.changed.emit()
+            self._populate_barriers()
+            self._populate_escalation()
+            self._populate_calculation()
+
+        except Exception as exc:
+            QMessageBox.warning(self, 'Kunde inte spara ändring', str(exc))
+            self._populate_hazop_hierarchy()
+
+    def _add_local_scenario(self):
+        """Create a new local (non-HAZOP) LOPA scenario."""
+        if not self._revision_id:
+            return
+
+        try:
+            source_id = self.db.add_lopa_local_source(self._revision_id)
+            self._source_id = source_id
+            self._populate_hazop_hierarchy(select_consequence_id=None)
+            self.changed.emit()
+        except Exception as exc:
+            QMessageBox.warning(self, 'Kunde inte skapa scenario', str(exc))
+
     def _build_original_cause_text(self, cause_id):
         """Build origin cause string: Object(s) - Deviation (guide word).
 
@@ -1428,7 +1512,7 @@ class LopaPanel(QWidget):
             frequency_text = (f"{source['base_frequency']:.3g} /år"
                               if source.get('base_frequency') is not None
                               else 'Frekvens saknas')
-            source_reference = self.db.hazop_hierarchy_reference(cause_id=cause_id)
+            source_reference = self._build_scenario_reference(source)
 
             for consequence in consequences:
                 consequence_id = consequence.get('hazop_consequence_id')

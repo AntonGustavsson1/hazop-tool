@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>K10 Gränsbeloppskalkylator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f8f9fa;
+            color: #2d3748;
+            line-height: 1.6;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0;
+            min-height: 100vh;
+        }
+
+        /* VÄNSTER PANEL - INPUT */
+        .input-panel {
+            background: #1a1f2e;
+            color: white;
+            padding: 30px;
+            overflow-y: auto;
+            border-right: 1px solid #2d3748;
+        }
+
+        .panel-header {
+            margin-bottom: 30px;
+        }
+
+        .panel-header h1 {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .panel-header p {
+            font-size: 14px;
+            color: #a0aec0;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 30px;
+            border-bottom: 1px solid #2d3748;
+            padding-bottom: 15px;
+        }
+
+        .tab {
+            padding: 10px 15px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            color: #718096;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab:hover {
+            color: #cbd5e0;
+        }
+
+        .tab.active {
+            color: #4299e1;
+            border-bottom-color: #4299e1;
+        }
+
+        .form-section {
+            margin-bottom: 30px;
+        }
+
+        .form-section-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: #cbd5e0;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #2d3748;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: #cbd5e0;
+            margin-bottom: 6px;
+        }
+
+        .form-group p {
+            font-size: 11px;
+            color: #718096;
+            margin-bottom: 6px;
+        }
+
+        .input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        input[type="text"],
+        input[type="number"] {
+            width: 100%;
+            padding: 10px 12px;
+            background: #2d3748;
+            border: 1px solid #4a5568;
+            border-radius: 6px;
+            font-size: 14px;
+            color: white;
+            font-family: 'Courier New', monospace;
+            transition: all 0.2s;
+        }
+
+        input[type="text"]:focus,
+        input[type="number"]:focus {
+            outline: none;
+            border-color: #4299e1;
+            background: #374151;
+        }
+
+        .input-suffix {
+            position: absolute;
+            right: 12px;
+            color: #718096;
+            font-weight: 600;
+            pointer-events: none;
+        }
+
+        .info-box {
+            background: rgba(66, 153, 225, 0.1);
+            border-left: 3px solid #4299e1;
+            padding: 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #a0c4ff;
+            margin-bottom: 20px;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 30px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #4299e1;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #3182ce;
+            box-shadow: 0 4px 12px rgba(66, 153, 225, 0.4);
+        }
+
+        .btn-secondary {
+            background: #2d3748;
+            color: #cbd5e0;
+            border: 1px solid #4a5568;
+        }
+
+        .btn-secondary:hover {
+            background: #374151;
+        }
+
+        .export-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #2d3748;
+        }
+
+        .export-btn {
+            flex: 1;
+            padding: 10px 14px;
+            background: #2d3748;
+            color: #cbd5e0;
+            border: 1px solid #4a5568;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .export-btn:hover {
+            background: #374151;
+            border-color: #4299e1;
+            color: #4299e1;
+        }
+
+        /* HÖGER PANEL - RESULTAT */
+        .results-panel {
+            background: white;
+            padding: 40px;
+            overflow-y: auto;
+        }
+
+        .results-header {
+            margin-bottom: 30px;
+        }
+
+        .results-header h2 {
+            font-size: 20px;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 5px;
+        }
+
+        .results-header p {
+            font-size: 13px;
+            color: #718096;
+        }
+
+        .result-group {
+            margin-bottom: 25px;
+        }
+
+        .result-group-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: #4a5568;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .result-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            font-size: 13px;
+            border-bottom: 1px solid #f0f4f8;
+        }
+
+        .result-row:last-child {
+            border-bottom: none;
+        }
+
+        .result-row.dim {
+            opacity: 0.6;
+        }
+
+        .result-row.highlight {
+            background: #f0f7ff;
+            margin: 0 -40px;
+            padding: 12px 40px;
+            border-radius: 4px;
+            border-bottom: none;
+            font-weight: 700;
+        }
+
+        .result-row.highlight .label {
+            color: #2563eb;
+        }
+
+        .result-row.highlight .value {
+            color: #2563eb;
+        }
+
+        .result-row.good {
+            color: #059669;
+        }
+
+        .result-row.good .value {
+            color: #059669;
+            font-weight: 700;
+        }
+
+        .label {
+            color: #4a5568;
+        }
+
+        .value {
+            color: #1a202c;
+            font-weight: 600;
+            font-family: 'Courier New', monospace;
+            text-align: right;
+        }
+
+        .divider {
+            height: 1px;
+            background: #e2e8f0;
+            margin: 12px 0;
+        }
+
+        .form-preview-section {
+            background: #f8f9fa;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 20px;
+            margin-top: 25px;
+        }
+
+        .form-preview-section h3 {
+            font-size: 13px;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .form-field {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            font-size: 12px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .form-field:last-child {
+            border-bottom: none;
+        }
+
+        .form-field-label {
+            color: #718096;
+            font-weight: 500;
+        }
+
+        .form-field-value {
+            color: #1a202c;
+            font-weight: 600;
+            font-family: 'Courier New', monospace;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            max-width: 500px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            font-size: 18px;
+            font-weight: 700;
+            color: #1a202c;
+            margin-bottom: 15px;
+        }
+
+        .modal-body {
+            font-size: 13px;
+            line-height: 1.8;
+            color: #4a5568;
+        }
+
+        .modal-close {
+            float: right;
+            font-size: 24px;
+            font-weight: 700;
+            color: #a0aec0;
+            cursor: pointer;
+            border: none;
+            background: none;
+        }
+
+        @media (max-width: 1024px) {
+            .container {
+                grid-template-columns: 1fr;
+                min-height: auto;
+            }
+
+            .input-panel {
+                border-right: none;
+                border-bottom: 1px solid #2d3748;
+            }
+        }
+
+        @media print {
+            .input-panel {
+                display: none;
+            }
+
+            .container {
+                grid-template-columns: 1fr;
+            }
+
+            .results-panel {
+                padding: 0;
+            }
+
+            button {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- VÄNSTER PANEL -->
+        <div class="input-panel">
+            <div class="panel-header">
+                <h1>K10 Gränsbelopp</h1>
+                <p>3:12-reglerna</p>
+            </div>
+
+            <div class="tabs">
+                <button class="tab active" onclick="switchYear(2025)">2025 Gamla regler</button>
+                <button class="tab" onclick="switchYear(2026)">2026 Nya regler</button>
+            </div>
+
+            <!-- PERSONUPPGIFTER -->
+            <div class="form-section">
+                <div class="form-section-title">Personuppgifter</div>
+                <div class="form-group">
+                    <label>Personnummer</label>
+                    <div class="input-wrapper">
+                        <input type="text" id="personnummer" value="19890508-4979">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Namn</label>
+                    <div class="input-wrapper">
+                        <input type="text" id="namn" value="Anton Gustavsson">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Företag</label>
+                    <div class="input-wrapper">
+                        <input type="text" id="foretag" value="Confolio AB">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Org.nr</label>
+                    <div class="input-wrapper">
+                        <input type="text" id="orgnr" value="559176-6752">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2025 INPUT -->
+            <div id="inputs-2025" class="form-section">
+                <div class="form-section-title">Dina uppgifter</div>
+                <div class="info-box">Gamla regler 2025: Huvudregeln eller förenklingsregeln</div>
+                <div class="form-group">
+                    <label>Ägarandel (%)</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="agarandel-2025" value="100" onchange="berakna()">
+                        <span class="input-suffix">%</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Sparat gränsbelopp från tidigare</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="sparat_utrymme-2025" value="73534" onchange="berakna()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Erhållen utdelning</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="utdelning-2025" value="384827" onchange="berakna()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Omkostnadsbelopp</label>
+                    <p>Ränta på belopp över 50k (10,96%)</p>
+                    <div class="input-wrapper">
+                        <input type="number" id="omkostnad-2025" value="0" onchange="berakna()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Bolagets lönesumma 2024</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="total_lon-2025" value="611625" onchange="berakna()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Din egen lön 2024</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="din_lon-2025" value="611625" onchange="berakna()">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2026 INPUT -->
+            <div id="inputs-2026" class="form-section hidden">
+                <div class="form-section-title">Dina uppgifter</div>
+                <div class="info-box">Nya regler 2026: En enhetlig regel</div>
+                <div class="form-group">
+                    <label>Ägarandel (%)</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="agarandel-2026" value="100" onchange="berakna()">
+                        <span class="input-suffix">%</span>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Antal bolag</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="antal_bolag-2026" value="1" onchange="berakna()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Sparat gränsbelopp</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="sparat_utrymme-2026" value="73534" onchange="berakna()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Erhållen utdelning</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="utdelning-2026" value="384827" onchange="berakna()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Omkostnadsbelopp</label>
+                    <p>Ränta på belopp över 100k (11,55%)</p>
+                    <div class="input-wrapper">
+                        <input type="number" id="omkostnad-2026" value="25000" onchange="berakna()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Bolagets lönesumma 2025</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="total_lon-2026" value="611625" onchange="berakna()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Din egen lön 2025</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="din_lon-2026" value="611625" onchange="berakna()">
+                    </div>
+                </div>
+            </div>
+
+            <div class="action-buttons">
+                <button class="btn-primary" onclick="berakna()">Beräkna</button>
+                <button class="btn-secondary" onclick="resetForm()">Rensa</button>
+            </div>
+
+            <div class="export-buttons">
+                <button class="export-btn" onclick="exporteraPDF()">💾 PDF</button>
+                <button class="export-btn" onclick="exporteraSRU()">📋 SRU</button>
+                <button class="export-btn" onclick="openFeedback()">💬 Feedback</button>
+                <button class="export-btn" onclick="openAbout()">ℹ️ Om</button>
+            </div>
+        </div>
+
+        <!-- HÖGER PANEL -->
+        <div class="results-panel">
+            <div class="results-header">
+                <h2 id="resultat-title">Resultat 2025</h2>
+                <p>Gamla regler</p>
+            </div>
+
+            <!-- 2025 RESULTAT -->
+            <div id="resultat-2025">
+                <div class="result-group">
+                    <div class="result-group-title">A 2. Huvudregeln</div>
+                    <div class="result-row dim">
+                        <span class="label">2.1 Omkostnadsbelopp × 10,96 %</span>
+                        <span class="value" id="rad-2-1">0 kr</span>
+                    </div>
+                    <div class="result-row dim">
+                        <span class="label">2.2 Lönebaserat utrymme</span>
+                        <span class="value" id="rad-2-2">305 812 kr</span>
+                    </div>
+                    <div class="result-row dim">
+                        <span class="label">2.3 Sparat utdelningsutrymme × 104,96 %</span>
+                        <span class="value" id="rad-2-3">73 534 kr</span>
+                    </div>
+                    <div class="divider"></div>
+                    <div class="result-row highlight">
+                        <span class="label">2.4 Gränsbelopp enligt huvudregeln</span>
+                        <span class="value" id="rad-2-4">379 346 kr</span>
+                    </div>
+                </div>
+
+                <div class="result-group">
+                    <div class="result-group-title">Din utdelning</div>
+                    <div class="result-row">
+                        <span class="label">2.6 Gränsbelopp att utnyttja</span>
+                        <span class="value" id="rad-2-6">379 346 kr</span>
+                    </div>
+                    <div class="result-row">
+                        <span class="label">2.7 Utdelning</span>
+                        <span class="value" id="rad-2-7">384 827 kr</span>
+                    </div>
+                    <div class="divider"></div>
+                    <div class="result-row good">
+                        <span class="label">2.15 Utdelning i kapital</span>
+                        <span class="value" id="rad-2-15">379 346 kr</span>
+                    </div>
+                    <div class="result-row dim">
+                        <span class="label">2.9 Utdelning som beskattats i tjänst</span>
+                        <span class="value" id="rad-2-9">5 481 kr</span>
+                    </div>
+                    <div class="divider"></div>
+                    <div class="result-row highlight">
+                        <span class="label">2.12 Sparat gränsbelopp till nästa år</span>
+                        <span class="value" id="rad-2-12">0 kr</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2026 RESULTAT -->
+            <div id="resultat-2026" class="hidden">
+                <div class="result-group">
+                    <div class="result-group-title">Beräkning</div>
+                    <div class="result-row dim">
+                        <span class="label">Grundbelopp</span>
+                        <span class="value" id="grundbelopp-2026">322 400 kr</span>
+                    </div>
+                    <div class="result-row dim">
+                        <span class="label">Lönebaserat utrymme</span>
+                        <span class="value" id="lonebaserat-2026">0 kr</span>
+                    </div>
+                    <div class="result-row dim">
+                        <span class="label">Ränta på omkostnader</span>
+                        <span class="value" id="ranta-2026">2 888 kr</span>
+                    </div>
+                    <div class="result-row dim">
+                        <span class="label">Sparat gränsbelopp</span>
+                        <span class="value" id="sparad-display-2026">73 534 kr</span>
+                    </div>
+                    <div class="divider"></div>
+                    <div class="result-row highlight">
+                        <span class="label">Gränsbelopp</span>
+                        <span class="value" id="gransbelopp-2026">398 822 kr</span>
+                    </div>
+                </div>
+
+                <div class="result-group">
+                    <div class="result-group-title">Din utdelning</div>
+                    <div class="result-row">
+                        <span class="label">Gränsbelopp</span>
+                        <span class="value" id="gransbelopp-display-2026">398 822 kr</span>
+                    </div>
+                    <div class="result-row">
+                        <span class="label">Erhållen utdelning</span>
+                        <span class="value" id="utdelning-display-2026">384 827 kr</span>
+                    </div>
+                    <div class="divider"></div>
+                    <div class="result-row good">
+                        <span class="label">Till kapitalinkomst (20%)</span>
+                        <span class="value" id="kapital-2026">384 827 kr</span>
+                    </div>
+                    <div class="result-row dim">
+                        <span class="label">Skatt (20%)</span>
+                        <span class="value" id="skatt-20-2026">76 965 kr</span>
+                    </div>
+                    <div class="result-row dim">
+                        <span class="label">Till tjänsteinkomst (30%)</span>
+                        <span class="value" id="over-gransbelopp-2026">0 kr</span>
+                    </div>
+                    <div class="result-row dim">
+                        <span class="label">Skatt (30%)</span>
+                        <span class="value" id="skatt-30-2026">0 kr</span>
+                    </div>
+                    <div class="divider"></div>
+                    <div class="result-row highlight">
+                        <span class="label">Nytt sparat gränsbelopp</span>
+                        <span class="value" id="nytt-sparat-2026">13 995 kr</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- FORM PREVIEW -->
+            <div class="form-preview-section">
+                <h3>K10-blankett</h3>
+                <div class="form-field">
+                    <span class="form-field-label">Personnummer</span>
+                    <span class="form-field-value" id="form-pnr">19890508-4979</span>
+                </div>
+                <div class="form-field">
+                    <span class="form-field-label">Namn</span>
+                    <span class="form-field-value" id="form-namn">Anton Gustavsson</span>
+                </div>
+                <div class="form-field">
+                    <span class="form-field-label">Företag</span>
+                    <span class="form-field-value" id="form-foretag">Confolio AB</span>
+                </div>
+                <div class="form-field">
+                    <span class="form-field-label">Gränsbelopp</span>
+                    <span class="form-field-value" id="form-gransbelopp">325 340 kr</span>
+                </div>
+                <div class="form-field">
+                    <span class="form-field-label">Till kapitalinkomst</span>
+                    <span class="form-field-value" id="form-kapital">231 321 kr</span>
+                </div>
+                <div class="form-field">
+                    <span class="form-field-label">Nytt sparat</span>
+                    <span class="form-field-value" id="form-nytt-sparat">94 019 kr</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODALER -->
+    <div id="feedbackModal" class="modal">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeFeedback()">×</button>
+            <div class="modal-header">Feedback</div>
+            <div class="modal-body">
+                <p>Har du förslag eller hittat ett fel?</p>
+                <p style="margin-top: 15px;"><strong>E-post:</strong> anton.gustavsson@prosaconsult.se</p>
+                <p style="margin-top: 15px;">Tack för ditt feedback!</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="aboutModal" class="modal">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeAbout()">×</button>
+            <div class="modal-header">Om programmet</div>
+            <div class="modal-body">
+                <p><strong>K10 Gränsbeloppskalkylator v2.0</strong></p>
+                <p style="margin-top: 15px;">Beräkna utdelningsutrymme enligt 3:12-reglerna för svenska aktiebolag.</p>
+                <p style="margin-top: 15px;"><strong>Från 2026:</strong> En enhetlig regel ersätter huvudregeln och förenklingsregeln.</p>
+                <p style="margin-top: 15px;">⚠️ Denna kalkylator är ett hjälpmedel. Kontrollera alltid med Skatteverket eller din revisor.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const IBB = {
+            2025: { tidigare: 80600, aktuell: 83400 },
+            2026: { tidigare: 83400, aktuell: 83400 }
+        };
+
+        let currentYear = 2025;
+
+        function switchYear(year) {
+            currentYear = year;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('inputs-2025').classList.toggle('hidden', year !== 2025);
+            document.getElementById('inputs-2026').classList.toggle('hidden', year !== 2026);
+            document.getElementById('resultat-2025').classList.toggle('hidden', year !== 2025);
+            document.getElementById('resultat-2026').classList.toggle('hidden', year !== 2026);
+            document.getElementById('resultat-title').textContent = year === 2025 ? 'Resultat 2025' : 'Resultat 2026';
+            document.querySelector('.results-header p').textContent = year === 2025 ? 'Gamla regler' : 'Nya regler';
+            berakna();
+        }
+
+        function berakna() {
+            currentYear === 2025 ? berakna2025() : berakna2026();
+            updateFormPreview();
+        }
+
+        function berakna2025() {
+            const ibb = IBB[2025];
+            const lon_egen = parseFloat(document.getElementById('din_lon-2025').value) || 0;
+            const omkostnad = parseFloat(document.getElementById('omkostnad-2025').value) || 0;
+            const sparat_ingaende = parseFloat(document.getElementById('sparat_utrymme-2025').value) || 0;
+            const utdelning = parseFloat(document.getElementById('utdelning-2025').value) || 0;
+
+            // K10 Rad 2 - Huvudregeln
+            const rad_2_1 = Math.max(0, (omkostnad - 50000) * 0.1096);  // Omkostnadsbelopp × 10,96%
+            const rad_2_2 = Math.max(0, (lon_egen - (8 * ibb.tidigare)) * 0.5);  // Lönebaserat utrymme
+            const rad_2_3 = sparat_ingaende * 1.0496;  // Sparat × 104,96%
+            const rad_2_4 = rad_2_1 + rad_2_2 + rad_2_3;  // Gränsbelopp
+
+            const rad_2_6 = rad_2_4;  // Gränsbelopp att utnyttja
+            const rad_2_7 = utdelning;  // Utdelning
+            const rad_2_15 = Math.min(rad_2_7, rad_2_6);  // Utdelning i kapital
+            const rad_2_9 = Math.max(0, rad_2_7 - rad_2_6);  // Utdelning som tjänsteinkomst
+            const rad_2_12 = Math.max(0, rad_2_6 - utdelning);  // Sparat till nästa år
+
+            // Uppdatera resultat för K10-rader
+            document.getElementById('rad-2-1').textContent = formatKr(rad_2_1);
+            document.getElementById('rad-2-2').textContent = formatKr(rad_2_2);
+            document.getElementById('rad-2-3').textContent = formatKr(rad_2_3);
+            document.getElementById('rad-2-4').textContent = formatKr(rad_2_4);
+            document.getElementById('rad-2-6').textContent = formatKr(rad_2_6);
+            document.getElementById('rad-2-7').textContent = formatKr(rad_2_7);
+            document.getElementById('rad-2-15').textContent = formatKr(rad_2_15);
+            document.getElementById('rad-2-9').textContent = formatKr(rad_2_9);
+            document.getElementById('rad-2-12').textContent = formatKr(rad_2_12);
+
+            // Lagra max_gransbelopp för form preview
+            window.max_gransbelopp_2025 = rad_2_4;
+            window.kapital_2025 = rad_2_15;
+            window.nytt_sparat_2025 = rad_2_12;
+        }
+
+        function berakna2026() {
+            const ibb = IBB[2026];
+            const agarandel = parseFloat(document.getElementById('agarandel-2026').value) / 100;
+            const antal_bolag = parseFloat(document.getElementById('antal_bolag-2026').value) || 1;
+            const lon_egen = parseFloat(document.getElementById('din_lon-2026').value) || 0;
+            const omkostnad = parseFloat(document.getElementById('omkostnad-2026').value) || 0;
+            const sparat = parseFloat(document.getElementById('sparat_utrymme-2026').value) || 0;
+            const utdelning = parseFloat(document.getElementById('utdelning-2026').value) || 0;
+
+            const grundbelopp = (4 * ibb.tidigare * agarandel) / antal_bolag;
+            const lon_avdrag = 8 * ibb.tidigare;
+            const lonebaserat = Math.max(0, (lon_egen - lon_avdrag) * 0.5);
+            const ranta = Math.max(0, (omkostnad - 100000) * 0.1155);
+            const gransbelopp = grundbelopp + lonebaserat + ranta + sparat;
+            const kapital_inom = Math.min(utdelning, gransbelopp);
+            const kapital_over = Math.max(0, utdelning - gransbelopp);
+            const skatt_20 = kapital_inom * 0.20;
+            const skatt_30 = kapital_over * 0.30;
+            const nytt_sparat = Math.max(0, gransbelopp - utdelning);
+
+            document.getElementById('grundbelopp-2026').textContent = formatKr(grundbelopp);
+            document.getElementById('lonebaserat-2026').textContent = formatKr(lonebaserat);
+            document.getElementById('ranta-2026').textContent = formatKr(ranta);
+            document.getElementById('sparad-display-2026').textContent = formatKr(sparat);
+            document.getElementById('gransbelopp-2026').textContent = formatKr(gransbelopp);
+            document.getElementById('gransbelopp-display-2026').textContent = formatKr(gransbelopp);
+            document.getElementById('utdelning-display-2026').textContent = formatKr(utdelning);
+            document.getElementById('kapital-2026').textContent = formatKr(kapital_inom);
+            document.getElementById('skatt-20-2026').textContent = formatKr(skatt_20);
+            document.getElementById('over-gransbelopp-2026').textContent = formatKr(kapital_over);
+            document.getElementById('skatt-30-2026').textContent = formatKr(skatt_30);
+            document.getElementById('nytt-sparat-2026').textContent = formatKr(nytt_sparat);
+
+            // Lagra värden för form preview
+            window.gransbelopp_2026 = gransbelopp;
+            window.kapital_inom_2026 = kapital_inom;
+            window.nytt_sparat_2026 = nytt_sparat;
+        }
+
+        function updateFormPreview() {
+            document.getElementById('form-pnr').textContent = document.getElementById('personnummer').value;
+            document.getElementById('form-namn').textContent = document.getElementById('namn').value;
+            document.getElementById('form-foretag').textContent = document.getElementById('foretag').value;
+
+            if (currentYear === 2025) {
+                document.getElementById('form-gransbelopp').textContent = formatKr(window.max_gransbelopp_2025 || 0);
+                document.getElementById('form-kapital').textContent = formatKr(window.kapital_2025 || 0);
+                document.getElementById('form-nytt-sparat').textContent = formatKr(window.nytt_sparat_2025 || 0);
+            } else {
+                document.getElementById('form-gransbelopp').textContent = formatKr(window.gransbelopp_2026 || 0);
+                document.getElementById('form-kapital').textContent = formatKr(window.kapital_inom_2026 || 0);
+                document.getElementById('form-nytt-sparat').textContent = formatKr(window.nytt_sparat_2026 || 0);
+            }
+        }
+
+        function formatKr(num) {
+            return Math.round(num).toLocaleString('sv-SE') + ' kr';
+        }
+
+        function resetForm() {
+            if (currentYear === 2025) {
+                document.getElementById('agarandel-2025').value = '100';
+                document.getElementById('sparat_utrymme-2025').value = '73534';
+                document.getElementById('utdelning-2025').value = '384827';
+                document.getElementById('omkostnad-2025').value = '0';
+                document.getElementById('total_lon-2025').value = '611625';
+                document.getElementById('din_lon-2025').value = '611625';
+            } else {
+                document.getElementById('agarandel-2026').value = '100';
+                document.getElementById('antal_bolag-2026').value = '1';
+                document.getElementById('sparat_utrymme-2026').value = '73534';
+                document.getElementById('utdelning-2026').value = '384827';
+                document.getElementById('omkostnad-2026').value = '25000';
+                document.getElementById('total_lon-2026').value = '611625';
+                document.getElementById('din_lon-2026').value = '611625';
+            }
+            berakna();
+        }
+
+        function exporteraPDF() {
+            const element = document.querySelector('.results-panel');
+            const opt = {
+                margin: 10,
+                filename: `K10_${currentYear}.pdf`,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2 },
+                jsPDF: { orientation: 'portrait', unit: 'mm', format: 'a4' }
+            };
+            html2pdf().set(opt).from(element).save();
+        }
+
+        function exporteraSRU() {
+            const personnummer = document.getElementById('personnummer').value;
+            const namn = document.getElementById('namn').value;
+            const orgnr = document.getElementById('orgnr').value;
+
+            let sruText = `K10 Gränsbeloppskalkylator SRU-Export\n${currentYear}\n\n`;
+            sruText += `Personnummer: ${personnummer}\nNamn: ${namn}\nOrg.nr: ${orgnr}\n\n`;
+
+            if (currentYear === 2025) {
+                sruText += `Gränsbelopp: ${formatKr(window.max_gransbelopp_2025 || 0)}\n`;
+                sruText += `Till kapitalinkomst: ${formatKr(window.kapital_2025 || 0)}\n`;
+                sruText += `Nytt sparat: ${formatKr(window.nytt_sparat_2025 || 0)}\n`;
+            } else {
+                sruText += `Gränsbelopp: ${formatKr(window.gransbelopp_2026 || 0)}\n`;
+                sruText += `Till kapitalinkomst: ${formatKr(window.kapital_inom_2026 || 0)}\n`;
+                sruText += `Nytt sparat: ${formatKr(window.nytt_sparat_2026 || 0)}\n`;
+            }
+
+            const blob = new Blob([sruText], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `K10_SRU_${currentYear}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        function openFeedback() { document.getElementById('feedbackModal').classList.add('active'); }
+        function closeFeedback() { document.getElementById('feedbackModal').classList.remove('active'); }
+        function openAbout() { document.getElementById('aboutModal').classList.add('active'); }
+        function closeAbout() { document.getElementById('aboutModal').classList.remove('active'); }
+
+        window.addEventListener('load', berakna);
+    </script>
+</body>
+</html>

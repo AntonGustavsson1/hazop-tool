@@ -1,0 +1,507 @@
+/* ── Johans dimensioneringsprogram — stilmall ────────────────────────────────── */
+:root {
+  --bg:        #f0f4f8;
+  --surface:   #ffffff;
+  --border:    #d1dbe8;
+  --primary:   #1e40af;
+  --primary-h: #1d3a9e;
+  --accent:    #0ea5e9;
+  --text:      #1e293b;
+  --muted:     #64748b;
+  --green:     #16a34a;
+  --yellow:    #ca8a04;
+  --red:       #dc2626;
+  --shadow:    0 1px 4px rgba(30,64,175,.10);
+  --radius:    8px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 15px; }
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────────── */
+header {
+  background: var(--primary);
+  color: #fff;
+  padding: .7rem 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  position: sticky; top: 0; z-index: 100;
+}
+header h1 { font-size: 1.2rem; font-weight: 600; letter-spacing: .02em; }
+header span.sub { font-size: .78rem; opacity: .75; margin-left: .5rem; }
+
+/* ── Fliknavigering ──────────────────────────────────────────────────────────── */
+nav.tabs {
+  background: var(--surface);
+  border-bottom: 2px solid var(--border);
+  display: flex;
+  padding: 0 1rem;
+  gap: .2rem;
+  position: sticky; top: 46px; z-index: 90;
+  box-shadow: var(--shadow);
+}
+nav.tabs button {
+  padding: .65rem 1.2rem;
+  border: none; background: none;
+  font-size: .9rem; font-weight: 500;
+  color: var(--muted); cursor: pointer;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+  transition: color .15s, border-color .15s;
+}
+nav.tabs button:hover { color: var(--primary); }
+nav.tabs button.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+/* ── Flikkontent ─────────────────────────────────────────────────────────────── */
+.tab-content { display: none; padding: 1.2rem 1.5rem; }
+.tab-content.active { display: block; }
+
+/* Kanalunder-flikar */
+.sub-tabs {
+  display: flex; gap: .4rem; margin-bottom: 1rem;
+}
+.sub-tabs button {
+  padding: .35rem .9rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 20px;
+  font-size: .82rem; cursor: pointer; color: var(--muted);
+  transition: all .15s;
+}
+.sub-tabs button.active {
+  background: var(--primary); color: #fff; border-color: var(--primary);
+}
+
+/* ── Layout: indata + resultat ───────────────────────────────────────────────── */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) 1fr;
+  gap: 1.2rem;
+  align-items: start;
+}
+@media (max-width: 820px) { .layout { grid-template-columns: 1fr; } }
+
+/* ── Kort / paneler ──────────────────────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  box-shadow: var(--shadow);
+}
+.card h3 {
+  font-size: .82rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+  margin-bottom: .8rem;
+  padding-bottom: .5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ── Formulär ────────────────────────────────────────────────────────────────── */
+.field { margin-bottom: .7rem; }
+.field label {
+  display: block;
+  font-size: .8rem;
+  color: var(--muted);
+  margin-bottom: .25rem;
+  font-weight: 500;
+}
+.field input, .field select {
+  width: 100%;
+  padding: .42rem .6rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: .9rem;
+  color: var(--text);
+  background: var(--bg);
+  transition: border-color .15s, box-shadow .15s;
+}
+.field input:focus, .field select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(14,165,233,.15);
+}
+.field .hint { font-size: .75rem; color: var(--muted); margin-top: .2rem; }
+
+/* Rader med flera fält */
+.field-row { display: grid; gap: .6rem; }
+.field-row.col2 { grid-template-columns: 1fr 1fr; }
+.field-row.col3 { grid-template-columns: 1fr 1fr 1fr; }
+
+/* ── Knappar ─────────────────────────────────────────────────────────────────── */
+button.btn-primary {
+  width: 100%;
+  padding: .55rem;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  font-size: .9rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: .4rem;
+  transition: background .15s;
+}
+button.btn-primary:hover { background: var(--primary-h); }
+
+button.btn-secondary {
+  padding: .35rem .8rem;
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: 5px;
+  font-size: .8rem;
+  cursor: pointer;
+  transition: all .15s;
+}
+button.btn-secondary:hover { background: var(--primary); color: #fff; }
+
+button.btn-copy {
+  padding: .3rem .7rem;
+  font-size: .78rem;
+  background: #e0e7ff;
+  color: var(--primary);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  float: right;
+}
+button.btn-copy:hover { background: var(--primary); color: #fff; }
+
+/* ── Resultatblock ───────────────────────────────────────────────────────────── */
+.result-block {
+  margin-top: .5rem;
+  padding: .7rem .9rem;
+  background: #f8faff;
+  border-left: 4px solid var(--primary);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.result-block.hidden { display: none; }
+
+.result-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: .25rem 0;
+  font-size: .9rem;
+  border-bottom: 1px solid var(--border);
+}
+.result-row:last-child { border-bottom: none; }
+.result-row .label { color: var(--muted); font-size: .82rem; }
+.result-row .value { font-weight: 600; font-family: 'Consolas', monospace; }
+.result-row .value.warn { color: var(--yellow); }
+.result-row .value.danger { color: var(--red); }
+.result-row .value.ok { color: var(--green); }
+
+/* ── Dimensionslista (tabell med alternativ) ─────────────────────────────────── */
+.dim-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .83rem;
+  margin-top: .5rem;
+}
+.dim-table th {
+  background: var(--primary);
+  color: #fff;
+  padding: .4rem .6rem;
+  text-align: left;
+  font-weight: 500;
+}
+.dim-table td {
+  padding: .35rem .6rem;
+  border-bottom: 1px solid var(--border);
+}
+.dim-table tr:nth-child(even) td { background: #f8faff; }
+.dim-table tr:hover td { background: #e0e7ff; }
+.dim-table tr.recommended td { font-weight: 700; }
+.dim-table tr.recommended td:first-child::before {
+  content: '★ '; color: var(--primary);
+}
+.dim-table .indicator {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+.green-dot { background: var(--green); }
+.yellow-dot { background: var(--yellow); }
+.red-dot { background: var(--red); }
+
+/* ── Reynolds / regim ────────────────────────────────────────────────────────── */
+.regime-lam   { color: var(--green); font-weight: 600; }
+.regime-trans { color: var(--yellow); font-weight: 600; }
+.regime-turb  { color: var(--red); font-weight: 600; }
+
+/* ── Material-infopanel ──────────────────────────────────────────────────────── */
+.mat-info {
+  background: #f0f7ff;
+  border: 1px solid #bcd0f0;
+  border-radius: 5px;
+  padding: .5rem .7rem;
+  font-size: .78rem;
+  color: var(--muted);
+  margin-top: .3rem;
+  display: none;
+}
+.mat-info.visible { display: block; }
+.mat-info strong { color: var(--primary); }
+
+/* ── DN-väljare ──────────────────────────────────────────────────────────────── */
+.dn-row {
+  display: flex;
+  gap: .5rem;
+  flex-wrap: wrap;
+  margin-top: .3rem;
+}
+.dn-chip {
+  padding: .22rem .55rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: .78rem;
+  cursor: pointer;
+  background: var(--surface);
+  transition: all .12s;
+}
+.dn-chip:hover { border-color: var(--primary); color: var(--primary); }
+.dn-chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+/* ── Historik ────────────────────────────────────────────────────────────────── */
+.history-panel {
+  margin-top: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.history-toggle {
+  width: 100%;
+  padding: .55rem 1rem;
+  background: #f8faff;
+  border: none;
+  text-align: left;
+  font-size: .82rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+.history-toggle::before { content: '▶'; font-size: .7rem; transition: transform .2s; }
+.history-toggle.open::before { transform: rotate(90deg); }
+.history-list { display: none; padding: .5rem; }
+.history-list.open { display: block; }
+.history-item {
+  padding: .4rem .6rem;
+  font-size: .78rem;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--muted);
+  transition: background .12s;
+}
+.history-item:hover { background: #e0e7ff; color: var(--primary); }
+.history-item .hi-result { font-family: monospace; font-weight: 600; }
+
+/* ── Radioknappar för beräkningstyp ──────────────────────────────────────────── */
+.radio-group {
+  display: flex; gap: .5rem; flex-wrap: wrap;
+  margin-bottom: .7rem;
+}
+.radio-group label {
+  display: flex; align-items: center; gap: .3rem;
+  padding: .3rem .7rem;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: .82rem;
+  transition: all .12s;
+}
+.radio-group label:hover { border-color: var(--primary); }
+.radio-group input[type=radio] { accent-color: var(--primary); }
+.radio-group label:has(input:checked) {
+  background: var(--primary); color: #fff; border-color: var(--primary);
+}
+
+/* ── Glykol-sektion ──────────────────────────────────────────────────────────── */
+.glycol-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .6rem;
+  margin-top: .5rem;
+  padding-top: .5rem;
+  border-top: 1px dashed var(--border);
+}
+.glycol-row.hidden { display: none; }
+
+/* ── Värmeförlust-sektion ────────────────────────────────────────────────────── */
+.heat-section {
+  margin-top: 1rem;
+  padding-top: .7rem;
+  border-top: 1px solid var(--border);
+}
+.heat-section h4 {
+  font-size: .82rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: .6rem;
+}
+
+/* ── Glömt fält (röd border) ─────────────────────────────────────────────────── */
+.field input.error { border-color: var(--red); }
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Meta-bar (projektinfo + PDF-export) ────────────────────────────────────── */
+#meta-bar {
+  background: #1e3a5f;
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .45rem 1.5rem;
+  flex-wrap: wrap;
+  position: sticky; top: 46px; z-index: 88;
+}
+.meta-fields { display: flex; gap: .5rem; flex: 1; flex-wrap: wrap; }
+#meta-bar input {
+  background: rgba(255,255,255,.12);
+  border: 1px solid rgba(255,255,255,.22);
+  border-radius: 4px;
+  color: #fff;
+  font-size: .78rem;
+  padding: .28rem .5rem;
+  min-width: 90px; flex: 1;
+}
+#meta-bar input::placeholder { color: rgba(255,255,255,.45); }
+#meta-bar input:focus { outline: none; border-color: #c8a951; background: rgba(255,255,255,.2); }
+#btn-export-pdf {
+  background: #c8a951;
+  color: #1e3a5f;
+  border: none;
+  border-radius: 5px;
+  padding: .38rem 1rem;
+  font-size: .82rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  letter-spacing: .03em;
+  transition: background .15s;
+  flex-shrink: 0;
+}
+#btn-export-pdf:hover { background: #e2be6a; }
+
+#print-area { display: none; }
+
+/* ── Rapport-layout (renderas vid utskrift) ──────────────────────────────────── */
+.rep-page {
+  font-family: 'Calibri', 'Segoe UI', Arial, sans-serif;
+  color: #1a1a1a;
+  line-height: 1.45;
+  font-size: 10pt;
+}
+.rep-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding-bottom: .7rem;
+  border-bottom: 2.5pt solid #1e3a5f;
+  margin-bottom: 1.1rem;
+}
+.rep-logo-box {
+  width: 52pt; height: 52pt;
+  background: #1e3a5f;
+  color: #c8a951;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17pt; font-weight: 700; letter-spacing: .04em;
+  flex-shrink: 0; border-radius: 3pt;
+}
+.rep-title-block { flex: 1; }
+.rep-doc-type {
+  font-size: 7pt; letter-spacing: .18em; color: #1e3a5f;
+  font-weight: 700; text-transform: uppercase; margin-bottom: .2rem;
+}
+.rep-doc-title { font-size: 14pt; font-weight: 700; color: #1e3a5f; margin-bottom: .15rem; }
+.rep-company-name { font-size: 8.5pt; color: #555; }
+.rep-meta-block { flex-shrink: 0; }
+.rep-meta-table { border-collapse: collapse; font-size: 8pt; }
+.rep-meta-table td { padding: .12rem .45rem; border: 0.5pt solid #c8d0dc; }
+.rep-meta-table td:first-child {
+  background: #eef2f7; color: #444; font-weight: 600; white-space: nowrap;
+}
+.rep-meta-table td:last-child { min-width: 100pt; }
+
+.rep-section { margin-bottom: 1.1rem; }
+.rep-section-title {
+  font-size: 9.5pt; font-weight: 700; color: #1e3a5f;
+  border-bottom: 1pt solid #1e3a5f;
+  padding-bottom: .2rem; margin-bottom: .55rem;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.rep-data-table { width: 100%; border-collapse: collapse; font-size: 9pt; }
+.rep-data-table th {
+  background: #1e3a5f; color: #fff;
+  padding: .3rem .6rem; text-align: left; font-weight: 600;
+}
+.rep-data-table td { padding: .28rem .6rem; border-bottom: 0.5pt solid #dde; }
+.rep-data-table tr:nth-child(even) td { background: #f5f8fc; }
+.rep-data-table .res-val { font-weight: 700; color: #1e3a5f; }
+
+.rep-formula-block {
+  background: #f4f6fa;
+  border: 0.5pt solid #c8d0dc;
+  border-left: 3pt solid #1e3a5f;
+  padding: .55rem .85rem;
+  border-radius: 0 3pt 3pt 0;
+}
+.rep-method-name { font-size: 9pt; font-weight: 700; color: #1e3a5f; margin-bottom: .35rem; }
+.rep-formula-code { font-family: 'Consolas', 'Courier New', monospace; font-size: 8.5pt; line-height: 1.65; }
+.formula-line { white-space: pre; }
+.rep-standard { margin-top: .4rem; font-size: 7.5pt; color: #777; font-style: italic; }
+
+.rep-dim-table { width: 100%; border-collapse: collapse; font-size: 9pt; margin-top: .3rem; }
+.rep-dim-table th {
+  background: #1e3a5f; color: #fff;
+  padding: .3rem .55rem; text-align: left; font-size: 8.5pt;
+}
+.rep-dim-table td { padding: .26rem .55rem; border-bottom: 0.5pt solid #dde; }
+.rep-dim-table tr:nth-child(even) td { background: #f5f8fc; }
+.rep-dim-table tr.rec-row td { font-weight: 700; background: #e6eef7 !important; }
+.rep-dim-table tr.rec-row td:first-child::before { content: '★ '; color: #c8a951; }
+
+.rep-footer {
+  margin-top: 1.5rem;
+  border-top: 0.5pt solid #1e3a5f;
+  padding-top: .35rem;
+  display: flex;
+  justify-content: space-between;
+  font-size: 7.5pt;
+  color: #888;
+}
+
+/* ── Print ───────────────────────────────────────────────────────────────────── */
+@media print {
+  @page { size: A4; margin: 14mm 16mm 18mm 16mm; }
+  header, nav.tabs, #meta-bar, .tab-content, .history-panel, #btn-export-pdf { display: none !important; }
+  #print-area { display: block !important; }
+  body { background: #fff; }
+}
