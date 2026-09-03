@@ -1978,11 +1978,15 @@ class LopaPanel(QWidget):
 
         The editable list below stays scoped to the selected scenario.  This
         compact matrix mirrors the reference sheet: one source per row and
-        one readable column for every configured safeguard type.
+        two readable columns per safeguard type (description + RRF).
         """
         sources = self.db.lopa_sources(self._revision_id) if self._revision_id else []
         types = self.db.safeguard_types()
-        headers = ['Källscenario', 'Grundfrekvens'] + list(types) + ['Återstående frekvens']
+        headers = ['Källscenario', 'Grundfrekvens']
+        for kind in types:
+            headers.append(kind)
+            headers.append(f'{kind} RRF')
+        headers.append('Återstående frekvens')
         old_loading = self._loading
         self._loading = True
         self._barrier_matrix.setColumnCount(len(headers))
@@ -1999,11 +2003,23 @@ class LopaPanel(QWidget):
                 if not barrier['active']:
                     continue
                 kind = barrier.get('sg_type') or 'Övrigt'
-                by_type.setdefault(kind, []).append(
-                    f"{barrier.get('description') or 'Namnlös'} (RRF {barrier['rrf']:.6g})")
-            for column, kind in enumerate(types, start=2):
-                self._barrier_matrix.setItem(
-                    row_index, column, self._readonly_cell('\n'.join(by_type.get(kind) or []) or '—'))
+                by_type.setdefault(kind, []).append(barrier)
+            for type_offset, kind in enumerate(types):
+                desc_column = 2 + type_offset * 2
+                rrf_column = 2 + type_offset * 2 + 1
+                barriers = by_type.get(kind) or []
+                if barriers:
+                    desc_text = '\n'.join(
+                        barrier.get('description') or 'Namnlös' for barrier in barriers)
+                    rrf_text = '\n'.join(
+                        f'{barrier["rrf"]:.6g}' for barrier in barriers)
+                else:
+                    desc_text = '—'
+                    rrf_text = '—'
+                self._barrier_matrix.setItem(row_index, desc_column, self._readonly_cell(desc_text))
+                rrf_cell = self._readonly_cell(rrf_text)
+                rrf_cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self._barrier_matrix.setItem(row_index, rrf_column, rrf_cell)
             result = self.db.lopa_source_calculation(source['id'])
             remaining = [item['remaining_frequency'] for item in result['categories']
                          if item['active'] and item['remaining_frequency'] is not None]
