@@ -1338,6 +1338,52 @@ class LopaPanel(QWidget):
         self._fit_hazop_category_columns(category_columns)
         self._hazop_hierarchy.doItemsLayout()
 
+    def _build_original_cause_text(self, cause_id):
+        """Build origin cause string: Object(s) - Deviation (guide word).
+
+        Supports multi-object systems via group_equipment_ids.
+        Example: "FI-1, V-2 - Högt flöde" or "V-1 - Lågt tryck"
+        """
+        cause = self.db.get_cause(cause_id) if cause_id else None
+        if not cause:
+            return 'Orsak saknas'
+
+        # Get the guide word (deviation)
+        deviation_id = cause.get('deviation_id')
+        deviation = self.db.conn.execute(
+            "SELECT description FROM deviations WHERE id=?",
+            (deviation_id,)).fetchone() if deviation_id else None
+        deviation_text = dict(deviation)['description'] if deviation else 'Okänd avvikelse'
+
+        # Get objects for grouped causes or single object
+        group_ids_str = cause.get('group_equipment_ids')
+        if group_ids_str:
+            # Multiple objects in group
+            try:
+                group_ids = [int(x.strip()) for x in group_ids_str.split(',') if x.strip()]
+                tags = []
+                for eq_id in group_ids:
+                    eq = self.db.get_equipment_by_id(eq_id)
+                    if eq and eq.get('tag'):
+                        tags.append(eq['tag'])
+                object_text = ', '.join(tags) if tags else 'Objekt'
+            except (ValueError, TypeError):
+                object_text = 'Objekt'
+        else:
+            # Single object from equipment_id or comp_tag
+            eq_id = cause.get('equipment_id')
+            if eq_id:
+                eq = self.db.get_equipment_by_id(eq_id)
+                object_text = eq.get('tag') if eq else 'Objekt'
+            else:
+                object_text = None
+
+        # Build final text: "Object - Deviation" or just "Deviation"
+        if object_text:
+            return f'{object_text} - {deviation_text}'
+        else:
+            return deviation_text
+
     def _hazop_category_columns(self, source_groups):
         """Keep configured category order and retain legacy imported values."""
         columns = list(self._category_options())
@@ -1378,11 +1424,7 @@ class LopaPanel(QWidget):
         editable = self._revision_is_editable()
         for source, consequences in source_groups:
             cause_id = source.get('hazop_cause_id')
-            object_trigger = ' '.join(part for part in (
-                source.get('equipment_tag') or '', source.get('trigger_code') or '',
-                source.get('trigger_custom') or '') if part).strip()
-            cause_text = ' — '.join(part for part in (
-                object_trigger, source.get('cause_text') or 'Orsak utan text') if part)
+            cause_text = self._build_original_cause_text(cause_id)
             frequency_text = (f"{source['base_frequency']:.3g} /år"
                               if source.get('base_frequency') is not None
                               else 'Frekvens saknas')
