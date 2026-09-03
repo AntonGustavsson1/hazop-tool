@@ -2245,6 +2245,15 @@ class LopaPanel(QWidget):
 
         self._loading = old_loading
 
+    def _sync_barrier_matrix_header_width(self):
+        """Synchronize custom header widget width with table column widths."""
+        if not self._barrier_matrix_header:
+            return
+        total_width = sum(self._barrier_matrix.columnWidth(i)
+                         for i in range(self._barrier_matrix.columnCount()))
+        self._barrier_matrix_header.setMinimumWidth(total_width)
+        self._barrier_matrix_header.setMaximumWidth(total_width)
+
     def _on_barrier_item_changed(self, item):
         if self._loading or item.column() != 0:
             return
