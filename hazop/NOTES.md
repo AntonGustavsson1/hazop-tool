@@ -1,5 +1,21 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: Oberoende barriärer-tabell med RRF per kolumn (2026-09-03)
+
+Omstrukturerad barriärmatrisen för bättre läsbarhet. Istället för att visa 
+"Nivågivare + alarm (RRF 10)" i en cell, är nu varje barriärtyp två kolumner:
+
+**Tidigare:** Källscenario | Grundfrekvens | Givare | Återstående
+**Nu:**      Källscenario | Grundfrekvens | Givare | Givare RRF | Ventiler | Ventiler RRF | Återstående
+
+Fördelar:
+- RRF-värdet är synligt och lätt att jämföra
+- Barriärbeskrivning och risk-reduktion är visuellt separerad
+- Möjliggör framtida redigering av RRF direkt i tabellen
+- Tydligare struktur för alla barriärtyper
+
+Testad med smoke-test (14/14 pass). Visuell verifiering i Qt-appen återstår.
+
 ## Crash-fixar: sqlite3.Row och stängd databas (2026-09-03)
 
 Genomgång av 100 crash-rapporter identifierade två återkommande problem:
