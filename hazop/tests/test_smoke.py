@@ -252,13 +252,13 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual('Överfyllnad',
                              p._hazop_hierarchy.item(0, p._HAZOP_CONSEQUENCE_COL).text())
             self.assertEqual('3',
-                             p._hazop_hierarchy.item(0, category_column).text())
+                             p._hazop_hierarchy.cellWidget(0, category_column).text())
             self.assertEqual('2',
-                             p._hazop_hierarchy.item(0, second_category_column).text())
+                             p._hazop_hierarchy.cellWidget(0, second_category_column).text())
             self.assertEqual('2',
-                             p._hazop_hierarchy.item(1, category_column).text())
+                             p._hazop_hierarchy.cellWidget(1, category_column).text())
             self.assertEqual('4',
-                             p._hazop_hierarchy.item(1, second_category_column).text())
+                             p._hazop_hierarchy.cellWidget(1, second_category_column).text())
             self.assertEqual(unassessed_cons_id, p._hazop_hierarchy.item(
                 2, category_column).data(p._ROLE_HAZOP_CONSEQUENCE_ID))
             self.assertEqual(
@@ -273,9 +273,10 @@ class SmokeTests(unittest.TestCase):
             self.assertIsNotNone(p._hazop_hierarchy.cellWidget(
                 1, p._HAZOP_REFERENCE_COL))
             self.assertEqual(cons_id, p._hazop_hierarchy.item(
-                0, category_column).data(p._ROLE_HAZOP_CONSEQUENCE_ID))
+                0, p._HAZOP_CONSEQUENCE_COL).data(p._ROLE_HAZOP_CONSEQUENCE_ID))
             # Each category cell has its own revision-local include control.
             p._confirm_lopa_only = lambda _text: True
+            self.app.processEvents()
             hierarchy_geometry = {
                 'height': p._hazop_hierarchy.height(),
                 'column_widths': [p._hazop_hierarchy.columnWidth(column)
@@ -283,9 +284,14 @@ class SmokeTests(unittest.TestCase):
                 'row_heights': [p._hazop_hierarchy.rowHeight(row)
                                 for row in range(p._hazop_hierarchy.rowCount())],
             }
-            assessment_item = p._hazop_hierarchy.item(0, category_column)
-            assessment_id = assessment_item.data(p._ROLE_ENTITY_ID)
-            assessment_item.setCheckState(Qt.CheckState.Unchecked)
+            assessment_toggle = p._hazop_hierarchy.cellWidget(0, category_column)
+            self.assertGreaterEqual(
+                assessment_toggle.width(),
+                p._hazop_hierarchy.columnWidth(category_column) - 2)
+            self.assertGreaterEqual(assessment_toggle.height(),
+                                    p._hazop_hierarchy.rowHeight(0) - 2)
+            assessment_id = assessment_toggle.property('lopa_assessment_id')
+            assessment_toggle.setChecked(False)
             self.app.processEvents()
             assessment = next(row for row in self.db.lopa_source_consequences(
                 imported['source_id']) if row['id'] == assessment_id)
@@ -298,9 +304,9 @@ class SmokeTests(unittest.TestCase):
                 p._hazop_hierarchy.rowHeight(row)
                 for row in range(p._hazop_hierarchy.rowCount())])
             p._confirm_lopa_only = lambda _text: False
-            cancel_item = p._hazop_hierarchy.item(0, second_category_column)
-            cancel_id = cancel_item.data(p._ROLE_ENTITY_ID)
-            cancel_item.setCheckState(Qt.CheckState.Unchecked)
+            cancel_toggle = p._hazop_hierarchy.cellWidget(0, second_category_column)
+            cancel_id = cancel_toggle.property('lopa_assessment_id')
+            cancel_toggle.setChecked(False)
             self.app.processEvents()
             cancelled_assessment = next(row for row in self.db.lopa_source_consequences(
                 imported['source_id']) if row['id'] == cancel_id)

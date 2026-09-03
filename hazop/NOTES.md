@@ -5882,3 +5882,14 @@ tabellförskjutningen inte återkommer i detta flöde.
 Verifierat med `py_compile`, hela `tests.test_smoke` (14 tester), den riktade
 LOPA-smoke-regressionen och `git diff --check`. GUI-flödet är testat headless;
 visuell kontroll i en riktig Qt-display återstår.
+
+### Fullcellskryssruta i LOPA-kategorier (2026-09-03)
+
+Varje numerisk kategori-cell använder nu en expanderande `QCheckBox` som
+fyller cellens hela bredd och höjd redan vid första renderingen. Den tidigare
+inbyggda tabellmarkeringen kunde se hoptryckt ut tills den ändrades. Samma
+dialog, revisionslokala lagring och återställning av tabellgeometri används
+fortfarande.
+
+Verifierat med riktat LOPA-test som kontrollerar full cellstorlek före klick,
+`py_compile`, hela `tests.test_smoke` (14 tester) och `git diff --check`.

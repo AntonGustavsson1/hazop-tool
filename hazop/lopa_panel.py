@@ -14,6 +14,7 @@ from PyQt6.QtCore import QDate, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QBoxLayout,
+    QCheckBox,
     QComboBox,
     QDateEdit,
     QDialog,
@@ -1179,6 +1180,20 @@ class LopaPanel(QWidget):
         item.setData(self._ROLE_HAZOP_CONSEQUENCE_ID, consequence_id)
         return item
 
+    def _hazop_category_toggle(self, *, severity, entity_id, source_id, active,
+                               editable):
+        """Create a full-cell numeric toggle for one consequence category."""
+        toggle = QCheckBox(str(severity) if severity is not None else '—')
+        toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        toggle.setProperty('lopa_assessment_id', entity_id)
+        toggle.setChecked(bool(active))
+        toggle.setEnabled(editable)
+        toggle.stateChanged.connect(
+            lambda state, assessment_id=entity_id, sid=source_id:
+            self._on_hazop_category_active_changed(
+                assessment_id, sid, state == Qt.CheckState.Checked.value))
+        return toggle
+
     def _hierarchy_reference_button(self, reference, *, cause_id=None, row=None):
         """Create the compact cause-only route back to HAZOP."""
         missing_hazop_source = bool(cause_id)
@@ -1300,17 +1315,20 @@ class LopaPanel(QWidget):
                 }
                 for offset, (category_key, _category_name) in enumerate(category_columns):
                     assessment = assessments_by_category.get(category_key)
-                    self._hazop_hierarchy.setItem(
-                        row, self._HAZOP_CATEGORY_START_COL + offset,
-                        self._make_hazop_table_item(
-                            str(assessment.get('severity')) if assessment and
-                            assessment.get('severity') is not None else '—',
-                            source_id=source['id'],
-                            entity_id=assessment['id'] if assessment else None,
-                            cause_id=cause_id, consequence_id=consequence_id,
-                            checkable=bool(assessment),
-                            checked=bool(assessment and assessment['active']),
-                            enabled=editable if assessment else False))
+                    column = self._HAZOP_CATEGORY_START_COL + offset
+                    if assessment:
+                        self._hazop_hierarchy.setCellWidget(
+                            row, column,
+                            self._hazop_category_toggle(
+                                severity=assessment.get('severity'),
+                                entity_id=assessment['id'], source_id=source['id'],
+                                active=assessment['active'], editable=editable))
+                    else:
+                        self._hazop_hierarchy.setItem(
+                            row, column,
+                            self._make_hazop_table_item(
+                                '—', source_id=source['id'], cause_id=cause_id,
+                                consequence_id=consequence_id, enabled=False))
                     if assessment and assessment['id'] == select_consequence_id:
                         selected_row = row
 
@@ -1362,7 +1380,14 @@ class LopaPanel(QWidget):
         entity_id = item.data(self._ROLE_ENTITY_ID)
         if self._loading or not entity_id:
             return
-        active = item.checkState() == Qt.CheckState.Checked
+        self._on_hazop_category_active_changed(
+            entity_id, item.data(self._ROLE_SOURCE_ID),
+            item.checkState() == Qt.CheckState.Checked)
+
+    def _on_hazop_category_active_changed(self, entity_id, source_id, active):
+        """Persist a full-cell category toggle without changing table geometry."""
+        if self._loading:
+            return
         table_geometry = {
             'height': self._hazop_hierarchy.height(),
             'column_widths': [self._hazop_hierarchy.columnWidth(column)
@@ -1376,7 +1401,6 @@ class LopaPanel(QWidget):
                 select_consequence_id=entity_id, preserve_geometry=table_geometry)
             return
         try:
-            source_id = item.data(self._ROLE_SOURCE_ID)
             with self.db.history_group():
                 self.db.set_lopa_consequence_active(entity_id, active)
                 assessments = self.db.lopa_source_consequences(source_id)
