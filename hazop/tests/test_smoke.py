@@ -238,52 +238,50 @@ class SmokeTests(unittest.TestCase):
             self.app.processEvents()
             self.app.processEvents()
             self.assertEqual(1, p._header_columns)
-            self.assertEqual(1, p._hazop_hierarchy.topLevelItemCount())
-            source_item = p._hazop_hierarchy.topLevelItem(0)
-            # One source/cause row, then one row per actual HAZOP consequence
-            # (not one duplicate row for every assessed category).
-            self.assertEqual(3, source_item.childCount())
-            self.assertEqual(2, source_item.child(0).childCount())
-            self.assertEqual(2, source_item.child(1).childCount())
-            self.assertEqual(0, source_item.child(2).childCount())
-            self.assertEqual('', source_item.child(0).text(2))
-            self.assertEqual('Överfyllnad', source_item.child(0).text(3))
-            self.assertEqual('', source_item.child(0).child(0).text(3))
-            self.assertIn('Nivå', source_item.child(0).child(0).text(4))
-            self.assertEqual(unassessed_cons_id, source_item.child(2).data(
-                0, p._ROLE_HAZOP_CONSEQUENCE_ID))
+            # One visual scenario row per category assessment. Source cells
+            # span those rows, while category, level and active stay separate.
+            self.assertEqual(5, p._hazop_hierarchy.rowCount())
+            self.assertEqual('Överfyllnad',
+                             p._hazop_hierarchy.item(0, p._HAZOP_CONSEQUENCE_COL).text())
+            self.assertEqual(category['name'],
+                             p._hazop_hierarchy.item(0, p._HAZOP_CATEGORY_COL).text())
+            self.assertEqual('3',
+                             p._hazop_hierarchy.item(0, p._HAZOP_LEVEL_COL).text())
+            self.assertEqual(second_category['name'],
+                             p._hazop_hierarchy.item(1, p._HAZOP_CATEGORY_COL).text())
+            self.assertEqual(2, p._hazop_hierarchy.rowSpan(0, p._HAZOP_REFERENCE_COL))
+            self.assertEqual(2, p._hazop_hierarchy.rowSpan(0, p._HAZOP_CAUSE_COL))
+            self.assertEqual(2, p._hazop_hierarchy.rowSpan(0, p._HAZOP_FREQUENCY_COL))
+            self.assertEqual(2, p._hazop_hierarchy.rowSpan(0, p._HAZOP_CONSEQUENCE_COL))
+            self.assertEqual(unassessed_cons_id, p._hazop_hierarchy.item(
+                4, p._HAZOP_CATEGORY_COL).data(p._ROLE_HAZOP_CONSEQUENCE_ID))
             self.assertEqual(
-                ['Aktiv', 'HAZOP-hierarki', 'Orsak', 'Konsekvens',
-                 'Kategori / riskbedömning', 'Grundfrekvens'],
-                [p._hazop_hierarchy.headerItem().text(index)
+                ['HAZOP-hierarki', 'Orsak', 'Grundfrekvens', 'Konsekvens',
+                 'Kategori', 'Nivå', 'Aktiv'],
+                [p._hazop_hierarchy.horizontalHeaderItem(index).text()
                  for index in range(p._hazop_hierarchy.columnCount())])
-            self.assertNotIn('Status', [
-                p._hazop_hierarchy.headerItem().text(index)
-                for index in range(p._hazop_hierarchy.columnCount())])
-            self.assertNotIn('HAZOP-koppling', [
-                p._hazop_hierarchy.headerItem().text(index)
-                for index in range(p._hazop_hierarchy.columnCount())])
-            source_reference = p._hazop_hierarchy.itemWidget(source_item, 1)
-            consequence_item = source_item.child(0)
-            consequence_reference = p._hazop_hierarchy.itemWidget(consequence_item, 1)
+            self.assertNotIn('Status', [p._hazop_hierarchy.horizontalHeaderItem(index).text()
+                                        for index in range(p._hazop_hierarchy.columnCount())])
+            self.assertNotIn('HAZOP-koppling', [p._hazop_hierarchy.horizontalHeaderItem(index).text()
+                                                for index in range(p._hazop_hierarchy.columnCount())])
+            source_reference = p._hazop_hierarchy.cellWidget(
+                0, p._HAZOP_REFERENCE_COL)
             self.assertRegex(source_reference.text(), r'^\d+(\.\d+){3,}$')
-            self.assertRegex(consequence_reference.text(), r'^\d+(\.\d+){4,}$')
-            self.assertEqual(cons_id, consequence_item.data(
-                0, p._ROLE_HAZOP_CONSEQUENCE_ID))
-            # The category-level include control remains revision-local, while
-            # the parent is the actual, once-only HAZOP consequence.
+            self.assertIsNone(p._hazop_hierarchy.cellWidget(
+                1, p._HAZOP_REFERENCE_COL))
+            self.assertEqual(cons_id, p._hazop_hierarchy.item(
+                0, p._HAZOP_CATEGORY_COL).data(p._ROLE_HAZOP_CONSEQUENCE_ID))
+            # The category-level include control is at the far right and
+            # remains revision-local, one control per assessment.
             p._confirm_lopa_only = lambda _text: True
-            assessment_item = consequence_item.child(0)
-            assessment_id = assessment_item.data(0, p._ROLE_ENTITY_ID)
-            assessment_item.setCheckState(0, Qt.CheckState.Unchecked)
+            assessment_item = p._hazop_hierarchy.item(0, p._HAZOP_ACTIVE_COL)
+            assessment_id = assessment_item.data(p._ROLE_ENTITY_ID)
+            assessment_item.setCheckState(Qt.CheckState.Unchecked)
             self.app.processEvents()
             assessment = next(row for row in self.db.lopa_source_consequences(
                 imported['source_id']) if row['id'] == assessment_id)
             self.assertFalse(assessment['active'])
-            source_item = p._hazop_hierarchy.topLevelItem(0)
-            consequence_item = source_item.child(0)
-            source_reference = p._hazop_hierarchy.itemWidget(source_item, 1)
-            consequence_reference = p._hazop_hierarchy.itemWidget(consequence_item, 1)
+            self.assertTrue(self.db.lopa_sources(created['revision_id'])[0]['active'])
             self.assertEqual(1, p._sensor_members.rowCount())
             self.assertEqual(1, p._barriers.rowCount())
             # Every actual consequence/category pair has its own risk row.
@@ -301,15 +299,11 @@ class SmokeTests(unittest.TestCase):
             self.assertIn('Verifiera ventilen', p._additional_actions.toPlainText())
             self.assertEqual(1, p._comments.rowCount())
             navigated = []
-            consequence_navigated = []
             p.hazop_navigation_requested.connect(navigated.append)
-            p.hazop_consequence_navigation_requested.connect(consequence_navigated.append)
             source_reference.click()
             self.assertEqual([cause_id], navigated)
             p._go_to_hazop()
             self.assertEqual([cause_id, cause_id], navigated)
-            consequence_reference.click()
-            self.assertEqual([cons_id], consequence_navigated)
         finally:
             p.deleteLater()
 

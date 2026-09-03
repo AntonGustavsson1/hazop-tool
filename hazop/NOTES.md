@@ -1,5 +1,29 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: kompakt HAZOP-scenariotabell med mergade källceller (2026-09-03)
+
+LOPA-modulens tabell **HAZOP-SCENARIER** är nu en dokumenttabell i stället
+för en expanderbar trädvy. Kolumnerna är, i ordning: **HAZOP-hierarki**,
+**Orsak**, **Grundfrekvens**, **Konsekvens**, **Kategori**, **Nivå** och
+**Aktiv**.
+
+Varje faktisk HAZOP-konsekvens bildar ett scenario. När scenariot har flera
+kategori-/nivåbedömningar mergas HAZOP-referens, orsak, grundfrekvens och
+konsekvens vertikalt över just dessa bedömningsrader. Kategori och nivå har
+en rad per bedömning. **Aktiv** ligger längst till höger, är inte mergad och
+har exakt en kryssruta per bedömning. RRF och SIL visas inte i denna tabell.
+Konsekvenser utan bedömning behåller en egen rad med streck och saknar aktiv
+kryssruta.
+
+HAZOP-referensen visas endast för orsaken och öppnar orsaken i HAZOP; någon
+separat konsekvensreferens visas inte. Om en Aktiv-kryssruta ändras synkas
+källscenariots aktiva läge med om minst en av dess bedömningar är aktiv,
+inom samma Ctrl+Z/Ctrl+Y-steg.
+
+Verifierat med den riktade LOPA-smokevägen, fulla `tests.test_smoke`,
+syntaxkontroll och nya regressioner för kolumnordning, cellspann och
+kryssrutornas placering. Visuell kontroll i den vanliga Qt-appen återstår.
+
 ## LOPA: rätt konsekvenshierarki och risk per konsekvenskategori (2026-09-03)
 
 LOPA-sidans tidigare separata tabeller **Källscenarier från HAZOP** och

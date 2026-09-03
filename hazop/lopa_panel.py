@@ -40,8 +40,6 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -64,7 +62,6 @@ from design import (
     lopa_category_badge_stylesheet,
     lopa_ghost_button_stylesheet,
     lopa_hierarchy_reference_stylesheet,
-    lopa_hierarchy_stylesheet,
     lopa_note_stylesheet,
     lopa_section_title_stylesheet,
     lopa_status_stylesheet,
@@ -89,9 +86,13 @@ class LopaPanel(QWidget):
     _ROLE_HAZOP_CAUSE_ID = int(Qt.ItemDataRole.UserRole) + 6
     _ROLE_HAZOP_CONSEQUENCE_ID = int(Qt.ItemDataRole.UserRole) + 7
 
-    _HIERARCHY_SOURCE = 'source'
-    _HIERARCHY_HAZOP_CONSEQUENCE = 'hazop-consequence'
-    _HIERARCHY_CONSEQUENCE = 'category-assessment'
+    _HAZOP_REFERENCE_COL = 0
+    _HAZOP_CAUSE_COL = 1
+    _HAZOP_FREQUENCY_COL = 2
+    _HAZOP_CONSEQUENCE_COL = 3
+    _HAZOP_CATEGORY_COL = 4
+    _HAZOP_LEVEL_COL = 5
+    _HAZOP_ACTIVE_COL = 6
 
     # Sentinel "unset" value for the document-date picker (see
     # recommendations_panel.py's due-date field for the same pattern) --
@@ -455,30 +456,29 @@ class LopaPanel(QWidget):
         source_label = QLabel('HAZOP-SCENARIER')
         source_label.setStyleSheet(lopa_section_title_stylesheet())
         source_layout.addWidget(source_label)
-        self._hazop_hierarchy = QTreeWidget()
-        self._hazop_hierarchy.setColumnCount(6)
-        self._hazop_hierarchy.setHeaderLabels([
-            'Aktiv', 'HAZOP-hierarki', 'Orsak', 'Konsekvens',
-            'Kategori / riskbedömning', 'Grundfrekvens',
+        self._hazop_hierarchy = QTableWidget(0, 7)
+        self._hazop_hierarchy.setHorizontalHeaderLabels([
+            'HAZOP-hierarki', 'Orsak', 'Grundfrekvens', 'Konsekvens',
+            'Kategori', 'Nivå', 'Aktiv',
         ])
-        self._hazop_hierarchy.setRootIsDecorated(True)
-        self._hazop_hierarchy.setItemsExpandable(True)
+        self._hazop_hierarchy.verticalHeader().setVisible(False)
         self._hazop_hierarchy.setAlternatingRowColors(True)
         self._hazop_hierarchy.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._hazop_hierarchy.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._hazop_hierarchy.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._hazop_hierarchy.setWordWrap(True)
-        self._hazop_hierarchy.setStyleSheet(lopa_hierarchy_stylesheet())
-        hierarchy_header = self._hazop_hierarchy.header()
+        self._hazop_hierarchy.setStyleSheet(lopa_table_stylesheet())
+        hierarchy_header = self._hazop_hierarchy.horizontalHeader()
         hierarchy_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        hierarchy_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hierarchy_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        hierarchy_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hierarchy_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         hierarchy_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        hierarchy_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        hierarchy_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         hierarchy_header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        self._configure_compact_tree(self._hazop_hierarchy, 72, 192)
+        hierarchy_header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self._configure_compact_table(self._hazop_hierarchy, 72, 192)
         self._hazop_hierarchy.itemChanged.connect(self._on_hazop_hierarchy_item_changed)
-        self._hazop_hierarchy.currentItemChanged.connect(self._on_hazop_hierarchy_selection_changed)
+        self._hazop_hierarchy.currentCellChanged.connect(self._on_hazop_hierarchy_selection_changed)
         source_layout.addWidget(self._hazop_hierarchy)
         source_actions = QHBoxLayout()
         self._sync_sources_btn = QPushButton('Kontrollera HAZOP-kopplingar')
@@ -522,9 +522,9 @@ class LopaPanel(QWidget):
         scenario_actions.addWidget(self._save_scenario_btn)
         scenario_layout.addLayout(scenario_actions)
 
-        # Consequences are children in ``_hazop_hierarchy`` rather than a
-        # second disconnected table.  The selected child still controls the
-        # local LOPA editor below, but the HAZOP source chain stays visible.
+        # The HAZOP chain is displayed as a compact document table.  Source
+        # columns are vertically merged over its category assessments, while
+        # category, level and the revision-local active control stay row-wise.
         consequence_layout = scenario_layout
         consequence_actions = QHBoxLayout()
         self._add_consequence_btn = QPushButton('+ Egen LOPA-konsekvens')
@@ -952,7 +952,8 @@ class LopaPanel(QWidget):
         self._lock_btn.setEnabled(False)
         self._archive_btn.setEnabled(False)
         self._choose_performed_btn.setEnabled(False)
-        self._hazop_hierarchy.clear()
+        self._hazop_hierarchy.clearContents()
+        self._hazop_hierarchy.setRowCount(0)
         self._sync_sources_btn.setEnabled(False)
         self._source_sync_note.clear()
         self._sensor_group.clear()
@@ -1159,37 +1160,44 @@ class LopaPanel(QWidget):
         item = table.item(row, 0) if row >= 0 else None
         return item.data(self._ROLE_ENTITY_ID) if item is not None else None
 
-    @staticmethod
-    def _hierarchy_item_data(item, role):
-        return item.data(0, role) if item is not None else None
-
     def _selected_hierarchy_consequence_id(self):
-        item = self._hazop_hierarchy.currentItem()
-        if self._hierarchy_item_data(item, self._ROLE_HIERARCHY_KIND) != self._HIERARCHY_CONSEQUENCE:
-            return None
-        return self._hierarchy_item_data(item, self._ROLE_ENTITY_ID)
+        return self._hazop_row_data(self._hazop_hierarchy.currentRow(),
+                                    self._ROLE_HAZOP_CONSEQUENCE_ID)
 
-    def _make_hierarchy_item(self, *, checked, enabled, source_id, entity_id,
-                             kind, cause_id=None, consequence_id=None, checkable=True):
-        """Create one selectable/checkable source-hierarchy row."""
-        item = QTreeWidgetItem()
+    def _hazop_row_data(self, row, role):
+        """Read shared row metadata from the compact HAZOP scenarios table."""
+        if row < 0:
+            return None
+        for column in range(self._hazop_hierarchy.columnCount()):
+            item = self._hazop_hierarchy.item(row, column)
+            if item is not None:
+                value = item.data(role)
+                if value is not None:
+                    return value
+        return None
+
+    def _make_hazop_table_item(self, text='', *, source_id, entity_id=None,
+                               cause_id=None, consequence_id=None,
+                               checkable=False, checked=False, enabled=True):
+        """Create a source-table cell while retaining its LOPA/HAZOP linkage."""
+        item = QTableWidgetItem(text)
         flags = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+        if not enabled:
+            flags &= ~Qt.ItemFlag.ItemIsEnabled
         if checkable and enabled:
             flags |= Qt.ItemFlag.ItemIsUserCheckable
         item.setFlags(flags)
         if checkable:
-            item.setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
-        item.setData(0, self._ROLE_SOURCE_ID, source_id)
-        item.setData(0, self._ROLE_ENTITY_ID, entity_id)
-        item.setData(0, self._ROLE_HIERARCHY_KIND, kind)
-        item.setData(0, self._ROLE_HAZOP_CAUSE_ID, cause_id)
-        item.setData(0, self._ROLE_HAZOP_CONSEQUENCE_ID, consequence_id)
+            item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+        item.setData(self._ROLE_SOURCE_ID, source_id)
+        item.setData(self._ROLE_ENTITY_ID, entity_id)
+        item.setData(self._ROLE_HAZOP_CAUSE_ID, cause_id)
+        item.setData(self._ROLE_HAZOP_CONSEQUENCE_ID, consequence_id)
         return item
 
-    def _hierarchy_reference_button(self, reference, *, cause_id=None,
-                                    consequence_id=None, item=None):
-        """Create the one explicit, compact route back to HAZOP."""
-        missing_hazop_source = bool(consequence_id or cause_id)
+    def _hierarchy_reference_button(self, reference, *, cause_id=None, row=None):
+        """Create the compact cause-only route back to HAZOP."""
+        missing_hazop_source = bool(cause_id)
         button = QPushButton(
             reference or ('HAZOP-källa saknas' if missing_hazop_source else 'Lokal LOPA'))
         button.setObjectName('lopaHierarchyReference')
@@ -1198,45 +1206,29 @@ class LopaPanel(QWidget):
         has_hazop_target = bool(reference and missing_hazop_source)
         button.setEnabled(has_hazop_target)
         if has_hazop_target:
-            button.setToolTip('Öppna denna rad i HAZOP')
+            button.setToolTip('Öppna orsaken i HAZOP')
             button.clicked.connect(
-                lambda _checked=False, tree_item=item, cid=cause_id, kid=consequence_id:
-                self._navigate_hazop_reference(tree_item, cid, kid))
+                lambda _checked=False, table_row=row, cid=cause_id:
+                self._navigate_hazop_reference(table_row, cid))
         else:
             button.setToolTip(
                 'HAZOP-källan finns inte längre.' if missing_hazop_source else
                 'Denna rad finns endast i LOPA-revisionen.')
         return button
 
-    def _navigate_hazop_reference(self, item, cause_id=None, consequence_id=None):
-        """Select the local row, then open its exact HAZOP source when possible."""
-        if item is not None:
-            self._hazop_hierarchy.setCurrentItem(item)
-        if consequence_id:
-            self.hazop_consequence_navigation_requested.emit(int(consequence_id))
-        elif cause_id:
+    def _navigate_hazop_reference(self, row, cause_id=None):
+        """Select the local scenario, then open its cause in HAZOP."""
+        if row is not None and row >= 0:
+            self._hazop_hierarchy.setCurrentCell(row, self._HAZOP_CATEGORY_COL)
+        if cause_id:
             self.hazop_navigation_requested.emit(int(cause_id))
 
-    @staticmethod
-    def _risk_assessment_summary(assessment, calculation):
-        """Return one compact, auditable text for a category assessment."""
-        severity = assessment.get('severity')
-        parts = [f"Nivå {severity}" if severity else 'Nivå saknas']
-        if calculation:
-            required_rrf = calculation.get('required_rrf')
-            if required_rrf is not None:
-                parts.append(f'RRF {required_rrf:.3g}')
-            if calculation.get('sil'):
-                parts.append(calculation['sil'])
-        return ' · '.join(parts)
-
     def _populate_hazop_hierarchy(self, *, select_consequence_id=None):
-        """Render every LOPA source once, with consequences under its cause.
+        """Render the approved merged-cell HAZOP scenarios table.
 
-        The old source and consequence tables represented the same HAZOP
-        chain twice.  This tree is deliberately the one source of truth for
-        row selection and active-state changes; source-specific details below
-        still follow the selected parent source.
+        One visual scenario consists of its HAZOP cause, base frequency and
+        one consequence. Those cells span the consequence's category rows.
+        Category, level and active remain unmerged, one row per assessment.
         """
         sources = self.db.lopa_sources(self._revision_id) if self._revision_id else []
         selected_source = (self._source_id if any(source['id'] == self._source_id
@@ -1248,82 +1240,97 @@ class LopaPanel(QWidget):
 
         old_loading = self._loading
         self._loading = True
-        self._hazop_hierarchy.clear()
-        selected_item = None
+        self._hazop_hierarchy.clearContents()
+        self._hazop_hierarchy.setRowCount(0)
+        selected_row = None
         editable = self._revision_is_editable()
         for source in sources:
-            calculations = self.db.lopa_source_calculation(source['id'])
-            calculations_by_assessment = {
-                row.get('lopa_consequence_id'): row
-                for row in calculations['categories']
-                if row.get('lopa_consequence_id') is not None
-            }
             cause_id = source.get('hazop_cause_id')
-            source_item = self._make_hierarchy_item(
-                checked=bool(source['active']), enabled=editable, source_id=source['id'],
-                entity_id=source['id'], kind=self._HIERARCHY_SOURCE, cause_id=cause_id)
             object_trigger = ' '.join(part for part in (
                 source.get('equipment_tag') or '', source.get('trigger_code') or '',
                 source.get('trigger_custom') or '') if part).strip()
-            source_item.setText(2, ' — '.join(part for part in (
-                object_trigger, source.get('cause_text') or 'Orsak utan text') if part))
-            source_item.setText(
-                5, f"{source['base_frequency']:.3g} /år"
-                if source.get('base_frequency') is not None else 'Frekvens saknas')
+            cause_text = ' — '.join(part for part in (
+                object_trigger, source.get('cause_text') or 'Orsak utan text') if part)
+            frequency_text = (f"{source['base_frequency']:.3g} /år"
+                              if source.get('base_frequency') is not None
+                              else 'Frekvens saknas')
             source_reference = self.db.hazop_hierarchy_reference(cause_id=cause_id)
-            self._hazop_hierarchy.addTopLevelItem(source_item)
-            self._hazop_hierarchy.setItemWidget(
-                source_item, 1, self._hierarchy_reference_button(
-                    source_reference, cause_id=cause_id, item=source_item))
 
             for consequence in self.db.lopa_source_consequence_groups(source['id']):
                 consequence_id = consequence.get('hazop_consequence_id')
-                child_item = self._make_hierarchy_item(
-                    checked=False, enabled=False, source_id=source['id'], entity_id=None,
-                    kind=self._HIERARCHY_HAZOP_CONSEQUENCE, cause_id=cause_id,
-                    consequence_id=consequence_id, checkable=False)
                 description = consequence.get('description') or 'Beskrivning saknas'
-                child_item.setText(3, description)
                 assessments = consequence.get('assessments') or []
-                child_item.setText(
-                    4, (f"{len(assessments)} kategoribedömning(ar)" if assessments else
-                        'Ingen kategoribedömning'))
-                consequence_reference = self.db.hazop_hierarchy_reference(
-                    consequence_id=consequence_id)
-                source_item.addChild(child_item)
-                self._hazop_hierarchy.setItemWidget(
-                    child_item, 1, self._hierarchy_reference_button(
-                        consequence_reference, cause_id=cause_id,
-                        consequence_id=consequence_id, item=child_item))
+                start_row = self._hazop_hierarchy.rowCount()
+                row_count = max(1, len(assessments))
+                for _ in range(row_count):
+                    self._hazop_hierarchy.insertRow(self._hazop_hierarchy.rowCount())
 
-                for assessment in assessments:
-                    assessment_item = self._make_hierarchy_item(
-                        checked=bool(assessment['active']), enabled=editable,
-                        source_id=source['id'], entity_id=assessment['id'],
-                        kind=self._HIERARCHY_CONSEQUENCE, cause_id=cause_id,
-                        consequence_id=consequence_id)
-                    assessment_item.setText(
-                        4, ' — '.join(part for part in (
+                self._hazop_hierarchy.setCellWidget(
+                    start_row, self._HAZOP_REFERENCE_COL,
+                    self._hierarchy_reference_button(
+                        source_reference, cause_id=cause_id, row=start_row))
+                for column, text in (
+                        (self._HAZOP_CAUSE_COL, cause_text),
+                        (self._HAZOP_FREQUENCY_COL, frequency_text),
+                        (self._HAZOP_CONSEQUENCE_COL, description)):
+                    self._hazop_hierarchy.setItem(
+                        start_row, column,
+                        self._make_hazop_table_item(
+                            text, source_id=source['id'], cause_id=cause_id,
+                            consequence_id=consequence_id))
+                if row_count > 1:
+                    for column in range(self._HAZOP_REFERENCE_COL,
+                                        self._HAZOP_CONSEQUENCE_COL + 1):
+                        self._hazop_hierarchy.setSpan(start_row, column, row_count, 1)
+
+                if not assessments:
+                    for column, text in (
+                            (self._HAZOP_CATEGORY_COL, '—'),
+                            (self._HAZOP_LEVEL_COL, '—'),
+                            (self._HAZOP_ACTIVE_COL, '—')):
+                        self._hazop_hierarchy.setItem(
+                            start_row, column,
+                            self._make_hazop_table_item(
+                                text, source_id=source['id'], cause_id=cause_id,
+                                consequence_id=consequence_id,
+                                enabled=(column != self._HAZOP_ACTIVE_COL)))
+                    if selected_row is None and source['id'] == selected_source:
+                        selected_row = start_row
+                    continue
+
+                for offset, assessment in enumerate(assessments):
+                    row = start_row + offset
+                    self._hazop_hierarchy.setItem(
+                        row, self._HAZOP_CATEGORY_COL,
+                        self._make_hazop_table_item(
                             assessment.get('category_name') or 'Konsekvenskategori',
-                            self._risk_assessment_summary(
-                                assessment, calculations_by_assessment.get(assessment['id'])))
-                            if part))
-                    child_item.addChild(assessment_item)
+                            source_id=source['id'], entity_id=assessment['id'],
+                            cause_id=cause_id, consequence_id=consequence_id))
+                    level = assessment.get('severity')
+                    self._hazop_hierarchy.setItem(
+                        row, self._HAZOP_LEVEL_COL,
+                        self._make_hazop_table_item(
+                            str(level) if level else '—', source_id=source['id'],
+                            entity_id=assessment['id'], cause_id=cause_id,
+                            consequence_id=consequence_id))
+                    self._hazop_hierarchy.setItem(
+                        row, self._HAZOP_ACTIVE_COL,
+                        self._make_hazop_table_item(
+                            '', source_id=source['id'], entity_id=assessment['id'],
+                            cause_id=cause_id, consequence_id=consequence_id,
+                            checkable=True, checked=bool(assessment['active']),
+                            enabled=editable))
                     if assessment['id'] == select_consequence_id:
-                        selected_item = assessment_item
+                        selected_row = row
 
-                child_item.setExpanded(True)
+                if selected_row is None and source['id'] == selected_source:
+                    selected_row = start_row
 
-            source_item.setExpanded(True)
-            if source['id'] == selected_source and selected_item is None:
-                selected_item = source_item
-
-        if selected_item is not None:
-            self._hazop_hierarchy.setCurrentItem(selected_item)
-        self._hazop_hierarchy.resizeColumnToContents(0)
-        self._hazop_hierarchy.resizeColumnToContents(1)
-        self._hazop_hierarchy.resizeColumnToContents(5)
-        self._fit_tree_height(self._hazop_hierarchy, 72, 192)
+        if selected_row is not None:
+            self._hazop_hierarchy.setCurrentCell(selected_row, self._HAZOP_CATEGORY_COL)
+        self._hazop_hierarchy.resizeColumnsToContents()
+        self._hazop_hierarchy.resizeRowsToContents()
+        self._fit_table_height(self._hazop_hierarchy, 72, 192)
         self._source_id = selected_source
         self._sync_sources_btn.setEnabled(bool(sources))
         changed = sum(1 for source in sources
@@ -1342,43 +1349,39 @@ class LopaPanel(QWidget):
         """Re-evaluate sync state without changing any revision snapshot."""
         self._populate_hazop_hierarchy()
 
-    def _on_hazop_hierarchy_selection_changed(self, current, _previous):
-        if self._loading or current is None:
+    def _on_hazop_hierarchy_selection_changed(self, current_row, _current_column,
+                                              _previous_row, _previous_column):
+        if self._loading or current_row < 0:
             return
-        source_id = self._hierarchy_item_data(current, self._ROLE_SOURCE_ID)
+        source_id = self._hazop_row_data(current_row, self._ROLE_SOURCE_ID)
         if source_id and source_id != self._source_id:
             self._source_id = source_id
             self._load_source_detail()
         self._update_hierarchy_actions()
 
-    def _on_hazop_hierarchy_item_changed(self, item, column):
-        if self._loading or column != 0:
+    def _on_hazop_hierarchy_item_changed(self, item, column=None):
+        if column is None:
+            column = item.column()
+        if self._loading or column != self._HAZOP_ACTIVE_COL:
             return
-        kind = self._hierarchy_item_data(item, self._ROLE_HIERARCHY_KIND)
-        entity_id = self._hierarchy_item_data(item, self._ROLE_ENTITY_ID)
+        entity_id = item.data(self._ROLE_ENTITY_ID)
         if not entity_id:
             return
-        active = item.checkState(0) == Qt.CheckState.Checked
-        if kind == self._HIERARCHY_SOURCE:
-            prompt = 'Ska källscenariot inkluderas i denna LOPA-revision?'
-            saver = self.db.set_lopa_source_active
-            title = 'Kunde inte ändra källscenario'
-        elif kind == self._HIERARCHY_CONSEQUENCE:
-            prompt = 'Ska kategori-/riskbedömningen inkluderas i just denna LOPA-beräkning?'
-            saver = self.db.set_lopa_consequence_active
-            title = 'Kunde inte ändra kategori-/riskbedömning'
-        else:
-            return
-        if not self._confirm_lopa_only(prompt):
-            self._populate_hazop_hierarchy(select_consequence_id=(
-                entity_id if kind == self._HIERARCHY_CONSEQUENCE else None))
+        active = item.checkState() == Qt.CheckState.Checked
+        if not self._confirm_lopa_only(
+                'Ska kategori-/riskbedömningen inkluderas i just denna LOPA-beräkning?'):
+            self._populate_hazop_hierarchy(select_consequence_id=entity_id)
             return
         try:
-            saver(entity_id, active)
+            source_id = item.data(self._ROLE_SOURCE_ID)
+            with self.db.history_group():
+                self.db.set_lopa_consequence_active(entity_id, active)
+                assessments = self.db.lopa_source_consequences(source_id)
+                self.db.set_lopa_source_active(
+                    source_id, any(bool(row['active']) for row in assessments))
         except Exception as exc:
-            QMessageBox.warning(self, title, str(exc))
-        self._populate_hazop_hierarchy(select_consequence_id=(
-            entity_id if kind == self._HIERARCHY_CONSEQUENCE else None))
+            QMessageBox.warning(self, 'Kunde inte ändra kategori-/riskbedömning', str(exc))
+        self._populate_hazop_hierarchy(select_consequence_id=entity_id)
         self._populate_escalation()
         self._populate_calculation()
         self.changed.emit()
