@@ -71,6 +71,67 @@ from design import (
 )
 
 
+class _BarrierMatrixHeaderWidget(QWidget):
+    """Custom hierarchical header for barrier matrix: type → (Barriär, RRF)."""
+
+    def __init__(self, barrier_types: list, parent=None):
+        super().__init__(parent)
+        self.barrier_types = barrier_types
+        self._build()
+
+    def _build(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Fixed columns
+        for label_text in ['Källscenario', 'Grundfrekvens']:
+            label = QLabel(label_text)
+            label.setStyleSheet(f'font-weight: 600; padding: 8px; border-right: 1px solid #ddd;')
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(label, 1)
+
+        # Barrier types with sub-headers
+        for barrier_type in self.barrier_types:
+            type_container = QWidget()
+            type_layout = QVBoxLayout(type_container)
+            type_layout.setContentsMargins(0, 0, 0, 0)
+            type_layout.setSpacing(0)
+
+            # Top: Barrier type
+            type_label = QLabel(barrier_type)
+            type_label.setStyleSheet(
+                'font-weight: 600; padding: 6px; text-align: center; '
+                'border-bottom: 1px solid #ddd; border-right: 1px solid #ddd;')
+            type_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            type_layout.addWidget(type_label)
+
+            # Bottom: Barriär + RRF
+            sub_layout = QHBoxLayout()
+            sub_layout.setContentsMargins(0, 0, 0, 0)
+            sub_layout.setSpacing(0)
+
+            for sub_label_text in ['Barriär', 'RRF']:
+                sub_label = QLabel(sub_label_text)
+                sub_label.setStyleSheet(
+                    'font-weight: 500; font-size: 11px; padding: 4px; text-align: center; '
+                    'border-right: 1px solid #ddd; color: #666;')
+                sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                sub_layout.addWidget(sub_label, 1)
+
+            type_layout.addLayout(sub_layout)
+            layout.addWidget(type_container, 2)
+
+        # Fixed column: Återstående frekvens
+        remaining_label = QLabel('Återstående\nfrekvens')
+        remaining_label.setStyleSheet('font-weight: 600; padding: 8px; text-align: center;')
+        remaining_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        remaining_label.setWordWrap(True)
+        layout.addWidget(remaining_label, 1)
+
+        self.setFixedHeight(50)
+
+
 class LopaPanel(QWidget):
     """LOPA list + revision detail page, independent of ``hazop.py``."""
 
@@ -679,14 +740,21 @@ class LopaPanel(QWidget):
         self._barrier_note.setStyleSheet(lopa_note_stylesheet())
         self._barrier_note.setToolTip(self._barrier_note.text())
         self._barrier_note.hide()
+        self._barrier_matrix_container = QWidget()
+        self._barrier_container_layout = QVBoxLayout(self._barrier_matrix_container)
+        self._barrier_container_layout.setContentsMargins(0, 0, 0, 0)
+        self._barrier_container_layout.setSpacing(0)
+        self._barrier_matrix_header = None
+        barrier_layout.addWidget(self._barrier_matrix_container)
         self._barrier_matrix = QTableWidget(0, 0)
         self._barrier_matrix.verticalHeader().setVisible(False)
+        self._barrier_matrix.horizontalHeader().setVisible(False)
         self._barrier_matrix.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._barrier_matrix.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._barrier_matrix.setWordWrap(True)
         self._barrier_matrix.setStyleSheet(lopa_table_stylesheet())
         self._configure_compact_table(self._barrier_matrix, 48, 104)
-        barrier_layout.addWidget(self._barrier_matrix)
+        self._barrier_container_layout.addWidget(self._barrier_matrix)
         self._barrier_detail_area = QWidget()
         barrier_detail_layout = QVBoxLayout(self._barrier_detail_area)
         barrier_detail_layout.setContentsMargins(0, 0, 0, 0)
@@ -1990,7 +2058,12 @@ class LopaPanel(QWidget):
         old_loading = self._loading
         self._loading = True
         self._barrier_matrix.setColumnCount(len(headers))
-        self._barrier_matrix.setHorizontalHeaderLabels(headers)
+        # Update custom hierarchical header
+        if self._barrier_matrix_header:
+            self._barrier_container_layout.removeWidget(self._barrier_matrix_header)
+            self._barrier_matrix_header.deleteLater()
+        self._barrier_matrix_header = _BarrierMatrixHeaderWidget(types, parent=self)
+        self._barrier_container_layout.insertWidget(0, self._barrier_matrix_header)
         self._barrier_matrix.setRowCount(len(sources))
         for row_index, source in enumerate(sources):
             cause = source.get('cause_text') or f"Källscenario {source['id']}"
