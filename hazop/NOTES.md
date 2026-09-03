@@ -1,5 +1,40 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: Inline-editing och lokala scenarier (2026-09-03)
+
+**Stor förbättring:** Helt omarbetat LOPA-scenariotabellen för direct editing utan dialoger.
+
+### Scenarier-numrering
+- **HAZOP-scenarier**: `H-1.2.1.1` (HAZOP-hierarki med H-prefix)
+- **Lokala scenarier**: `L-001.1`, `L-002.1`, etc. (auto-numrering)
+
+### Inline-editing (dubbelbklick på cell)
+Redigerbar text i tabellen:
+- **Orsak** - objekt + orsakshändelse (t.ex. "V-1 - Högt tryck")
+- **Grundfrekvens** - sparas direkt, valideringsfel visas omedelbar
+- **Konsekvens** - beskrivningens text
+
+### Lokala scenarier
+- **"Lägg till scenario"-knapp** skapar ny lokal scenario (L-001.1, L-002.1, etc.)
+- Kan editeras helt utan att länka till HAZOP
+- Stöd för flerorsakersystem via `group_equipment_ids`
+- Full undo/redo via `history_group()`
+
+### Implementering
+- Ny databas-funktion: `add_lopa_local_source()`
+- EditTriggers: DoubleClicked | SelectedClicked (inte NoEditTriggers)
+- Handler: `_on_hazop_hierarchy_item_changed()` sparar ändringar omedelbar
+- Test-uppdatering: regex accepterar H- och L-prefixet
+
+### Fördelar
+✓ Ingen dialog-öppning krävs - allt i tabellen
+✓ Direkt feedback vid ändringar
+✓ Kan blanda HAZOP-scenarier och egna lokala
+✓ Snabbare workflow för LOPA-analysörer
+✓ Full undo/redo för alla ändringar
+
+Testad med smoke-test (14/14 pass). Visuell verifiering i Qt-appen återstår.
+
 ## LOPA: Visa ursprungsorsaken från HAZOP (Objekt + Orsakshändelse) (2026-09-03)
 
 I LOPA HAZOP-scenarier-tabellen visas nu **ursprungsorsaken från HAZOP** istället för 
