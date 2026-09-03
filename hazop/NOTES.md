@@ -1,5 +1,17 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: Aktiv-kryssruta ändrar inte tabellhöjd (2026-09-03)
+
+När en kategori-/riskbedömning aktiveras eller avaktiveras öppnar LOPA först
+en bekräftelsedialog och bygger därefter om HAZOP-SCENARIER. Den tidigare
+ombyggnaden körde också tabellens automatiska höjdanpassning, vilket kunde få
+tabellen att hoppa i storlek efter dialogrutan. Aktiv-flödet behåller nu den
+höjd som redan visas, både när ändringen bekräftas och när den avbryts.
+Vanliga innehållsändringar fortsätter att anpassa tabellhöjden normalt.
+
+Verifierat med LOPA-smoke-test som jämför tabellhöjden före och efter ett
+Aktiv-byte. Visuell kontroll i vanliga Qt-appen återstår.
+
 ## LOPA: ta bort redundanta HAZOP-knappar (2026-09-03)
 
 Knapparna **Kontrollera HAZOP-kopplingar** och **Gå till HAZOP** är borttagna

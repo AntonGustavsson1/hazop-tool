@@ -274,6 +274,7 @@ class SmokeTests(unittest.TestCase):
             # The category-level include control is at the far right and
             # remains revision-local, one control per assessment.
             p._confirm_lopa_only = lambda _text: True
+            hierarchy_height = p._hazop_hierarchy.height()
             assessment_item = p._hazop_hierarchy.item(0, p._HAZOP_ACTIVE_COL)
             assessment_id = assessment_item.data(p._ROLE_ENTITY_ID)
             assessment_item.setCheckState(Qt.CheckState.Unchecked)
@@ -281,6 +282,7 @@ class SmokeTests(unittest.TestCase):
             assessment = next(row for row in self.db.lopa_source_consequences(
                 imported['source_id']) if row['id'] == assessment_id)
             self.assertFalse(assessment['active'])
+            self.assertEqual(hierarchy_height, p._hazop_hierarchy.height())
             self.assertTrue(self.db.lopa_sources(created['revision_id'])[0]['active'])
             self.assertEqual(1, p._sensor_members.rowCount())
             self.assertEqual(1, p._barriers.rowCount())

@@ -1217,7 +1217,8 @@ class LopaPanel(QWidget):
         if cause_id:
             self.hazop_navigation_requested.emit(int(cause_id))
 
-    def _populate_hazop_hierarchy(self, *, select_consequence_id=None):
+    def _populate_hazop_hierarchy(self, *, select_consequence_id=None,
+                                  preserve_height=None):
         """Render the approved merged-cell HAZOP scenarios table.
 
         One visual scenario consists of its HAZOP cause, base frequency and
@@ -1324,7 +1325,10 @@ class LopaPanel(QWidget):
             self._hazop_hierarchy.setCurrentCell(selected_row, self._HAZOP_CATEGORY_COL)
         self._hazop_hierarchy.resizeColumnsToContents()
         self._hazop_hierarchy.resizeRowsToContents()
-        self._fit_table_height(self._hazop_hierarchy, 72, 192)
+        if preserve_height is None:
+            self._fit_table_height(self._hazop_hierarchy, 72, 192)
+        else:
+            self._hazop_hierarchy.setFixedHeight(preserve_height)
         self._source_id = selected_source
         changed = sum(1 for source in sources
                       if self.db.lopa_source_sync_state(source['id'])['state'] == 'changed')
@@ -1357,9 +1361,11 @@ class LopaPanel(QWidget):
         if not entity_id:
             return
         active = item.checkState() == Qt.CheckState.Checked
+        table_height = self._hazop_hierarchy.height()
         if not self._confirm_lopa_only(
                 'Ska kategori-/riskbedömningen inkluderas i just denna LOPA-beräkning?'):
-            self._populate_hazop_hierarchy(select_consequence_id=entity_id)
+            self._populate_hazop_hierarchy(
+                select_consequence_id=entity_id, preserve_height=table_height)
             return
         try:
             source_id = item.data(self._ROLE_SOURCE_ID)
@@ -1370,7 +1376,8 @@ class LopaPanel(QWidget):
                     source_id, any(bool(row['active']) for row in assessments))
         except Exception as exc:
             QMessageBox.warning(self, 'Kunde inte ändra kategori-/riskbedömning', str(exc))
-        self._populate_hazop_hierarchy(select_consequence_id=entity_id)
+        self._populate_hazop_hierarchy(
+            select_consequence_id=entity_id, preserve_height=table_height)
         self._populate_escalation()
         self._populate_calculation()
         self.changed.emit()
