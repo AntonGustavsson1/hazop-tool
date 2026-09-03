@@ -294,6 +294,12 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
                         if accident_frequency is not None and tel and tel > 0 else None)
         complete = active and frequency is not None and tel is not None and severity > 0
         rows.append({
+            # ``categories`` is a flat calculation input, but each entry is
+            # an individual HAZOP consequence/category assessment.  Preserve
+            # that identity in the result for the LOPA worksheet and export.
+            'lopa_consequence_id': category.get('lopa_consequence_id'),
+            'hazop_consequence_id': category.get('hazop_consequence_id'),
+            'description': category.get('description') or '',
             'category_key': category_key,
             'category_name': category.get('category_name') or category_config['name'],
             'severity': severity,

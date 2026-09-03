@@ -2953,8 +2953,86 @@ class Database:
 
     def lopa_source_consequences(self, source_id):
         return [dict(row) for row in self.conn.execute(
-            "SELECT * FROM lopa_source_consequences WHERE source_id=? "
-            "ORDER BY category_name,category_key,id", (source_id,)).fetchall()]
+            "SELECT lc.* FROM lopa_source_consequences lc "
+            "LEFT JOIN consequences co ON co.id=lc.hazop_consequence_id "
+            "LEFT JOIN consequence_categories cc ON cc.id=lc.hazop_category_id "
+            "WHERE lc.source_id=? "
+            "ORDER BY COALESCE(co.sort_order,2147483647),COALESCE(co.id,2147483647),"
+            "COALESCE(cc.sort_order,2147483647),lc.category_name,lc.category_key,lc.id",
+            (source_id,)).fetchall()]
+
+    def lopa_source_consequence_groups(self, source_id):
+        """Return actual HAZOP consequences with their LOPA assessments.
+
+        ``lopa_source_consequences`` deliberately contains one row per
+        ``HAZOP consequence x consequence category``.  It is therefore not a
+        suitable list of visible consequences on its own: using it directly
+        duplicates descriptions for every category and hides a consequence
+        that has not yet been assessed.  This helper restores the real
+        hierarchy without altering the stored revision snapshot.
+        """
+        source = self.conn.execute(
+            "SELECT hazop_cause_id FROM lopa_source_scenarios WHERE id=?", (source_id,)
+        ).fetchone()
+        if not source:
+            return []
+
+        by_hazop_id = {}
+        local_assessments = []
+        for assessment in self.lopa_source_consequences(source_id):
+            consequence_id = assessment.get('hazop_consequence_id')
+            if consequence_id is None:
+                local_assessments.append(assessment)
+            else:
+                by_hazop_id.setdefault(int(consequence_id), []).append(assessment)
+
+        groups = []
+        cause_id = source['hazop_cause_id']
+        if cause_id is not None:
+            for consequence in self.consequences(cause_id):
+                consequence = dict(consequence)
+                consequence_id = consequence['id']
+                assessments = by_hazop_id.pop(consequence_id, [])
+                local_override = next(
+                    (row for row in assessments
+                     if not row.get('follows_hazop') and row.get('description')),
+                    None)
+                groups.append({
+                    'key': f'hazop:{consequence_id}',
+                    'hazop_consequence_id': consequence_id,
+                    'description': ((local_override or {}).get('description') or
+                                    consequence.get('description') or ''),
+                    'assessments': assessments,
+                    'follows_hazop': not bool(local_override),
+                    'source_missing': False,
+                })
+
+        # Retain historical assessment data if the HAZOP row has subsequently
+        # been removed.  It remains visible but has no live navigation target.
+        for consequence_id, assessments in by_hazop_id.items():
+            groups.append({
+                'key': f'missing:{consequence_id}',
+                'hazop_consequence_id': consequence_id,
+                'description': next(
+                    (row.get('description') for row in assessments
+                     if row.get('description')), 'Beskrivning saknas'),
+                'assessments': assessments,
+                'follows_hazop': False,
+                'source_missing': True,
+            })
+
+        # A deliberately local LOPA consequence has no HAZOP identifier. It
+        # still occupies one consequence row and carries its own assessments.
+        for assessment in local_assessments:
+            groups.append({
+                'key': f"local:{assessment['id']}",
+                'hazop_consequence_id': None,
+                'description': assessment.get('description') or 'Lokal LOPA-konsekvens',
+                'assessments': [assessment],
+                'follows_hazop': False,
+                'source_missing': False,
+            })
+        return groups
 
     def lopa_sensor_groups(self, revision_id):
         return [dict(row) for row in self.conn.execute(
@@ -3126,12 +3204,28 @@ class Database:
 
     def update_lopa_consequence(self, consequence_id, description=None, severity=None,
                                 detached_reason=''):
-        """Make an explicitly local consequence override in an editable revision."""
+        """Make an explicitly local consequence/category override.
+
+        A LOPA source row stores one assessment for each consequence/category
+        pair.  The description belongs to the actual consequence, however,
+        so changing it must update every category assessment under that one
+        HAZOP consequence.  The numerical severity remains local to the
+        selected category assessment.
+        """
         consequence = self._lopa_consequence_source(consequence_id)
         assignments, values = [], []
         if description is not None:
-            assignments.append('description=?')
-            values.append(str(description or ''))
+            description = str(description or '')
+            reason = str(detached_reason or 'Redigerad lokalt i LOPA.')
+            if consequence.get('hazop_consequence_id') is not None:
+                self.conn.execute(
+                    "UPDATE lopa_source_consequences SET description=?,follows_hazop=0,"
+                    "detached_reason=? WHERE source_id=? AND hazop_consequence_id=?",
+                    (description, reason, consequence['source_id'],
+                     consequence['hazop_consequence_id']))
+            else:
+                assignments.append('description=?')
+                values.append(description)
         if severity is not None:
             try:
                 severity = int(severity)
@@ -3141,13 +3235,14 @@ class Database:
                 raise ValueError('Konsekvensnivå får inte vara negativ.')
             assignments.append('severity=?')
             values.append(severity)
-        if not assignments:
+        if not assignments and description is None:
             return
-        assignments.extend(['follows_hazop=0', 'detached_reason=?'])
-        values.append(str(detached_reason or 'Redigerad lokalt i LOPA.'))
-        values.append(consequence_id)
-        self.conn.execute(
-            f"UPDATE lopa_source_consequences SET {','.join(assignments)} WHERE id=?", values)
+        if assignments:
+            assignments.extend(['follows_hazop=0', 'detached_reason=?'])
+            values.append(str(detached_reason or 'Redigerad lokalt i LOPA.'))
+            values.append(consequence_id)
+            self.conn.execute(
+                f"UPDATE lopa_source_consequences SET {','.join(assignments)} WHERE id=?", values)
         self._log_lopa(consequence['lopa_id'], consequence['revision_id'], 'consequence-detached',
                        f'Konsekvens {consequence_id}: lokalt ändrad')
         self.commit()
@@ -3671,6 +3766,12 @@ class Database:
         for consequence in self.lopa_source_consequences(source_id):
             escalation = factor_values.get(consequence['category_key'], {})
             source['categories'].append({
+                # Keep the stored assessment identity through calculation so
+                # every consequence/category pair can be rendered and audited
+                # separately instead of being collapsed by category.
+                'lopa_consequence_id': consequence['id'],
+                'hazop_consequence_id': consequence.get('hazop_consequence_id'),
+                'description': consequence.get('description') or '',
                 'category_key': consequence['category_key'],
                 'category_name': consequence['category_name'],
                 'severity': consequence['severity'],

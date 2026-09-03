@@ -163,11 +163,17 @@ class SmokeTests(unittest.TestCase):
         self.db.update_cause(cause_id, description='LSHH test', base_frequency=0.2)
         cons_id = self.db.add_consequence(cause_id)
         self.db.update_consequence(cons_id, 'Överfyllnad', 3, '')
-        category = self.db.consequence_categories()[0]
+        categories = self.db.consequence_categories()
+        category = categories[0]
+        second_category = categories[1]
         self.db.set_consequence_severity(cons_id, category['id'], 3)
+        self.db.set_consequence_severity(cons_id, second_category['id'], 2)
         second_cons_id = self.db.add_consequence(cause_id)
         self.db.update_consequence(second_cons_id, 'Utsläpp till mark', 2, '')
         self.db.set_consequence_severity(second_cons_id, category['id'], 2)
+        self.db.set_consequence_severity(second_cons_id, second_category['id'], 4)
+        unassessed_cons_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(unassessed_cons_id, 'Oklassificerad följd', 0, '')
         sensor_sg = self.db.add_safeguard(cons_id)
         self.db.update_safeguard(sensor_sg, description='LSHH', rrf=100, sg_type='SIS')
         other_sg = self.db.add_safeguard(cons_id)
@@ -234,7 +240,16 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(1, p._header_columns)
             self.assertEqual(1, p._hazop_hierarchy.topLevelItemCount())
             source_item = p._hazop_hierarchy.topLevelItem(0)
-            self.assertEqual(2, source_item.childCount())
+            # One source/cause row, then one row per actual HAZOP consequence
+            # (not one duplicate row for every assessed category).
+            self.assertEqual(3, source_item.childCount())
+            self.assertEqual(2, source_item.child(0).childCount())
+            self.assertEqual(2, source_item.child(1).childCount())
+            self.assertEqual(0, source_item.child(2).childCount())
+            self.assertEqual('Överfyllnad', source_item.child(0).text(2))
+            self.assertNotEqual('Överfyllnad', source_item.child(0).child(0).text(2))
+            self.assertEqual(unassessed_cons_id, source_item.child(2).data(
+                0, p._ROLE_HAZOP_CONSEQUENCE_ID))
             self.assertNotIn('Status', [
                 p._hazop_hierarchy.headerItem().text(index)
                 for index in range(p._hazop_hierarchy.columnCount())])
@@ -248,20 +263,26 @@ class SmokeTests(unittest.TestCase):
             self.assertRegex(consequence_reference.text(), r'^\d+(\.\d+){4,}$')
             self.assertEqual(cons_id, consequence_item.data(
                 0, p._ROLE_HAZOP_CONSEQUENCE_ID))
-            # The unified tree retains the old per-consequence include
-            # control; it must update the revision-local record, never HAZOP.
+            # The category-level include control remains revision-local, while
+            # the parent is the actual, once-only HAZOP consequence.
             p._confirm_lopa_only = lambda _text: True
-            consequence_item.setCheckState(0, Qt.CheckState.Unchecked)
+            assessment_item = consequence_item.child(0)
+            assessment_id = assessment_item.data(0, p._ROLE_ENTITY_ID)
+            assessment_item.setCheckState(0, Qt.CheckState.Unchecked)
             self.app.processEvents()
-            self.assertFalse(self.db.lopa_source_consequences(
-                imported['source_id'])[0]['active'])
+            assessment = next(row for row in self.db.lopa_source_consequences(
+                imported['source_id']) if row['id'] == assessment_id)
+            self.assertFalse(assessment['active'])
             source_item = p._hazop_hierarchy.topLevelItem(0)
             consequence_item = source_item.child(0)
             source_reference = p._hazop_hierarchy.itemWidget(source_item, 1)
             consequence_reference = p._hazop_hierarchy.itemWidget(consequence_item, 1)
             self.assertEqual(1, p._sensor_members.rowCount())
             self.assertEqual(1, p._barriers.rowCount())
-            self.assertGreaterEqual(p._escalation.rowCount(), 1)
+            # Every actual consequence/category pair has its own risk row.
+            self.assertEqual(4, p._escalation.rowCount())
+            self.assertEqual('Överfyllnad', p._escalation.item(0, 1).text())
+            self.assertEqual('Utsläpp till mark', p._escalation.item(2, 1).text())
             self.assertIsNotNone(p._sensor_group.currentData())
             self.assertEqual('1oo1', p._sensor_voting.currentText())
             self.assertEqual(1, p._final_members.rowCount())

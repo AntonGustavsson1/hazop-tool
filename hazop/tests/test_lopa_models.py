@@ -147,6 +147,51 @@ class LopaDatabaseTests(unittest.TestCase):
         self.db.unlock_lopa_revision(copied_revision, 'Ny granskning', actor='Anton')
         self.assertEqual('Utkast', self.db.get_lopa_revision(copied_revision)['status'])
 
+    def test_imported_lopa_keeps_consequences_separate_from_category_assessments(self):
+        """A source is one cause, not one row for every category assessment."""
+        cause_id, sensor_sg, _other_sg, _equipment_id = self._hazop_chain()
+        first_consequence_id = self.db.get_safeguard(sensor_sg)['consequence_id']
+        categories = self.db.consequence_categories()
+        self.db.set_consequence_severity(first_consequence_id, categories[1]['id'], 2)
+        second_consequence_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(second_consequence_id, 'Sekundärt utsläpp', 4, '')
+        self.db.set_consequence_severity(second_consequence_id, categories[0]['id'], 4)
+        self.db.set_consequence_severity(second_consequence_id, categories[1]['id'], 1)
+        unassessed_consequence_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(unassessed_consequence_id, 'Oklassificerad följd', 0, '')
+
+        created = self.db.create_lopa()
+        source_id = self.db.add_lopa_source_from_safeguard(
+            created['lopa_id'], sensor_sg)['source_id']
+
+        groups = self.db.lopa_source_consequence_groups(source_id)
+        self.assertEqual(
+            [first_consequence_id, second_consequence_id, unassessed_consequence_id],
+            [group['hazop_consequence_id'] for group in groups])
+        self.assertEqual(['Utsläpp', 'Sekundärt utsläpp', 'Oklassificerad följd'],
+                         [group['description'] for group in groups])
+        self.assertEqual([2, 2, 0], [len(group['assessments']) for group in groups])
+
+        calculation = self.db.lopa_source_calculation(source_id)
+        self.assertEqual(4, len(calculation['categories']))
+        self.assertEqual(
+            [first_consequence_id, first_consequence_id,
+             second_consequence_id, second_consequence_id],
+            [row['hazop_consequence_id'] for row in calculation['categories']])
+        self.assertTrue(all(row['lopa_consequence_id'] is not None
+                            for row in calculation['categories']))
+
+        # Text belongs to the consequence itself, while level belongs to one
+        # category. A local text override must never split the same HAZOP
+        # consequence into contradictory category-specific descriptions.
+        first_assessment = groups[0]['assessments'][0]
+        self.db.update_lopa_consequence(
+            first_assessment['id'], description='Lokal överfyllnadstext')
+        first_rows = [row for row in self.db.lopa_source_consequences(source_id)
+                      if row['hazop_consequence_id'] == first_consequence_id]
+        self.assertEqual(['Lokal överfyllnadstext', 'Lokal överfyllnadstext'],
+                         [row['description'] for row in first_rows])
+
     def test_manual_archived_number_requires_explicit_confirmation(self):
         first = self.db.create_lopa(display_number='017')
         self.db.archive_lopa(first['lopa_id'])

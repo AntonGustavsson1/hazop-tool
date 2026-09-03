@@ -90,7 +90,8 @@ class LopaPanel(QWidget):
     _ROLE_HAZOP_CONSEQUENCE_ID = int(Qt.ItemDataRole.UserRole) + 7
 
     _HIERARCHY_SOURCE = 'source'
-    _HIERARCHY_CONSEQUENCE = 'consequence'
+    _HIERARCHY_HAZOP_CONSEQUENCE = 'hazop-consequence'
+    _HIERARCHY_CONSEQUENCE = 'category-assessment'
 
     # Sentinel "unset" value for the document-date picker (see
     # recommendations_panel.py's due-date field for the same pattern) --
@@ -457,7 +458,7 @@ class LopaPanel(QWidget):
         self._hazop_hierarchy = QTreeWidget()
         self._hazop_hierarchy.setColumnCount(4)
         self._hazop_hierarchy.setHeaderLabels([
-            'Aktiv', 'HAZOP-hierarki', 'Källscenario / konsekvens', 'Frekvens / nivå',
+            'Aktiv', 'HAZOP-hierarki', 'Orsak / konsekvens', 'Kategori / riskbedömning',
         ])
         self._hazop_hierarchy.setRootIsDecorated(True)
         self._hazop_hierarchy.setItemsExpandable(True)
@@ -527,7 +528,7 @@ class LopaPanel(QWidget):
         self._add_consequence_btn.clicked.connect(self._add_custom_consequence)
         consequence_actions.addWidget(self._add_consequence_btn)
         consequence_actions.addStretch()
-        self._edit_consequence_btn = QPushButton('Ändra lokalt…')
+        self._edit_consequence_btn = QPushButton('Ändra lokal bedömning…')
         self._edit_consequence_btn.clicked.connect(self._edit_selected_consequence)
         consequence_actions.addWidget(self._edit_consequence_btn)
         consequence_layout.addLayout(consequence_actions)
@@ -1166,14 +1167,15 @@ class LopaPanel(QWidget):
         return self._hierarchy_item_data(item, self._ROLE_ENTITY_ID)
 
     def _make_hierarchy_item(self, *, checked, enabled, source_id, entity_id,
-                             kind, cause_id=None, consequence_id=None):
+                             kind, cause_id=None, consequence_id=None, checkable=True):
         """Create one selectable/checkable source-hierarchy row."""
         item = QTreeWidgetItem()
         flags = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
-        if enabled:
+        if checkable and enabled:
             flags |= Qt.ItemFlag.ItemIsUserCheckable
         item.setFlags(flags)
-        item.setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+        if checkable:
+            item.setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
         item.setData(0, self._ROLE_SOURCE_ID, source_id)
         item.setData(0, self._ROLE_ENTITY_ID, entity_id)
         item.setData(0, self._ROLE_HIERARCHY_KIND, kind)
@@ -1212,6 +1214,19 @@ class LopaPanel(QWidget):
         elif cause_id:
             self.hazop_navigation_requested.emit(int(cause_id))
 
+    @staticmethod
+    def _risk_assessment_summary(assessment, calculation):
+        """Return one compact, auditable text for a category assessment."""
+        severity = assessment.get('severity')
+        parts = [f"Nivå {severity}" if severity else 'Nivå saknas']
+        if calculation:
+            required_rrf = calculation.get('required_rrf')
+            if required_rrf is not None:
+                parts.append(f'RRF {required_rrf:.3g}')
+            if calculation.get('sil'):
+                parts.append(calculation['sil'])
+        return ' · '.join(parts)
+
     def _populate_hazop_hierarchy(self, *, select_consequence_id=None):
         """Render every LOPA source once, with consequences under its cause.
 
@@ -1234,6 +1249,12 @@ class LopaPanel(QWidget):
         selected_item = None
         editable = self._revision_is_editable()
         for source in sources:
+            calculations = self.db.lopa_source_calculation(source['id'])
+            calculations_by_assessment = {
+                row.get('lopa_consequence_id'): row
+                for row in calculations['categories']
+                if row.get('lopa_consequence_id') is not None
+            }
             cause_id = source.get('hazop_cause_id')
             source_item = self._make_hierarchy_item(
                 checked=bool(source['active']), enabled=editable, source_id=source['id'],
@@ -1252,17 +1273,18 @@ class LopaPanel(QWidget):
                 source_item, 1, self._hierarchy_reference_button(
                     source_reference, cause_id=cause_id, item=source_item))
 
-            for consequence in self.db.lopa_source_consequences(source['id']):
+            for consequence in self.db.lopa_source_consequence_groups(source['id']):
                 consequence_id = consequence.get('hazop_consequence_id')
                 child_item = self._make_hierarchy_item(
-                    checked=bool(consequence['active']), enabled=editable,
-                    source_id=source['id'], entity_id=consequence['id'],
-                    kind=self._HIERARCHY_CONSEQUENCE, cause_id=cause_id,
-                    consequence_id=consequence_id)
-                category = consequence.get('category_name') or 'Konsekvens'
+                    checked=False, enabled=False, source_id=source['id'], entity_id=None,
+                    kind=self._HIERARCHY_HAZOP_CONSEQUENCE, cause_id=cause_id,
+                    consequence_id=consequence_id, checkable=False)
                 description = consequence.get('description') or 'Beskrivning saknas'
-                child_item.setText(2, f'{category} — {description}')
-                child_item.setText(3, f"Nivå {consequence.get('severity') or '—'}")
+                child_item.setText(2, description)
+                assessments = consequence.get('assessments') or []
+                child_item.setText(
+                    3, (f"{len(assessments)} kategoribedömning(ar)" if assessments else
+                        'Ingen kategoribedömning'))
                 consequence_reference = self.db.hazop_hierarchy_reference(
                     consequence_id=consequence_id)
                 source_item.addChild(child_item)
@@ -1270,8 +1292,23 @@ class LopaPanel(QWidget):
                     child_item, 1, self._hierarchy_reference_button(
                         consequence_reference, cause_id=cause_id,
                         consequence_id=consequence_id, item=child_item))
-                if consequence['id'] == select_consequence_id:
-                    selected_item = child_item
+
+                for assessment in assessments:
+                    assessment_item = self._make_hierarchy_item(
+                        checked=bool(assessment['active']), enabled=editable,
+                        source_id=source['id'], entity_id=assessment['id'],
+                        kind=self._HIERARCHY_CONSEQUENCE, cause_id=cause_id,
+                        consequence_id=consequence_id)
+                    assessment_item.setText(
+                        2, assessment.get('category_name') or 'Konsekvenskategori')
+                    assessment_item.setText(
+                        3, self._risk_assessment_summary(
+                            assessment, calculations_by_assessment.get(assessment['id'])))
+                    child_item.addChild(assessment_item)
+                    if assessment['id'] == select_consequence_id:
+                        selected_item = assessment_item
+
+                child_item.setExpanded(True)
 
             source_item.setExpanded(True)
             if source['id'] == selected_source and selected_item is None:
@@ -1322,10 +1359,12 @@ class LopaPanel(QWidget):
             prompt = 'Ska källscenariot inkluderas i denna LOPA-revision?'
             saver = self.db.set_lopa_source_active
             title = 'Kunde inte ändra källscenario'
-        else:
-            prompt = 'Ska konsekvensen inkluderas i just denna LOPA-beräkning?'
+        elif kind == self._HIERARCHY_CONSEQUENCE:
+            prompt = 'Ska kategori-/riskbedömningen inkluderas i just denna LOPA-beräkning?'
             saver = self.db.set_lopa_consequence_active
-            title = 'Kunde inte ändra konsekvens'
+            title = 'Kunde inte ändra kategori-/riskbedömning'
+        else:
+            return
         if not self._confirm_lopa_only(prompt):
             self._populate_hazop_hierarchy(select_consequence_id=(
                 entity_id if kind == self._HIERARCHY_CONSEQUENCE else None))
@@ -1457,8 +1496,8 @@ class LopaPanel(QWidget):
         consequence_id = self._selected_hierarchy_consequence_id()
         if not consequence_id:
             QMessageBox.information(
-                self, 'Välj konsekvens',
-                'Välj först en indragen konsekvensrad i HAZOP-hierarkin.')
+                self, 'Välj riskbedömning',
+                'Välj först en indragen kategori-/riskbedömning under en konsekvens.')
             return
         consequence = next((row for row in self.db.lopa_source_consequences(self._source_id)
                             if row['id'] == consequence_id), None)
@@ -1468,13 +1507,13 @@ class LopaPanel(QWidget):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         if consequence.get('follows_hazop') and not self._confirm_lopa_only(
-                'Ska konsekvensens text eller nivå ändras lokalt i LOPA?'):
+                'Ska konsekvenstexten eller kategori-/risknivån ändras lokalt i LOPA?'):
             return
         try:
             self.db.update_lopa_consequence(
                 consequence_id, description=dialog.description(), severity=dialog.severity())
         except Exception as exc:
-            QMessageBox.warning(self, 'Kunde inte ändra konsekvens', str(exc))
+            QMessageBox.warning(self, 'Kunde inte ändra riskbedömning', str(exc))
             return
         self._populate_hazop_hierarchy(select_consequence_id=consequence_id)
         self._populate_escalation()
@@ -1991,58 +2030,57 @@ class LopaPanel(QWidget):
         matrix = self.db.lopa_revision_matrix(self._revision_id)
         config = matrix.get('lopa') or {}
         settings = config.get('category_settings') or {}
-        consequences = self.db.lopa_source_consequences(self._source_id)
-        per_category = {}
-        for consequence in consequences:
-            key = consequence['category_key']
-            current = per_category.get(key)
-            if current is None or consequence['severity'] > current['severity']:
-                per_category[key] = consequence
         escalation_rows = {row['category_key']: row
                            for row in self.db.lopa_escalation_rows(self._source_id)}
+        calculation = self.db.lopa_source_calculation(self._source_id)
+        assessments = calculation['categories']
         factor_defs = []
         seen_factors = set()
-        for key in per_category:
+        for key in dict.fromkeys(row['category_key'] for row in assessments):
             for factor in settings.get(key, {}).get('escalation_factors') or []:
                 factor_key = factor.get('key')
                 if factor_key and factor_key not in seen_factors:
                     factor_defs.append(factor)
                     seen_factors.add(factor_key)
-        headers = (['Aktiv', 'Kategori', 'Nivå', 'TEL (/år)'] +
+        headers = (['Eskalering aktiv', 'Konsekvens', 'Kategori', 'Nivå', 'TEL (/år)'] +
                    [f"{factor['label']} (%)" for factor in factor_defs] +
                    ['Eskaleringsfaktor', 'Olycksfrekvens', 'RRF'])
-        calculations = self.db.lopa_source_calculation(self._source_id)
-        calculated_by_key = {}
-        for row in calculations['categories']:
-            old = calculated_by_key.get(row['category_key'])
-            if old is None or (row['required_rrf'] or -1) > (old['required_rrf'] or -1):
-                calculated_by_key[row['category_key']] = row
         old_loading = self._loading
         self._loading = True
         self._escalation.setColumnCount(len(headers))
         self._escalation.setHorizontalHeaderLabels(headers)
-        self._escalation.setRowCount(len(per_category))
+        self._escalation.setRowCount(len(assessments))
         editable = self._revision_is_editable()
-        for row_index, (key, consequence) in enumerate(per_category.items()):
+        raw_assessments = {
+            row['id']: row for row in self.db.lopa_source_consequences(self._source_id)
+        }
+        for row_index, calculated in enumerate(assessments):
+            key = calculated['category_key']
             setting = settings.get(key, {})
             escalation = escalation_rows.get(key, {})
             try:
                 values = json.loads(escalation.get('factor_values_json') or '{}')
             except (TypeError, ValueError, json.JSONDecodeError):
                 values = {}
-            active = bool(escalation.get('active', 1))
-            calculated = calculated_by_key.get(key, {})
-            active_item = self._check_cell(active, enabled=editable, entity_id=key)
+            raw_assessment = raw_assessments.get(calculated.get('lopa_consequence_id'), {})
+            active_item = self._check_cell(
+                bool(escalation.get('active', 1)), enabled=editable, entity_id=key)
             active_item.setData(self._ROLE_SOURCE_ID, self._source_id)
+            active_item.setToolTip(
+                'Styr eskaleringsfaktorerna för alla bedömningar i denna kategori. '
+                'Inkludering av en enskild bedömning styrs i HAZOP-hierarkin ovan.')
             self._escalation.setItem(row_index, 0, active_item)
+            self._escalation.setItem(
+                row_index, 1, self._readonly_cell(
+                    calculated.get('description') or raw_assessment.get('description') or '—'))
             self._escalation.setCellWidget(
-                row_index, 1, self._category_badge_widget(consequence['category_name']))
-            self._escalation.setItem(row_index, 2, self._readonly_cell(consequence['severity']))
+                row_index, 2, self._category_badge_widget(calculated['category_name']))
+            self._escalation.setItem(row_index, 3, self._readonly_cell(calculated['severity']))
             tel = calculated.get('tel')
             self._escalation.setItem(
-                row_index, 3, self._readonly_cell('—' if tel is None else f'{tel:.6g}'))
+                row_index, 4, self._readonly_cell('—' if tel is None else f'{tel:.6g}'))
             supported = {factor.get('key'): factor for factor in setting.get('escalation_factors') or []}
-            for column, factor in enumerate(factor_defs, start=4):
+            for column, factor in enumerate(factor_defs, start=5):
                 definition = supported.get(factor['key'])
                 if definition is None:
                     self._escalation.setItem(row_index, column, self._readonly_cell('—'))
@@ -2054,7 +2092,7 @@ class LopaPanel(QWidget):
                 if not editable:
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._escalation.setItem(row_index, column, item)
-            computed_column = 4 + len(factor_defs)
+            computed_column = 5 + len(factor_defs)
             factor = calculated.get('escalation_factor')
             accident = calculated.get('accident_frequency')
             rrf = calculated.get('required_rrf')
@@ -2069,7 +2107,7 @@ class LopaPanel(QWidget):
                 self._readonly_cell('—' if rrf is None else f'{rrf:.6g}'))
         self._escalation.resizeRowsToContents()
         self._escalation.resizeColumnsToContents()
-        self._fit_table_height(self._escalation, 48, 112)
+        self._fit_table_height(self._escalation, 48, 160)
         self._loading = old_loading
 
     def _on_escalation_item_changed(self, item):
@@ -2331,14 +2369,17 @@ class LopaPanel(QWidget):
 
 
 class LopaConsequenceDialog(QDialog):
-    """Small local-override editor for one HAZOP-derived consequence row."""
+    """Small local editor for one consequence/category assessment."""
 
     def __init__(self, consequence, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Ändra LOPA-konsekvens')
+        self.setWindowTitle('Ändra lokal riskbedömning')
         self.setMinimumWidth(440)
         layout = QVBoxLayout(self)
-        hint = QLabel('Ändringen gäller bara den öppna LOPA-revisionen. HAZOP påverkas inte.')
+        category = consequence.get('category_name') or 'vald kategori'
+        hint = QLabel(
+            'Ändringen gäller bara den öppna LOPA-revisionen. HAZOP påverkas inte. '
+            f'Konsekvenstexten delas av alla kategorier för denna konsekvens; nivån gäller {category}.')
         hint.setWordWrap(True)
         hint.setStyleSheet(lopa_note_stylesheet())
         layout.addWidget(hint)
@@ -2348,8 +2389,8 @@ class LopaConsequenceDialog(QDialog):
         self._severity = QSpinBox()
         self._severity.setRange(0, 99)
         self._severity.setValue(int(consequence.get('severity') or 0))
-        form.addRow('Beskrivning', self._description)
-        form.addRow('Konsekvensnivå', self._severity)
+        form.addRow('Konsekvenstext', self._description)
+        form.addRow(f'Nivå — {category}', self._severity)
         layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)

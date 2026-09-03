@@ -1,12 +1,23 @@
 # NOTES.md — Beslut och kontext
 
-## LOPA: gemensam klickbar HAZOP-hierarki för orsak och konsekvens (2026-09-03)
+## LOPA: rätt konsekvenshierarki och risk per konsekvenskategori (2026-09-03)
 
 LOPA-sidans tidigare separata tabeller **Källscenarier från HAZOP** och
 **Konsekvenser från HAZOP** är ersatta med en gemensam, kompakt trädtabell.
-Varje orsaksrad är en förälder och de importerade HAZOP-konsekvenserna visas
-indragna direkt under rätt orsak. Den tar därför inte längre upp samma
-HAZOP-kedja två gånger på LOPA-arket.
+Varje orsaksrad visas exakt en gång. Varje faktisk HAZOP-konsekvens visas
+sedan en gång indragen under rätt orsak, även om den ännu saknar en
+konsekvensbedömning. Kategori- och riskbedömningarna ligger under sin egen
+konsekvensrad och upprepar alltså aldrig konsekvenstexten.
+
+Detta är viktigt eftersom `lopa_source_consequences` i databasen medvetet
+lagrar en rad per **konsekvens × kategori**, inte en rad per konsekvens.
+En ny läsmodell grupperar nu de sparade bedömningarna under den korrekta
+HAZOP-konsekvensen utan att ändra den revisionssäkra LOPA-snapshoten. Den
+rena beräkningsmodellen behåller dessutom den underliggande bedömningens id,
+HAZOP-konsekvens och text, så att eskalerings-/riskrader och Excel-exporten
+visar en separat bedömning för varje kombination av konsekvens och kategori.
+En lokal ändring av konsekvenstext sprids till samtliga kategorier under just
+den konsekvensen; en ändring av nivå gäller däremot bara den valda kategorin.
 
 Kolumnerna **Status** och **HAZOP-koppling** är borttagna. I stället visas en
 kort, klickbar hierarkireferens, till exempel `1.2.3.1.1.1`, byggd från den
@@ -16,17 +27,18 @@ orsaksreferens öppnar den orsaken i HAZOP; klick på en konsekvensreferens
 öppnar den exakta konsekvensraden. Lokala LOPA-rader markeras tydligt som
 lokala och saknar avsiktligt en HAZOP-länk.
 
-Aktiva kryssrutor och lokal konsekvensredigering är bevarade i samma träd.
-Val av en underliggande konsekvens väljer samtidigt dess förälder som aktuellt
-LOPA-scenario för barriärer, eskalering och beräkning.
+Aktiva kryssrutor och lokal konsekvensredigering är bevarade på den
+underliggande kategori-/riskbedömningen. Val av en konsekvens eller dess
+kategori väljer samtidigt dess förälder som aktuellt LOPA-scenario för
+barriärer, eskalering och beräkning.
 
-Verifierat med nytt databasregressionstest för hierarkireferensens ordning,
-LOPA-smoke-test med en orsak och två konsekvenser, klicktest för både orsaks-
-och konsekvensnavigering, designtester, `py_compile`, `git diff --check` och
-en normal Qt-rendering av en verklig LOPA. Den normala renderingen bekräftar
-att status-/ID-kolumnerna är borta och att den nya hierarkitabellen ryms i
-scenariokortet. Offscreen-Qt saknar fortsatt full fontmiljö, så slutlig
-typografisk acceptans sker som vanligt i den vanliga appen.
+Verifierat med databasregressionstest för två bedömda konsekvenser med två
+kategorier vardera samt en obesvarad konsekvens, LOPA-smoke-test, klicktest
+för både orsaks- och konsekvensnavigering, designtester, `py_compile`,
+`git diff --check` och normal Qt-rendering. Den normala renderingen bekräftar
+strukturen **en orsak → flera konsekvenser → kategori/risk per konsekvens**.
+Offscreen-Qt saknar fortsatt full fontmiljö, så slutlig typografisk acceptans
+sker som vanligt i den vanliga appen.
 
 ## LOPA: Justera kategoribadgens storlek för bättre proportioner (2026-09-02, femte uppföljningen)
 

@@ -224,16 +224,17 @@ def export_lopa_excel(db, filepath, selections=None):
             for item in calculation['categories']:
                 values = escalation.get(item['category_key'], {}).get('factor_values_json') or '{}'
                 escalation_rows.append([
-                    source.get('cause_text') or '', item['category_name'], item['severity'],
+                    source.get('cause_text') or '', item.get('description') or '',
+                    item['category_name'], item['severity'],
                     _number(item['tel']), values, _number(item['barrier_rrf']),
                     _number(item['escalation_factor']), _number(item['remaining_frequency']),
                     _number(item['accident_frequency']), _number(item['required_rrf']), item['sil'] or '—',
                 ])
         row = _write_table(ws, row,
-                           ['Källscenario', 'Kategori', 'Nivå', 'TEL /år', 'Faktorer (%)',
+                           ['Källscenario', 'Konsekvens', 'Kategori', 'Nivå', 'TEL /år', 'Faktorer (%)',
                             'Barriär-RRF', 'Eskalering', 'Kvarvarande /år', 'Olycka /år', 'Krävd RRF', 'SIL'],
                            escalation_rows,
-                           widths=[28, 18, 9, 14, 30, 14, 14, 18, 16, 14, 13])
+                           widths=[28, 32, 18, 9, 14, 30, 14, 14, 18, 16, 14, 13])
 
         ws.cell(row, 1, 'Övriga uppgifter').font = Font(bold=True, size=12)
         row += 1

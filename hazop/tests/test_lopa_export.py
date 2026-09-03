@@ -69,7 +69,8 @@ class LopaExportTests(unittest.TestCase):
         for required in ('Skyddsbarriäranalys (LOPA)', 'Källscenarier från HAZOP',
                          'Givardel', 'Manöverdel', 'Oberoende barriärer',
                          'Eskalering och beräkningsspår', 'Kommentarer',
-                         'Exportkommentar', 'SIF-017', 'Stäng ventil'):
+                         'Exportkommentar', 'SIF-017', 'Stäng ventil',
+                         'Konsekvens', 'Överfyllnad'):
             self.assertIn(required, values)
 
     def test_export_accepts_multiple_explicit_revisions(self):
