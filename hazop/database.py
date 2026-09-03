@@ -4483,8 +4483,8 @@ class Database:
 
     # ── Equipment catalog ─────────────────────────────────────────────────────
     def equipment_items(self):
-        return self.conn.execute(
-            "SELECT * FROM equipment_catalog ORDER BY prefix, tag").fetchall()
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM equipment_catalog ORDER BY prefix, tag").fetchall()]
 
     def add_equipment_item(self, tag, original_tag, prefix, page, eq_type, desc, is_ocr):
         cur = self.conn.execute(
@@ -4831,9 +4831,12 @@ class Database:
         return dict(row) if row else None
 
     def get_equipment_by_id(self, id_):
-        row = self.conn.execute(
-            "SELECT * FROM equipment_catalog WHERE id=?", (id_,)).fetchone()
-        return dict(row) if row else None
+        try:
+            row = self.conn.execute(
+                "SELECT * FROM equipment_catalog WHERE id=?", (id_,)).fetchone()
+            return dict(row) if row else None
+        except Exception:
+            return None
 
     def get_equipment_by_marker_id(self, marker_id):
         """Resolve an equipment_markers.id (what a P&ID drag/drop mime
@@ -6295,8 +6298,11 @@ class Database:
         return dict(row) if row else None
 
     def get_cause(self, id_):
-        row = self.conn.execute("SELECT * FROM causes WHERE id=?", (id_,)).fetchone()
-        return dict(row) if row else None
+        try:
+            row = self.conn.execute("SELECT * FROM causes WHERE id=?", (id_,)).fetchone()
+            return dict(row) if row else None
+        except Exception:
+            return None
 
     def get_consequence(self, id_):
         row = self.conn.execute("SELECT * FROM consequences WHERE id=?", (id_,)).fetchone()
