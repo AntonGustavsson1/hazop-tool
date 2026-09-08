@@ -111,6 +111,23 @@ class WorksheetExportTests(unittest.TestCase):
         self.assertEqual(row['values'][2], '')
         self.assertEqual(row['values'][3], '')
 
+    def test_group_cause_export_keeps_and_or_and_arrow_operators(self):
+        node_id = self._node('Node A')
+        deviation_id = self._deviation(node_id, 'High flow', 1)
+        cause_id = self.db.add_cause(deviation_id)
+        first = self.db.add_equipment_item('FV-1', 'FV-1', 'FV', '', 'Valve', '', 0)
+        second = self.db.add_equipment_item('FV-2', 'FV-2', 'FV', '', 'Valve', '', 0)
+        third = self.db.add_equipment_item('FV-3', 'FV-3', 'FV', '', 'Valve', '', 0)
+        self.db.update_cause(cause_id, group_equipment_ids=[first, second, third])
+        self.db.update_cause(
+            cause_id, description='FV-1 felar\nFV-2 stänger\nFV-3 öppnar',
+            comp_tag='FV-1 AND FV-2 -> FV-3')
+
+        row = next(row for row in _worksheet_rows(self.db)
+                   if row['merge_key'][2] == cause_id)
+        self.assertIn('AND FV-2', row['values'][2])
+        self.assertIn('-> FV-3', row['values'][2])
+
 
 if __name__ == '__main__':
     unittest.main()

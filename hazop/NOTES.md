@@ -1,5 +1,37 @@
 # NOTES.md — Beslut och kontext
 
+## Samlad HAZOP rapport till Word (2026-09-08)
+
+`Export → Exportera Word-rapport…` skapar en svensk rapport från en
+skrivskyddad SQLite-ögonblicksbild. Strukturen är omarbetad från Antons
+`2x20xx-Report-01 HAZOP_svenska_utan SIL.docx`; originalet ändras inte.
+Dokumentstyrning, projekttexter, referenser, deltagare/närvaro, sparad
+riskmatris, noder, HAZOP-protokoll och rekommendationer ingår. Rapportdelen
+är A4 stående och bilagornas tabeller A3/A4 liggande. Rapporttexter och
+rapportansvariga fylls från namngivna Egna fält, dokumenterade i WORD_REPORT.md.
+
+Saknade uppgifter gulmarkeras med [KOMPLETTERA: …], respektive [?] i smal
+frekvenskolumn. Inga gamla kunduppgifter, SIL-resultat eller riskacceptans
+antas. Ej registrerad närvaro skiljs från frånvaro. Rekommendationernas
+positionsnummer följer worksheet även vid återkommande avvikelsebeskrivningar.
+Befintliga Word-tabellbyggare återanvänds; de tidigare ospårade exporterarnas
+källfiler och tester ingår som nödvändiga beroenden, inte kundernas DOCX-filer.
+
+Begränsningar: P&ID-bilder med nodgränser infogas manuellt på gulmarkerade
+platser. DOCX-mallen är ett redigerbart exempel, inte en mallfil som läses
+tillbaka av programmet. Exporterade dokument måste granskas före användning.
+Originalstudien är läst genom mode=ro vid exempelgenerering.
+
+Verifiering: syntaxkontroll samt 31 fokuserade export- och smoke-tester
+godkända i arbetskopian och i en separat export av enbart commitinnehållet.
+Två saknade Qt-importer och ett testberoende på pågående databasutveckling
+fångades av den separata kontrollen och rättades. Word-rendering och
+sidgranskning genomförd för standardmall (13 sidor) och GFC Landvetter-exempel
+(20 sidor) under ej_programfiler/rapporter. Protokollets gruppoperatorer
+och deras regressionstest ingår som beroende för oförändrad orsakssemantik.
+Qt-kontrollen är headless; exportmenyn är inte visuellt accepterad i native GUI.
+Övriga redan pågående ändringar lämnas utanför rapportcommitten.
+
 ## LOPA: Inline-editing och lokala scenarier (2026-09-03)
 
 **Stor förbättring:** Helt omarbetat LOPA-scenariotabellen för direct editing utan dialoger.

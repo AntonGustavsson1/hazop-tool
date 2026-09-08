@@ -88,9 +88,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import (
     Qt, pyqtSignal, QSize, QPointF, QRectF, QRect, QPoint, QTimer, QMimeData, QEvent,
-    QAbstractTableModel, QModelIndex, QSortFilterProxyModel, QDate,
+    QAbstractTableModel, QModelIndex, QSortFilterProxyModel, QDate, QUrl,
 )
-from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor, QPalette, QTextLayout, QTextOption, QTextCharFormat
+from PyQt6.QtGui import QFont, QFontMetrics, QColor, QAction, QBrush, QPen, QPainter, QDrag, QPainterPath, QPixmap, QIcon, QPolygonF, QShortcut, QKeySequence, QCursor, QPalette, QTextLayout, QTextOption, QTextCharFormat, QDesktopServices
 from PyQt6.QtSvgWidgets import QSvgWidget
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1142,6 +1142,8 @@ class MainWindow(QMainWindow):
         self._act_redo.setStatusTip("Gör om senast ångrade ändring (Ctrl+Y)")
 
         export_menu = mb.addMenu("Export")
+        export_menu.addAction(_icon('document'), "Exportera Word-rapport…",
+                              self._export_word_report)
         export_menu.addAction(_icon('chart'), "Excel",           self._export_excel)
         export_menu.addAction(_icon('chart'), "Åtgärder (Excel)", self._export_actions_excel)
         export_menu.addAction(_icon('document'), "PDF",             self._export_pdf)
@@ -2922,6 +2924,37 @@ class MainWindow(QMainWindow):
         self.tree_panel.refresh()
         if self._cur_type == CAUSE_T and self._cur_id:
             self.scenario_panel.load_cause(self._cur_id)
+
+    def _export_word_report(self):
+        from report_word_export import export_report_word
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportera Word-rapport", "hazop_rapport.docx",
+            "Word-dokument (*.docx)")
+        if not path:
+            return
+        if not path.lower().endswith('.docx'):
+            path += '.docx'
+        paper, accepted = QInputDialog.getItem(
+            self, "Word-rapport", "Pappersformat för protokoll och rekommendationer (liggande):",
+            ["A3", "A4"], 0, False)
+        if not accepted:
+            return
+        focus = QApplication.focusWidget()
+        if focus is not None:
+            focus.clearFocus()
+        exported, error = export_report_word(self.db, path, paper)
+        if not exported:
+            QMessageBox.critical(self, "Fel vid rapportexport", error)
+            return
+        self.status_bar.showMessage(f"Word-rapport sparad: {path}", 8000)
+        QMessageBox.information(
+            self, "Word-rapport klar",
+            f"Rapporten är sparad:\n{path}\n\n"
+            "Saknade uppgifter är gulmarkerade med [KOMPLETTERA].\n"
+            "Rapporttexter kan fyllas i under Projekt → Egna fält.\n"
+            "Uppdatera innehållsförteckningen i Word med Ctrl+A, F9.")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
 
     def _export_excel(self):
         path, _ = QFileDialog.getSaveFileName(

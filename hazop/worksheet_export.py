@@ -8,6 +8,7 @@ recommendations so an exported workbook remains editable and readable.
 
 import json
 import math
+import re
 
 from database import get_matrix, risk_info
 
@@ -190,7 +191,19 @@ def _worksheet_rows(db):
         except Exception:
             equipment_ids = []
         if len(equipment_ids) >= 2:
-            return '\n'.join(db.group_cause_description_lines(cause, equipment_ids))
+            lines = db.group_cause_description_lines(cause, equipment_ids)
+            operators = [value for value in re.findall(
+                r'\s(&|AND|OR|<>|->|\+)\s',
+                str(cause.get('comp_tag') or ''), flags=re.IGNORECASE)]
+            if len(operators) == 1:
+                operators *= len(lines) - 1
+            display = [lines[0]] if lines else []
+            for index, line in enumerate(lines[1:], 1):
+                operator = operators[index - 1] if index <= len(operators) else 'OR'
+                operator = ('AND' if operator.casefold() in ('&', 'and', '+')
+                            else operator.upper())
+                display.append(f'{operator} {line}')
+            return '\n'.join(display)
         description = (cause.get('description') or '').strip()
         tag = (cause.get('comp_tag') or '').strip()
         if tag and description and not description.startswith(tag):
