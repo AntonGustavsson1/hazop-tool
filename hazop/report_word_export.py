@@ -468,14 +468,24 @@ def _add_matrix(document, db, data):
     if level_defs:
         document.add_paragraph('Risknivåerna i matrisen beskrivs i tabell 4-1a. Färg och nivånamn följer den aktiva projektmatrisen.')
         _caption(document, '4-1a', 'Risknivåer och definitioner')
-        level_table = _table(document, ['Färg', 'Risknivå', 'Definition'], [
-            [item.get('color', ''), item.get('label', ''),
-             item.get('definition') or missing('risknivådefinition')]
-            for item in level_defs], [30, 40, 100])
+        level_table = _table(document, ['Risknivå', 'Definition'], [
+            [item.get('label', ''), item.get('definition') or missing('risknivådefinition')]
+            for item in level_defs], [70, 100])
         for row, item in zip(level_table.rows[1:], level_defs):
             color = str(item.get('color') or '')
             if color:
-                _set_cell_shading(row.cells[0], color.lstrip('#'))
+                cell = row.cells[0]
+                _set_cell_shading(cell, color.lstrip('#'))
+                try:
+                    rgb = color.lstrip('#')
+                    red, green, blue = (int(rgb[i:i + 2], 16) for i in (0, 2, 4))
+                    foreground = '000000' if (0.299 * red + 0.587 * green + 0.114 * blue) > 160 else 'FFFFFF'
+                    for paragraph in cell.paragraphs:
+                        for run in paragraph.runs:
+                            from docx.shared import RGBColor
+                            run.font.color.rgb = RGBColor.from_string(foreground)
+                except (ValueError, TypeError):
+                    pass
     x_codes, y_codes = matrix['x_codes'], matrix['y_codes']
     document.add_heading('4.2 Frekvensskala', 2)
     document.add_paragraph(
