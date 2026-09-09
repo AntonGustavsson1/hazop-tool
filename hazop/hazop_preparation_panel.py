@@ -2287,7 +2287,7 @@ class HAZOPPreparationPanel(QWidget):
         form = QFormLayout(box)
         form.setContentsMargins(12, 10, 12, 10)
         form.setSpacing(7)
-        rows = (("prepared", "Utfärdad av:"), ("reviewed", "Granskad av:"), ("contact", "Kontaktperson:")) if section == 'report' else (("prepared", "Framtagen av:"), ("reviewed", "Kvalitetsgranskad av:"), ("approved", "Godkänd av:"))
+        rows = (("prepared", "Utfärdad av:"), ("reviewed", "Granskad av:"), ("contact", "Kontaktperson kund:")) if section == 'report' else (("prepared", "Framtagen av:"), ("reviewed", "Kvalitetsgranskad av:"), ("approved", "Godkänd av:"), ("contact", "Kontaktperson kund:"))
         if section == 'report':
             for key, label, default in (("number", "Rapportnummer:", ''), ("date", "Rapportdatum:", ''), ("distribution", "Distribution:", 'Enligt kundens anvisning')):
                 edit = QLineEdit()
