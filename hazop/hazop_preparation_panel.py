@@ -1669,7 +1669,7 @@ class HAZOPPreparationPanel(QWidget):
         self._proj_name = spellcheck.SpellCheckLineEdit(context=self.spellcheck_context)
         self._proj_name.editingFinished.connect(
             lambda: self.db.set_config('project_name', self._proj_name.text()))
-        pl.addRow("Projektnamn:", self._proj_name)
+        pl.addRow("System:", self._proj_name)
 
         # Not a SpellCheckLineEdit -- a project number is an identifier,
         # not prose (same reasoning excludes tag numbers/name fields

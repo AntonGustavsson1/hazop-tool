@@ -730,7 +730,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     from docx.shared import Pt, RGBColor
 
     data = collect_report_data(db)
-    project = _value(db.get_config('project_name', ''), 'projektnamn')
+    project = _value(db.get_config('project_name', ''), 'system')
     client = _value(db.get_config('project_client', ''), 'kund')
     field = data['field']
     project_number_raw = (db.get_config('project_number', '') or '').strip()
