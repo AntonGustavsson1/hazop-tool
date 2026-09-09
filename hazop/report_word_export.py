@@ -759,6 +759,11 @@ def build_report(db, *, paper_size='A3', standard_template=False):
                 session_lines.append(details)
             _numbered_list(document, session_lines)
     _front_heading('Studerade noder')
+    document.add_paragraph(
+        'Nodindelningen har använts för att skapa tydliga och hanterbara delar '
+        'av analysobjektet. Varje nod har behandlats med utgångspunkt i sin '
+        'avsedda funktion och i gränssnitten mot angränsande delar. Följande '
+        'noder har ingått i HAZOP-studien:')
     if data['nodes']:
         _numbered_list(document, [
             _value(node.get('name'), 'nodnamn') for node in data['nodes']
