@@ -451,28 +451,37 @@ def _add_matrix(document, db, data):
     _table(document, ['Nivå', 'Definition'],
            [[code, _value(label, 'frekvensdefinition')]
             for code, label in zip(x_codes, matrix['x_labels'])], [25, 135])
+    from docx.enum.section import WD_SECTION_START
+    landscape_section = document.add_section(WD_SECTION_START.NEW_PAGE)
+    _page_setup(landscape_section, landscape=True, paper='A4')
     document.add_heading('4.3 Konsekvensdefinitioner', 2)
     document.add_paragraph(
         'Konsekvenserna bedöms inom de kategorier som är registrerade i '
-        'projektet. Tabellerna 4.3.1 och framåt visar definitionerna för varje '
-        'kategori och nivå.')
+        'projektet. Tabell 4.3 sammanställer de kategorier och nivåer som har '
+        'definierats för studien.')
     categories = [dict(c) for c in db.consequence_categories()]
     definitions = db.get_severity_definitions()
-    category_index = 0
+    consequence_rows = []
     for category in categories:
         category_values = [definitions.get(i + 1, {}).get(category['id']) for i in range(len(y_codes))]
         if not any((v or '').strip() for v in category_values):
             continue
-        category_index += 1
-        document.add_heading(category['name'], 3)
-        _caption(document, f'4.3.{category_index}', 'Konsekvensdefinitioner för ' + category['name'])
-        _table(document, ['Nivå', 'Benämning', 'Definition'], [
-            [code, matrix['y_labels'][i],
-             _value(definitions.get(i + 1, {}).get(category['id']),
-                    f"definition {category['name']} {code}")]
-            for i, code in enumerate(y_codes)], [16, 32, 112])
-    if not category_index:
+        for i, code in enumerate(y_codes):
+            value = definitions.get(i + 1, {}).get(category['id'])
+            if not (value or '').strip():
+                continue
+            consequence_rows.append([
+                category['name'], code, matrix['y_labels'][i],
+                _value(value, f"definition {category['name']} {code}"),
+            ])
+    if consequence_rows:
+        _caption(document, '4.3', 'Konsekvensdefinitioner')
+        _table(document, ['Kategori', 'Nivå', 'Benämning', 'Definition'],
+               consequence_rows, [34, 16, 34, 181])
+    else:
         document.add_paragraph(missing('konsekvenskategorier'))
+    portrait_section = document.add_section(WD_SECTION_START.NEW_PAGE)
+    _page_setup(portrait_section, landscape=False, paper='A4')
     document.add_heading('4.4 Riskacceptanskriterier', 2)
     document.add_paragraph('Riskacceptanskriterierna har använts för att tolka de nivåer som har valts i riskmatrisen. De kriterier som har definierats för projektet redovisas i tabell 4.4.')
     criteria = [(str(i), db.get_config(f'risk_acceptance_{i}', '')) for i in range(1, 6)]
@@ -487,7 +496,8 @@ def _add_matrix(document, db, data):
         document.add_paragraph(data['field']('Riskacceptanskriterier'))
     else:
         document.add_paragraph(missing('riskacceptanskriterier'))
-    _prose(document, data, 'Frekvensunderlag', '4.5 Underlag för frekvenser')
+    if data['field']('Frekvensunderlag'):
+        _prose(document, data, 'Frekvensunderlag', '4.5 Underlag för frekvenser')
     document.add_heading('4.6 Underlag för barriärer och enablers', 2)
     document.add_paragraph('Barriärer och enablers som har registrerats i analysen har sammanställts för att tydliggöra vilka skydd och påverkande förhållanden som har beaktats.')
     enablers = sorted({(rf['description'] or '').strip() for row in data['rows'] for rf in db.reduction_factors(row['merge_key'][3]) if (rf['description'] or '').strip() and dict(rf).get('active', 1)})
