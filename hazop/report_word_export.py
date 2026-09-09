@@ -362,9 +362,13 @@ def _add_matrix(document, db, data):
         'den risknivå som har konfigurerats för respektive kombination.')
     headers, matrix_rows, horizontal, vertical, x_frequency = _matrix_display_values(matrix)
     x_codes, y_codes = matrix['x_codes'], matrix['y_codes']
+    # The risk category is conveyed by cell colour and is intentionally not
+    # repeated inside every cell.
+    matrix_rows = [[row[0]] + ['' for _ in row[1:]] for row in matrix_rows]
     _caption(document, '4.1', 'Studiens riskmatris')
     table = _table(document, headers, matrix_rows,
                    [32] + [128 / len(horizontal)] * len(horizontal))
+    document.add_paragraph('Frekvens visas horisontellt och konsekvens vertikalt, i samma riktning som i programmet.')
     from docx.shared import RGBColor
     for ri, vi in enumerate(vertical, 1):
         for col, hi in enumerate(horizontal, 1):
@@ -400,9 +404,26 @@ def _add_matrix(document, db, data):
             for i, code in enumerate(y_codes)], [16, 32, 112])
     if not categories:
         document.add_paragraph(missing('konsekvenskategorier'))
-    _prose(document, data, 'Riskacceptanskriterier', '4.4 Riskacceptanskriterier')
+    document.add_heading('4.4 Riskacceptanskriterier', 2)
+    document.add_paragraph('Riskacceptanskriterierna har använts för att tolka de nivåer som har valts i riskmatrisen. De kriterier som har definierats för projektet redovisas i tabell 4.4.')
+    criteria = [(str(i), db.get_config(f'risk_acceptance_{i}', '')) for i in range(1, 6)]
+    criteria = [(level, value) for level, value in criteria if value.strip()]
+    if criteria:
+        _caption(document, '4.4', 'Definierade riskacceptanskriterier')
+        _table(document, ['Nivå', 'Kriterium'], criteria, [25, 135])
+    elif data['field']('Riskacceptanskriterier'):
+        document.add_paragraph(data['field']('Riskacceptanskriterier'))
+    else:
+        document.add_paragraph(missing('riskacceptanskriterier'))
     _prose(document, data, 'Frekvensunderlag', '4.5 Underlag för frekvenser')
-    _prose(document, data, 'Barriärunderlag', '4.6 Underlag för barriärer och enablers')
+    document.add_heading('4.6 Underlag för barriärer och enablers', 2)
+    document.add_paragraph('Barriärer och enablers som har registrerats i analysen har sammanställts för att tydliggöra vilka skydd och påverkande förhållanden som har beaktats.')
+    enablers = sorted({(rf['description'] or '').strip() for row in data['rows'] for rf in db.reduction_factors(row['merge_key'][3]) if (rf['description'] or '').strip() and dict(rf).get('active', 1)})
+    if enablers:
+        _caption(document, '4.6', 'Typer av använda enablers')
+        _table(document, ['Enabler', 'Beskrivning'], [[e, 'Registrerad enabler i analysen'] for e in enablers], [55, 105])
+    elif data['field']('Barriärunderlag'):
+        document.add_paragraph(data['field']('Barriärunderlag'))
 
 
 def _add_participants(document, db, data):
@@ -450,9 +471,6 @@ def _add_participants(document, db, data):
         'kompletteringspunkter, så att de kan behandlas vid granskning och '
         'uppföljning utan att ersättas av antaganden i rapportexporten.')
     document.add_paragraph(
-        'Studien har utgått från följande metodreferens: ' +
-        _value(data['field']('Metodreferens'), 'Metodreferens'))
-    document.add_paragraph(
         'Uppgifterna återges så som de är registrerade i projektet. En saknad '
         'närvaroregistrering ska därför inte automatiskt tolkas som att en '
         'person varit frånvarande.')
@@ -498,21 +516,24 @@ def _add_participants(document, db, data):
         'medverkat under endast en del av mötet.')
     attendance = db.get_attendance_details()
     attendance_rows = []
+    short_status = len(sessions) > 5
     for p in participants:
         name = _value(' '.join(filter(None, [p['first_name'], p['last_name']])), 'deltagarnamn')
-        for index, session in enumerate(sessions, 1):
+        statuses = []
+        for session in sessions:
             state = attendance.get((p['id'], session['id']))
-            status = ('Närvarande' if state[0] else 'Frånvarande') if state else missing('närvaro')
-            attendance_rows.append([name, str(index), status, state[1] if state else ''])
+            statuses.append(('N' if state and state[0] else 'F') if short_status else ('Närvarande' if state and state[0] else 'Frånvarande') if state else missing('närvaro'))
+        attendance_rows.append([name] + statuses)
+    attendance_headers = ['Deltagare'] + [s.get('date') or f'Tillfälle {i}' for i, s in enumerate(sessions, 1)]
     _caption(document, '3.3', 'Närvaro per analystillfälle')
-    _table(document, ['Deltagare', 'Tillfälle', 'Närvaro', 'Anteckning'],
-           attendance_rows or [[missing('närvarounderlag'), '', '', '']], [45, 17, 45, 53])
+    if attendance_rows and sessions:
+        _table(document, attendance_headers, attendance_rows, [55] + [105 / len(sessions)] * len(sessions))
 
 
 def _node_appendix(document, db, data):
     _chapter(document, 'Bilaga 2 HAZOP noder')
     document.add_paragraph(
-        'Bilagan beskriver hur anläggningen har delats in för analysen. '
+        'Denna bilaga beskriver hur anläggningen har delats in för analysen. '
         'Nodernas funktion, gränser och normala förutsättningar ger den '
         'referens mot vilken avvikelserna i HAZOP-genomgången har bedömts.')
     document.add_paragraph(
@@ -552,23 +573,8 @@ def _node_appendix(document, db, data):
 
 
 def _annotated_worksheet_rows(db, rows):
-    """Annotate true data gaps; never annotate covered merge continuation cells."""
-    result = deepcopy(rows)
-    for row in result:
-        node_id, deviation_id, cause_id, consequence_id = row['merge_key']
-        if cause_id is not None:
-            cause = dict(db.get_cause(cause_id))
-            if not (cause.get('description') or '').strip():
-                row['values'][2] = (row['values'][2] + '\n' + missing('orsakshändelse')).strip()
-            if not row['values'][3].strip():
-                row['values'][3] = '[?]'
-        if consequence_id is not None:
-            if not row['values'][4].strip():
-                row['values'][4] = missing('konsekvensbeskrivning')
-            if not row['risk_before']:
-                row['values'][5] = missing('riskbedömning')
-                row['values'][9] = missing('riskbedömning')
-    return result
+    """Return protocol rows without editorial completion markers."""
+    return deepcopy(rows)
 
 
 def build_report(db, *, paper_size='A3', standard_template=False):
@@ -704,7 +710,12 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'Studien har genomförts som en strukturerad genomgång av möjliga avvikelser '
         'från systemets avsedda funktion. Rapporten sammanfattar genomförandet, '
         'eventuella avvikelser från planerat arbetssätt och de resultat som har '
-        'dokumenterats i HAZOP-protokollet.')
+        'dokumenterats i HAZOP-protokollet. HAZOP är en etablerad metod för att '
+        'pröva hur en process eller anläggning kan avvika från sin avsedda funktion. '
+        'Genom att kombinera ledord med analysgruppens erfarenhet har möjliga orsaker, '
+        'konsekvenser och befintliga skydd identifierats. Arbetssättet har även '
+        'synliggjort operabilitetsfrågor och gett ett gemensamt underlag för fortsatt '
+        'projektering, verifiering och riskreducerande åtgärder.')
     document.add_heading('1.2 Bakgrund', 2)
     document.add_paragraph(
         'HAZOP-metoden har använts för att systematiskt identifiera avvikelser, '
@@ -738,10 +749,11 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     _chapter(document, '2 Referensdokument')
     document.add_paragraph(
-        'Analysens kvalitet och spårbarhet är beroende av att det underlag som '
-        'använts går att identifiera i efterhand. I detta kapitel samlas '
-        'ritningar och övriga referensdokument som har varit tillgängliga för '
-        'analysgruppen.')
+        'För att genomföra studien har ett dokumenterat underlag använts. Ritningar, '
+        'revisionsuppgifter och övriga referensdokument har gjort det möjligt att '
+        'avgränsa noderna och följa analysens resultat tillbaka till aktuella '
+        'förutsättningar. Detta kapitel sammanställer underlaget som var tillgängligt '
+        'för analysgruppen.')
     document.add_paragraph(
         'Dokumentens revision eller datum är en viktig del av referensen, '
         'eftersom senare ändringar kan påverka nodindelning, förutsättningar '
@@ -770,17 +782,17 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             'resultatet kan förstås och följas upp på ett enhetligt sätt.')
         document.add_heading('4.1 Riskmatris', 2)
         document.add_paragraph(
-            'Här infogas tabell 4.1 med samma axelval, visningsriktning, '
+            'Tabell 4.1 återger samma axelval, visningsriktning, '
             'risknivåer och färger som i det aktuella HAZOP-projektet.')
         document.add_paragraph(missing('studiens riskmatris'))
         document.add_heading('4.2 Frekvensskala', 2)
         document.add_paragraph(
-            'Här infogas tabell 4.2 med de frekvensnivåer och definitioner som '
+            'Tabell 4.2 återger de frekvensnivåer och definitioner som '
             'analysgruppen ska använda.')
         document.add_paragraph(missing('frekvensskala och definitioner'))
         document.add_heading('4.3 Konsekvensdefinitioner', 2)
         document.add_paragraph(
-            'Här infogas tabellerna 4.3.1 och framåt med konsekvensdefinitioner '
+            'Tabellerna 4.3.1 och framåt återger konsekvensdefinitioner '
             'för studiens kategorier.')
         document.add_paragraph(missing('konsekvenskategorier och definitioner'))
         _prose(document, data, 'Riskacceptanskriterier', '4.4 Riskacceptanskriterier')
@@ -818,7 +830,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     _chapter(document, 'Bilaga 1 Avvikelser och förkortningar')
     document.add_paragraph(
-        'Bilagan ger en överblick över de avvikelser som har behandlats i '
+        'Denna bilaga ger en överblick över de avvikelser som har behandlats i '
         'studien och förklarar de förkortningar som används i rapporten. '
         'Studiens metod och genomförande har beskrivits i avsnitt 3.1.')
     document.add_heading('B1.1 Registrerade avvikelser', 2)
