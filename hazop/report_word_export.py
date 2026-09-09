@@ -742,8 +742,22 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             most = ', '.join(f'Nod {n} ({count})' for n, count in node_counts.most_common(3))
             document.add_paragraph(f'{open_count} rekommendationer har ännu inte avslutats.' + (f' Flest rekommendationer berör {most}.' if most else ''))
         if data['sessions']:
-            document.add_paragraph('Analysdatum:')
-            _numbered_list(document, [s.get('date') or missing('analysdatum') for s in data['sessions']])
+            document.add_paragraph(
+                'Analystillfällena har genomförts enligt följande. Datum, plats '
+                'och eventuell mötesform anges för att göra genomförandet spårbart:')
+            session_lines = []
+            for session in data['sessions']:
+                date_text = session.get('date') or missing('analysdatum')
+                location = session.get('location') or missing('plats')
+                mode = 'digitalt' if session.get('is_digital') else ''
+                time_text = '–'.join(v for v in (session.get('start_time'), session.get('end_time')) if v)
+                details = f'{date_text}, {location}'
+                if time_text:
+                    details += f', kl. {time_text}'
+                if mode:
+                    details += f' ({mode})'
+                session_lines.append(details)
+            _numbered_list(document, session_lines)
     _front_heading('Studerade noder')
     if data['nodes']:
         _numbered_list(document, [
