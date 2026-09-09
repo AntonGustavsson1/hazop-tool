@@ -662,7 +662,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'REVIEWER': _value(reviewed_by, 'granskad av'),
         'PROSA_ADDRESS': _value(company_address, 'ProSa-adress'),
         'CLIENT_ADDRESS': field('Kundadress') or '',
-        'MANAGER': contact_person,
+        'MANAGER': field('Uppdragsansvarig') or issued_by or contact_person,
         # The assignment/contact person is shown in the customer block and in
         # the running header; do not repeat an issuer name under ProSa.
         'PROSA_CONTACT': '',
@@ -1056,6 +1056,25 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     update = OxmlElement('w:updateFields')
     update.set(qn('w:val'), 'true')
     document.settings.element.append(update)
+    # New-page sections inherit the running metadata header but not the logo
+    # drawing from the template's first header. Copy that image relationship
+    # into each report section so the ProSa mark remains visible throughout.
+    from docx.opc.constants import RELATIONSHIP_TYPE
+    source_header = document.sections[0].header.part
+    source_blip = next(source_header._element.iter(qn('a:blip')), None)
+    if source_blip is not None:
+        source_rid = source_blip.get(qn('r:embed'))
+        source_rel = source_header.rels.get(source_rid)
+        if source_rel is not None:
+            for section in document.sections[1:]:
+                target_header = section.header.part
+                if next(target_header._element.iter(qn('a:blip')), None) is not None:
+                    continue
+                new_rid = target_header.relate_to(source_rel._target, RELATIONSHIP_TYPE.IMAGE)
+                paragraph = deepcopy(next(source_header._element.iter(qn('w:p')), source_header._element))
+                for blip in paragraph.iter(qn('a:blip')):
+                    blip.set(qn('r:embed'), new_rid)
+                target_header._element.insert(0, paragraph)
     apply_report_fonts(document)
     _highlight_document(document)
     return document
