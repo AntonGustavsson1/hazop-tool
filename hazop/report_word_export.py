@@ -258,6 +258,9 @@ def _table(document, headers, rows, widths=None):
 
 def _caption(document, number, title):
     paragraph = document.add_paragraph(f'Tabell {number} {title}', 'Caption')
+    paragraph.paragraph_format.left_indent = None
+    paragraph.paragraph_format.first_line_indent = None
+    paragraph.paragraph_format.right_indent = None
     paragraph.paragraph_format.keep_with_next = True
     return paragraph
 
@@ -299,6 +302,7 @@ def _chapter(document, title):
 
 def _numbered_list(document, items):
     """Add an independent numbered list that always starts at one."""
+    from docx.shared import Pt
     style_num_id = document.styles['List Number']._element.pPr.numPr.numId.val
     numbering = document.part.numbering_part.element
     abstract_num_id = numbering.num_having_numId(style_num_id).abstractNumId.val
@@ -307,6 +311,9 @@ def _numbered_list(document, items):
     paragraphs = []
     for item in items:
         paragraph = document.add_paragraph(item, 'List Number')
+        paragraph.paragraph_format.space_after = Pt(4)
+        for run in paragraph.runs:
+            run.font.size = Pt(11)
         num_pr = paragraph._p.get_or_add_pPr().get_or_add_numPr()
         num_pr.get_or_add_numId().val = sequence.numId
         paragraphs.append(paragraph)
@@ -396,6 +403,9 @@ def _add_matrix(document, db, data):
     document.add_paragraph('Riskacceptanskriterierna har använts för att tolka de nivåer som har valts i riskmatrisen. De kriterier som har definierats för projektet redovisas i tabell 4.4.')
     criteria = [(str(i), db.get_config(f'risk_acceptance_{i}', '')) for i in range(1, 6)]
     criteria = [(level, value) for level, value in criteria if value.strip()]
+    if not criteria:
+        criteria = [(str(item.get('label') or item.get('color') or 'Risknivå'), item.get('definition', ''))
+                    for item in matrix.get('risk_level_definitions', []) if (item.get('definition') or '').strip()]
     if criteria:
         _caption(document, '4.4', 'Definierade riskacceptanskriterier')
         _table(document, ['Nivå', 'Kriterium'], criteria, [25, 135])
@@ -582,11 +592,14 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     reviewed_by = field('Granskad av') or field('Godkänd av') or field('Kvalitetsgranskad av') or db.get_config('report_reviewed_by', '') or db.get_config('report_approved_by', '')
     contact_person = field('Kontaktperson') or field('Kontaktperson kund') or db.get_config('report_contact_by', '')
     company_name = db.get_config('company_name', 'ProSa Process Safety Consulting AB') or 'ProSa Process Safety Consulting AB'
-    company_address = field('Kontorsadress ProSa') or ', '.join(v for v in (
+    company_address = field('Kontorsadress ProSa') or '\n'.join(v for v in (
         db.get_config('company_street', ''),
         ' '.join(v for v in (db.get_config('company_postal_code', ''), db.get_config('company_city', '')) if v),
         db.get_config('company_country', ''),) if (v or '').strip())
     company_contact = field('Kontaktuppgifter ProSa') or db.get_config('company_contact', '')
+    client_person = field('Kontaktperson') or field('Kontaktperson kund') or db.get_config('report_contact_by', '')
+    if client_person and client and client_person.casefold().startswith(client.casefold()):
+        client_person = client_person[len(client):].lstrip(' :\n\r-')
 
     values = {
         'TITLE': 'HAZOP för ' + project, 'CLIENT': client,
@@ -597,10 +610,10 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'REVIEWER': _value(reviewed_by, 'granskad av'),
         'PROSA_ADDRESS': _value(company_address, 'ProSa-adress'),
         'CLIENT_ADDRESS': _value(field('Kundadress'), 'kundadress'),
-        'MANAGER': _value(field('Uppdragsansvarig'), 'uppdragsansvarig'),
-        'PROSA_CONTACT': _value(company_contact, 'ProSa-kontakt'),
-        'CLIENT_PERSON': _value(contact_person, 'kontaktperson'),
-        'CLIENT_CONTACT': _value(field('Kontaktuppgifter') or field('Kontaktuppgifter kund'), 'kontaktuppgifter'),
+        'MANAGER': field('Uppdragsansvarig') or '',
+        'PROSA_CONTACT': company_contact or issued_by or '',
+        'CLIENT_PERSON': _value(client_person, 'kontaktperson'),
+        'CLIENT_CONTACT': field('Kontaktuppgifter') or field('Kontaktuppgifter kund') or '',
     }
     revision_rows = [{
         'REVISION': _value(r.get('label'), 'revision'),
@@ -613,6 +626,17 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'REVISION_AUTHOR': missing('utfört av'),
     }]
     document = new_report_document(values, revision_rows)
+    # Keep the cover contact blocks compact and unambiguous.  Setting the
+    # complete cell text also preserves the intended line breaks in Word.
+    for cell in document.tables[0].rows[5].cells[:2]:
+        cell.text = 'Kontorsadress:\nProSa Process Safety Consulting AB\n' + (company_address or '')
+    document.tables[0].rows[6].cells[2].text = (
+        'Kontaktperson kund:\n' + (client_person or '') +
+        ('\n' + values['CLIENT_CONTACT'] if values['CLIENT_CONTACT'] else ''))
+    for cell in document.tables[0].rows[3].cells:
+        for paragraph in cell.paragraphs:
+            for run in paragraph.runs:
+                run.text = run.text.replace('Rev:', 'Revision:')
     styles = document.styles
     styles['Heading 1'].paragraph_format.page_break_before = False
     if 'TOC Heading' not in styles:
@@ -620,23 +644,8 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     document.core_properties.title = values['TITLE']
     document.core_properties.author = issued_by or ''
     document.core_properties.subject = 'HAZOP analys utan SIL bedömning'
-    document.add_heading('Förkortningar', 1).paragraph_format.page_break_before = False
-    document.add_paragraph('Följande förkortningar används återkommande i rapporten och i HAZOP-protokollet.')
-    _table(document, ['Förkortning', 'Förklaring'], [
-        ['HAZOP', 'Hazard and Operability Study – risk- och driftanalys'],
-        ['P&ID', 'Piping and Instrumentation Diagram – rör- och instrumentdiagram'],
-        ['RRF', 'Risk Reduction Factor – riskreduktionsfaktor'],
-        ['BPCS', 'Basic Process Control System – ordinarie processtyrsystem'],
-    ], [28, 132])
-    document.add_section(WD_SECTION_START.NEW_PAGE)
-    contents_heading = document.add_paragraph('Innehåll', 'TOC Heading')
-    _field_run(document.add_paragraph(), 'TOC \\o "1-3" \\h \\z',
-               'Uppdatera innehållsförteckningen i Word med Ctrl+A och F9.')
-    document.add_paragraph('Bilagor', 'TOC Heading')
-    _field_run(document.add_paragraph(), 'TOC \\t "Bilaga 1,1,Bilaga 2,1,Bilaga 3,1,Bilaga 4,1" \\h \\z',
-               'Bilagorna visas i en separat innehållsförteckning.')
-
-    _chapter(document, 'Sammanfattning')
+    summary_heading = _chapter(document, 'Sammanfattning')
+    summary_heading._p.get_or_add_pPr().get_or_add_outlineLvl().val = 9
     document.add_paragraph(
         f'HAZOP-studien avser {project} för {client}. Analysen har genomförts '
         'som en strukturerad genomgång av möjliga avvikelser från anläggningens '
@@ -680,6 +689,23 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     document.add_paragraph(
         'Den detaljerade redovisningen finns i HAZOP-protokollet och i '
         'rekommendationslistan i rapportens bilagor.')
+
+    abbreviations_heading = document.add_heading('Förkortningar', 1)
+    abbreviations_heading._p.get_or_add_pPr().get_or_add_outlineLvl().val = 9
+    document.add_paragraph('Följande förkortningar används återkommande i rapporten och i HAZOP-protokollet.')
+    _table(document, ['Förkortning', 'Förklaring'], [
+        ['HAZOP', 'Hazard and Operability Study – risk- och driftanalys'],
+        ['P&ID', 'Piping and Instrumentation Diagram – rör- och instrumentdiagram'],
+        ['RRF', 'Risk Reduction Factor – riskreduktionsfaktor'],
+        ['BPCS', 'Basic Process Control System – ordinarie processtyrsystem'],
+    ], [28, 132])
+    document.add_section(WD_SECTION_START.NEW_PAGE)
+    document.add_paragraph('Innehåll', 'TOC Heading')
+    _field_run(document.add_paragraph(), 'TOC \\o "1-3" \\h \\z',
+               'Uppdatera innehållsförteckningen i Word med Ctrl+A och F9.')
+    document.add_paragraph('Bilagor', 'TOC Heading')
+    _field_run(document.add_paragraph(), 'TOC \\t "Bilaga 1,1,Bilaga 2,1,Bilaga 3,1,Bilaga 4,1" \\h \\z',
+               'Bilagorna visas i en separat innehållsförteckning.')
 
     _chapter(document, '1 Inledning')
     document.add_paragraph(
