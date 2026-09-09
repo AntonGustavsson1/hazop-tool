@@ -496,23 +496,28 @@ def _add_matrix(document, db, data):
         'definierats för studien.')
     categories = [dict(c) for c in db.consequence_categories()]
     definitions = db.get_severity_definitions()
-    consequence_rows = []
+    # Present one row per consequence level and one column per consequence
+    # category.  Empty categories are omitted so the table stays useful for
+    # projects that only assess (for example) person and environment.
+    active_categories = []
     for category in categories:
-        category_values = [definitions.get(i + 1, {}).get(category['id']) for i in range(len(y_codes))]
-        if not any((v or '').strip() for v in category_values):
-            continue
-        for i, code in enumerate(y_codes):
-            value = definitions.get(i + 1, {}).get(category['id'])
-            if not (value or '').strip():
-                continue
+        values = [definitions.get(i + 1, {}).get(category['id']) for i in range(len(y_codes))]
+        if any((value or '').strip() for value in values):
+            active_categories.append(category)
+    consequence_rows = []
+    for i, code in enumerate(y_codes):
+        values = [definitions.get(i + 1, {}).get(category['id'], '') for category in active_categories]
+        if any((value or '').strip() for value in values):
             consequence_rows.append([
-                category['name'], code, matrix['y_labels'][i],
-                _value(value, f"definition {category['name']} {code}"),
+                code, matrix['y_labels'][i],
+                *[_value(value, f"definition {category['name']} {code}")
+                  for category, value in zip(active_categories, values)],
             ])
     if consequence_rows:
         _caption(document, '4.3', 'Konsekvensdefinitioner')
-        _table(document, ['Kategori', 'Nivå', 'Benämning', 'Definition'],
-               consequence_rows, [34, 16, 34, 181])
+        headers = ['Nivå', 'Benämning'] + [category['name'] for category in active_categories]
+        widths = [16, 30] + [max(35, int(204 / max(1, len(active_categories))))] * len(active_categories)
+        _table(document, headers, consequence_rows, widths)
     else:
         document.add_paragraph(missing('konsekvenskategorier'))
     portrait_section = document.add_section(WD_SECTION_START.NEW_PAGE)
