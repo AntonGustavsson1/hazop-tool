@@ -6063,3 +6063,18 @@ och kräver att Orsak och Konsekvens redan i första vyn är bredare än 100 px.
 
 Verifierat med `py_compile`, hela `tests.test_smoke` (14 tester) och
 `git diff --check`. Visuell kontroll i en riktig Qt-display återstår.
+
+## 2026-09-09 — Wordrapport: utvecklad metodik, sammanfattning och rätt matrisaxlar
+
+Wordrapportens sammanfattning anger nu antal analystillfällen och visar de
+registrerade noderna som en numrerad lista. Huvudkapitlen har fått mer
+sammanhängande inledningstext, medan tabellhänvisningarna har flyttats till de
+underkapitel där respektive tabell faktiskt introduceras. Bilaga 1 innehåller
+nu en längre metodbeskrivning för förberedelse och nodindelning, genomförande,
+riskbedömning och dokumentation samt kvalitetssäkring och uppföljning.
+
+Riskmatrisen i rapporten använder nu samma axelkonvention som programmets
+matrisvyer: `x_reversed` placerar hög nivå till vänster och `y_reversed`
+placerar låg nivå överst. Den tidigare rapportlogiken vände Y-axeln åt motsatt
+håll när `y_reversed=False`, vilket gjorde att den exporterade matrisen kunde
+få omvänd radordning jämfört med programmet.

@@ -16,7 +16,8 @@ from docx.oxml.ns import qn
 import database
 from database import Database, load_matrix
 from report_word_export import (
-    export_report_word, _report_snapshot, collect_report_data, _worksheet_references,
+    export_report_word, _matrix_display_values, _report_snapshot,
+    collect_report_data, _worksheet_references,
 )
 from worksheet_export import _worksheet_rows
 from worksheet_word_export import export_worksheet_word
@@ -78,9 +79,11 @@ class ReportWordExportTests(unittest.TestCase):
                             for section in doc.sections[2:]))
         body_text = '\n'.join(paragraph.text for paragraph in doc.paragraphs)
         for text in (
-            'Tabell 2.1 förtecknar de ritningsblad',
-            'Tabell 3.1 redovisar analystillfällena',
-            'Tabell B4.1 samlar studiens rekommendationer',
+            'De ritningsblad som finns registrerade i studien förtecknas i tabell 2.1',
+            'Studiens planerade eller genomförda analystillfällen sammanställs i tabell 3.1',
+            'Tabell B4.1 redovisar rekommendationerna',
+            'HAZOP är en strukturerad gruppbaserad genomgång',
+            'B1.5 Kvalitetssäkring och uppföljning',
         ):
             self.assertIn(text, body_text)
         with ZipFile(self.path) as archive:
@@ -189,6 +192,43 @@ class ReportWordExportTests(unittest.TestCase):
         doc = self.export(standard_template=True)
         self.assertFalse(any(t.cell(0, 0).text == 'Konsekvens / frekvens' for t in doc.tables))
         self.assertTrue(any('studiens riskmatris' in p.text for p in doc.paragraphs))
+
+    def test_summary_reports_sessions_and_lists_nodes_in_numbered_style(self):
+        self.db.add_analysis_session('Tillfälle 1', '2026-09-09', 'Kontoret')
+        doc = self.export()
+        body_text = '\n'.join(p.text for p in doc.paragraphs)
+        self.assertIn('genomförts vid 1 analystillfälle', body_text)
+        self.assertIn('Studerade noder', body_text)
+        node_names = {row['name'] for row in self.db.nodes()}
+        numbered = [p for p in doc.paragraphs if p.style.name == 'List Number']
+        self.assertTrue(node_names.issubset({p.text for p in numbered}))
+        node_sequence = next(p for p in numbered if p.text in node_names)
+        method_sequence = next(p for p in numbered if p.text.startswith('Bekräfta nodens'))
+        self.assertNotEqual(node_sequence._p.pPr.numPr.numId.val,
+                            method_sequence._p.pPr.numPr.numId.val)
+
+    def test_report_matrix_uses_same_axis_directions_as_program(self):
+        matrix = {
+            'rows': 2, 'cols': 3,
+            'x_codes': ['F0', 'F1', 'F2'],
+            'y_codes': ['C1', 'C2'],
+            'cell_labels': [['00', '01', '02'], ['10', '11', '12']],
+            'x_axis': 'consequence', 'x_reversed': False, 'y_reversed': False,
+        }
+        headers, rows, horizontal, vertical, x_frequency = _matrix_display_values(matrix)
+        self.assertFalse(x_frequency)
+        self.assertEqual(headers, ['Frekvens / konsekvens', 'C1', 'C2'])
+        self.assertEqual(vertical, [2, 1, 0])
+        self.assertEqual(rows, [
+            ['F2', '02', '12'], ['F1', '01', '11'], ['F0', '00', '10'],
+        ])
+
+        matrix.update(x_axis='frequency', x_reversed=True, y_reversed=True)
+        headers, rows, horizontal, vertical, x_frequency = _matrix_display_values(matrix)
+        self.assertTrue(x_frequency)
+        self.assertEqual(headers, ['Konsekvens / frekvens', 'F2', 'F1', 'F0'])
+        self.assertEqual(vertical, [0, 1])
+        self.assertEqual(rows, [['C1', '02', '01', '00'], ['C2', '12', '11', '10']])
 
 
 class ReportMenuTests(unittest.TestCase):
