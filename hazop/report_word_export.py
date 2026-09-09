@@ -28,6 +28,7 @@ from report_branding import new_report_document, apply_report_fonts
 REPORT_FIELDS = (
     'Rapportnummer', 'Rapportdatum', 'Rapportrevision', 'Rapportstatus',
     'Distribution', 'Uppdragsansvarig', 'Kontaktperson kund', 'Kontaktuppgifter kund',
+    'Kontaktperson', 'Kontaktuppgifter', 'Utfärdad av', 'Granskad av',
     'Framtagen av', 'Kvalitetsgranskad av', 'Godkänd av',
     'Kontorsadress ProSa', 'Kontaktuppgifter ProSa', 'Kundadress',
     'Bakgrund', 'Syfte', 'Omfattning', 'Avgränsningar', 'Driftfall',
@@ -241,6 +242,9 @@ def _table(document, headers, rows, widths=None):
             if index == 0:
                 _set_cell_shading(cell, 'EEECE1')
             for p in cell.paragraphs:
+                p.paragraph_format.left_indent = None
+                p.paragraph_format.first_line_indent = None
+                p.paragraph_format.right_indent = None
                 p.paragraph_format.space_before = Pt(3)
                 p.paragraph_format.space_after = Pt(3)
                 p.paragraph_format.keep_with_next = False
@@ -263,8 +267,6 @@ PROSE_INTROS = {
     'Syfte': 'Syftet beskriver vad studien ska bidra med och vilken användning resultatet är avsett för. Det ger en gemensam utgångspunkt för både analysgruppen och den fortsatta hanteringen av identifierade frågor.',
     'Omfattning': 'Omfattningen anger vilka system, delar och gränssnitt som har ingått. Tillsammans med nodindelningen ger den läsaren en tydlig bild av vilket analysobjekt rapportens resultat gäller.',
     'Avgränsningar': 'Avgränsningarna förtydligar sådant som medvetet har lämnats utanför studien eller behandlats på annat sätt. De är viktiga när resultatet senare används i projektering, drift eller fortsatt riskhantering.',
-    'Driftfall': 'Här beskrivs de driftsituationer som legat till grund för samtalen, till exempel normal drift, start, stopp eller underhåll. Beskrivningen gör det möjligt att förstå under vilka förhållanden de identifierade scenarierna är relevanta.',
-    'Analysförutsättningar': 'Här samlas de förutsättningar och antaganden som analysgruppen har utgått från. Genom att redovisa dem öppet blir det lättare att avgöra när ett resultat fortfarande är giltigt och när en förändring kan motivera en ny bedömning.',
     'Övriga referensdokument': 'Utöver ritningsunderlaget kan studien ha baserats på exempelvis beskrivningar, instruktioner eller tidigare analyser. Dessa underlag anges här så att läsaren kan följa vilka uppgifter som fanns tillgängliga när analysen genomfördes.',
     'Riskacceptanskriterier': 'Riskacceptanskriterierna beskriver hur risknivåerna ska förstås och användas i den fortsatta hanteringen. Avsnittet bör även tydliggöra vem som kan bedöma eller acceptera en kvarvarande risk.',
     'Frekvensunderlag': 'Frekvensbedömningen bygger på analysgruppens gemensamma värdering av hur ofta en orsak eller händelse kan uppstå. Här beskrivs vilket erfarenhetsunderlag och vilka principer som har använts för att välja nivå i skalan.',
@@ -581,29 +583,40 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     project = _value(db.get_config('project_name', ''), 'projektnamn')
     client = _value(db.get_config('project_client', ''), 'kund')
     field = data['field']
-    report_number = _value(field('Rapportnummer'), 'rapportnummer')
+    project_number_raw = (db.get_config('project_number', '') or '').strip()
+    suggested_report_number = f'{project_number_raw}-R-001' if project_number_raw else ''
+    report_number = _value(field('Rapportnummer') or db.get_config('report_number', '') or suggested_report_number, 'rapportnummer')
     revision = _value(field('Rapportrevision') or data['latest_revision'].get('label'), 'rapportrevision')
-    date = _value(field('Rapportdatum'), 'rapportdatum')
+    date = _value(field('Rapportdatum') or db.get_config('report_date', '') or data['latest_revision'].get('date'), 'rapportdatum')
+    issued_by = field('Utfärdad av') or field('Framtagen av') or db.get_config('report_prepared_by', '')
+    reviewed_by = field('Granskad av') or field('Godkänd av') or field('Kvalitetsgranskad av') or db.get_config('report_reviewed_by', '') or db.get_config('report_approved_by', '')
+    contact_person = field('Kontaktperson') or field('Kontaktperson kund') or db.get_config('report_contact_by', '')
+    company_name = db.get_config('company_name', 'ProSa Process Safety Consulting AB') or 'ProSa Process Safety Consulting AB'
+    company_address = field('Kontorsadress ProSa') or ', '.join(v for v in (
+        db.get_config('company_street', ''),
+        ' '.join(v for v in (db.get_config('company_postal_code', ''), db.get_config('company_city', '')) if v),
+        db.get_config('company_country', ''),) if (v or '').strip())
+    company_contact = field('Kontaktuppgifter ProSa') or db.get_config('company_contact', '')
 
     values = {
         'TITLE': 'HAZOP för ' + project, 'CLIENT': client,
         'REPORT_NUMBER': report_number, 'REVISION': revision, 'DATE': date,
         'STATUS': _value(field('Rapportstatus'), 'rapportstatus'),
-        'DISTRIBUTION': _value(field('Distribution'), 'distribution'),
-        'AUTHOR': _value(field('Framtagen av') or db.get_config('report_prepared_by', ''), 'framtagen av'),
-        'REVIEWER': _value(field('Kvalitetsgranskad av') or db.get_config('report_reviewed_by', ''), 'kvalitetsgranskad av'),
-        'PROSA_ADDRESS': _value(field('Kontorsadress ProSa'), 'kontorsadress ProSa'),
+        'DISTRIBUTION': _value(field('Distribution') or db.get_config('report_distribution', '') or 'Enligt kundens anvisning', 'distribution'),
+        'AUTHOR': _value(issued_by, 'utfärdad av'),
+        'REVIEWER': _value(reviewed_by, 'granskad av'),
+        'PROSA_ADDRESS': _value(company_address, 'ProSa-adress'),
         'CLIENT_ADDRESS': _value(field('Kundadress'), 'kundadress'),
         'MANAGER': _value(field('Uppdragsansvarig'), 'uppdragsansvarig'),
-        'PROSA_CONTACT': _value(field('Kontaktuppgifter ProSa'), 'kontaktuppgifter ProSa'),
-        'CLIENT_PERSON': _value(field('Kontaktperson kund'), 'kontaktperson kund'),
-        'CLIENT_CONTACT': _value(field('Kontaktuppgifter kund'), 'kontaktuppgifter kund'),
+        'PROSA_CONTACT': _value(company_contact, 'ProSa-kontakt'),
+        'CLIENT_PERSON': _value(contact_person, 'kontaktperson'),
+        'CLIENT_CONTACT': _value(field('Kontaktuppgifter') or field('Kontaktuppgifter kund'), 'kontaktuppgifter'),
     }
     revision_rows = [{
         'REVISION': _value(r.get('label'), 'revision'),
         'REVISION_DATE': _value(r.get('date'), 'revisionsdatum'),
         'REVISION_DESCRIPTION': _value(r.get('description'), 'revisionsbeskrivning'),
-        'REVISION_AUTHOR': missing('utfört av för revision ' + str(r.get('label') or '')),
+        'REVISION_AUTHOR': _value(r.get('performed_by'), 'utfört av för revision ' + str(r.get('label') or '')),
     } for r in data['revisions']] or [{
         'REVISION': revision, 'REVISION_DATE': missing('revisionsdatum'),
         'REVISION_DESCRIPTION': missing('revisionsbeskrivning'),
@@ -615,14 +628,14 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     if 'TOC Heading' not in styles:
         styles.add_style('TOC Heading', WD_STYLE_TYPE.PARAGRAPH).base_style = styles['Heading 1']
     document.core_properties.title = values['TITLE']
-    document.core_properties.author = field('Framtagen av') or ''
+    document.core_properties.author = issued_by or ''
     document.core_properties.subject = 'HAZOP analys utan SIL bedömning'
     document.add_heading('Dokumentstyrning', 1).paragraph_format.page_break_before = False
     document.add_paragraph(
         'Försättsbladet och dokumentbladet anger rapportens identitet, distribution '
         'och revisionshistorik. Tabell D.1 kompletterar dessa uppgifter med '
-        'projektets analysperiod och godkännande. Gulmarkerade kompletteringsfält '
-        'behöver behandlas före slutlig granskning; färgade riskceller anger riskklass.')
+        'projektets analysperiod, ansvar och revisionshistorik. Färgade riskceller '
+        'anger riskklass enligt studiens riskmatris.')
     _caption(document, 'D.1', 'Kompletterande dokumentuppgifter')
     _table(document, ['Uppgift', 'Värde'], [
         ['Projektnummer', _value(db.get_config('project_number', ''), 'projektnummer')],
@@ -630,7 +643,10 @@ def build_report(db, *, paper_size='A3', standard_template=False):
          ' till ' + _value(db.get_config('project_date_end', ''), 'analysperiodens slut')],
         ['Anläggning', _value(db.get_config('project_facility', ''), 'anläggning')],
         ['Rapportstatus', values['STATUS']],
-        ['Godkänd av', _value(field('Godkänd av') or db.get_config('report_approved_by', ''), 'godkänd av')],
+        ['Utfärdad av', values['AUTHOR']],
+        ['Granskad av', values['REVIEWER']],
+        ['Kontaktperson', values['CLIENT_PERSON']],
+        ['ProSa företag', company_name],
     ], [48, 112])
     other_fields = [f for f in data['custom']
                     if (f['name'] or '').strip().casefold() not in {n.casefold() for n in REPORT_FIELDS}]
@@ -641,7 +657,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             for f in other_fields], [48, 112])
     document.add_section(WD_SECTION_START.NEW_PAGE)
     contents_heading = document.add_paragraph('Innehåll', 'TOC Heading')
-    _field_run(document.add_paragraph(), 'TOC \\o "1-1" \\h \\z',
+    _field_run(document.add_paragraph(), 'TOC \\o "1-3" \\h \\z',
                'Uppdatera innehållsförteckningen i Word med Ctrl+A och F9.')
 
     _chapter(document, 'Sammanfattning')
@@ -665,9 +681,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         document.add_paragraph(
             f"Av konsekvensposterna har {data['described_count']} en registrerad "
             f"beskrivning och {data['assessed_count']} minst en kategoribaserad "
-            'riskbedömning. Gulmarkerade kompletteringsfält visar var underlaget '
-            'behöver förtydligas före slutlig granskning; antalet registrerade '
-            'poster är inte i sig ett besked om att studien är färdig.')
+            'riskbedömning.')
     document.add_heading('Studerade noder', 2)
     if data['nodes']:
         _numbered_list(document, [
@@ -682,22 +696,45 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     _chapter(document, '1 Inledning')
     document.add_paragraph(
-        'Inledningen beskriver varför studien har genomförts och vilket '
-        'analysobjekt som har behandlats. Den samlar den information som '
-        'behövs för att förstå rapportens sammanhang och använda resultatet '
-        'på rätt sätt i det fortsatta arbetet.')
+        f'En HAZOP-studie har genomförts för {project} vid {client}. '
+        'Kapitlet beskriver bakgrunden till arbetet, studiens syfte och omfattning '
+        'samt de avgränsningar som har gällt för den genomförda analysen.')
+    document.add_heading('1.1 Inledning', 2)
     document.add_paragraph(
-        'Bakgrund och syfte sätter riktningen för analysen, medan omfattning, '
-        'avgränsningar och driftfall tydliggör var resultatet är tillämpligt. '
-        'Angivna analysförutsättningar bör därför kontrolleras om anläggningen '
-        'eller projektets utgångspunkter förändras.')
-    _prose(document, data, 'Bakgrund', '1.1 Bakgrund')
-    _prose(document, data, 'Syfte', '1.2 Syfte')
-    _prose(document, data, 'Omfattning', '1.3 Omfattning')
-    document.add_paragraph('Registrerade noder: ' + _value(', '.join(n['name'] for n in data['nodes']), 'nodlista'))
-    _prose(document, data, 'Avgränsningar', '1.4 Avgränsningar')
-    _prose(document, data, 'Driftfall', '1.5 Driftfall')
-    _prose(document, data, 'Analysförutsättningar', '1.6 Analysförutsättningar')
+        'Studien har genomförts som en strukturerad genomgång av möjliga avvikelser '
+        'från systemets avsedda funktion. Rapporten sammanfattar genomförandet, '
+        'eventuella avvikelser från planerat arbetssätt och de resultat som har '
+        'dokumenterats i HAZOP-protokollet.')
+    document.add_heading('1.2 Bakgrund', 2)
+    document.add_paragraph(
+        'HAZOP-metoden har använts för att systematiskt identifiera avvikelser, '
+        'möjliga orsaker och konsekvenser samt att bedöma befintliga skydd. '
+        'Arbetssättet har gett analysgruppen ett gemensamt underlag för att '
+        'prioritera ytterligare riskreducerande åtgärder och följa upp frågor '
+        'i den fortsatta projekteringen.')
+    document.add_heading('1.3 Syfte och omfattning', 2)
+    document.add_paragraph(
+        'Syftet har varit att identifiera och värdera risker samt operabilitetsfrågor '
+        'inom det analyserade systemet och att dokumentera rekommendationer där '
+        'ytterligare åtgärder har bedömts motiverade.')
+    if field('Syfte'):
+        document.add_paragraph(field('Syfte'))
+    if field('Omfattning'):
+        document.add_paragraph(field('Omfattning'))
+    document.add_paragraph('Analysen har omfattat följande noder:')
+    _numbered_list(document, [_value(node.get('name'), 'nodnamn') for node in data['nodes']] or [missing('numrerad nodlista')])
+    if field('Driftfall'):
+        document.add_paragraph('De driftsituationer som har ingått har varit: ' + field('Driftfall'))
+    document.add_heading('1.4 Avgränsning', 2)
+    document.add_paragraph(
+        'Bedömningen har avgränsats till de systemdelar, noder, ritningar och övriga '
+        'dokument som har varit registrerade i projektfilen. Inga ytterligare '
+        'systemgränser eller tekniska förutsättningar har antagits utöver det '
+        'tillgängliga projektunderlaget.')
+    if field('Avgränsningar'):
+        document.add_paragraph(field('Avgränsningar'))
+    if field('Analysförutsättningar'):
+        document.add_paragraph('Analysen har utgått från följande dokumenterade förutsättningar: ' + field('Analysförutsättningar'))
 
     _chapter(document, '2 Referensdokument')
     document.add_paragraph(
@@ -716,7 +753,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'som nodindelningen och scenarioanalysen har baserats på.')
     sheets = [dict(s) for s in db.get_sheets()]
     _caption(document, '2.1', 'Registrerade ritningsunderlag')
-    _table(document, ['Ritningsnummer', 'Ritningsnamn', 'Revision', 'Datum', 'PDF sida'], [
+    _table(document, ['Dokumentnummer', 'Dokumenttitel', 'Revision', 'Datum', 'PDF sida'], [
         [_value(s.get('drawing_number'), 'ritningsnummer'),
          _value(s.get('drawing_name'), 'ritningsnamn'),
          _value(s.get('drawing_revision'), 'revision'),
@@ -817,10 +854,8 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'barriärer, riskbedömning och eventuell rekommendation. Noderna '
         'redovisas i samma ordning som i sammanfattningen och nodbilagan.')
     document.add_paragraph(
-        'Scenarioreferenserna följer ordningen '
-        'studie.nod.avvikelse.orsak.konsekvens. Gulmarkerat [?] betyder att '
-        'frekvens saknas och behöver kompletteras, eller att det behöver '
-        'verifieras att frekvens inte är tillämplig.')
+        'Scenarioreferenserna följer ordningen studie.nod.avvikelse.orsak.konsekvens '
+        'och redovisas tillsammans med de registrerade bedömningarna.')
     for index, group in enumerate(_group_rows(_annotated_worksheet_rows(db, data['rows']))):
         if index:
             document.add_page_break()
