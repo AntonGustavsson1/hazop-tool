@@ -663,7 +663,9 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'PROSA_ADDRESS': _value(company_address, 'ProSa-adress'),
         'CLIENT_ADDRESS': field('Kundadress') or '',
         'MANAGER': contact_person,
-        'PROSA_CONTACT': company_contact or issued_by or '',
+        # The assignment/contact person is shown in the customer block and in
+        # the running header; do not repeat an issuer name under ProSa.
+        'PROSA_CONTACT': '',
         'CLIENT_PERSON': _value(client_person, 'kontaktperson'),
         'CLIENT_CONTACT': field('Kontaktuppgifter') or field('Kontaktuppgifter kund') or '',
     }
