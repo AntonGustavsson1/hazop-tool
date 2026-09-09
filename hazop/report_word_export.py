@@ -347,9 +347,10 @@ def _add_matrix(document, db, data):
     document.add_heading('4 Riskbedömning', 1)
     document.add_paragraph(
         'Riskbedömningen ger analysgruppen ett gemensamt sätt att värdera de '
-        'scenarier som identifieras under studien. Den sparade riskmatrisen, '
-        'frekvensskalan och konsekvensdefinitionerna återges i detta kapitel så '
-        'att bedömningarna kan förstås även utanför själva protokollet.')
+        'scenarier som identifieras under studien. Riskbedömningarna har '
+        'genomförts med den riskmatris och de skalor som anges för studien. '
+        'Resultaten i protokollet ska tolkas tillsammans med frekvens- och '
+        'konsekvensdefinitionerna i detta kapitel.')
     document.add_paragraph(
         'I protokollet redovisas riskbedömningar före och efter barriärer samt '
         'de enablers som har beaktats. Risknivåerna ska läsas tillsammans med '
@@ -454,6 +455,10 @@ def _add_participants(document, db, data):
         'beaktat registrerade barriärer och enablers. Valda nivåer har '
         'dokumenterats tillsammans med scenarioinformationen för att '
         'bedömningens bakgrund ska kunna följas i rapporten.')
+    document.add_paragraph(
+        'Innan analystillfället avslutades gick gruppen gemensamt igenom '
+        'identifierade rekommendationer och säkerställde att formulering, '
+        'ansvar och uppföljningsbehov var tillräckligt tydliga.')
     sessions = [dict(s) for s in db.list_analysis_sessions()]
     document.add_heading('3.2 Analystillfällen', 2)
     document.add_paragraph(
@@ -615,35 +620,21 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     document.core_properties.title = values['TITLE']
     document.core_properties.author = issued_by or ''
     document.core_properties.subject = 'HAZOP analys utan SIL bedömning'
-    document.add_heading('Dokumentstyrning', 1).paragraph_format.page_break_before = False
-    document.add_paragraph(
-        'Försättsbladet och dokumentbladet anger rapportens identitet, distribution '
-        'och revisionshistorik. Tabell D.1 kompletterar dessa uppgifter med '
-        'projektets analysperiod, ansvar och revisionshistorik. Färgade riskceller '
-        'anger riskklass enligt studiens riskmatris.')
-    _caption(document, 'D.1', 'Kompletterande dokumentuppgifter')
-    _table(document, ['Uppgift', 'Värde'], [
-        ['Projektnummer', _value(db.get_config('project_number', ''), 'projektnummer')],
-        ['Analysperiod', _value(db.get_config('project_date_start', ''), 'analysperiodens start') +
-         ' till ' + _value(db.get_config('project_date_end', ''), 'analysperiodens slut')],
-        ['Anläggning', _value(db.get_config('project_facility', ''), 'anläggning')],
-        ['Rapportstatus', values['STATUS']],
-        ['Utfärdad av', values['AUTHOR']],
-        ['Granskad av', values['REVIEWER']],
-        ['Kontaktperson', values['CLIENT_PERSON']],
-        ['ProSa företag', company_name],
-    ], [48, 112])
-    other_fields = [f for f in data['custom']
-                    if (f['name'] or '').strip().casefold() not in {n.casefold() for n in REPORT_FIELDS}]
-    if other_fields:
-        document.add_heading('Övriga projektuppgifter', 2)
-        _table(document, ['Uppgift', 'Värde'], [
-            [_value(f['name'], 'fältnamn'), _value(f['value'], f['name'] or 'fältvärde')]
-            for f in other_fields], [48, 112])
+    document.add_heading('Förkortningar', 1).paragraph_format.page_break_before = False
+    document.add_paragraph('Följande förkortningar används återkommande i rapporten och i HAZOP-protokollet.')
+    _table(document, ['Förkortning', 'Förklaring'], [
+        ['HAZOP', 'Hazard and Operability Study – risk- och driftanalys'],
+        ['P&ID', 'Piping and Instrumentation Diagram – rör- och instrumentdiagram'],
+        ['RRF', 'Risk Reduction Factor – riskreduktionsfaktor'],
+        ['BPCS', 'Basic Process Control System – ordinarie processtyrsystem'],
+    ], [28, 132])
     document.add_section(WD_SECTION_START.NEW_PAGE)
     contents_heading = document.add_paragraph('Innehåll', 'TOC Heading')
     _field_run(document.add_paragraph(), 'TOC \\o "1-3" \\h \\z',
                'Uppdatera innehållsförteckningen i Word med Ctrl+A och F9.')
+    document.add_paragraph('Bilagor', 'TOC Heading')
+    _field_run(document.add_paragraph(), 'TOC \\t "Bilaga 1,1,Bilaga 2,1,Bilaga 3,1,Bilaga 4,1" \\h \\z',
+               'Bilagorna visas i en separat innehållsförteckning.')
 
     _chapter(document, 'Sammanfattning')
     document.add_paragraph(
@@ -663,6 +654,17 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             f"Genomgången har resulterat i {data['consequence_count']} "
             f"dokumenterade konsekvensposter och {len(data['recommendations'])} "
             'rekommendationer för fortsatt hantering.')
+        closed = {'stängd', 'implementerad', 'avslutad', 'ej implementerad'}
+        open_count = sum(1 for r in data['recommendations'] if str(r.get('status') or '').strip().casefold() not in closed)
+        node_counts = Counter()
+        for rec in data['recommendation_rows']:
+            for item in str(rec[5]).split(', '):
+                parts = item.split('.')
+                if len(parts) > 1 and parts[1].isdigit():
+                    node_counts[int(parts[1])] += 1
+        if data['recommendations']:
+            most = ', '.join(f'Nod {n} ({count})' for n, count in node_counts.most_common(3))
+            document.add_paragraph(f'{open_count} rekommendationer har ännu inte avslutats.' + (f' Flest rekommendationer berör {most}.' if most else ''))
         if data['sessions']:
             document.add_paragraph('Analysdatum:')
             _numbered_list(document, [s.get('date') or missing('analysdatum') for s in data['sessions']])
@@ -684,7 +686,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         f'En HAZOP-studie har genomförts för {project} vid {client}. '
         'Kapitlet beskriver bakgrunden till arbetet, studiens syfte och omfattning '
         'samt de avgränsningar som har gällt för den genomförda analysen.')
-    document.add_heading('1.1 Inledning', 2)
+    document.add_heading('1.1 Bakgrund', 2)
     document.add_paragraph(
         'Studien har genomförts som en strukturerad genomgång av möjliga avvikelser '
         'från systemets avsedda funktion. Rapporten sammanfattar genomförandet, '
@@ -695,14 +697,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'konsekvenser och befintliga skydd identifierats. Arbetssättet har även '
         'synliggjort operabilitetsfrågor och gett ett gemensamt underlag för fortsatt '
         'riskhanteringsarbete, verifiering och riskreducerande åtgärder.')
-    document.add_heading('1.2 Bakgrund', 2)
-    document.add_paragraph(
-        'HAZOP-metoden har använts för att systematiskt identifiera avvikelser, '
-        'möjliga orsaker och konsekvenser samt att bedöma befintliga skydd. '
-        'Arbetssättet har gett analysgruppen ett gemensamt underlag för att '
-        'prioritera ytterligare riskreducerande åtgärder och följa upp frågor '
-        'i riskhanteringsarbetet.')
-    document.add_heading('1.3 Syfte och omfattning', 2)
+    document.add_heading('1.2 Syfte och omfattning', 2)
     document.add_paragraph(
         'Syftet har varit att identifiera och värdera risker samt operabilitetsfrågor '
         'inom det analyserade systemet och att dokumentera rekommendationer där '
@@ -715,7 +710,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     _numbered_list(document, [_value(node.get('name'), 'nodnamn') for node in data['nodes']] or [missing('numrerad nodlista')])
     if field('Driftfall'):
         document.add_paragraph('De driftsituationer som har ingått har varit: ' + field('Driftfall'))
-    document.add_heading('1.4 Avgränsning', 2)
+    document.add_heading('1.3 Avgränsning', 2)
     document.add_paragraph(
         'Bedömningen har avgränsats till de systemdelar, noder, ritningar och övriga '
         'dokument som anges i denna rapport.')
@@ -724,31 +719,28 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     if field('Analysförutsättningar'):
         document.add_paragraph('Analysen har utgått från följande dokumenterade förutsättningar: ' + field('Analysförutsättningar'))
 
-    _chapter(document, '2 Referensdokument')
+    _chapter(document, '2 Dokumentunderlag')
     document.add_paragraph(
         'För att genomföra studien har ett dokumenterat underlag använts. Ritningar, '
         'revisionsuppgifter och övriga referensdokument har gjort det möjligt att '
         'avgränsa noderna och följa analysens resultat tillbaka till aktuella '
         'förutsättningar. Detta kapitel sammanställer underlaget som var tillgängligt '
         'för analysgruppen.')
-    document.add_paragraph(
-        'Dokumentens revision eller datum är en viktig del av referensen, '
-        'eftersom senare ändringar kan påverka nodindelning, förutsättningar '
-        'och tidigare bedömningar.')
     document.add_heading('2.1 Ritningsunderlag', 2)
     document.add_paragraph(
-        'De ritningsblad som finns registrerade i studien förtecknas i tabell '
-        '2.1. Uppgifterna används för att identifiera det grafiska underlag '
-        'som nodindelningen och scenarioanalysen har baserats på.')
+        'Det underlag som användes för HAZOP-studien omfattade P&ID-ritningar '
+        'och övriga projektdokument enligt tabell 2.1. Uppgifterna identifierar '
+        'det grafiska underlag som nodindelningen och scenarioanalysen baserades på.')
     sheets = [dict(s) for s in db.get_sheets()]
-    _caption(document, '2.1', 'Registrerade ritningsunderlag')
+    _caption(document, '2.1', 'Dokumentunderlag')
     _table(document, ['Dokumentnummer', 'Dokumenttitel', 'Revision', 'Datum', 'PDF sida'], [
         [_value(s.get('drawing_number'), 'ritningsnummer'),
          _value(s.get('drawing_name'), 'ritningsnamn'),
          _value(s.get('drawing_revision'), 'revision'),
          _value(s.get('drawing_date'), 'ritningsdatum'), str(s['physical_page'] + 1)]
         for s in sheets] or [[missing('referensdokument'), '', '', '', '']], [34, 51, 23, 32, 20])
-    _prose(document, data, 'Övriga referensdokument', '2.2 Övriga referensdokument')
+    if field('Övriga referensdokument'):
+        _prose(document, data, 'Övriga referensdokument', '2.2 Övriga referensdokument')
     _add_participants(document, db, data)
     if standard_template:
         _chapter(document, '4 Riskbedömning')
