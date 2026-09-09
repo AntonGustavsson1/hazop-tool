@@ -225,6 +225,10 @@ def _page_setup(section, landscape=False, paper='A4'):
 
 
 def _table(document, headers, rows, widths=None):
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
     from docx.shared import Mm, Pt
     table = document.add_table(rows=1, cols=len(headers))
     table.autofit = False
@@ -369,6 +373,8 @@ def _add_matrix(document, db, data):
         'horisontellt och konsekvens vertikalt när detta är den valda '
         'projektorienteringen.')
     headers, rows, horizontal, vertical, x_frequency = _matrix_display_values(matrix)
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
     from docx.shared import Mm, Pt
     table = document.add_table(rows=2, cols=len(headers))
     table.autofit = False
@@ -417,6 +423,22 @@ def _add_matrix(document, db, data):
                 for run in p.runs:
                     run.bold = True
                     run.font.size = Pt(8)
+    # Add a table-level frame as well as per-cell borders. This keeps the
+    # outside line continuous where the axis header cells are merged.
+    tbl_pr = table._tbl.tblPr
+    tbl_borders = tbl_pr.first_child_found_in('w:tblBorders')
+    if tbl_borders is None:
+        tbl_borders = OxmlElement('w:tblBorders')
+        tbl_pr.append(tbl_borders)
+    for edge in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV'):
+        element = tbl_borders.find(qn('w:' + edge))
+        if element is None:
+            element = OxmlElement('w:' + edge)
+            tbl_borders.append(element)
+        element.set(qn('w:val'), 'single')
+        element.set(qn('w:sz'), '4')
+        element.set(qn('w:space'), '0')
+        element.set(qn('w:color'), 'D9D9D9')
     _set_repeat_table_header(table.rows[1])
     document.add_paragraph().paragraph_format.space_after = Pt(0)
     x_codes, y_codes = matrix['x_codes'], matrix['y_codes']
