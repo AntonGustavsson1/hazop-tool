@@ -7,6 +7,7 @@ from constants import _bundle_dir
 
 def new_report_document(values, revisions):
     from docx import Document
+    from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     document = Document(_bundle_dir() / 'report_templates' / 'prosa_hazop.docx')
     revision_table = document.tables[1]
@@ -24,9 +25,28 @@ def new_report_document(values, revisions):
             root = getattr(part, '_element', None)
         if root is None:
             continue
-        for text in root.iter(qn('w:t')):
-            text.text = re.sub(r'\{\{([A-Z_]+)\}\}',
-                               lambda m: str(values[m.group(1)]), text.text or '')
+        for text in list(root.iter(qn('w:t'))):
+            replacement = re.sub(r'\{\{([A-Z_]+)\}\}',
+                                 lambda m: str(values[m.group(1)]), text.text or '')
+            if '\n' not in replacement:
+                text.text = replacement
+                continue
+            parent = text.getparent()
+            text.text = replacement.split('\n', 1)[0]
+            previous = text
+            for part in replacement.split('\n')[1:]:
+                br = OxmlElement('w:br')
+                previous.addnext(br)
+                new_text = OxmlElement('w:t')
+                new_text.text = part
+                br.addnext(new_text)
+                previous = new_text
+    # The customer name is already shown in the cover heading and need not be
+    # repeated in the contact-person block. Keep the run formatting intact.
+    if document.tables and len(document.tables[0].rows) > 6:
+        for paragraph in document.tables[0].rows[6].cells[2].paragraphs:
+            for run in paragraph.runs:
+                run.text = run.text.replace(str(values.get('CLIENT') or ''), '')
     return document
 
 

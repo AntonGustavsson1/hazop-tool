@@ -609,7 +609,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'AUTHOR': _value(issued_by, 'utfärdad av'),
         'REVIEWER': _value(reviewed_by, 'granskad av'),
         'PROSA_ADDRESS': _value(company_address, 'ProSa-adress'),
-        'CLIENT_ADDRESS': _value(field('Kundadress'), 'kundadress'),
+        'CLIENT_ADDRESS': field('Kundadress') or '',
         'MANAGER': field('Uppdragsansvarig') or '',
         'PROSA_CONTACT': company_contact or issued_by or '',
         'CLIENT_PERSON': _value(client_person, 'kontaktperson'),
@@ -626,13 +626,6 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'REVISION_AUTHOR': missing('utfört av'),
     }]
     document = new_report_document(values, revision_rows)
-    # Keep the cover contact blocks compact and unambiguous.  Setting the
-    # complete cell text also preserves the intended line breaks in Word.
-    for cell in document.tables[0].rows[5].cells[:2]:
-        cell.text = 'Kontorsadress:\nProSa Process Safety Consulting AB\n' + (company_address or '')
-    document.tables[0].rows[6].cells[2].text = (
-        'Kontaktperson kund:\n' + (client_person or '') +
-        ('\n' + values['CLIENT_CONTACT'] if values['CLIENT_CONTACT'] else ''))
     for cell in document.tables[0].rows[3].cells:
         for paragraph in cell.paragraphs:
             for run in paragraph.runs:
@@ -644,8 +637,21 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     document.core_properties.title = values['TITLE']
     document.core_properties.author = issued_by or ''
     document.core_properties.subject = 'HAZOP analys utan SIL bedömning'
-    summary_heading = _chapter(document, 'Sammanfattning')
-    summary_heading._p.get_or_add_pPr().get_or_add_outlineLvl().val = 9
+    from docx.shared import Pt, RGBColor
+
+    def _front_heading(text):
+        """Front-matter heading excluded from the generated TOC."""
+        paragraph = document.add_paragraph()
+        paragraph.style = styles['Normal']
+        paragraph.paragraph_format.space_before = Pt(8)
+        paragraph.paragraph_format.space_after = Pt(6)
+        run = paragraph.add_run(text)
+        run.bold = False
+        run.font.size = Pt(16)
+        run.font.color.rgb = RGBColor(91, 145, 35)
+        return paragraph
+
+    _front_heading('Sammanfattning')
     document.add_paragraph(
         f'HAZOP-studien avser {project} för {client}. Analysen har genomförts '
         'som en strukturerad genomgång av möjliga avvikelser från anläggningens '
@@ -677,7 +683,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         if data['sessions']:
             document.add_paragraph('Analysdatum:')
             _numbered_list(document, [s.get('date') or missing('analysdatum') for s in data['sessions']])
-    document.add_heading('Studerade noder', 2)
+    _front_heading('Studerade noder')
     if data['nodes']:
         _numbered_list(document, [
             _value(node.get('name'), 'nodnamn') for node in data['nodes']
@@ -690,8 +696,8 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'Den detaljerade redovisningen finns i HAZOP-protokollet och i '
         'rekommendationslistan i rapportens bilagor.')
 
-    abbreviations_heading = document.add_heading('Förkortningar', 1)
-    abbreviations_heading._p.get_or_add_pPr().get_or_add_outlineLvl().val = 9
+    document.add_page_break()
+    _front_heading('Förkortningar')
     document.add_paragraph('Följande förkortningar används återkommande i rapporten och i HAZOP-protokollet.')
     _table(document, ['Förkortning', 'Förklaring'], [
         ['HAZOP', 'Hazard and Operability Study – risk- och driftanalys'],
@@ -699,13 +705,10 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         ['RRF', 'Risk Reduction Factor – riskreduktionsfaktor'],
         ['BPCS', 'Basic Process Control System – ordinarie processtyrsystem'],
     ], [28, 132])
-    document.add_section(WD_SECTION_START.NEW_PAGE)
+    document.add_page_break()
     document.add_paragraph('Innehåll', 'TOC Heading')
     _field_run(document.add_paragraph(), 'TOC \\o "1-3" \\h \\z',
                'Uppdatera innehållsförteckningen i Word med Ctrl+A och F9.')
-    document.add_paragraph('Bilagor', 'TOC Heading')
-    _field_run(document.add_paragraph(), 'TOC \\t "Bilaga 1,1,Bilaga 2,1,Bilaga 3,1,Bilaga 4,1" \\h \\z',
-               'Bilagorna visas i en separat innehållsförteckning.')
 
     _chapter(document, '1 Inledning')
     document.add_paragraph(
@@ -907,6 +910,12 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         _add_recommendation_table(document, data['recommendation_rows'], width, margin)
     else:
         document.add_paragraph(missing('rekommendationer eller bekräftelse att inga rekommendationer behövs'))
+
+    _chapter(document, 'Bilaga 5 Node Markup')
+    document.add_paragraph(
+        'Denna bilaga redovisar node markup för de analyserade noderna. '
+        'Markeringarna klipps in från respektive P&ID som en del av den slutliga '
+        'rapportdokumentationen.')
 
     # Keep both original front-matter headers. Body and landscape sections
     # share the full source header; use continuous, refreshed page numbering.
