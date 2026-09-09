@@ -786,8 +786,9 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             document.add_paragraph(f'{open_count} rekommendationer har ännu inte avslutats.' + (f' Flest rekommendationer berör {most}.' if most else ''))
         if data['sessions']:
             document.add_paragraph(
-                'Analystillfällena har genomförts enligt följande. Datum, plats '
-                'och eventuell mötesform anges för att göra genomförandet spårbart:')
+                'HAZOP-studien genomfördes vid följande tillfälle:'
+                if len(data['sessions']) == 1 else
+                'HAZOP-studien genomfördes vid följande tillfällen:')
             session_lines = []
             for session in data['sessions']:
                 date_text = session.get('date') or missing('analysdatum')
