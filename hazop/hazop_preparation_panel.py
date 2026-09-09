@@ -1780,22 +1780,6 @@ class HAZOPPreparationPanel(QWidget):
         company_form.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
         tabs.addTab(company_tab, "Företagsuppgifter")
 
-        # ── Tab: Riskacceptanskriterier ────────────────────────────────────
-        criteria_tab = QWidget()
-        criteria_form = QFormLayout(criteria_tab)
-        criteria_form.setSpacing(10)
-        criteria_form.setContentsMargins(16, 16, 16, 16)
-        self._risk_acceptance_fields = {}
-        for level in range(1, 6):
-            edit = QTextEdit()
-            edit.setFixedHeight(52)
-            edit.setPlainText(self.db.get_config(f'risk_acceptance_{level}', '') or '')
-            edit.textChanged.connect(lambda l=level, e=edit: self.db.set_config(f'risk_acceptance_{l}', e.toPlainText().strip()))
-            self._risk_acceptance_fields[level] = edit
-            criteria_form.addRow(f'Risknivå {level}:', edit)
-        criteria_form.addRow(QLabel('Kriterierna återges i rapportens avsnitt 4.4 när de har definierats.'))
-        tabs.addTab(criteria_tab, "Riskacceptanskriterier")
-
         # ── Tab: Deltagare ────────────────────────────────────────────────────
         # Replaces the old free-text "Deltagare" field (2026-08-11, user
         # request: "skulle även gilla ... en till flik med deltagare
@@ -2262,11 +2246,6 @@ class HAZOPPreparationPanel(QWidget):
         self._proj_facility.setText(self.db.get_config('project_facility', ''))
         for key, edit in getattr(self, '_company_fields', {}).items():
             edit.setText(self.db.get_config(key, edit.text()) or edit.text())
-        for level, edit in getattr(self, '_risk_acceptance_fields', {}).items():
-            edit.blockSignals(True)
-            edit.setPlainText(self.db.get_config(f'risk_acceptance_{level}', '') or '')
-            edit.blockSignals(False)
-
         today = QDate.currentDate()
         start_str = self.db.get_config('project_date_start', '')
         end_str   = self.db.get_config('project_date_end', '')

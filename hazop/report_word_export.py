@@ -466,8 +466,8 @@ def _add_matrix(document, db, data):
         level_defs = [{'color': color, 'label': label, 'definition': ''}
                       for color, label in derived.items()]
     if level_defs:
-        document.add_paragraph('Risknivåerna i matrisen beskrivs i tabell 4-1a. Färg och nivånamn följer den aktiva projektmatrisen.')
-        _caption(document, '4-1a', 'Risknivåer och definitioner')
+        document.add_paragraph('Acceptanskriterierna i matrisen beskrivs i tabell 4-1a. Färg och nivånamn följer den aktiva projektmatrisen.')
+        _caption(document, '4-1a', 'Acceptanskriterier')
         level_table = _table(document, ['Risknivå', 'Definition'], [
             [item.get('label', ''), item.get('definition') or missing('risknivådefinition')]
             for item in level_defs], [70, 100])
@@ -532,23 +532,9 @@ def _add_matrix(document, db, data):
         document.add_paragraph(missing('konsekvenskategorier'))
     portrait_section = document.add_section(WD_SECTION_START.NEW_PAGE)
     _page_setup(portrait_section, landscape=False, paper='A4')
-    document.add_heading('4.4 Riskacceptanskriterier', 2)
-    document.add_paragraph('Riskacceptanskriterierna har använts för att tolka de nivåer som har valts i riskmatrisen. De kriterier som har definierats för projektet redovisas i tabell 4-4.')
-    criteria = [(str(i), db.get_config(f'risk_acceptance_{i}', '')) for i in range(1, 6)]
-    criteria = [(level, value) for level, value in criteria if value.strip()]
-    if not criteria:
-        criteria = [(str(item.get('label') or item.get('color') or 'Risknivå'), item.get('definition', ''))
-                    for item in matrix.get('risk_level_definitions', []) if (item.get('definition') or '').strip()]
-    if criteria:
-        _caption(document, '4.4', 'Definierade riskacceptanskriterier')
-        _table(document, ['Nivå', 'Kriterium'], criteria, [25, 135])
-    elif data['field']('Riskacceptanskriterier'):
-        document.add_paragraph(data['field']('Riskacceptanskriterier'))
-    else:
-        document.add_paragraph(missing('riskacceptanskriterier'))
     if data['field']('Frekvensunderlag'):
-        _prose(document, data, 'Frekvensunderlag', '4.5 Underlag för frekvenser')
-    document.add_heading('4.6 Underlag för barriärer och enablers', 2)
+        _prose(document, data, 'Frekvensunderlag', '4.4 Underlag för frekvenser')
+    document.add_heading('4.5 Underlag för barriärer och enablers', 2)
     document.add_paragraph(
         'Avsnittet sammanställer vilka typer av enablers som har använts i '
         'analysen och vilka RRF-värden som har registrerats för dem. Barriärer '
@@ -969,8 +955,10 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         document.add_heading('4.1 Riskmatris', 2)
         document.add_paragraph(
             'Tabell 4-1 återger samma axelval, visningsriktning, '
-            'risknivåer och färger som i det aktuella HAZOP-projektet.')
+            'risknivåer och färger som i det aktuella HAZOP-projektet. '
+            'Acceptanskriterierna för nivåerna redovisas i tabell 4-1a.')
         document.add_paragraph(missing('studiens riskmatris'))
+        document.add_paragraph(missing('acceptanskriterier för risknivåerna'))
         document.add_heading('4.2 Frekvensskala', 2)
         document.add_paragraph(
             'Tabell 4-2 återger de frekvensnivåer och definitioner som '
@@ -981,9 +969,8 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             'Tabellerna 4.3.1 och framåt återger konsekvensdefinitioner '
             'för studiens kategorier.')
         document.add_paragraph(missing('konsekvenskategorier och definitioner'))
-        _prose(document, data, 'Riskacceptanskriterier', '4.4 Riskacceptanskriterier')
-        _prose(document, data, 'Frekvensunderlag', '4.5 Underlag för frekvenser')
-        _prose(document, data, 'Barriärunderlag', '4.6 Underlag för barriärer och enablers')
+        _prose(document, data, 'Frekvensunderlag', '4.4 Underlag för frekvenser')
+        _prose(document, data, 'Barriärunderlag', '4.5 Underlag för barriärer och enablers')
     else:
         _add_matrix(document, db, data)
 
