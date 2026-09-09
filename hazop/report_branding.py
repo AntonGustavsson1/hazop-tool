@@ -72,6 +72,17 @@ def new_report_document(values, revisions):
                                         rpr.remove(bold)
                                 clone.find(qn('w:t')).text = rest
                                 run._r.addnext(clone)
+        # The customer contact block is Swedish prose; explicitly mark its
+        # runs as Swedish so Word does not apply English proofing/formatting.
+        if len(document.tables[0].rows) > 6 and len(document.tables[0].rows[6].cells) > 2:
+            for paragraph in document.tables[0].rows[6].cells[2].paragraphs:
+                for run in paragraph.runs:
+                    rpr = run._r.get_or_add_rPr()
+                    lang = rpr.find(qn('w:lang'))
+                    if lang is None:
+                        lang = OxmlElement('w:lang')
+                        rpr.append(lang)
+                    lang.set(qn('w:val'), 'sv-SE')
     # The running header uses a compact two-line table. Its first label is
     # intentionally Revision (the value is the report revision number).
     for part in document.part.package.parts:
