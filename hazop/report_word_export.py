@@ -364,9 +364,61 @@ def _add_matrix(document, db, data):
         'de definitioner och kriterier som anges i detta kapitel.')
     document.add_heading('4.1 Riskmatris', 2)
     document.add_paragraph(
-        'Riskmatrisen har inte återgetts som en separat kopia i slutrapporten. '
-        'Bedömningarna ska tolkas mot den generella riskmatris som gäller för '
-        'studien och mot definitionerna i följande avsnitt.')
+        'Tabell 4.1 återger den sparade riskmatrisen med samma axelriktning, '
+        'cellfärger och risknivåer som användes i programmet. Frekvens anges '
+        'horisontellt och konsekvens vertikalt när detta är den valda '
+        'projektorienteringen.')
+    headers, rows, horizontal, vertical, x_frequency = _matrix_display_values(matrix)
+    from docx.shared import Mm, Pt
+    table = document.add_table(rows=2, cols=len(headers))
+    table.autofit = False
+    widths = [32] + [18] * (len(headers) - 1)
+    for col, width in zip(table.columns, widths):
+        col.width = Mm(width)
+    table.cell(0, 0).text = ''
+    table.cell(0, 0).merge(table.cell(1, 0))
+    table.cell(0, 0).text = 'Konsekvens' if x_frequency else 'Frekvens'
+    table.cell(0, 1).merge(table.cell(0, len(headers) - 1))
+    table.cell(0, 1).text = 'Frekvens' if x_frequency else 'Konsekvens'
+    for col, value in enumerate(headers[1:], 1):
+        table.cell(1, col).text = str(value)
+    for row_index, values in enumerate(rows, 2):
+        cells = table.add_row().cells
+        cells[0].text = str(values[0])
+        for col, value in enumerate(values[1:], 1):
+            cells[col].text = str(value)
+            vi, hi = vertical[row_index - 2], horizontal[col - 1]
+            ci, fi = (vi, hi) if x_frequency else (hi, vi)
+            color = (matrix.get('cell_colors') or [])[ci][fi]
+            _set_cell_shading(cells[col], str(color).lstrip('#'))
+            fg = (matrix.get('cell_fg_colors') or [])[ci][fi]
+            for p in cells[col].paragraphs:
+                for run in p.runs:
+                    if fg:
+                        from docx.shared import RGBColor
+                        run.font.color.rgb = RGBColor.from_string(str(fg).lstrip('#'))
+        for cell in cells:
+            _set_cell_borders(cell, 'D9D9D9')
+            cell.vertical_alignment = 1
+            for p in cell.paragraphs:
+                p.paragraph_format.left_indent = None
+                p.paragraph_format.first_line_indent = None
+                p.paragraph_format.alignment = 1
+                p.paragraph_format.space_before = Pt(2)
+                p.paragraph_format.space_after = Pt(2)
+                for run in p.runs:
+                    run.font.size = Pt(8)
+    for row in table.rows[:2]:
+        for cell in row.cells:
+            _set_cell_shading(cell, 'EEECE1')
+            _set_cell_borders(cell, 'D9D9D9')
+            for p in cell.paragraphs:
+                p.paragraph_format.alignment = 1
+                for run in p.runs:
+                    run.bold = True
+                    run.font.size = Pt(8)
+    _set_repeat_table_header(table.rows[1])
+    document.add_paragraph().paragraph_format.space_after = Pt(0)
     x_codes, y_codes = matrix['x_codes'], matrix['y_codes']
     document.add_heading('4.2 Frekvensskala', 2)
     document.add_paragraph(
@@ -604,13 +656,13 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     values = {
         'TITLE': 'HAZOP för ' + project, 'CLIENT': client,
         'REPORT_NUMBER': report_number, 'REVISION': revision, 'DATE': date,
-        'STATUS': _value(field('Rapportstatus'), 'rapportstatus'),
+        'STATUS': revision,
         'DISTRIBUTION': _value(field('Distribution') or db.get_config('report_distribution', '') or 'Enligt kundens anvisning', 'distribution'),
         'AUTHOR': _value(issued_by, 'utfärdad av'),
         'REVIEWER': _value(reviewed_by, 'granskad av'),
         'PROSA_ADDRESS': _value(company_address, 'ProSa-adress'),
         'CLIENT_ADDRESS': field('Kundadress') or '',
-        'MANAGER': field('Uppdragsansvarig') or '',
+        'MANAGER': contact_person,
         'PROSA_CONTACT': company_contact or issued_by or '',
         'CLIENT_PERSON': _value(client_person, 'kontaktperson'),
         'CLIENT_CONTACT': field('Kontaktuppgifter') or field('Kontaktuppgifter kund') or '',
@@ -630,6 +682,13 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         for paragraph in cell.paragraphs:
             for run in paragraph.runs:
                 run.text = run.text.replace('Rev:', 'Revision:')
+    for section in document.sections:
+        for table in section.header.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        for run in paragraph.runs:
+                            run.text = run.text.replace('Status\n', 'Revision\n')
     styles = document.styles
     styles['Heading 1'].paragraph_format.page_break_before = False
     if 'TOC Heading' not in styles:
@@ -712,7 +771,8 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     _chapter(document, '1 Inledning')
     document.add_paragraph(
-        f'En HAZOP-studie har genomförts för {project} vid {client}. '
+        f'HAZOP-studien har genomförts för {project}, som tillhör {client}. '
+        f'{company_name} har fått i uppgift att leda och dokumentera HAZOP-studien. '
         'Kapitlet beskriver bakgrunden till arbetet, studiens syfte och omfattning '
         'samt de avgränsningar som har gällt för den genomförda analysen.')
     document.add_heading('1.1 Bakgrund', 2)

@@ -46,7 +46,16 @@ def new_report_document(values, revisions):
     if document.tables and len(document.tables[0].rows) > 6:
         for paragraph in document.tables[0].rows[6].cells[2].paragraphs:
             for run in paragraph.runs:
-                run.text = run.text.replace(str(values.get('CLIENT') or ''), '')
+                    run.text = run.text.replace(str(values.get('CLIENT') or ''), '')
+    # The running header uses a compact two-line table. Its first label is
+    # intentionally Revision (the value is the report revision number).
+    for part in document.part.package.parts:
+        root = getattr(part, '_element', None)
+        if root is None or 'header' not in str(part.partname):
+            continue
+        for text in root.iter(qn('w:t')):
+            if (text.text or '').strip() == 'Status':
+                text.text = (text.text or '').replace('Status', 'Revision')
     return document
 
 
