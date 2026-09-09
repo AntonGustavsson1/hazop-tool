@@ -1881,7 +1881,7 @@ class HAZOPPreparationPanel(QWidget):
         self._risk_level_table.setHorizontalHeaderLabels(["Färg", "Risknivå", "Definition"])
         self._risk_level_table.setMinimumHeight(80)
         self._risk_level_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self._risk_level_table.itemChanged.connect(lambda _item: setattr(self, '_matrix_levels_dirty', True))
+        self._risk_level_table.itemChanged.connect(self._on_risk_level_item_changed)
         levels_lay.addWidget(self._risk_level_table)
 
         # ── Matrix grid ───────────────────────────────────────────────────────
@@ -3488,6 +3488,8 @@ class HAZOPPreparationPanel(QWidget):
                         table_item.setBackground(QBrush(color))
                         fg = QColor('#000000' if color.lightness() > 160 else '#ffffff')
                         table_item.setForeground(QBrush(fg))
+                if col == 1:
+                    table_item.setData(Qt.ItemDataRole.UserRole, str(item.get('label', '') or ''))
                 self._risk_level_table.setItem(row, col, table_item)
         self._risk_level_table.blockSignals(False)
         self._matrix_levels_dirty = False
@@ -4064,6 +4066,24 @@ class HAZOPPreparationPanel(QWidget):
             if any(values):
                 result.append({'color': values[0], 'label': values[1], 'definition': values[2]})
         return result
+
+    def _on_risk_level_item_changed(self, item):
+        """Keep matrix cell labels aligned with renamed acceptance levels."""
+        self._matrix_levels_dirty = True
+        if item.column() != 1:
+            return
+        old_label = str(item.data(Qt.ItemDataRole.UserRole) or '').strip()
+        new_label = item.text().strip()
+        if not old_label or old_label == new_label:
+            item.setData(Qt.ItemDataRole.UserRole, new_label)
+            return
+        for _display_row, row_buttons in getattr(self, '_cell_buttons', []):
+            for button in row_buttons:
+                if button.label().strip() == old_label:
+                    button.set_cell(button.color(), new_label, button.fg_color())
+                    button.update()
+        item.setData(Qt.ItemDataRole.UserRole, new_label)
+        self._matrix_grid.activate()
 
     def _save_matrix_values(self, show_confirmation=True):
         n_cons = self._rows_spin.value()   # consequence levels (rows in data)
