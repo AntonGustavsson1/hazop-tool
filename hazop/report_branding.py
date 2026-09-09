@@ -47,6 +47,15 @@ def new_report_document(values, revisions):
         for paragraph in document.tables[0].rows[6].cells[2].paragraphs:
             for run in paragraph.runs:
                     run.text = run.text.replace(str(values.get('CLIENT') or ''), '')
+    # Keep the cover metadata readable and understated; the document title and
+    # table headers carry the emphasis, while title/date/distribution/revision
+    # values use the regular body weight.
+    if document.tables:
+        for row in document.tables[0].rows[1:4]:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.bold = False
     # The running header uses a compact two-line table. Its first label is
     # intentionally Revision (the value is the report revision number).
     for part in document.part.package.parts:
