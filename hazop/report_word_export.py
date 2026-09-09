@@ -261,6 +261,7 @@ def _table(document, headers, rows, widths=None):
 
 
 def _caption(document, number, title):
+    number = str(number).replace('.', '-')
     paragraph = document.add_paragraph(f'Tabell {number} {title}', 'Caption')
     paragraph.paragraph_format.left_indent = None
     paragraph.paragraph_format.first_line_indent = None
@@ -368,7 +369,7 @@ def _add_matrix(document, db, data):
         'de definitioner och kriterier som anges i detta kapitel.')
     document.add_heading('4.1 Riskmatris', 2)
     document.add_paragraph(
-        'Tabell 4.1 återger den sparade riskmatrisen med samma axelriktning, '
+        'Tabell 4-1 återger den sparade riskmatrisen med samma axelriktning, '
         'cellfärger och risknivåer som användes i programmet. Frekvens anges '
         'horisontellt och konsekvens vertikalt när detta är den valda '
         'projektorienteringen.')
@@ -445,7 +446,7 @@ def _add_matrix(document, db, data):
     document.add_heading('4.2 Frekvensskala', 2)
     document.add_paragraph(
         'Frekvensnivåerna som används vid scenarioanalysen redovisas i tabell '
-        '4.2. Definitionerna ger stöd för en konsekvent bedömning mellan olika '
+        '4-2. Definitionerna ger stöd för en konsekvent bedömning mellan olika '
         'noder och analystillfällen.')
     _caption(document, '4.2', 'Frekvensnivåer och definitioner')
     _table(document, ['Nivå', 'Definition'],
@@ -457,7 +458,7 @@ def _add_matrix(document, db, data):
     document.add_heading('4.3 Konsekvensdefinitioner', 2)
     document.add_paragraph(
         'Konsekvenserna bedöms inom de kategorier som är registrerade i '
-        'projektet. Tabell 4.3 sammanställer de kategorier och nivåer som har '
+        'projektet. Tabell 4-3 sammanställer de kategorier och nivåer som har '
         'definierats för studien.')
     categories = [dict(c) for c in db.consequence_categories()]
     definitions = db.get_severity_definitions()
@@ -499,15 +500,25 @@ def _add_matrix(document, db, data):
     if data['field']('Frekvensunderlag'):
         _prose(document, data, 'Frekvensunderlag', '4.5 Underlag för frekvenser')
     document.add_heading('4.6 Underlag för barriärer och enablers', 2)
-    document.add_paragraph('Barriärer och enablers som har registrerats i analysen har sammanställts för att tydliggöra vilka skydd och påverkande förhållanden som har beaktats.')
-    enablers = sorted({(rf['description'] or '').strip() for row in data['rows'] for rf in db.reduction_factors(row['merge_key'][3]) if (rf['description'] or '').strip() and dict(rf).get('active', 1)})
-    rrf_values = sorted({float(rf['rrf']) for row in data['rows'] for rf in db.reduction_factors(row['merge_key'][3]) if (rf['description'] or '').strip() and dict(rf).get('active', 1) and rf['rrf'] is not None})
-    if rrf_values:
-        rrf_text = f'{rrf_values[0]:g}' if len(rrf_values) == 1 else f'{rrf_values[0]:g}–{rrf_values[-1]:g}'
-        document.add_paragraph(f'RRF för använda enablers har satts till {rrf_text}.')
-    if enablers:
-        _caption(document, '4.6', 'Typer av använda enablers')
-        _table(document, ['Enabler', 'Beskrivning'], [[e, 'Registrerad enabler i analysen'] for e in enablers], [55, 105])
+    document.add_paragraph(
+        'Barriärer och enablers har beaktats i den konsekvens där de har bedömts '
+        'utgöra ett relevant skydd eller påverka händelseförloppet. De listas '
+        'därför tillsammans med respektive konsekvens. RRF visar den '
+        'riskreduktionsfaktor som har registrerats för varje rad.')
+    barrier_rows = []
+    for row in data['rows']:
+        consequence = (row.get('values') or [''] * 5)[4]
+        for rf in db.reduction_factors(row['merge_key'][3]):
+            rf = dict(rf)
+            description = (rf.get('description') or '').strip()
+            if not description or not rf.get('active', 1):
+                continue
+            rrf = '' if rf.get('rrf') is None else f"{float(rf['rrf']):g}"
+            barrier_rows.append([consequence or missing('konsekvens'), description, rrf or missing('RRF')])
+    if barrier_rows:
+        unique_rows = list(dict.fromkeys(tuple(r) for r in barrier_rows))
+        _caption(document, '4-6', 'Barriärer och enablers per konsekvens')
+        _table(document, ['Konsekvens', 'Barriär / enabler', 'RRF'], unique_rows, [65, 85, 25])
     elif data['field']('Barriärunderlag'):
         document.add_paragraph(data['field']('Barriärunderlag'))
 
@@ -609,7 +620,11 @@ def _add_participants(document, db, data):
 
 
 def _node_appendix(document, db, data):
-    _chapter(document, 'Bilaga 2 HAZOP noder')
+    from docx.enum.section import WD_SECTION_START
+    section = document.add_section(WD_SECTION_START.NEW_PAGE)
+    _page_setup(section, landscape=True, paper='A4')
+    heading = document.add_heading('Bilaga 2 HAZOP noder', 1)
+    heading.paragraph_format.page_break_before = False
     document.add_paragraph(
         'Denna bilaga beskriver hur anläggningen har delats in för analysen. '
         'Nodernas funktion, gränser och normala förutsättningar ger den '
@@ -618,12 +633,9 @@ def _node_appendix(document, db, data):
         'Nodnumreringen följer samma ordning som i protokollet. En verifierad '
         'nodritning bör komplettera uppgifterna och tydligt visa de gränser '
         'som analysgruppen har använt.')
-    systems = {s['id']: s['name'] for s in db.systems()}
     sheets = {s['physical_page']: dict(s) for s in db.get_sheets()}
+    rows = []
     for number, node in enumerate(data['nodes'], 1):
-        document.add_heading(f"Nod {number} {node['name']}", 2)
-        description = document.add_paragraph(_value(node.get('description'), 'nodens funktion och designavsikt'))
-        description.paragraph_format.keep_with_next = True
         pages = db.analysis_pages_for_node(node['id'])
         references = []
         for page in pages:
@@ -633,19 +645,18 @@ def _node_appendix(document, db, data):
                 ', rev. ' + _value(sheet.get('drawing_revision'), 'ritningsrevision'))
         if node.get('pid_ref'):
             references.insert(0, node['pid_ref'])
-        document.add_paragraph(
-            f"Tabell B2.{number} sammanställer registrerade förutsättningar och "
-            f"ritningsreferenser för nod {number}.")
-        _caption(document, f'B2.{number}', 'Noduppgifter för ' + node['name'])
-        _table(document, ['Uppgift', 'Värde'], [
-            ['System', systems.get(node.get('system_id'), 'Ogrupperad nod')],
-            ['P&ID referenser', '\n'.join(references) or missing('nodens P&ID referenser')],
-            ['Media', _value(node.get('media'), 'media')],
-            ['Tryck', _value(node.get('pressure'), 'tryck inklusive enhet')],
-            ['Temperatur', _value(node.get('temperature'), 'temperatur inklusive enhet')],
-            ['Nodstatus', node.get('study_status') or missing('nodstatus')],
-        ], [37, 123])
-        document.add_paragraph(missing('infoga nodritning med verifierade nodgränser'))
+        rows.append({'Nod': f'{number} {node["name"]}',
+                     'P&ID referens': '\n'.join(references),
+                     'Media': node.get('media') or '',
+                     'Tryck': node.get('pressure') or '',
+                     'Temperatur': node.get('temperature') or ''})
+    columns = ['Nod', 'P&ID referens']
+    for key in ('Media', 'Tryck', 'Temperatur'):
+        if any(str(row[key]).strip() for row in rows):
+            columns.append(key)
+    document.add_paragraph('Tabell B2-1 sammanställer nodernas P&ID-referenser och registrerade processförutsättningar. Tomma uppgifter har utelämnats för att hålla tabellen överskådlig.')
+    _caption(document, 'B2-1', 'Nod- och processuppgifter')
+    _table(document, columns, [[row[key] or missing(key.lower()) for key in columns] for row in rows] or [[missing('noder'), '']], [34, 75] + [42] * (len(columns) - 2))
     if not data['nodes']:
         document.add_paragraph(missing('noder och designavsikt'))
 
@@ -964,17 +975,6 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     _caption(document, 'B1.1', 'Registrerade avvikelser')
     _table(document, ['Avvikelse'], [[v] for v in deviations if v]
            or [[missing('avvikelser och ledord')]])
-    document.add_heading('B1.2 Förkortningar', 2)
-    document.add_paragraph(
-        'De förkortningar som används återkommande i rapporten förklaras i '
-        'tabell B1.2.')
-    _caption(document, 'B1.2', 'Förkortningar')
-    _table(document, ['Förkortning', 'Förklaring'], [
-        ['HAZOP', 'Hazard and Operability Study – risk- och driftanalys'],
-        ['P&ID', 'Piping and Instrumentation Diagram – rör- och instrumentdiagram'],
-        ['RRF', 'Risk Reduction Factor – riskreduktionsfaktor'],
-        ['BPCS', 'Basic Process Control System – ordinarie processtyrsystem'],
-    ], [28, 132])
     _node_appendix(document, db, data)
 
     section = document.add_section(WD_SECTION_START.NEW_PAGE)
