@@ -47,15 +47,31 @@ def new_report_document(values, revisions):
         for paragraph in document.tables[0].rows[6].cells[2].paragraphs:
             for run in paragraph.runs:
                     run.text = run.text.replace(str(values.get('CLIENT') or ''), '')
-    # Keep the cover metadata readable and understated; the document title and
-    # table headers carry the emphasis, while title/date/distribution/revision
-    # values use the regular body weight.
+    # Keep cover metadata values in regular body weight while emphasizing the
+    # labels.  The template stores each metadata line in one run, so split the
+    # run at the colon and retain the original order in the XML.
     if document.tables:
         for row in document.tables[0].rows[1:4]:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
+                        text = run.text or ''
                         run.bold = False
+                        match = re.match(r'^(Titel|Datum|Distribution|Rapport nr|Rev|Revision):', text)
+                        if match:
+                            label = match.group(0)
+                            rest = text[len(label):]
+                            run.text = label
+                            run.bold = True
+                            if rest:
+                                clone = deepcopy(run._r)
+                                rpr = clone.find(qn('w:rPr'))
+                                if rpr is not None:
+                                    bold = rpr.find(qn('w:b'))
+                                    if bold is not None:
+                                        rpr.remove(bold)
+                                clone.find(qn('w:t')).text = rest
+                                run._r.addnext(clone)
     # The running header uses a compact two-line table. Its first label is
     # intentionally Revision (the value is the report revision number).
     for part in document.part.package.parts:
