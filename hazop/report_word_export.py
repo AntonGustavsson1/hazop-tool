@@ -284,17 +284,17 @@ def _caption(document, number, title):
 
 
 PROSE_INTROS = {
-    'Bakgrund': 'Bakgrunden ger läsaren sammanhanget till studien och beskriver den verksamhet eller förändring som har gjort analysen aktuell. Den hjälper också till att förklara vilka frågor som varit särskilt viktiga under genomgången.',
-    'Syfte': 'Syftet beskriver vad studien ska bidra med och vilken användning resultatet är avsett för. Det ger en gemensam utgångspunkt för både analysgruppen och den fortsatta hanteringen av identifierade frågor.',
-    'Omfattning': 'Omfattningen anger vilka system, delar och gränssnitt som har ingått. Tillsammans med nodindelningen ger den läsaren en tydlig bild av vilket analysobjekt rapportens resultat gäller.',
-    'Avgränsningar': 'Avgränsningarna förtydligar sådant som medvetet har lämnats utanför studien eller behandlats på annat sätt. De är viktiga när resultatet senare används i projektering, drift eller fortsatt riskhantering.',
-    'Övriga referensdokument': 'Utöver ritningsunderlaget kan studien ha baserats på exempelvis beskrivningar, instruktioner eller tidigare analyser. Dessa underlag anges här så att läsaren kan följa vilka uppgifter som fanns tillgängliga när analysen genomfördes.',
-    'Riskacceptanskriterier': 'Riskacceptanskriterierna beskriver hur risknivåerna ska förstås och användas i den fortsatta hanteringen. Avsnittet bör även tydliggöra vem som kan bedöma eller acceptera en kvarvarande risk.',
-    'Frekvensunderlag': 'Frekvensbedömningen bygger på analysgruppens gemensamma värdering av hur ofta en orsak eller händelse kan uppstå.',
-    'Barriärunderlag': 'Barriärer och enablers påverkar hur ett scenario utvecklas och hur den slutliga risknivån bedöms. Här förklaras vilka typer av skydd som har tillgodoräknats och vilka krav som ställts för att de ska betraktas som tillgängliga och relevanta.',
-    'Resultat och slutsatser': 'Avsnittet lyfter fram de viktigaste iakttagelserna från studien och sätter dem i ett sammanhang. Det bör ge läsaren en samlad förståelse av vad som behöver tas vidare, utan att ersätta den mer detaljerade redovisningen i bilagorna.',
-    'Uppföljning': 'Här beskrivs hur rekommendationerna ska tas om hand efter avslutad analys. Ansvar, tidplan och vilket underlag som krävs för att kunna avsluta en åtgärd bör framgå så att uppföljningen blir tydlig och spårbar.',
-    'Metodreferens': 'Om projektet har använt en särskild instruktion, standard eller kundanpassad metodbeskrivning anges den här. Referensen kompletterar den praktiska arbetsgång som beskrivs i följande avsnitt.',
+    'Bakgrund': 'Detta avsnitt beskriver bakgrunden till studien och de förhållanden som gjorde analysen aktuell. Informationen ger läsaren det sammanhang som behövs för att förstå studiens inriktning och resultat.',
+    'Syfte': 'Detta avsnitt anger vad studien skulle uppnå och hur resultatet är avsett att användas i det fortsatta arbetet.',
+    'Omfattning': 'Detta avsnitt anger vilka systemdelar, funktioner och gränssnitt som ingick i studien. Omfattningen ska läsas tillsammans med nodindelningen och de ritningar som anges i rapporten.',
+    'Avgränsningar': 'Detta avsnitt beskriver de avgränsningar och antaganden som gällde under studien. De behöver beaktas när resultaten används i projektering, drift eller fortsatt riskhantering.',
+    'Övriga referensdokument': 'Utöver ritningsunderlaget användes de beskrivningar, instruktioner och övriga projektdokument som anges nedan. Förteckningen visar vilket underlag som var tillgängligt när studien genomfördes.',
+    'Riskacceptanskriterier': 'Acceptanskriterierna beskriver hur risknivåerna ska tolkas och hanteras efter studien.',
+    'Frekvensunderlag': 'Frekvensbedömningen grundades på analysgruppens gemensamma bedömning av hur ofta den aktuella orsaken eller händelsen kan inträffa.',
+    'Barriärunderlag': 'Detta avsnitt beskriver de principer som användes när barriärer och enablers beaktades i riskbedömningen.',
+    'Resultat och slutsatser': 'Detta avsnitt sammanfattar studiens viktigaste resultat och de frågor som behöver hanteras vidare. Den fullständiga redovisningen finns i HAZOP-protokollet och rekommendationsregistret.',
+    'Uppföljning': 'Detta avsnitt beskriver hur rekommendationerna ska behandlas efter studien. Ansvar, beslut, tidplan och underlag för verifierad stängning bör dokumenteras för varje rekommendation.',
+    'Metodreferens': 'Särskilda projektinstruktioner eller andra metodreferenser som användes under studien anges nedan.',
 }
 
 
@@ -371,21 +371,19 @@ def _add_matrix(document, db, data):
     document.add_page_break()
     document.add_heading('4 Riskbedömning', 1)
     document.add_paragraph(
-        'Riskbedömningen ger analysgruppen ett gemensamt sätt att värdera de '
-        'scenarier som identifieras under studien. Riskbedömningarna har '
-        'genomförts med den riskmatris och de skalor som anges för studien. '
-        'Resultaten i protokollet ska tolkas tillsammans med frekvens- och '
-        'konsekvensdefinitionerna i detta kapitel.')
+        'Analysgruppen använde studiens riskmatris för att bedöma de scenarier '
+        'som identifierades. Matrisen gav en gemensam grund för att väga '
+        'samman bedömd frekvens och konsekvens. Resultaten i HAZOP-protokollet '
+        'ska läsas tillsammans med skalorna och definitionerna i detta kapitel.')
     document.add_paragraph(
-        'I protokollet redovisas riskbedömningar före och efter barriärer samt '
-        'de enablers som har beaktats. Risknivåerna ska läsas tillsammans med '
-        'de definitioner och kriterier som anges i detta kapitel.')
+        'Protokollet redovisar bedömningen före och efter tillgodoräknade '
+        'barriärer samt de enablers som har beaktats. Färgen i matrisen visar '
+        'risknivån, och tabell 4-1a beskriver hur respektive nivå ska hanteras.')
     document.add_heading('4.1 Riskmatris', 2)
     document.add_paragraph(
-        'Tabell 4-1 återger den sparade riskmatrisen med samma axelriktning, '
-        'cellfärger och risknivåer som användes i programmet. Frekvens anges '
-        'horisontellt och konsekvens vertikalt när detta är den valda '
-        'projektorienteringen.')
+        'Tabell 4-1 visar den riskmatris som användes i studien. Axelriktning, '
+        'färger och nivånamn överensstämmer med den matris som finns sparad i '
+        'projektet.')
     headers, rows, horizontal, vertical, x_frequency = _matrix_display_values(matrix)
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
@@ -466,7 +464,9 @@ def _add_matrix(document, db, data):
         level_defs = [{'color': color, 'label': label, 'definition': ''}
                       for color, label in derived.items()]
     if level_defs:
-        document.add_paragraph('Acceptanskriterierna i matrisen beskrivs i tabell 4-1a. Färg och nivånamn följer den aktiva projektmatrisen.')
+        document.add_paragraph(
+            'Tabell 4-1a beskriver acceptanskriterierna för matrisens '
+            'risknivåer. Nivånamn och färger är desamma som i tabell 4-1.')
         _caption(document, '4-1a', 'Acceptanskriterier')
         level_table = _table(document, ['Risknivå', 'Definition'], [
             [item.get('label', ''), item.get('definition') or missing('risknivådefinition')]
@@ -489,9 +489,9 @@ def _add_matrix(document, db, data):
     x_codes, y_codes = matrix['x_codes'], matrix['y_codes']
     document.add_heading('4.2 Frekvensskala', 2)
     document.add_paragraph(
-        'Frekvensnivåerna som används vid scenarioanalysen redovisas i tabell '
-        '4-2. Definitionerna ger stöd för en konsekvent bedömning mellan olika '
-        'noder och analystillfällen.')
+        'Tabell 4-2 redovisar de frekvensnivåer som användes i '
+        'scenarioanalysen. Definitionerna anger hur ofta en händelse bedöms '
+        'kunna inträffa och ger stöd för jämförbara bedömningar genom studien.')
     _caption(document, '4.2', 'Frekvensnivåer och definitioner')
     _table(document, ['Nivå', 'Definition'],
            [[code, _value(label, 'frekvensdefinition')]
@@ -501,9 +501,10 @@ def _add_matrix(document, db, data):
     _page_setup(landscape_section, landscape=True, paper='A4')
     document.add_heading('4.3 Konsekvensdefinitioner', 2)
     document.add_paragraph(
-        'Konsekvenserna bedöms inom de kategorier som är registrerade i '
-        'projektet. Tabell 4-3 sammanställer de kategorier och nivåer som har '
-        'definierats för studien.')
+        'Konsekvenserna bedömdes separat för de kategorier som ingick i '
+        'studien. Tabell 4-3 redovisar benämning och definition för varje '
+        'konsekvensnivå inom person, miljö och ekonomi, i den mån dessa '
+        'kategorier har använts.')
     categories = [dict(c) for c in db.consequence_categories()]
     definitions = db.get_severity_definitions()
     # Present one row per consequence level and one column per consequence
@@ -532,14 +533,17 @@ def _add_matrix(document, db, data):
         document.add_paragraph(missing('konsekvenskategorier'))
     portrait_section = document.add_section(WD_SECTION_START.NEW_PAGE)
     _page_setup(portrait_section, landscape=False, paper='A4')
+    next_section = 4
     if data['field']('Frekvensunderlag'):
         _prose(document, data, 'Frekvensunderlag', '4.4 Underlag för frekvenser')
-    document.add_heading('4.5 Underlag för barriärer och enablers', 2)
+        next_section = 5
+    document.add_heading(f'4.{next_section} Underlag för barriärer och enablers', 2)
     document.add_paragraph(
-        'Avsnittet sammanställer vilka typer av enablers som har använts i '
-        'analysen och vilka RRF-värden som har registrerats för dem. Barriärer '
-        'och enablers redovisas i övrigt under respektive konsekvens i HAZOP-'
-        'protokollet.')
+        'Barriärer redovisas under den konsekvens där analysgruppen bedömde att '
+        'de gav ett relevant skydd. Enablers används för att beskriva '
+        'förhållanden som påverkar sannolikheten för att händelseförloppet ska '
+        'utvecklas till den angivna konsekvensen. Tabellen nedan sammanställer '
+        'de typer av enablers och RRF-värden som användes i studien.')
     enabler_rrfs = {}
     for row in data['rows']:
         for rf in db.reduction_factors(row['merge_key'][3]):
@@ -550,7 +554,7 @@ def _add_matrix(document, db, data):
             enabler_rrfs.setdefault(description, set()).add(
                 '' if rf.get('rrf') is None else f"{float(rf['rrf']):g}")
     if enabler_rrfs:
-        _caption(document, '4-6', 'Typer av använda enablers och RRF')
+        _caption(document, f'4-{next_section}', 'Typer av använda enablers och RRF')
         _table(document, ['Typ av enabler', 'RRF'], [
             [description, ', '.join(sorted(values, key=lambda v: (v == '', float(v) if v else 0))) or missing('RRF')]
             for description, values in sorted(enabler_rrfs.items())
@@ -562,25 +566,23 @@ def _add_matrix(document, db, data):
 def _add_participants(document, db, data):
     _chapter(document, '3 Genomförande och deltagare')
     document.add_paragraph(
-        'HAZOP-arbetet har genomförts som en gemensam och tvärdisciplinär '
-        'genomgång där deltagarnas kunskap om process, teknik, drift och '
-        'underhåll har tagits till vara. Kapitlet beskriver det arbetssätt som '
-        'har använts, hur studien har organiserats och vilka personer som har '
-        'medverkat.')
+        'HAZOP-studien genomfördes som en gemensam, tvärdisciplinär genomgång. '
+        'Deltagarna bidrog med kunskap om systemets konstruktion, process, '
+        'drift och underhåll. Detta kapitel beskriver hur analysen genomfördes '
+        'och vilka personer som deltog.')
     document.add_heading('3.1 Metod och arbetssätt', 2)
     document.add_paragraph(
-        'Studien har genomförts som en strukturerad HAZOP-genomgång av möjliga '
-        'avvikelser från anläggningens avsedda funktion. Analysobjektet har '
-        'delats in i hanterbara noder med definierade gränser och en beskriven '
-        'designavsikt. Indelningen har gjort det möjligt att behandla varje '
-        'funktion sammanhållet och samtidigt uppmärksamma viktiga gränssnitt '
-        'mot angränsande system.')
+        'Analysobjektet delades in i noder med tydliga gränser. Innan en nod '
+        'analyserades bekräftade gruppen dess avsedda funktion, relevanta '
+        'driftfall och kopplingar till angränsande system. Nodindelningen gav '
+        'en gemensam utgångspunkt för diskussionen och minskade risken för att '
+        'viktiga gränssnitt skulle förbises.')
     document.add_paragraph(
-        'Inför analystillfällena har relevant referensunderlag samlats in. Under '
-        'genomgången har analysgruppen utgått från nodens funktion och aktuella '
-        'driftfall. Parametrar och ledord har därefter använts för att formulera '
-        'relevanta avvikelser och följa händelseförloppet från möjlig orsak till '
-        'tänkbar konsekvens.')
+        'Under genomgången kombinerade gruppen processparametrar med HAZOP-ledord '
+        'för att formulera meningsfulla avvikelser. För varje avvikelse '
+        'identifierades trovärdiga orsaker och möjliga konsekvenser. Gruppen '
+        'dokumenterade därefter de barriärer och enablers som bedömdes påverka '
+        'scenariot.')
     document.add_paragraph('Arbetsgången har varit följande:')
     _numbered_list(document, (
         'Nodens avsedda funktion, gränser och relevanta driftfall har bekräftats.',
@@ -588,22 +590,22 @@ def _add_participants(document, db, data):
         'Trovärdiga orsaker och möjliga konsekvenser har identifierats och beskrivits.',
         'Befintliga barriärer och andra förhållanden som påverkar händelseförloppet har dokumenterats.',
         'Frekvens och konsekvens har bedömts i protokollets riskkolumner för de konsekvenskategorier som har berörts.',
-        'Rekommendationer har formulerats när ytterligare utredning, verifiering eller åtgärd har bedömts behövas; även ansvar, tidplan och uppföljningsbehov har beaktats.',
+        'Rekommendationer har formulerats när ytterligare utredning, verifiering eller åtgärd har bedömts behövas. Gruppen har även beaktat ansvar, tidplan och behov av uppföljning.',
     ))
     document.add_paragraph(
-        'Riskbedömningarna har gjorts med projektets sparade riskmatris. '
-        'Analysgruppen har först bedömt det formulerade scenariot och därefter '
-        'beaktat registrerade barriärer och enablers. Valda nivåer har '
-        'dokumenterats tillsammans med scenarioinformationen för att '
-        'bedömningens bakgrund ska kunna följas i rapporten.')
+        'Riskbedömningarna genomfördes med studiens riskmatris. Gruppen bedömde '
+        'först scenariot före tillgodoräknade skydd och därefter den risk som '
+        'återstod när relevanta barriärer och enablers hade beaktats. Valda '
+        'nivåer dokumenterades i protokollet tillsammans med scenarioinformationen.')
     document.add_paragraph(
-        'Innan analystillfället avslutades gick gruppen gemensamt igenom '
-        'identifierade rekommendationer och säkerställde att formulering, '
-        'ansvar och uppföljningsbehov var tillräckligt tydliga.')
+        'Innan varje analystillfälle avslutades gick gruppen igenom de '
+        'rekommendationer som hade formulerats. Genomgången användes för att '
+        'förtydliga rekommendationernas innebörd och kontrollera att fortsatt '
+        'hantering kunde följas upp.')
     sessions = [dict(s) for s in db.list_analysis_sessions()]
     document.add_heading('3.2 Analystillfällen', 2)
     document.add_paragraph(
-        'Genomförda analystillfällen sammanställs i tabell 3-1 med datum, tid och plats.')
+        'Datum, tid och plats för genomförda analystillfällen redovisas i tabell 3-1.')
     session_rows = [[str(i), _value(s.get('date'), 'datum'),
                      _value(s.get('start_time'), 'starttid') + '–' +
                      _value(s.get('end_time'), 'sluttid'),
@@ -614,8 +616,8 @@ def _add_participants(document, db, data):
         ['1', missing('analystillfälle'), '', '']], [17, 28, 43, 72])
     document.add_heading('3.3 Deltagare', 2)
     document.add_paragraph(
-        'Tabell 3-2 visar deltagarna och de roller eller övriga '
-        'deltagaruppgifter som har registrerats för studien.')
+        'De personer som deltog i studien redovisas i tabell 3-2 tillsammans '
+        'med registrerade roller och övriga deltagaruppgifter.')
     participants = [dict(p) for p in db.list_participants()]
     columns = db.list_participant_columns()
     values = db.get_participant_column_values()
@@ -636,9 +638,9 @@ def _add_participants(document, db, data):
            participant_rows or [[missing('deltagare'), '', '']], [32, 40, 88])
     document.add_heading('3.4 Närvaro', 2)
     document.add_paragraph(
-        'Närvaron vid respektive analystillfälle redovisas i tabell 3-3. '
-        'Eventuella anteckningar kan exempelvis förklara om en deltagare '
-        'medverkat under endast en del av mötet.')
+        'Tabell 3-3 visar deltagarnas närvaro vid respektive analystillfälle. '
+        'Anteckningar kan användas för att ange om någon endast deltog under '
+        'en del av genomgången.')
     attendance = db.get_attendance_details()
     attendance_rows = []
     short_status = len(sessions) > 5
@@ -659,16 +661,15 @@ def _node_appendix(document, db, data):
     from docx.enum.section import WD_SECTION_START
     section = document.add_section(WD_SECTION_START.NEW_PAGE)
     _page_setup(section, landscape=True, paper='A4')
-    heading = document.add_heading('Bilaga 2 HAZOP noder', 1)
+    heading = document.add_heading('Bilaga 2 HAZOP-noder', 1)
     heading.paragraph_format.page_break_before = False
     document.add_paragraph(
-        'Denna bilaga beskriver hur anläggningen har delats in för analysen. '
-        'Nodernas funktion, gränser och normala förutsättningar ger den '
-        'referens mot vilken avvikelserna i HAZOP-genomgången har bedömts.')
+        'Denna bilaga redovisar den nodindelning som användes i studien. '
+        'Indelningen visar vilka delar av systemet som behandlades tillsammans '
+        'och ger en referens till motsvarande avsnitt i HAZOP-protokollet.')
     document.add_paragraph(
-        'Nodnumreringen följer samma ordning som i protokollet. En verifierad '
-        'nodritning bör komplettera uppgifterna och tydligt visa de gränser '
-        'som analysgruppen har använt.')
+        'Nodnumreringen följer protokollets ordning. Nodernas gränser redovisas '
+        'på P&ID-ritningarna i bilaga 5 när dessa markeringar har infogats.')
     sheets = {s['physical_page']: dict(s) for s in db.get_sheets()}
     rows = []
     for number, node in enumerate(data['nodes'], 1):
@@ -690,7 +691,18 @@ def _node_appendix(document, db, data):
     for key in ('Media', 'Tryck', 'Temperatur'):
         if any(str(row[key]).strip() for row in rows):
             columns.append(key)
-    document.add_paragraph('Tabell B2-1 sammanställer nodernas P&ID-referenser och de processförutsättningar som har registrerats i studien.')
+    shown_fields = [name.lower() for name in columns[2:]]
+    if shown_fields:
+        if len(shown_fields) == 1:
+            conditions = shown_fields[0]
+        else:
+            conditions = ', '.join(shown_fields[:-1]) + ' och ' + shown_fields[-1]
+        document.add_paragraph(
+            'Tabell B2-1 redovisar nodernas P&ID-referenser samt registrerade '
+            f'uppgifter om {conditions}.')
+    else:
+        document.add_paragraph(
+            'Tabell B2-1 redovisar noderna och deras P&ID-referenser.')
     _caption(document, 'B2-1', 'Nod- och processuppgifter')
     if len(columns) > 2:
         remaining = 267 - 45 - 105
@@ -714,6 +726,9 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     from docx.shared import Pt, RGBColor
+
+    def count_phrase(count, singular, plural=None):
+        return f"{count} {singular if count == 1 else (plural or singular + 'er')}"
 
     data = collect_report_data(db)
     project = _value(db.get_config('project_name', ''), 'system')
@@ -783,7 +798,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         styles.add_style('TOC Heading', WD_STYLE_TYPE.PARAGRAPH).base_style = styles['Heading 1']
     document.core_properties.title = values['TITLE']
     document.core_properties.author = issued_by or ''
-    document.core_properties.subject = 'HAZOP analys utan SIL bedömning'
+    document.core_properties.subject = 'HAZOP-analys utan SIL-bedömning'
     from docx.shared import Pt, RGBColor
 
     def _front_heading(text):
@@ -800,22 +815,27 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     _front_heading('Sammanfattning')
     document.add_paragraph(
-        f'HAZOP-studien avser {project} för {client}. Analysen har genomförts '
-        'som en strukturerad genomgång av möjliga avvikelser från anläggningens '
-        'avsedda funktion, med fokus på att skapa ett tydligt och spårbart '
-        'underlag för fortsatt riskhantering.')
+        f'Denna rapport redovisar den HAZOP-studie som har genomförts för '
+        f'{project} vid {client}. Studien har granskat hur avvikelser från '
+        'systemets avsedda funktion kan uppstå, vilka konsekvenser de kan få '
+        'och vilka befintliga skydd som påverkar händelseförloppet. Resultatet '
+        'ska användas som underlag för projektets fortsatta riskhantering.')
     if standard_template:
         document.add_paragraph(
             missing('antal analystillfällen, noder, konsekvensposter och rekommendationer'))
     else:
         session_count = len(data['sessions'])
         session_label = 'analystillfälle' if session_count == 1 else 'analystillfällen'
+        node_phrase = count_phrase(len(data['nodes']), 'nod')
+        consequence_phrase = count_phrase(
+            data['consequence_count'], 'konsekvenspost', 'konsekvensposter')
+        recommendation_phrase = count_phrase(
+            len(data['recommendations']), 'rekommendation')
         document.add_paragraph(
-            f"Arbetet omfattar {len(data['nodes'])} noder och har "
-            f"genomförts vid {session_count} {session_label}. "
-            f"Genomgången har resulterat i {data['consequence_count']} "
-            f"dokumenterade konsekvensposter och {len(data['recommendations'])} "
-            'rekommendationer för fortsatt hantering.')
+            f"Studien genomfördes vid {session_count} {session_label} och "
+            f"omfattade {node_phrase}. Analysgruppen dokumenterade "
+            f"{consequence_phrase} och formulerade {recommendation_phrase} "
+            'för fortsatt hantering.')
         closed = {'stängd', 'implementerad', 'avslutad', 'ej implementerad'}
         open_count = sum(1 for r in data['recommendations'] if str(r.get('status') or '').strip().casefold() not in closed)
         node_counts = Counter()
@@ -825,14 +845,16 @@ def build_report(db, *, paper_size='A3', standard_template=False):
                 if len(parts) > 1 and parts[1].isdigit():
                     node_counts[int(parts[1])] += 1
         if data['recommendations']:
-            most_items = [f'Nod {n} ({count})' for n, count in node_counts.most_common(3)]
+            most_items = [f'nod {n} ({count})' for n, count in node_counts.most_common(3)]
             if len(most_items) > 1:
                 most = ', '.join(most_items[:-1]) + ' och ' + most_items[-1]
             else:
                 most = most_items[0] if most_items else ''
             document.add_paragraph(
-                f'{open_count} öppna rekommendationer.' +
-                (f' Flest rekommendationer berör {most}.' if most else ''))
+                'Rekommendationsregistret innehåller ' +
+                (f'{open_count} öppen rekommendation.' if open_count == 1 else
+                 f'{open_count} öppna rekommendationer.') +
+                (f' Flest rekommendationer är kopplade till {most}.' if most else ''))
         if data['sessions']:
             document.add_paragraph(
                 'HAZOP-studien genomfördes vid följande tillfälle:'
@@ -853,10 +875,10 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             _numbered_list(document, session_lines)
     _front_heading('Studerade noder')
     document.add_paragraph(
-        'Nodindelningen har använts för att skapa tydliga och hanterbara delar '
-        'av analysobjektet. Varje nod har behandlats med utgångspunkt i sin '
-        'avsedda funktion och i gränssnitten mot angränsande delar. Följande '
-        'noder har ingått i HAZOP-studien:')
+        'Analysobjektet delades in i noder för att varje funktion skulle kunna '
+        'granskas sammanhållet. För varje nod behandlade analysgruppen den '
+        'avsedda funktionen, relevanta driftfall och gränssnitt mot angränsande '
+        'system. Följande noder ingick i studien:')
     if data['nodes']:
         _numbered_list(document, [
             _value(node.get('name'), 'nodnamn') for node in data['nodes']
@@ -866,8 +888,8 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     if field('Resultat och slutsatser'):
         document.add_paragraph(field('Resultat och slutsatser'))
     document.add_paragraph(
-        'Den detaljerade redovisningen finns i HAZOP-protokollet och i '
-        'rekommendationslistan i rapportens bilagor.')
+        'Det fullständiga analysresultatet redovisas i HAZOP-protokollet och '
+        'rekommendationsregistret i rapportens bilagor.')
 
     document.add_page_break()
     _front_heading('Förkortningar')
@@ -885,26 +907,29 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     _chapter(document, '1 Inledning')
     document.add_paragraph(
-        f'HAZOP-studien har genomförts för {project}, som tillhör {client}. '
-        f'{company_name} har fått i uppgift att leda och dokumentera HAZOP-studien. '
-        'Kapitlet beskriver bakgrunden till arbetet, studiens syfte och omfattning '
-        'samt de avgränsningar som har gällt för den genomförda analysen.')
+        f'{client} har låtit genomföra en HAZOP-studie av {project}. '
+        f'{company_name} har fått i uppdrag att leda analysen och dokumentera '
+        'resultatet. HAZOP är en systematisk metod för att undersöka hur en '
+        'process eller ett system kan avvika från sin avsedda funktion. Under '
+        'studien kombinerades fördefinierade ledord med analysgruppens kunskap '
+        'om konstruktion, drift och underhåll. På så sätt kunde gruppen '
+        'identifiera möjliga orsaker, konsekvenser och befintliga skydd samt '
+        'uppmärksamma frågor som kan påverka säkerhet eller drift. Rapporten '
+        'beskriver studiens förutsättningar, genomförande och resultat.')
     document.add_heading('1.1 Bakgrund', 2)
     document.add_paragraph(
-        'Studien har genomförts som en strukturerad genomgång av möjliga avvikelser '
-        'från systemets avsedda funktion. Rapporten sammanfattar genomförandet, '
-        'eventuella avvikelser från planerat arbetssätt och de resultat som har '
-        'dokumenterats i HAZOP-protokollet. HAZOP är en etablerad metod för att '
-        'pröva hur en process eller anläggning kan avvika från sin avsedda funktion. '
-        'Genom att kombinera ledord med analysgruppens erfarenhet har möjliga orsaker, '
-        'konsekvenser och befintliga skydd identifierats. Arbetssättet har även '
-        'synliggjort operabilitetsfrågor och gett ett gemensamt underlag för fortsatt '
-        'riskhanteringsarbete, verifiering och riskreducerande åtgärder.')
+        'Studien genomfördes för att granska den aktuella utformningen och '
+        'samla analysgruppens bedömningar i ett gemensamt protokoll. Protokollet '
+        'visar vilka avvikelser som behandlades, hur gruppen resonerade kring '
+        'orsaker och konsekvenser samt vilka rekommendationer som formulerades. '
+        'Rapporten sammanfattar detta arbete och ger en spårbar grund för '
+        'fortsatta beslut, verifieringar och riskreducerande åtgärder.')
     document.add_heading('1.2 Syfte och omfattning', 2)
     document.add_paragraph(
-        'Syftet har varit att identifiera och värdera risker samt operabilitetsfrågor '
-        'inom det analyserade systemet och att dokumentera rekommendationer där '
-        'ytterligare åtgärder har bedömts motiverade.')
+        'Syftet med studien var att identifiera risker och operabilitetsproblem '
+        'inom det analyserade systemet. Analysgruppen bedömde de identifierade '
+        'scenarierna och formulerade rekommendationer när ytterligare utredning, '
+        'verifiering eller åtgärd bedömdes vara motiverad.')
     if field('Syfte'):
         document.add_paragraph(field('Syfte'))
     if field('Omfattning'):
@@ -915,8 +940,9 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         document.add_paragraph('De driftsituationer som har ingått har varit: ' + field('Driftfall'))
     document.add_heading('1.3 Avgränsning', 2)
     document.add_paragraph(
-        'Bedömningen har avgränsats till de systemdelar, noder, ritningar och övriga '
-        'dokument som anges i denna rapport.')
+        'Studien omfattade de systemdelar och gränssnitt som framgår av '
+        'nodindelningen. Bedömningarna grundades på de ritningar och övriga '
+        'dokument som anges i rapporten.')
     if field('Avgränsningar'):
         document.add_paragraph(field('Avgränsningar'))
     if field('Analysförutsättningar'):
@@ -924,16 +950,16 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     _chapter(document, '2 Dokumentunderlag')
     document.add_paragraph(
-        'För att genomföra studien har ett dokumenterat underlag använts. Ritningar, '
-        'revisionsuppgifter och övriga referensdokument har gjort det möjligt att '
-        'avgränsa noderna och följa analysens resultat tillbaka till aktuella '
-        'förutsättningar. Detta kapitel sammanställer underlaget som var tillgängligt '
-        'för analysgruppen.')
+        'Studien genomfördes med stöd av de ritningar och projektdokument som '
+        'var tillgängliga för analysgruppen. Underlaget användes för att '
+        'fastställa nodernas gränser, beskriva systemets avsedda funktion och '
+        'bedöma de scenarier som behandlades. Dokumentnummer och revisioner '
+        'redovisas i detta kapitel så att analysens förutsättningar kan följas.')
     document.add_heading('2.1 Ritningsunderlag', 2)
     document.add_paragraph(
-        'Det underlag som användes för HAZOP-studien omfattade P&ID-ritningar '
-        'och övriga projektdokument enligt tabell 2-1. Uppgifterna identifierar '
-        'det grafiska underlag som nodindelningen och scenarioanalysen baserades på.')
+        'P&ID-ritningarna och övriga registrerade projektdokument redovisas i '
+        'tabell 2-1. Dessa dokument utgjorde underlag för nodindelningen och '
+        'den efterföljande scenarioanalysen.')
     sheets = [dict(s) for s in db.get_sheets()]
     _caption(document, '2.1', 'Dokumentunderlag')
     _table(document, ['Dokumentnummer', 'Dokumenttitel', 'Revision', 'Datum', 'PDF sida'], [
@@ -948,26 +974,25 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     if standard_template:
         _chapter(document, '4 Riskbedömning')
         document.add_paragraph(
-            'Riskbedömningen ger analysgruppen ett gemensamt sätt att värdera '
-            'de scenarier som identifieras. Kapitlet ska redovisa den matris, '
-            'de skalor och de bedömningsgrunder som används i studien, så att '
-            'resultatet kan förstås och följas upp på ett enhetligt sätt.')
+            'Riskbedömningen ger analysgruppen en gemensam grund för att värdera '
+            'de scenarier som identifieras. Detta kapitel redovisar den matris, '
+            'de skalor och de definitioner som ska användas i studien.')
         document.add_heading('4.1 Riskmatris', 2)
         document.add_paragraph(
-            'Tabell 4-1 återger samma axelval, visningsriktning, '
-            'risknivåer och färger som i det aktuella HAZOP-projektet. '
-            'Acceptanskriterierna för nivåerna redovisas i tabell 4-1a.')
+            'Tabell 4-1 ska redovisa studiens riskmatris med valda axlar, '
+            'nivånamn och färger. Acceptanskriterierna för risknivåerna ska '
+            'redovisas i tabell 4-1a.')
         document.add_paragraph(missing('studiens riskmatris'))
         document.add_paragraph(missing('acceptanskriterier för risknivåerna'))
         document.add_heading('4.2 Frekvensskala', 2)
         document.add_paragraph(
-            'Tabell 4-2 återger de frekvensnivåer och definitioner som '
-            'analysgruppen ska använda.')
+            'Tabell 4-2 ska redovisa de frekvensnivåer och definitioner som '
+            'analysgruppen använder i studien.')
         document.add_paragraph(missing('frekvensskala och definitioner'))
         document.add_heading('4.3 Konsekvensdefinitioner', 2)
         document.add_paragraph(
-            'Tabellerna 4.3.1 och framåt återger konsekvensdefinitioner '
-            'för studiens kategorier.')
+            'Tabell 4-3 ska redovisa konsekvensdefinitionerna för de kategorier '
+            'som ingår i studien.')
         document.add_paragraph(missing('konsekvenskategorier och definitioner'))
         _prose(document, data, 'Frekvensunderlag', '4.4 Underlag för frekvenser')
         _prose(document, data, 'Barriärunderlag', '4.5 Underlag för barriärer och enablers')
@@ -976,51 +1001,61 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     _chapter(document, '5 Resultat och uppföljning')
     document.add_paragraph(
-        'Kapitlet samlar studiens övergripande resultat och beskriver hur de '
-        'frågor som identifierats ska tas vidare. Syftet är att ge en tydlig '
-        'övergång från analys till fortsatt riskhanteringsarbete, verifiering eller '
-        'åtgärdshantering.')
+        'Detta kapitel sammanfattar studiens resultat och beskriver hur '
+        'rekommendationerna ska hanteras efter avslutad analys. Den detaljerade '
+        'bakgrunden till varje rekommendation finns i HAZOP-protokollet.')
     document.add_paragraph(
-        'Slutsatserna bör läsas tillsammans med det detaljerade protokollet. '
-        'Uppföljningen behöver säkerställa att varje rekommendation får en '
-        'tydlig hantering och att eventuella kvarstående risker bedöms på '
-        'avsedd beslutsnivå.')
+        'Varje rekommendation behöver tilldelas en ansvarig och föras till ett '
+        'dokumenterat beslut. Om rekommendationen genomförs ska åtgärden '
+        'verifieras innan den stängs. Om den avslås eller ersätts av en annan '
+        'lösning ska beslutet och dess grund dokumenteras.')
     if field('Resultat och slutsatser'):
         _prose(document, data, 'Resultat och slutsatser', '5.1 Resultat och slutsatser')
+    else:
+        document.add_heading('5.1 Resultatöversikt', 2)
+        node_phrase = count_phrase(len(data['nodes']), 'nod')
+        consequence_phrase = count_phrase(
+            data['consequence_count'], 'dokumenterad konsekvenspost',
+            'dokumenterade konsekvensposter')
+        recommendation_phrase = count_phrase(
+            len(data['recommendations']), 'rekommendation')
+        document.add_paragraph(
+            f"Studien omfattade {node_phrase} och resulterade i "
+            f"{consequence_phrase}. Analysgruppen formulerade "
+            f"{recommendation_phrase}, som redovisas i bilaga 4.")
     document.add_heading('5.2 Rekommendationernas status', 2)
     document.add_paragraph(
-        'Tabell 5-1 ger en översikt över rekommendationernas registrerade '
-        'status. Fullständig rekommendationstext, ansvarig, åtgärdsdatum och '
-        'koppling till berörda scenarier redovisas i tabell B4-1.')
+        'Tabell 5-1 sammanfattar rekommendationerna efter registrerad status. '
+        'Rekommendationstext, ansvarig, åtgärdsdatum och koppling till '
+        'berörda scenarier redovisas i tabell B4-1.')
     status_counts = Counter(str(r.get('status') or 'Ej angiven') for r in data['recommendations'])
     _caption(document, '5.1', 'Rekommendationer per registrerad status')
     _table(document, ['Registrerad status', 'Antal'], sorted(status_counts.items())
            or ([[missing('status'), missing('antal')]] if standard_template
                else [['Inga rekommendationer registrerade', 0]]), [125, 35])
     document.add_paragraph(
-        'Statusuppgifterna återges som registrerade. En stängd rekommendation '
-        'innebär inte automatiskt att kvarvarande risk är bedömd eller accepterad.')
+        'Tabellen återger den status som var registrerad när rapporten '
+        'exporterades. En rekommendation bör inte stängas förrän beslutet är '
+        'dokumenterat och en genomförd åtgärd har verifierats.')
     document.add_heading('5.3 Rekommendationer', 2)
     document.add_paragraph(
-        'Rekommendationerna har tagits fram gemensamt av analysgruppen utifrån '
-        'de identifierade scenarierna och den samlade diskussionen under studien. '
-        'För varje rekommendation ska en bedömning göras av om den ska '
-        'implementeras eller inte. Oavsett vilket beslut som fattas ska beslutet '
-        'och dess motivering dokumenteras, tillsammans med ansvar och eventuell '
-        'tidplan för uppföljning.')
+        'Analysgruppen formulerade rekommendationerna utifrån de scenarier som '
+        'behandlades under studien. Varje rekommendation ska bedömas och '
+        'antingen genomföras, avslås eller utredas vidare. Ansvarig, beslut, '
+        'motivering och planerad tidpunkt för uppföljning ska dokumenteras i '
+        'rekommendationsregistret.')
     if field('Uppföljning'):
         document.add_paragraph(field('Uppföljning'))
 
-    _chapter(document, 'Bilaga 1 Avvikelser och förkortningar')
+    _chapter(document, 'Bilaga 1 Avvikelser')
     document.add_paragraph(
-        'Denna bilaga ger en överblick över de avvikelser som har behandlats i '
-        'studien och förklarar de förkortningar som används i rapporten. '
-        'Studiens metod och genomförande har beskrivits i avsnitt 3.1.')
+        'Denna bilaga sammanställer de avvikelser som användes i studien. '
+        'Metoden och arbetsgången beskrivs i avsnitt 3.1.')
     document.add_heading('B1.1 Registrerade avvikelser', 2)
     document.add_paragraph(
-        'Tabell B1-1 visar de avvikelser som finns registrerade för studiens '
-        'noder. Förteckningen ger en överblick över analysens frågeställningar '
-        'men ersätter inte scenarioredovisningen i protokollet.')
+        'Tabell B1-1 visar de avvikelser som användes för att utmana nodernas '
+        'avsedda funktion. Alla avvikelser var inte relevanta för varje nod; '
+        'den fullständiga tillämpningen framgår av HAZOP-protokollet.')
     deviations = list(dict.fromkeys(
         (d['description'] or '').strip() for n in data['nodes'] for d in db.deviations(n['id'])))
     _caption(document, 'B1.1', 'Registrerade avvikelser')
@@ -1030,25 +1065,26 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     section = document.add_section(WD_SECTION_START.NEW_PAGE)
     width, margin = _page_setup(section, True, paper_size)
-    heading = document.add_heading('Bilaga 3 HAZOP protokoll', 1)
+    heading = document.add_heading('Bilaga 3 HAZOP-protokoll', 1)
     heading.paragraph_format.page_break_before = False
     document.add_paragraph(
-        'Protokollet är studiens detaljerade redovisning. Här kan läsaren följa '
-        'resonemanget från avvikelse och orsak till konsekvens, befintliga '
-        'barriärer, riskbedömning och eventuell rekommendation. Noderna '
-        'redovisas i samma ordning som i sammanfattningen och nodbilagan.')
+        'HAZOP-protokollet innehåller studiens detaljerade resultat. För varje '
+        'behandlat scenario redovisas avvikelse, orsak, konsekvens, befintliga '
+        'barriärer, riskbedömning och eventuell rekommendation. Noderna följer '
+        'samma ordning som i sammanfattningen och bilaga 2.')
     document.add_paragraph(
-        'Scenarioreferenserna följer ordningen studie.nod.avvikelse.orsak.konsekvens '
-        'och redovisas tillsammans med de registrerade bedömningarna.')
+        'Varje scenarioreferens följer ordningen '
+        'studie.nod.avvikelse.orsak.konsekvens. Referensen används även i '
+        'rekommendationsregistret för att koppla en rekommendation till rätt '
+        'del av protokollet.')
     for index, group in enumerate(_group_rows(_annotated_worksheet_rows(db, data['rows']))):
         if index:
             document.add_page_break()
         node_label = group[0]['values'][0] if group and group[0].get('values') else ''
         document.add_paragraph(
             f"Tabell B3-{index + 1} redovisar HAZOP-protokollet för "
-            f"{node_label or 'den aktuella noden'}. Rekommendationer i tabellen "
-            'återfinns även i rekommendationslistan med referens tillbaka till '
-            'berört scenario.')
+            f"{node_label or 'den aktuella noden'}. Eventuella rekommendationer "
+            'återfinns även i tabell B4-1 med hänvisning till berört scenario.')
         _caption(document, f'B3.{index + 1}', 'HAZOP protokoll per nod')
         _add_node_table(document, group, width, margin)
     if not data['rows']:
@@ -1059,16 +1095,14 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     document.add_page_break()
     document.add_heading('Bilaga 4 Rekommendationslista', 1)
     document.add_paragraph(
-        'Rekommendationslistan samlar de frågor som analysgruppen har bedömt '
-        'behöver utredas, verifieras eller åtgärdas efter genomgången. Den är '
-        'avsedd att fungera som ett spårbart underlag för ansvarsfördelning och '
-        'fortsatt uppföljning.')
+        'Denna bilaga samlar de rekommendationer som analysgruppen formulerade '
+        'under studien. Registret ska användas för att dokumentera ansvar, '
+        'beslut, genomförande och verifierad stängning.')
     document.add_heading('B4.1 Rekommendationsregister', 2)
     document.add_paragraph(
-        'Tabell B4-1 redovisar rekommendationerna med ansvarig, åtgärdsdatum '
-        'och registrerad status. Scenarioreferenserna visar var varje '
-        'rekommendation hör hemma i bilaga 3 och gör det möjligt att följa '
-        'åtgärden tillbaka till analysen.')
+        'Tabell B4-1 redovisar varje rekommendation med ansvarig, åtgärdsdatum '
+        'och registrerad status. Scenarioreferensen visar var frågan behandlades '
+        'i bilaga 3.')
     _caption(document, 'B4.1', 'Rekommendationer och scenarioreferenser')
     if data['recommendation_rows']:
         _add_recommendation_table(document, data['recommendation_rows'], width, margin)
@@ -1077,9 +1111,9 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     _chapter(document, 'Bilaga 5 Node Markup')
     document.add_paragraph(
-        'Denna bilaga redovisar node markup för de analyserade noderna. '
-        'Markeringarna klipps in från respektive P&ID som en del av den slutliga '
-        'rapportdokumentationen.')
+        'Denna bilaga redovisar nodindelningen markerad på aktuella P&ID-'
+        'ritningar. Markeringarna infogas för respektive nod när rapporten '
+        'färdigställs.')
 
     # Keep both original front-matter headers. Body and landscape sections
     # share the full source header; use continuous, refreshed page numbering.

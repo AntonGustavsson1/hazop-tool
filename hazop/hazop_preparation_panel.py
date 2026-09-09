@@ -1874,15 +1874,24 @@ class HAZOPPreparationPanel(QWidget):
         pal_lay.addStretch()
         ml.addWidget(pal_box)
 
-        levels_box = QGroupBox("Risknivåer – definition per celltyp")
+        levels_box = QGroupBox("Acceptanskriterier")
         levels_lay = QVBoxLayout(levels_box)
-        levels_lay.addWidget(QLabel("Ange vad exempelvis grönt, gult och rött innebär i den aktuella matrisen."))
+        levels_lay.addWidget(QLabel(
+            "Ange hur varje risknivå ska tolkas och hanteras. "
+            "Namnändringar uppdaterar motsvarande celler i riskmatrisen."))
         self._risk_level_table = QTableWidget(0, 3)
-        self._risk_level_table.setHorizontalHeaderLabels(["Färg", "Risknivå", "Definition"])
+        self._risk_level_table.setHorizontalHeaderLabels(
+            ["Färg", "Risknivå", "Acceptanskriterium"])
         self._risk_level_table.setMinimumHeight(80)
         self._risk_level_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._risk_level_table.itemChanged.connect(self._on_risk_level_item_changed)
         levels_lay.addWidget(self._risk_level_table)
+        levels_actions = QHBoxLayout()
+        save_levels_btn = QPushButton("Spara acceptanskriterier")
+        save_levels_btn.clicked.connect(self._save_acceptance_criteria)
+        levels_actions.addWidget(save_levels_btn)
+        levels_actions.addStretch()
+        levels_lay.addLayout(levels_actions)
 
         # ── Matrix grid ───────────────────────────────────────────────────────
         # Use a wrapper so matrix stays at natural size (top-left) while the
@@ -2049,7 +2058,7 @@ class HAZOPPreparationPanel(QWidget):
         subnav.setContentsMargins(8, 6, 8, 0)
         self._risk_matrix_btn = QPushButton("Riskmatris")
         self._risk_axes_btn = QPushButton("Axlar")
-        self._risk_levels_btn = QPushButton("Risknivåer")
+        self._risk_levels_btn = QPushButton("Acceptanskriterier")
         self._risk_lopa_btn = QPushButton("LOPA")
         for btn in (self._risk_matrix_btn, self._risk_axes_btn, self._risk_levels_btn, self._risk_lopa_btn):
             btn.setCheckable(True)
@@ -4085,6 +4094,12 @@ class HAZOPPreparationPanel(QWidget):
         item.setData(Qt.ItemDataRole.UserRole, new_label)
         self._matrix_grid.activate()
 
+    def _save_acceptance_criteria(self):
+        """Persist definitions and renamed matrix-cell labels together."""
+        if self._save_matrix_values(show_confirmation=False):
+            QMessageBox.information(
+                self, "Sparat", "Acceptanskriterierna har sparats med riskmatrisen.")
+
     def _save_matrix_values(self, show_confirmation=True):
         n_cons = self._rows_spin.value()   # consequence levels (rows in data)
         n_freq = self._cols_spin.value()   # frequency levels  (cols in data)
@@ -4201,10 +4216,11 @@ class HAZOPPreparationPanel(QWidget):
                 self.db.set_risk_matrix(cfg)
         except Exception as exc:
             QMessageBox.critical(self, "Riskmatrisen sparades inte", str(exc))
-            return
+            return False
         if show_confirmation:
             QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
         self.matrix_changed.emit()
+        return True
 
     def _reload_custom_matrix_templates(self):
         """Show project-local templates immediately below the standard ones."""
