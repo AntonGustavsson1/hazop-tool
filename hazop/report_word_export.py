@@ -379,7 +379,7 @@ def _add_matrix(document, db, data):
         'Protokollet redovisar bedömningen före och efter tillgodoräknade '
         'barriärer samt de enablers som har beaktats. Färgen i matrisen visar '
         'risknivån, och tabell 4-1a beskriver hur respektive nivå ska hanteras.')
-    document.add_heading('4.1 Riskmatris', 2)
+    document.add_heading('4.1 Riskmatris och acceptanskriterier', 2)
     document.add_paragraph(
         'Tabell 4-1 visar den riskmatris som användes i studien. Axelriktning, '
         'färger och nivånamn överensstämmer med den matris som finns sparad i '
@@ -496,6 +496,8 @@ def _add_matrix(document, db, data):
     _table(document, ['Nivå', 'Definition'],
            [[code, _value(label, 'frekvensdefinition')]
             for code, label in zip(x_codes, matrix['x_labels'])], [25, 135])
+    if data['field']('Frekvensunderlag'):
+        document.add_paragraph(data['field']('Frekvensunderlag'))
     from docx.enum.section import WD_SECTION_START
     landscape_section = document.add_section(WD_SECTION_START.NEW_PAGE)
     _page_setup(landscape_section, landscape=True, paper='A4')
@@ -533,11 +535,7 @@ def _add_matrix(document, db, data):
         document.add_paragraph(missing('konsekvenskategorier'))
     portrait_section = document.add_section(WD_SECTION_START.NEW_PAGE)
     _page_setup(portrait_section, landscape=False, paper='A4')
-    next_section = 4
-    if data['field']('Frekvensunderlag'):
-        _prose(document, data, 'Frekvensunderlag', '4.4 Underlag för frekvenser')
-        next_section = 5
-    document.add_heading(f'4.{next_section} Underlag för barriärer och enablers', 2)
+    document.add_heading('4.4 Barriärer och enablers', 2)
     document.add_paragraph(
         'Barriärer redovisas under den konsekvens där analysgruppen bedömde att '
         'de gav ett relevant skydd. Enablers används för att beskriva '
@@ -554,7 +552,7 @@ def _add_matrix(document, db, data):
             enabler_rrfs.setdefault(description, set()).add(
                 '' if rf.get('rrf') is None else f"{float(rf['rrf']):g}")
     if enabler_rrfs:
-        _caption(document, f'4-{next_section}', 'Typer av använda enablers och RRF')
+        _caption(document, '4-4', 'Typer av använda enablers och RRF')
         _table(document, ['Typ av enabler', 'RRF'], [
             [description, ', '.join(sorted(values, key=lambda v: (v == '', float(v) if v else 0))) or missing('RRF')]
             for description, values in sorted(enabler_rrfs.items())
@@ -563,13 +561,13 @@ def _add_matrix(document, db, data):
         document.add_paragraph(data['field']('Barriärunderlag'))
 
 
-def _add_participants(document, db, data):
-    _chapter(document, '3 Genomförande och deltagare')
+def _add_participants(document, db, data, *, standard_template=False):
+    _chapter(document, '3 Genomförande')
     document.add_paragraph(
         'HAZOP-studien genomfördes som en gemensam, tvärdisciplinär genomgång. '
         'Deltagarna bidrog med kunskap om systemets konstruktion, process, '
         'drift och underhåll. Detta kapitel beskriver hur analysen genomfördes '
-        'och vilka personer som deltog.')
+        'och hur analysgruppen var sammansatt.')
     document.add_heading('3.1 Metod och arbetssätt', 2)
     document.add_paragraph(
         'Analysobjektet delades in i noder med tydliga gränser. Innan en nod '
@@ -614,7 +612,7 @@ def _add_participants(document, db, data):
     _caption(document, '3.1', 'Analystillfällen')
     _table(document, ['Tillfälle', 'Datum', 'Tid', 'Plats'], session_rows or [
         ['1', missing('analystillfälle'), '', '']], [17, 28, 43, 72])
-    document.add_heading('3.3 Deltagare', 2)
+    document.add_heading('3.3 Analysgrupp och närvaro', 2)
     document.add_paragraph(
         'De personer som deltog i studien redovisas i tabell 3-2 tillsammans '
         'med registrerade roller och övriga deltagaruppgifter.')
@@ -636,9 +634,8 @@ def _add_participants(document, db, data):
     _caption(document, '3.2', 'Deltagare och roller')
     _table(document, ['Förnamn', 'Efternamn', 'Deltagaruppgifter'],
            participant_rows or [[missing('deltagare'), '', '']], [32, 40, 88])
-    document.add_heading('3.4 Närvaro', 2)
     document.add_paragraph(
-        'Tabell 3-3 visar deltagarnas närvaro vid respektive analystillfälle. '
+        'Deltagarnas närvaro vid respektive analystillfälle redovisas i tabell 3-3. '
         'Anteckningar kan användas för att ange om någon endast deltog under '
         'en del av genomgången.')
     attendance = db.get_attendance_details()
@@ -649,12 +646,25 @@ def _add_participants(document, db, data):
         statuses = []
         for session in sessions:
             state = attendance.get((p['id'], session['id']))
-            statuses.append(('N' if state and state[0] else 'F') if short_status else ('Närvarande' if state and state[0] else 'Frånvarande') if state else missing('närvaro'))
+            if state:
+                status = ('N' if state[0] else 'F') if short_status else (
+                    'Närvarande' if state[0] else 'Frånvarande')
+                note = str(state[1] or '').strip() if len(state) > 1 else ''
+                statuses.append(status + ('\n' + note if note else ''))
+            else:
+                statuses.append(missing('närvaro'))
         attendance_rows.append([name] + statuses)
     attendance_headers = ['Deltagare'] + [s.get('date') or f'Tillfälle {i}' for i, s in enumerate(sessions, 1)]
     _caption(document, '3.3', 'Närvaro per analystillfälle')
     if attendance_rows and sessions:
         _table(document, attendance_headers, attendance_rows, [55] + [105 / len(sessions)] * len(sessions))
+    elif standard_template:
+        _table(
+            document,
+            ['Deltagare', 'Datum / analystillfälle'],
+            [[missing('deltagare'), missing('närvaro')]],
+            [55, 105],
+        )
 
 
 def _node_appendix(document, db, data):
@@ -710,8 +720,6 @@ def _node_appendix(document, db, data):
     else:
         widths = [60, 207]
     _table(document, columns, [[row[key] or missing(key.lower()) for key in columns] for row in rows] or [[missing('noder'), '']], widths)
-    if not data['nodes']:
-        document.add_paragraph(missing('noder och designavsikt'))
 
 
 def _annotated_worksheet_rows(db, rows):
@@ -731,6 +739,37 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         return f"{count} {singular if count == 1 else (plural or singular + 'er')}"
 
     data = collect_report_data(db)
+    closed_statuses = {'stängd', 'implementerad', 'avslutad', 'ej implementerad'}
+    open_recommendation_count = sum(
+        1 for recommendation in data['recommendations']
+        if str(recommendation.get('status') or '').strip().casefold() not in closed_statuses)
+    recommendation_nodes = Counter()
+    for recommendation in data['recommendation_rows']:
+        linked_nodes = set()
+        for reference in str(recommendation[5]).split(', '):
+            match = re.match(r'^\d+\.(\d+)\.', reference)
+            if match:
+                linked_nodes.add(int(match.group(1)))
+        recommendation_nodes.update(linked_nodes)
+    residual_by_consequence = {}
+    for row in data['rows']:
+        consequence_id = row['merge_key'][3]
+        risk_after = row.get('risk_after')
+        if consequence_id is not None and risk_after and str(risk_after[0]).strip():
+            residual_by_consequence[consequence_id] = str(risk_after[0]).strip()
+    residual_risks = Counter(residual_by_consequence.values())
+    matrix_level_order = {
+        str(item.get('label') or '').strip().casefold(): index
+        for index, item in enumerate(data['matrix'].get('risk_level_definitions') or [])
+    }
+    ordered_residual_risks = sorted(
+        residual_risks.items(),
+        key=lambda item: (matrix_level_order.get(item[0].casefold(), 999), item[0].casefold()))
+    residual_risk_summary = ', '.join(
+        f'{label}: {count}' for label, count in ordered_residual_risks)
+    high_risk_count = sum(
+        count for label, count in residual_risks.items()
+        if re.search(r'krit|hög|high|oaccept|röd|red|extrem', label, re.IGNORECASE))
     project = _value(db.get_config('project_name', ''), 'system')
     client = _value(db.get_config('project_client', ''), 'kund')
     field = data['field']
@@ -781,6 +820,9 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'REVISION_AUTHOR': missing('utfört av'),
     }]
     document = new_report_document(values, revision_rows)
+    for text in document.element.iter(qn('w:t')):
+        if text.text:
+            text.text = text.text.replace('Version ', 'Revision ')
     for cell in document.tables[0].rows[3].cells:
         for paragraph in cell.paragraphs:
             for run in paragraph.runs:
@@ -796,6 +838,22 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     styles['Heading 1'].paragraph_format.page_break_before = False
     if 'TOC Heading' not in styles:
         styles.add_style('TOC Heading', WD_STYLE_TYPE.PARAGRAPH).base_style = styles['Heading 1']
+    if 'Appendix Node Heading' not in styles:
+        node_heading_style = styles.add_style(
+            'Appendix Node Heading', WD_STYLE_TYPE.PARAGRAPH)
+        node_heading_style.base_style = styles['Heading 2']
+        node_heading_style.paragraph_format.space_before = Pt(8)
+        node_heading_style.paragraph_format.space_after = Pt(4)
+        node_heading_style.paragraph_format.page_break_before = False
+        outline_level = OxmlElement('w:outlineLvl')
+        outline_level.set(qn('w:val'), '9')
+        node_heading_style.element.get_or_add_pPr().append(outline_level)
+    for style_name, size, after in (('TOC 1', 10, 1), ('TOC 2', 9, 0)):
+        if style_name in styles:
+            styles[style_name].font.size = Pt(size)
+            styles[style_name].paragraph_format.space_before = Pt(0)
+            styles[style_name].paragraph_format.space_after = Pt(after)
+            styles[style_name].paragraph_format.line_spacing = 1
     document.core_properties.title = values['TITLE']
     document.core_properties.author = issued_by or ''
     document.core_properties.subject = 'HAZOP-analys utan SIL-bedömning'
@@ -820,41 +878,11 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'systemets avsedda funktion kan uppstå, vilka konsekvenser de kan få '
         'och vilka befintliga skydd som påverkar händelseförloppet. Resultatet '
         'ska användas som underlag för projektets fortsatta riskhantering.')
-    if standard_template:
-        document.add_paragraph(
-            missing('antal analystillfällen, noder, konsekvensposter och rekommendationer'))
-    else:
+    if not standard_template:
         session_count = len(data['sessions'])
         session_label = 'analystillfälle' if session_count == 1 else 'analystillfällen'
-        node_phrase = count_phrase(len(data['nodes']), 'nod')
-        consequence_phrase = count_phrase(
-            data['consequence_count'], 'konsekvenspost', 'konsekvensposter')
-        recommendation_phrase = count_phrase(
-            len(data['recommendations']), 'rekommendation')
         document.add_paragraph(
-            f"Studien genomfördes vid {session_count} {session_label} och "
-            f"omfattade {node_phrase}. Analysgruppen dokumenterade "
-            f"{consequence_phrase} och formulerade {recommendation_phrase} "
-            'för fortsatt hantering.')
-        closed = {'stängd', 'implementerad', 'avslutad', 'ej implementerad'}
-        open_count = sum(1 for r in data['recommendations'] if str(r.get('status') or '').strip().casefold() not in closed)
-        node_counts = Counter()
-        for rec in data['recommendation_rows']:
-            for item in str(rec[5]).split(', '):
-                parts = item.split('.')
-                if len(parts) > 1 and parts[1].isdigit():
-                    node_counts[int(parts[1])] += 1
-        if data['recommendations']:
-            most_items = [f'nod {n} ({count})' for n, count in node_counts.most_common(3)]
-            if len(most_items) > 1:
-                most = ', '.join(most_items[:-1]) + ' och ' + most_items[-1]
-            else:
-                most = most_items[0] if most_items else ''
-            document.add_paragraph(
-                'Rekommendationsregistret innehåller ' +
-                (f'{open_count} öppen rekommendation.' if open_count == 1 else
-                 f'{open_count} öppna rekommendationer.') +
-                (f' Flest rekommendationer är kopplade till {most}.' if most else ''))
+            f'Studien genomfördes vid {session_count} {session_label}.')
         if data['sessions']:
             document.add_paragraph(
                 'HAZOP-studien genomfördes vid följande tillfälle:'
@@ -873,6 +901,8 @@ def build_report(db, *, paper_size='A3', standard_template=False):
                     details += f' ({mode})'
                 session_lines.append(details)
             _numbered_list(document, session_lines)
+    else:
+        document.add_paragraph(missing('analystillfällen, datum och plats'))
     _front_heading('Studerade noder')
     document.add_paragraph(
         'Analysobjektet delades in i noder för att varje funktion skulle kunna '
@@ -885,11 +915,43 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         ])
     else:
         _numbered_list(document, [missing('numrerad nodlista')])
+    _front_heading('Huvudresultat')
+    if standard_template:
+        document.add_paragraph(
+            missing('antal noder, konsekvensposter och rekommendationer'))
+    else:
+        node_phrase = count_phrase(len(data['nodes']), 'nod')
+        consequence_phrase = count_phrase(
+            data['consequence_count'], 'konsekvenspost', 'konsekvensposter')
+        recommendation_phrase = count_phrase(
+            len(data['recommendations']), 'rekommendation')
+        document.add_paragraph(
+            f'Analysen omfattade {node_phrase}. Analysgruppen dokumenterade '
+            f'{consequence_phrase} och formulerade {recommendation_phrase} '
+            'för fortsatt hantering.')
+        if data['recommendations']:
+            most_items = [
+                f'nod {number} ({count})'
+                for number, count in recommendation_nodes.most_common(3)]
+            if len(most_items) > 1:
+                most = ', '.join(most_items[:-1]) + ' och ' + most_items[-1]
+            else:
+                most = most_items[0] if most_items else ''
+            document.add_paragraph(
+                'Rekommendationsregistret innehåller ' +
+                (f'{open_recommendation_count} öppen rekommendation.'
+                 if open_recommendation_count == 1 else
+                 f'{open_recommendation_count} öppna rekommendationer.') +
+                (f' De noder som har flest kopplade rekommendationer är {most}.'
+                 if len(most_items) > 1 else
+                 f' Den nod som har flest kopplade rekommendationer är {most}.'
+                 if most else ''))
     if field('Resultat och slutsatser'):
         document.add_paragraph(field('Resultat och slutsatser'))
     document.add_paragraph(
-        'Det fullständiga analysresultatet redovisas i HAZOP-protokollet och '
-        'rekommendationsregistret i rapportens bilagor.')
+        'En sammanställning av huvudresultaten finns i tabell 5-1. Det '
+        'fullständiga analysresultatet redovisas i HAZOP-protokollet och '
+        'rekommendationsregistret i bilaga 3 och bilaga 4.')
 
     document.add_page_break()
     _front_heading('Förkortningar')
@@ -902,10 +964,15 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     ], [28, 132])
     document.add_page_break()
     document.add_paragraph('Innehåll', 'TOC Heading')
-    _field_run(document.add_paragraph(), 'TOC \\o "1-3" \\h \\z',
+    _field_run(document.add_paragraph(), 'TOC \\o "1-2" \\h \\z',
                'Uppdatera innehållsförteckningen i Word med Ctrl+A och F9.')
 
-    _chapter(document, '1 Inledning')
+    # The TOC field expands into several paragraphs when Word updates it. A
+    # new-page section immediately after that field can leave an empty page.
+    # Start the body section continuously; Word places the field-end paragraph
+    # at the start of the following page when the TOC is updated.
+    document.add_section(WD_SECTION_START.CONTINUOUS)
+    document.add_heading('1 Inledning', 1)
     document.add_paragraph(
         f'{client} har låtit genomföra en HAZOP-studie av {project}. '
         f'{company_name} har fått i uppdrag att leda analysen och dokumentera '
@@ -918,12 +985,13 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'beskriver studiens förutsättningar, genomförande och resultat.')
     document.add_heading('1.1 Bakgrund', 2)
     document.add_paragraph(
-        'Studien genomfördes för att granska den aktuella utformningen och '
-        'samla analysgruppens bedömningar i ett gemensamt protokoll. Protokollet '
-        'visar vilka avvikelser som behandlades, hur gruppen resonerade kring '
-        'orsaker och konsekvenser samt vilka rekommendationer som formulerades. '
-        'Rapporten sammanfattar detta arbete och ger en spårbar grund för '
-        'fortsatta beslut, verifieringar och riskreducerande åtgärder.')
+        f'Bakgrunden till studien är den aktuella utformningen av {project}. '
+        'Analysgruppen behövde därför gå igenom systemets funktioner, gränssnitt '
+        'och planerade driftfall på ett sammanhållet sätt. Resultatet har '
+        'dokumenterats i ett gemensamt protokoll som kan användas vid fortsatt '
+        'projektering, verifiering och riskhantering.')
+    if field('Bakgrund'):
+        document.add_paragraph(field('Bakgrund'))
     document.add_heading('1.2 Syfte och omfattning', 2)
     document.add_paragraph(
         'Syftet med studien var att identifiera risker och operabilitetsproblem '
@@ -934,11 +1002,15 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         document.add_paragraph(field('Syfte'))
     if field('Omfattning'):
         document.add_paragraph(field('Omfattning'))
-    document.add_paragraph('Analysen har omfattat följande noder:')
-    _numbered_list(document, [_value(node.get('name'), 'nodnamn') for node in data['nodes']] or [missing('numrerad nodlista')])
+    if data['nodes']:
+        document.add_paragraph(
+            f"Analysen har omfattat {count_phrase(len(data['nodes']), 'nod')}. "
+            'Nodindelningen och tillhörande P&ID-referenser redovisas i bilaga 2.')
+    else:
+        document.add_paragraph(missing('omfattning och nodindelning'))
     if field('Driftfall'):
         document.add_paragraph('De driftsituationer som har ingått har varit: ' + field('Driftfall'))
-    document.add_heading('1.3 Avgränsning', 2)
+    document.add_heading('1.3 Avgränsningar', 2)
     document.add_paragraph(
         'Studien omfattade de systemdelar och gränssnitt som framgår av '
         'nodindelningen. Bedömningarna grundades på de ritningar och övriga '
@@ -955,7 +1027,9 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'fastställa nodernas gränser, beskriva systemets avsedda funktion och '
         'bedöma de scenarier som behandlades. Dokumentnummer och revisioner '
         'redovisas i detta kapitel så att analysens förutsättningar kan följas.')
-    document.add_heading('2.1 Ritningsunderlag', 2)
+    other_documents = field('Övriga referensdokument')
+    if other_documents:
+        document.add_heading('2.1 Ritningsunderlag', 2)
     document.add_paragraph(
         'P&ID-ritningarna och övriga registrerade projektdokument redovisas i '
         'tabell 2-1. Dessa dokument utgjorde underlag för nodindelningen och '
@@ -968,16 +1042,19 @@ def build_report(db, *, paper_size='A3', standard_template=False):
          _value(s.get('drawing_revision'), 'revision'),
          _value(s.get('drawing_date'), 'ritningsdatum'), str(s['physical_page'] + 1)]
         for s in sheets] or [[missing('referensdokument'), '', '', '', '']], [34, 51, 23, 32, 20])
-    if field('Övriga referensdokument'):
-        _prose(document, data, 'Övriga referensdokument', '2.2 Övriga referensdokument')
-    _add_participants(document, db, data)
+    if other_documents:
+        document.add_heading('2.2 Övrigt dokumentunderlag', 2)
+        document.add_paragraph(PROSE_INTROS['Övriga referensdokument'])
+        for text in other_documents.split('\n'):
+            document.add_paragraph(text)
+    _add_participants(document, db, data, standard_template=standard_template)
     if standard_template:
         _chapter(document, '4 Riskbedömning')
         document.add_paragraph(
             'Riskbedömningen ger analysgruppen en gemensam grund för att värdera '
             'de scenarier som identifieras. Detta kapitel redovisar den matris, '
             'de skalor och de definitioner som ska användas i studien.')
-        document.add_heading('4.1 Riskmatris', 2)
+        document.add_heading('4.1 Riskmatris och acceptanskriterier', 2)
         document.add_paragraph(
             'Tabell 4-1 ska redovisa studiens riskmatris med valda axlar, '
             'nivånamn och färger. Acceptanskriterierna för risknivåerna ska '
@@ -989,13 +1066,19 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             'Tabell 4-2 ska redovisa de frekvensnivåer och definitioner som '
             'analysgruppen använder i studien.')
         document.add_paragraph(missing('frekvensskala och definitioner'))
+        if field('Frekvensunderlag'):
+            document.add_paragraph(field('Frekvensunderlag'))
         document.add_heading('4.3 Konsekvensdefinitioner', 2)
         document.add_paragraph(
             'Tabell 4-3 ska redovisa konsekvensdefinitionerna för de kategorier '
             'som ingår i studien.')
         document.add_paragraph(missing('konsekvenskategorier och definitioner'))
-        _prose(document, data, 'Frekvensunderlag', '4.4 Underlag för frekvenser')
-        _prose(document, data, 'Barriärunderlag', '4.5 Underlag för barriärer och enablers')
+        document.add_heading('4.4 Barriärer och enablers', 2)
+        document.add_paragraph(PROSE_INTROS['Barriärunderlag'])
+        if field('Barriärunderlag'):
+            document.add_paragraph(field('Barriärunderlag'))
+        else:
+            document.add_paragraph(missing('principer för barriärer och enablers'))
     else:
         _add_matrix(document, db, data)
 
@@ -1004,32 +1087,51 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'Detta kapitel sammanfattar studiens resultat och beskriver hur '
         'rekommendationerna ska hanteras efter avslutad analys. Den detaljerade '
         'bakgrunden till varje rekommendation finns i HAZOP-protokollet.')
+    document.add_heading('5.1 Huvudresultat', 2)
     document.add_paragraph(
-        'Varje rekommendation behöver tilldelas en ansvarig och föras till ett '
-        'dokumenterat beslut. Om rekommendationen genomförs ska åtgärden '
-        'verifieras innan den stängs. Om den avslås eller ersätts av en annan '
-        'lösning ska beslutet och dess grund dokumenteras.')
-    if field('Resultat och slutsatser'):
-        _prose(document, data, 'Resultat och slutsatser', '5.1 Resultat och slutsatser')
+        'Tabell 5-1 sammanfattar studiens omfattning och de resultat som behöver '
+        'beaktas i den fortsatta hanteringen. Den fullständiga redovisningen '
+        'finns i rapportens bilagor.')
+    most_result_items = [
+        f'nod {number} ({count})'
+        for number, count in recommendation_nodes.most_common(3)]
+    if len(most_result_items) > 1:
+        most_result_text = ', '.join(most_result_items[:-1]) + ' och ' + most_result_items[-1]
     else:
-        document.add_heading('5.1 Resultatöversikt', 2)
-        node_phrase = count_phrase(len(data['nodes']), 'nod')
-        consequence_phrase = count_phrase(
-            data['consequence_count'], 'dokumenterad konsekvenspost',
-            'dokumenterade konsekvensposter')
-        recommendation_phrase = count_phrase(
-            len(data['recommendations']), 'rekommendation')
-        document.add_paragraph(
-            f"Studien omfattade {node_phrase} och resulterade i "
-            f"{consequence_phrase}. Analysgruppen formulerade "
-            f"{recommendation_phrase}, som redovisas i bilaga 4.")
+        most_result_text = most_result_items[0] if most_result_items else ''
+    if standard_template:
+        result_rows = [
+            ['Analystillfällen', missing('antal analystillfällen')],
+            ['Analyserade noder', missing('antal noder')],
+            ['Dokumenterade konsekvensposter', missing('antal konsekvensposter')],
+            ['Rekommendationer', missing('antal rekommendationer')],
+            ['Öppna rekommendationer', missing('antal öppna rekommendationer')],
+            ['Risknivåer efter barriärer', missing('risknivåer efter barriärer')],
+            ['Höga eller kritiska riskbedömningar efter barriärer', missing('antal höga eller kritiska riskbedömningar')],
+            ['Noder med flest kopplade rekommendationer', missing('berörda noder')],
+        ]
+    else:
+        result_rows = [
+            ['Analystillfällen', len(data['sessions'])],
+            ['Analyserade noder', len(data['nodes'])],
+            ['Dokumenterade konsekvensposter', data['consequence_count']],
+            ['Rekommendationer', len(data['recommendations'])],
+            ['Öppna rekommendationer', open_recommendation_count],
+            ['Risknivåer efter barriärer', residual_risk_summary or 'Inga registrerade riskbedömningar'],
+            ['Höga eller kritiska riskbedömningar efter barriärer', high_risk_count],
+            ['Noder med flest kopplade rekommendationer', most_result_text or 'Inga kopplade rekommendationer'],
+        ]
+    _caption(document, '5.1', 'Sammanställning av huvudresultat')
+    _table(document, ['Resultatmått', 'Utfall'], result_rows, [105, 55])
+    if field('Resultat och slutsatser'):
+        document.add_paragraph(field('Resultat och slutsatser'))
     document.add_heading('5.2 Rekommendationernas status', 2)
     document.add_paragraph(
-        'Tabell 5-1 sammanfattar rekommendationerna efter registrerad status. '
+        'Tabell 5-2 sammanfattar rekommendationerna efter registrerad status. '
         'Rekommendationstext, ansvarig, åtgärdsdatum och koppling till '
         'berörda scenarier redovisas i tabell B4-1.')
     status_counts = Counter(str(r.get('status') or 'Ej angiven') for r in data['recommendations'])
-    _caption(document, '5.1', 'Rekommendationer per registrerad status')
+    _caption(document, '5.2', 'Rekommendationer per registrerad status')
     _table(document, ['Registrerad status', 'Antal'], sorted(status_counts.items())
            or ([[missing('status'), missing('antal')]] if standard_template
                else [['Inga rekommendationer registrerade', 0]]), [125, 35])
@@ -1044,6 +1146,16 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'antingen genomföras, avslås eller utredas vidare. Ansvarig, beslut, '
         'motivering och planerad tidpunkt för uppföljning ska dokumenteras i '
         'rekommendationsregistret.')
+    document.add_heading('5.4 Fortsatt hantering', 2)
+    document.add_paragraph(
+        'Efter studien ska varje öppen rekommendation tilldelas en ansvarig och '
+        'föras till ett dokumenterat beslut. En rekommendation kan genomföras, '
+        'avslås eller utredas vidare. Beslutet och dess grund ska dokumenteras '
+        'tillsammans med planerat datum för genomförande eller fortsatt utredning.')
+    document.add_paragraph(
+        'En genomförd åtgärd ska verifieras innan rekommendationen stängs. '
+        'Verifieringen ska visa att den beslutade åtgärden är införd och att '
+        'den hanterar den fråga som identifierades i HAZOP-studien.')
     if field('Uppföljning'):
         document.add_paragraph(field('Uppföljning'))
 
@@ -1051,7 +1163,6 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     document.add_paragraph(
         'Denna bilaga sammanställer de avvikelser som användes i studien. '
         'Metoden och arbetsgången beskrivs i avsnitt 3.1.')
-    document.add_heading('B1.1 Registrerade avvikelser', 2)
     document.add_paragraph(
         'Tabell B1-1 visar de avvikelser som användes för att utmana nodernas '
         'avsedda funktion. Alla avvikelser var inte relevanta för varje nod; '
@@ -1078,14 +1189,18 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'rekommendationsregistret för att koppla en rekommendation till rätt '
         'del av protokollet.')
     for index, group in enumerate(_group_rows(_annotated_worksheet_rows(db, data['rows']))):
-        if index:
-            document.add_page_break()
         node_label = group[0]['values'][0] if group and group[0].get('values') else ''
+        node_name = re.sub(r'^\s*\d+\.\s*', '', node_label).strip()
+        node_heading = document.add_paragraph(
+            f"B3.{index + 1} {node_name or 'Aktuell nod'}",
+            style='Appendix Node Heading')
         document.add_paragraph(
             f"Tabell B3-{index + 1} redovisar HAZOP-protokollet för "
-            f"{node_label or 'den aktuella noden'}. Eventuella rekommendationer "
+            f"{node_name or 'den aktuella noden'}. Eventuella rekommendationer "
             'återfinns även i tabell B4-1 med hänvisning till berört scenario.')
-        _caption(document, f'B3.{index + 1}', 'HAZOP protokoll per nod')
+        _caption(
+            document, f'B3.{index + 1}',
+            f"HAZOP-protokoll för {node_name or 'aktuell nod'}")
         _add_node_table(document, group, width, margin)
     if not data['rows']:
         document.add_paragraph(missing('HAZOP protokoll'))
@@ -1098,7 +1213,6 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'Denna bilaga samlar de rekommendationer som analysgruppen formulerade '
         'under studien. Registret ska användas för att dokumentera ansvar, '
         'beslut, genomförande och verifierad stängning.')
-    document.add_heading('B4.1 Rekommendationsregister', 2)
     document.add_paragraph(
         'Tabell B4-1 redovisar varje rekommendation med ansvarig, åtgärdsdatum '
         'och registrerad status. Scenarioreferensen visar var frågan behandlades '
@@ -1109,7 +1223,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     else:
         document.add_paragraph(missing('rekommendationer eller bekräftelse att inga rekommendationer behövs'))
 
-    _chapter(document, 'Bilaga 5 Node Markup')
+    _chapter(document, 'Bilaga 5 Nodmarkeringar')
     document.add_paragraph(
         'Denna bilaga redovisar nodindelningen markerad på aktuella P&ID-'
         'ritningar. Markeringarna infogas för respektive nod när rapporten '
