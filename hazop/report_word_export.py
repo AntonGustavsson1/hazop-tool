@@ -501,24 +501,25 @@ def _add_matrix(document, db, data):
         _prose(document, data, 'Frekvensunderlag', '4.5 Underlag för frekvenser')
     document.add_heading('4.6 Underlag för barriärer och enablers', 2)
     document.add_paragraph(
-        'Barriärer och enablers har beaktats i den konsekvens där de har bedömts '
-        'utgöra ett relevant skydd eller påverka händelseförloppet. De listas '
-        'därför tillsammans med respektive konsekvens. RRF visar den '
-        'riskreduktionsfaktor som har registrerats för varje rad.')
-    barrier_rows = []
+        'Avsnittet sammanställer vilka typer av enablers som har använts i '
+        'analysen och vilka RRF-värden som har registrerats för dem. Barriärer '
+        'och enablers redovisas i övrigt under respektive konsekvens i HAZOP-'
+        'protokollet.')
+    enabler_rrfs = {}
     for row in data['rows']:
-        consequence = (row.get('values') or [''] * 5)[4]
         for rf in db.reduction_factors(row['merge_key'][3]):
             rf = dict(rf)
             description = (rf.get('description') or '').strip()
             if not description or not rf.get('active', 1):
                 continue
-            rrf = '' if rf.get('rrf') is None else f"{float(rf['rrf']):g}"
-            barrier_rows.append([consequence or missing('konsekvens'), description, rrf or missing('RRF')])
-    if barrier_rows:
-        unique_rows = list(dict.fromkeys(tuple(r) for r in barrier_rows))
-        _caption(document, '4-6', 'Barriärer och enablers per konsekvens')
-        _table(document, ['Konsekvens', 'Barriär / enabler', 'RRF'], unique_rows, [65, 85, 25])
+            enabler_rrfs.setdefault(description, set()).add(
+                '' if rf.get('rrf') is None else f"{float(rf['rrf']):g}")
+    if enabler_rrfs:
+        _caption(document, '4-6', 'Typer av använda enablers och RRF')
+        _table(document, ['Typ av enabler', 'RRF'], [
+            [description, ', '.join(sorted(values, key=lambda v: (v == '', float(v) if v else 0))) or missing('RRF')]
+            for description, values in sorted(enabler_rrfs.items())
+        ], [130, 30])
     elif data['field']('Barriärunderlag'):
         document.add_paragraph(data['field']('Barriärunderlag'))
 
