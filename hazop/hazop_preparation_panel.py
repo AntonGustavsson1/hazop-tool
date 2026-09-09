@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
-    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTableWidget,
+    QScrollArea, QSizePolicy, QSpacerItem, QSpinBox, QSplitter, QTableWidget,
     QTableWidgetItem, QStackedWidget, QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
     QWidget,
 )
