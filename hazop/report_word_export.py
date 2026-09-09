@@ -694,7 +694,7 @@ def _node_appendix(document, db, data):
     for key in ('Media', 'Tryck', 'Temperatur'):
         if any(str(row[key]).strip() for row in rows):
             columns.append(key)
-    document.add_paragraph('Tabell B2-1 sammanställer nodernas P&ID-referenser och registrerade processförutsättningar. Tomma uppgifter har utelämnats för att hålla tabellen överskådlig.')
+    document.add_paragraph('Tabell B2-1 sammanställer nodernas P&ID-referenser och de processförutsättningar som har registrerats i studien.')
     _caption(document, 'B2-1', 'Nod- och processuppgifter')
     if len(columns) > 2:
         remaining = 267 - 45 - 105
@@ -827,8 +827,14 @@ def build_report(db, *, paper_size='A3', standard_template=False):
                 if len(parts) > 1 and parts[1].isdigit():
                     node_counts[int(parts[1])] += 1
         if data['recommendations']:
-            most = ', '.join(f'Nod {n} ({count})' for n, count in node_counts.most_common(3))
-            document.add_paragraph(f'{open_count} rekommendationer har ännu inte avslutats.' + (f' Flest rekommendationer berör {most}.' if most else ''))
+            most_items = [f'Nod {n} ({count})' for n, count in node_counts.most_common(3)]
+            if len(most_items) > 1:
+                most = ', '.join(most_items[:-1]) + ' och ' + most_items[-1]
+            else:
+                most = most_items[0] if most_items else ''
+            document.add_paragraph(
+                f'{open_count} öppna rekommendationer.' +
+                (f' Flest rekommendationer berör {most}.' if most else ''))
         if data['sessions']:
             document.add_paragraph(
                 'HAZOP-studien genomfördes vid följande tillfälle:'
