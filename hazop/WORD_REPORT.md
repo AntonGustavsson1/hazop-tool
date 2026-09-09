@@ -8,6 +8,8 @@ Uppdatera innehållsförteckningen i Word med Ctrl+A och F9 om Word frågar.
 ## Rapportmall och datakällor
 
 Förlagan `2x20xx-Report-01 HAZOP_svenska_utan SIL.docx` är oförändrad.
+Exporten använder den rensade, inbyggda ProSa-rapportstommen för framsida,
+dokumentblad (sida 2), sidhuvud, sidfot, Aptos-brödtext och gröna rubrikformat.
 Rapportens struktur har renodlats till dokumentstyrning, sammanfattning,
 inledning, referenser, deltagare, riskbedömning, resultat samt fyra bilagor.
 Gamla kundnamn, rapportnummer, slutsatser, standardhänvisningar och
@@ -41,6 +43,7 @@ värden för samma namn ger ett kompletteringsfält.
 - Rapportnummer, Rapportdatum, Rapportrevision, Rapportstatus, Distribution
 - Framtagen av, Kvalitetsgranskad av, Godkänd av
 - Uppdragsansvarig, Kontaktperson kund, Kontaktuppgifter kund
+- Kontorsadress ProSa, Kontaktuppgifter ProSa, Kundadress
 - Bakgrund, Syfte, Omfattning, Avgränsningar, Driftfall, Analysförutsättningar
 - Övriga referensdokument, Metodreferens
 - Riskacceptanskriterier, Frekvensunderlag, Barriärunderlag
@@ -59,7 +62,8 @@ och rekommendationsceller fylls inte med påhittade uppgifter.
 
 Rapporten är redigerbar i Word. Manuella ändringar i en exporterad DOCX eller
 i `HAZOP_standardmall.docx` läses **inte** tillbaka av programmet; framtida
-exporter bygger på programdata och rapportstrukturen i `report_word_export.py`.
+exporter bygger på programdata, den inbyggda ProSa-stommen och
+rapportstrukturen i `report_word_export.py`.
 Återkommande projekttexter bör därför fyllas i som egna fält.
 
 P&ID-bilder och visuella nodgränser kopieras ännu inte automatiskt. Bilaga 2

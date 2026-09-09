@@ -10,6 +10,15 @@ riskmatris, noder, HAZOP-protokoll och rekommendationer ingår. Rapportdelen
 är A4 stående och bilagornas tabeller A3/A4 liggande. Rapporttexter och
 rapportansvariga fylls från namngivna Egna fält, dokumenterade i WORD_REPORT.md.
 
+Uppdatering 2026-09-09: exporten använder nu en kundrensad inbyggd
+ProSa-stomme med originalets framsida, dokumentblad på sida 2, sidhuvud,
+sidfot, Aptos-brödtext och gröna rubrikformat. Varje kapitel och bilaga har
+en kort beskrivande introduktion som hänvisar till relevant tabell eller
+bilaga. Sidhuvudets bild- och textdelar kopieras explicit till genererade
+sektioner, vilket även täcker liggande protokoll- och rekommendationssidor.
+Historiska dokumentegenskaper och gamla kunduppgifter är rensade ur den
+inbyggda stommen och den exporterade DOCX-filen.
+
 Saknade uppgifter gulmarkeras med [KOMPLETTERA: …], respektive [?] i smal
 frekvenskolumn. Inga gamla kunduppgifter, SIL-resultat eller riskacceptans
 antas. Ej registrerad närvaro skiljs från frånvaro. Rekommendationernas

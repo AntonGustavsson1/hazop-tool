@@ -21,6 +21,7 @@ from worksheet_word_export import (
     _set_cell_shading, _set_repeat_table_header,
 )
 from recommendations_word_export import _add_recommendation_table
+from report_branding import new_report_document, apply_report_fonts
 
 
 # These labels are also the supported field names in Projekt > Egna fält.
@@ -28,6 +29,7 @@ REPORT_FIELDS = (
     'Rapportnummer', 'Rapportdatum', 'Rapportrevision', 'Rapportstatus',
     'Distribution', 'Uppdragsansvarig', 'Kontaktperson kund', 'Kontaktuppgifter kund',
     'Framtagen av', 'Kvalitetsgranskad av', 'Godkänd av',
+    'Kontorsadress ProSa', 'Kontaktuppgifter ProSa', 'Kundadress',
     'Bakgrund', 'Syfte', 'Omfattning', 'Avgränsningar', 'Driftfall',
     'Analysförutsättningar', 'Övriga referensdokument', 'Metodreferens',
     'Riskacceptanskriterier', 'Frekvensunderlag', 'Barriärunderlag',
@@ -161,20 +163,35 @@ def _highlight(paragraph):
 
 
 def _highlight_document(document):
-    def walk(container):
-        for p in container.paragraphs:
-            _highlight(p)
-        seen = set()
-        for table in container.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    if cell._tc not in seen:
-                        seen.add(cell._tc)
-                        walk(cell)
-    walk(document)
-    for section in document.sections:
-        walk(section.header)
-        walk(section.footer)
+    # Include runs inside retained content controls and header text boxes.
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    roots = [document.element]
+    roots += [p.element for p in document.part.package.parts
+              if ('header' in str(p.partname) or 'footer' in str(p.partname))
+              and hasattr(p, 'element')]
+    for root in roots:
+        for run in list(root.iter(qn('w:r'))):
+            texts = list(run.iter(qn('w:t')))
+            content = ''.join(t.text or '' for t in texts)
+            if MISSING_PREFIX not in content and '[?]' not in content:
+                continue
+            parts = re.split(r'(\[KOMPLETTERA: [^\]]*\]|\[\?\])', content)
+            parent, index = run.getparent(), run.getparent().index(run)
+            for part in parts:
+                if not part: continue
+                new_run = OxmlElement('w:r')
+                props = run.find(qn('w:rPr'))
+                props = deepcopy(props) if props is not None else OxmlElement('w:rPr')
+                if part.startswith(MISSING_PREFIX) or part == '[?]':
+                    highlight = OxmlElement('w:highlight')
+                    highlight.set(qn('w:val'), 'yellow')
+                    props.append(highlight)
+                new_run.append(props)
+                text = OxmlElement('w:t')
+                text.set(qn('xml:space'), 'preserve'); text.text = part
+                new_run.append(text); parent.insert(index, new_run); index += 1
+            parent.remove(run)
 
 
 def _field_run(paragraph, instruction, cached='1'):
@@ -199,7 +216,7 @@ def _page_setup(section, landscape=False, paper='A4'):
     section.page_width, section.page_height = Mm(width), Mm(height)
     margin = 12 if landscape else 25
     section.left_margin = section.right_margin = Mm(margin)
-    section.top_margin, section.bottom_margin = Mm(22), Mm(20)
+    section.top_margin, section.bottom_margin = Mm(40), Mm(20)
     section.header_distance = section.footer_distance = Mm(9)
     return width, margin
 
@@ -233,18 +250,57 @@ def _table(document, headers, rows, widths=None):
     return table
 
 
+def _caption(document, number, title):
+    paragraph = document.add_paragraph(f'Tabell {number} {title}', 'Caption')
+    paragraph.paragraph_format.keep_with_next = True
+    return paragraph
+
+
+PROSE_INTROS = {
+    'Bakgrund': 'Bakgrunden beskriver varför studien utförs och vilken del av anläggningen som berörs. Nodernas funktion och driftdata redovisas i bilaga 2.',
+    'Syfte': 'Syftet anger vad analysen ska belysa. Resultaten dokumenteras per scenario i bilaga 3 och rekommendationerna samlas i tabell B4.1.',
+    'Omfattning': 'Omfattningen anger vilka system och noder som ingår. Nodförteckningen nedan och nodbeskrivningarna i bilaga 2 avgränsar analysobjektet.',
+    'Avgränsningar': 'Avgränsningarna anger vad studien inte omfattar och ska läsas tillsammans med nodbeskrivningarna i bilaga 2.',
+    'Driftfall': 'Driftfallen beskriver under vilka driftsförhållanden scenarierna i bilaga 3 ska tolkas, exempelvis normal drift, start, stopp och underhåll.',
+    'Analysförutsättningar': 'Här anges de förutsättningar och antaganden som används vid analysen. Dokumentversionerna i tabell 2.1 ger spårbarhet till studiens underlag.',
+    'Övriga referensdokument': 'Här anges underlag utöver ritningarna i tabell 2.1, med dokumentnummer, titel, revision eller datum.',
+    'Riskacceptanskriterier': 'Här anges hur riskklasserna ska användas och vem som kan acceptera kvarvarande risk. Riskmatrisen och dess skalor ska läsas tillsammans med dessa kriterier.',
+    'Frekvensunderlag': 'Här beskrivs underlaget för orsaksfrekvenserna i protokollet och hur de kopplas till studiens frekvensskala.',
+    'Barriärunderlag': 'Här beskrivs grunderna för kreditering av barriärer och enablers. De registrerade faktorerna och riskklasserna före och efter barriärer återges i bilaga 3.',
+    'Resultat och slutsatser': 'Slutsatserna sammanfattar studiens viktigaste observationer och kvarstående frågor. De ska kunna följas till protokollet i bilaga 3 och rekommendationerna i tabell B4.1.',
+    'Uppföljning': 'Här anges hur rekommendationerna i tabell B4.1 ska följas upp, vem som ansvarar och vilket underlag som krävs för att avsluta en åtgärd.',
+    'Metodreferens': 'Här anges den metodbeskrivning eller instruktion som valts för studien. Den generella arbetsgången nedan kompletteras av studiens förutsättningar i kapitel 1.',
+}
+
+
 def _prose(document, data, label, heading=None, level=2):
     document.add_heading(heading or label, level)
+    if label in PROSE_INTROS:
+        document.add_paragraph(PROSE_INTROS[label])
     for text in _value(data['field'](label), label).split('\n'):
         document.add_paragraph(text)
 
 
+def _chapter(document, title):
+    """Start a top-level chapter on a normal body page.
+
+    The source header contains anchored artwork.  A new linked section is more
+    reliable than a paragraph-level page break: Word otherwise occasionally
+    draws a generated chapter's first page in the header area.
+    """
+    from docx.enum.section import WD_SECTION_START
+    document.add_section(WD_SECTION_START.NEW_PAGE)
+    return document.add_heading(title, 1)
+
+
 def _add_matrix(document, db, data):
     matrix = data['matrix']
+    document.add_page_break()
     document.add_heading('4 Riskbedömning', 1)
     document.add_paragraph(
         'Riskvärden, färger och nivådefinitioner nedan återger studiens sparade '
-        'riskmatris. Protokollet redovisar risk före och efter barriärer och '
+        'riskmatris. Tabell 4.1 visar matrisen, tabell 4.2 frekvensskalan och '
+        'tabellerna under 4.3 konsekvensdefinitionerna. Protokollet redovisar risk före och efter barriärer och '
         'registrerade enablers. Någon separat bedömning efter genomförda '
         'rekommendationer ingår inte i denna export.')
     document.add_heading('4.1 Riskmatris', 2)
@@ -268,6 +324,7 @@ def _add_matrix(document, db, data):
             ci, fi = (vi, hi) if x_frequency else (hi, vi)
             values.append(matrix['cell_labels'][ci][fi])
         matrix_rows.append(values)
+    _caption(document, '4.1', 'Studiens riskmatris')
     table = _table(document, headers, matrix_rows,
                    [32] + [128 / len(horizontal)] * len(horizontal))
     from docx.shared import RGBColor
@@ -280,14 +337,16 @@ def _add_matrix(document, db, data):
                 run.font.color.rgb = RGBColor.from_string(
                     matrix['cell_fg_colors'][ci][fi].lstrip('#'))
     document.add_heading('4.2 Frekvensskala', 2)
+    _caption(document, '4.2', 'Frekvensnivåer och definitioner')
     _table(document, ['Nivå', 'Definition'],
            [[code, _value(label, 'frekvensdefinition')]
             for code, label in zip(x_codes, matrix['x_labels'])], [25, 135])
     document.add_heading('4.3 Konsekvensdefinitioner', 2)
     categories = [dict(c) for c in db.consequence_categories()]
     definitions = db.get_severity_definitions()
-    for category in categories:
+    for index, category in enumerate(categories, 1):
         document.add_heading(category['name'], 3)
+        _caption(document, f'4.3.{index}', 'Konsekvensdefinitioner för ' + category['name'])
         _table(document, ['Nivå', 'Benämning', 'Definition'], [
             [code, matrix['y_labels'][i],
              _value(definitions.get(i + 1, {}).get(category['id']),
@@ -301,7 +360,8 @@ def _add_matrix(document, db, data):
 
 
 def _add_participants(document, db):
-    document.add_heading('3 Genomförande och deltagare', 1)
+    _chapter(document, '3 Genomförande och deltagare')
+    document.add_paragraph('Tabell 3.1 redovisar analystillfällena och tabell 3.2 deltagarna med registrerade roller och övriga uppgifter. Närvaron i tabell 3.3 visar deltagandet vid respektive tillfälle; en saknad registrering tolkas inte som frånvaro.')
     sessions = [dict(s) for s in db.list_analysis_sessions()]
     document.add_heading('3.1 Analystillfällen', 2)
     session_rows = [[str(i), _value(s.get('date'), 'datum'),
@@ -309,6 +369,7 @@ def _add_participants(document, db):
                      _value(s.get('end_time'), 'sluttid'),
                      'Digitalt' if s.get('is_digital') else _value(s.get('location'), 'plats')]
                     for i, s in enumerate(sessions, 1)]
+    _caption(document, '3.1', 'Analystillfällen')
     _table(document, ['Tillfälle', 'Datum', 'Tid', 'Plats'], session_rows or [
         ['1', missing('analystillfälle'), '', '']], [17, 28, 43, 72])
     document.add_heading('3.2 Deltagare', 2)
@@ -327,6 +388,7 @@ def _add_participants(document, db):
             _value(p.get('first_name'), 'förnamn'), _value(p.get('last_name'), 'efternamn'),
             '\n'.join(details) or missing('företag och roll eller disciplin'),
         ])
+    _caption(document, '3.2', 'Deltagare och roller')
     _table(document, ['Förnamn', 'Efternamn', 'Deltagaruppgifter'],
            participant_rows or [[missing('deltagare'), '', '']], [32, 40, 88])
     document.add_heading('3.3 Närvaro', 2)
@@ -338,12 +400,14 @@ def _add_participants(document, db):
             state = attendance.get((p['id'], session['id']))
             status = ('Närvarande' if state[0] else 'Frånvarande') if state else missing('närvaro')
             attendance_rows.append([name, str(index), status, state[1] if state else ''])
+    _caption(document, '3.3', 'Närvaro per analystillfälle')
     _table(document, ['Deltagare', 'Tillfälle', 'Närvaro', 'Anteckning'],
            attendance_rows or [[missing('närvarounderlag'), '', '', '']], [45, 17, 45, 53])
 
 
 def _node_appendix(document, db, data):
-    document.add_heading('Bilaga 2 HAZOP noder', 1)
+    _chapter(document, 'Bilaga 2 HAZOP noder')
+    document.add_paragraph('Bilagan beskriver analysens noder och kopplar dem till ritningar och driftdata. Varje nod har en egen tabell B2.n, där n motsvarar nodnumret i protokollet i bilaga 3. Nodritningen ska tydliggöra de gränser som använts i analysen.')
     systems = {s['id']: s['name'] for s in db.systems()}
     sheets = {s['physical_page']: dict(s) for s in db.get_sheets()}
     for number, node in enumerate(data['nodes'], 1):
@@ -359,6 +423,7 @@ def _node_appendix(document, db, data):
                 ', rev. ' + _value(sheet.get('drawing_revision'), 'ritningsrevision'))
         if node.get('pid_ref'):
             references.insert(0, node['pid_ref'])
+        _caption(document, f'B2.{number}', 'Noduppgifter för ' + node['name'])
         _table(document, ['Uppgift', 'Värde'], [
             ['System', systems.get(node.get('system_id'), 'Ogrupperad nod')],
             ['P&ID referenser', '\n'.join(references) or missing('nodens P&ID referenser')],
@@ -394,7 +459,6 @@ def _annotated_worksheet_rows(db, rows):
 
 def build_report(db, *, paper_size='A3', standard_template=False):
     """Build the report in memory. Caller owns the matrix/snapshot context."""
-    from docx import Document
     from docx.enum.section import WD_SECTION_START
     from docx.enum.style import WD_STYLE_TYPE
     from docx.oxml import OxmlElement
@@ -402,34 +466,6 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     from docx.shared import Pt, RGBColor
 
     data = collect_report_data(db)
-    document = Document()
-    _page_setup(document.sections[0])
-    styles = document.styles
-    styles['Normal'].font.name = 'Arial'
-    styles['Normal'].font.size = Pt(10)
-    styles['Normal'].paragraph_format.space_after = Pt(6)
-    for name, size in [('Title', 26), ('Subtitle', 16), ('TOC Heading', 16),
-                       ('Heading 1', 16), ('Heading 2', 12), ('Heading 3', 10)]:
-        styles[name].font.name = 'Arial'
-        styles[name].font.size = Pt(size)
-        styles[name].font.color.rgb = RGBColor(0, 0, 0)
-    styles['Heading 1'].paragraph_format.page_break_before = True
-    styles['Heading 2'].paragraph_format.space_before = Pt(12)
-    # Explicit TOC styles stop Word from expanding a short contents list
-    # onto a nearly empty second page on first field update.
-    for name in ('TOC 1', 'TOC 2'):
-        style = styles[name] if name in styles else styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
-        style.font.name = 'Arial'
-        style.font.size = Pt(9)
-        style.paragraph_format.space_after = Pt(2)
-        style.paragraph_format.space_before = Pt(0)
-        style.paragraph_format.line_spacing = 1
-    for style in styles:
-        for border in list(style.element.iter(qn('w:pBdr'))):
-            border.getparent().remove(border)
-    document.core_properties.title = 'HAZOP rapport'
-    document.core_properties.author = data['field']('Framtagen av') or db.get_config('report_prepared_by', '') or ''
-    document.core_properties.subject = 'HAZOP analys utan SIL bedömning'
     project = _value(db.get_config('project_name', ''), 'projektnamn')
     client = _value(db.get_config('project_client', ''), 'kund')
     field = data['field']
@@ -437,45 +473,53 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     revision = _value(field('Rapportrevision') or data['latest_revision'].get('label'), 'rapportrevision')
     date = _value(field('Rapportdatum'), 'rapportdatum')
 
-    brand = document.add_paragraph('ProSa')
-    brand.runs[0].font.size = Pt(28)
-    brand.runs[0].bold = True
-    brand.runs[0].font.color.rgb = RGBColor.from_string('62AA25')
-    brand.paragraph_format.space_after = Pt(55)
-    document.add_paragraph('HAZOP rapport', 'Title')
-    document.add_paragraph(project, 'Subtitle')
-    document.add_paragraph(client)
-    document.add_paragraph(_value(db.get_config('project_facility', ''), 'anläggning'))
-    document.add_paragraph('Standardmall' if standard_template else 'Risker och driftavvikelser')
-    document.add_paragraph('Rapport nr: ' + report_number)
-    document.add_paragraph('Revision: ' + revision + '\nDatum: ' + date)
-    document.add_paragraph('Status: ' + _value(field('Rapportstatus'), 'rapportstatus'))
+    values = {
+        'TITLE': 'HAZOP för ' + project, 'CLIENT': client,
+        'REPORT_NUMBER': report_number, 'REVISION': revision, 'DATE': date,
+        'STATUS': _value(field('Rapportstatus'), 'rapportstatus'),
+        'DISTRIBUTION': _value(field('Distribution'), 'distribution'),
+        'AUTHOR': _value(field('Framtagen av') or db.get_config('report_prepared_by', ''), 'framtagen av'),
+        'REVIEWER': _value(field('Kvalitetsgranskad av') or db.get_config('report_reviewed_by', ''), 'kvalitetsgranskad av'),
+        'PROSA_ADDRESS': _value(field('Kontorsadress ProSa'), 'kontorsadress ProSa'),
+        'CLIENT_ADDRESS': _value(field('Kundadress'), 'kundadress'),
+        'MANAGER': _value(field('Uppdragsansvarig'), 'uppdragsansvarig'),
+        'PROSA_CONTACT': _value(field('Kontaktuppgifter ProSa'), 'kontaktuppgifter ProSa'),
+        'CLIENT_PERSON': _value(field('Kontaktperson kund'), 'kontaktperson kund'),
+        'CLIENT_CONTACT': _value(field('Kontaktuppgifter kund'), 'kontaktuppgifter kund'),
+    }
+    revision_rows = [{
+        'REVISION': _value(r.get('label'), 'revision'),
+        'REVISION_DATE': _value(r.get('date'), 'revisionsdatum'),
+        'REVISION_DESCRIPTION': _value(r.get('description'), 'revisionsbeskrivning'),
+        'REVISION_AUTHOR': missing('utfört av för revision ' + str(r.get('label') or '')),
+    } for r in data['revisions']] or [{
+        'REVISION': revision, 'REVISION_DATE': missing('revisionsdatum'),
+        'REVISION_DESCRIPTION': missing('revisionsbeskrivning'),
+        'REVISION_AUTHOR': missing('utfört av'),
+    }]
+    document = new_report_document(values, revision_rows)
+    styles = document.styles
+    styles['Heading 1'].paragraph_format.page_break_before = False
+    if 'TOC Heading' not in styles:
+        styles.add_style('TOC Heading', WD_STYLE_TYPE.PARAGRAPH).base_style = styles['Heading 1']
+    document.core_properties.title = values['TITLE']
+    document.core_properties.author = field('Framtagen av') or ''
+    document.core_properties.subject = 'HAZOP analys utan SIL bedömning'
+    document.add_heading('Dokumentstyrning', 1).paragraph_format.page_break_before = False
     document.add_paragraph(
-        'Rapporten samlar studiens omfattning, genomförande, riskbedömningar '
-        'och rekommendationer med tillhörande HAZOP-protokoll.')
-    document.add_paragraph(
-        'Gulmarkerad text inom hakparenteser anger uppgifter som behöver '
-        'kompletteras. Färger inne i riskmatrisceller visar riskklass.')
-
-    document.add_heading('Dokumentstyrning', 1)
+        'Försättsbladet och dokumentbladet anger rapportens identitet, distribution '
+        'och revisionshistorik. Tabell D.1 kompletterar dessa uppgifter med '
+        'projektets analysperiod och godkännande. Gulmarkerade kompletteringsfält '
+        'behöver behandlas före slutlig granskning; färgade riskceller anger riskklass.')
+    _caption(document, 'D.1', 'Kompletterande dokumentuppgifter')
     _table(document, ['Uppgift', 'Värde'], [
         ['Projektnummer', _value(db.get_config('project_number', ''), 'projektnummer')],
         ['Analysperiod', _value(db.get_config('project_date_start', ''), 'analysperiodens start') +
          ' till ' + _value(db.get_config('project_date_end', ''), 'analysperiodens slut')],
-        ['Rapportnummer', report_number], ['Revision', revision], ['Rapportdatum', date],
-        ['Framtagen av', _value(field('Framtagen av') or db.get_config('report_prepared_by', ''), 'framtagen av')],
-        ['Kvalitetsgranskad av', _value(field('Kvalitetsgranskad av') or db.get_config('report_reviewed_by', ''), 'kvalitetsgranskad av')],
+        ['Anläggning', _value(db.get_config('project_facility', ''), 'anläggning')],
+        ['Rapportstatus', values['STATUS']],
         ['Godkänd av', _value(field('Godkänd av') or db.get_config('report_approved_by', ''), 'godkänd av')],
-        ['Distribution', _value(field('Distribution'), 'distribution')],
-        ['Uppdragsansvarig', _value(field('Uppdragsansvarig'), 'uppdragsansvarig')],
-        ['Kontaktperson kund', _value(field('Kontaktperson kund'), 'kontaktperson kund')],
-        ['Kontaktuppgifter kund', _value(field('Kontaktuppgifter kund'), 'kontaktuppgifter kund')],
     ], [48, 112])
-    document.add_heading('Revisionshistorik', 2)
-    _table(document, ['Revision', 'Datum', 'Beskrivning'], [
-        [_value(r['label'], 'revision'), _value(r['date'], 'revisionsdatum'),
-         _value(r['description'], 'revisionsbeskrivning')] for r in data['revisions']]
-        or [[missing('revision'), missing('datum'), missing('revisionsbeskrivning')]], [32, 30, 98])
     other_fields = [f for f in data['custom']
                     if (f['name'] or '').strip().casefold() not in {n.casefold() for n in REPORT_FIELDS}]
     if other_fields:
@@ -483,12 +527,12 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         _table(document, ['Uppgift', 'Värde'], [
             [_value(f['name'], 'fältnamn'), _value(f['value'], f['name'] or 'fältvärde')]
             for f in other_fields], [48, 112])
+    document.add_section(WD_SECTION_START.NEW_PAGE)
     contents_heading = document.add_paragraph('Innehåll', 'TOC Heading')
-    contents_heading.paragraph_format.page_break_before = True
     _field_run(document.add_paragraph(), 'TOC \\o "1-1" \\h \\z',
                'Uppdatera innehållsförteckningen i Word med Ctrl+A och F9.')
 
-    document.add_heading('Sammanfattning', 1)
+    _chapter(document, 'Sammanfattning')
     document.add_paragraph(f'HAZOP-studien avser {project} för {client}.')
     document.add_paragraph(missing('sammanställning av antal noder, konsekvensposter och rekommendationer')
         if standard_template else
@@ -501,7 +545,8 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     document.add_paragraph(_value(field('Resultat och slutsatser'), 'resultat och slutsatser'))
     document.add_paragraph('HAZOP-protokollet finns i Bilaga 3 och rekommendationslistan i Bilaga 4.')
 
-    document.add_heading('1 Inledning', 1)
+    _chapter(document, '1 Inledning')
+    document.add_paragraph('Kapitlet beskriver studiens bakgrund, syfte och avgränsningar. Dessa uppgifter anger hur resultaten ska tolkas och vilka noder i bilaga 2 som omfattas av protokollet i bilaga 3.')
     _prose(document, data, 'Bakgrund', '1.1 Bakgrund')
     _prose(document, data, 'Syfte', '1.2 Syfte')
     _prose(document, data, 'Omfattning', '1.3 Omfattning')
@@ -510,8 +555,10 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     _prose(document, data, 'Driftfall', '1.5 Driftfall')
     _prose(document, data, 'Analysförutsättningar', '1.6 Analysförutsättningar')
 
-    document.add_heading('2 Referensdokument', 1)
+    _chapter(document, '2 Referensdokument')
+    document.add_paragraph('Tabell 2.1 förtecknar de ritningsblad som finns registrerade i studien. Ritningsnummer, revision och datum identifierar underlaget för analysen. Övriga styrande dokument anges i avsnitt 2.1.')
     sheets = [dict(s) for s in db.get_sheets()]
+    _caption(document, '2.1', 'Registrerade ritningsunderlag')
     _table(document, ['Ritningsnummer', 'Ritningsnamn', 'Revision', 'Datum', 'PDF sida'], [
         [_value(s.get('drawing_number'), 'ritningsnummer'),
          _value(s.get('drawing_name'), 'ritningsnamn'),
@@ -521,17 +568,20 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     _prose(document, data, 'Övriga referensdokument', '2.1 Övriga referensdokument')
     _add_participants(document, db)
     if standard_template:
-        document.add_heading('4 Riskbedömning', 1)
+        _chapter(document, '4 Riskbedömning')
+        document.add_paragraph('Kapitlet ska redovisa studiens riskmatris, frekvensskala och konsekvensdefinitioner samt hur dessa används för scenarierna i bilaga 3. Riskacceptanskriterier och underlag för bedömningarna behöver anges nedan.')
         document.add_paragraph(missing('studiens riskmatris med frekvensskala och konsekvensdefinitioner'))
         for label in ('Riskacceptanskriterier', 'Frekvensunderlag', 'Barriärunderlag'):
             _prose(document, data, label)
     else:
         _add_matrix(document, db, data)
 
-    document.add_heading('5 Resultat och uppföljning', 1)
+    _chapter(document, '5 Resultat och uppföljning')
+    document.add_paragraph('Kapitlet sammanfattar observationer och fortsatt hantering. Tabell 5.1 visar rekommendationernas registrerade status. Rekommendationstext, ansvarig, åtgärdsdatum och scenarioreferenser finns i tabell B4.1.')
     _prose(document, data, 'Resultat och slutsatser', '5.1 Resultat och slutsatser')
     document.add_heading('5.2 Rekommendationernas status', 2)
     status_counts = Counter(_value(r.get('status'), 'status') for r in data['recommendations'])
+    _caption(document, '5.1', 'Rekommendationer per registrerad status')
     _table(document, ['Registrerad status', 'Antal'], sorted(status_counts.items())
            or ([[missing('status'), missing('antal')]] if standard_template
                else [['Inga rekommendationer registrerade', 0]]), [125, 35])
@@ -540,12 +590,13 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'innebär inte automatiskt att kvarvarande risk är bedömd eller accepterad.')
     _prose(document, data, 'Uppföljning', '5.3 Uppföljning och ansvar')
 
-    document.add_heading('Bilaga 1 HAZOP metodik', 1)
+    _chapter(document, 'Bilaga 1 HAZOP metodik')
     document.add_paragraph(
         'HAZOP granskar avvikelser från avsedd funktion. Analysen organiseras '
         'per nod och dokumenterar avvikelser, orsaker, konsekvenser, barriärer '
         'och rekommendationer. Studiens avgränsningar och bedömningsgrunder '
-        'anges i kapitel 1 och 4.')
+        'anges i kapitel 1 och 4. Tabell B1.1 visar de registrerade avvikelserna '
+        'och tabell B1.2 förklarar rapportens förkortningar.')
     _prose(document, data, 'Metodreferens', 'Metodreferens')
     document.add_heading('Arbetsgång', 2)
     for step in (
@@ -560,9 +611,11 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     document.add_heading('Registrerade avvikelser', 2)
     deviations = list(dict.fromkeys(
         (d['description'] or '').strip() for n in data['nodes'] for d in db.deviations(n['id'])))
+    _caption(document, 'B1.1', 'Registrerade avvikelser')
     _table(document, ['Avvikelse'], [[v] for v in deviations if v]
            or [[missing('avvikelser och ledord')]])
     document.add_heading('Förkortningar', 2)
+    _caption(document, 'B1.2', 'Förkortningar')
     _table(document, ['Förkortning', 'Förklaring'], [
         ['HAZOP', 'Hazard and Operability Study – risk- och driftanalys'],
         ['P&ID', 'Piping and Instrumentation Diagram – rör- och instrumentdiagram'],
@@ -575,26 +628,78 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     width, margin = _page_setup(section, True, paper_size)
     heading = document.add_heading('Bilaga 3 HAZOP protokoll', 1)
     heading.paragraph_format.page_break_before = False
+    document.add_paragraph('Nodtabellerna B3.n redovisar registrerade avvikelser, orsaker, konsekvenser, barriärer och riskbedömningar. Tabellnumrets sista del motsvarar nodnumret. Rekommendationerna återfinns även i tabell B4.1, med referenser tillbaka till respektive scenario.')
     document.add_paragraph('Referenser använder ordningen studie.nod.avvikelse.orsak.konsekvens i protokollet.')
     document.add_paragraph('Gulmarkerat [?] betyder att frekvens saknas; komplettera eller verifiera att frekvens inte är tillämplig.')
     for index, group in enumerate(_group_rows(_annotated_worksheet_rows(db, data['rows']))):
         if index:
             document.add_page_break()
+        _caption(document, f'B3.{index + 1}', 'HAZOP protokoll per nod')
         _add_node_table(document, group, width, margin)
     if not data['rows']:
         document.add_paragraph(missing('HAZOP protokoll'))
+    # Keep the final register in the landscape protocol section. This retains
+    # its normal repeated header rather than introducing a new first-page
+    # header solely for the final table.
+    document.add_page_break()
     document.add_heading('Bilaga 4 Rekommendationslista', 1)
+    document.add_paragraph('Tabell B4.1 samlar studiens rekommendationer med ansvarig, åtgärdsdatum och registrerad status. Scenarioreferenserna visar var rekommendationen hör hemma i bilaga 3 och gör det möjligt att följa åtgärden tillbaka till analysen.')
+    _caption(document, 'B4.1', 'Rekommendationer och scenarioreferenser')
     if data['recommendation_rows']:
         _add_recommendation_table(document, data['recommendation_rows'], width, margin)
     else:
         document.add_paragraph(missing('rekommendationer eller bekräftelse att inga rekommendationer behövs'))
 
-    # A short running header follows all portrait/landscape sections.
-    header = document.sections[0].header.paragraphs[0]
-    header.text = 'ProSa  |  ' + project + '  |  ' + report_number
-    for run in header.runs:
-        run.font.size = Pt(8)
-    footer = document.sections[0].footer.paragraphs[0]
+    # Keep both original front-matter headers. Body and landscape sections
+    # share the full source header; use continuous, refreshed page numbering.
+    for section in document.sections:
+        for setting in list(section._sectPr):
+            if setting.tag == qn('w:pgNumType'):
+                section._sectPr.remove(setting)
+    # Do not rely on Word resolving a long chain of linked headers. Its
+    # floating source artwork can disappear after generated section breaks.
+    # Each generated section therefore receives its own relationship to the
+    # same image parts and a copy of the source header XML.
+    source_header = document.sections[2].header
+
+    def copy_source_header(target_header):
+        relationship_ids = {}
+        for old_id, relationship in source_header.part.rels.items():
+            if relationship.is_external:
+                new_id = target_header.part.relate_to(
+                    relationship.target_ref, relationship.reltype, is_external=True)
+            else:
+                new_id = target_header.part.relate_to(
+                    relationship.target_part, relationship.reltype)
+            relationship_ids[old_id] = new_id
+        for child in list(target_header._element):
+            target_header._element.remove(child)
+        for child in deepcopy(list(source_header._element)):
+            target_header._element.append(child)
+        for element in target_header._element.iter():
+            for attribute in (qn('r:embed'), qn('r:id'), qn('r:link')):
+                old_id = element.get(attribute)
+                if old_id in relationship_ids:
+                    element.set(attribute, relationship_ids[old_id])
+
+    for index, section in enumerate(document.sections[2:]):
+        # Word treats the first body page of some generated sections as a
+        # first-page-header even when titlePg is absent. Define that header
+        # explicitly as well, rather than inheriting the cover's first header.
+        section.different_first_page_header_footer = True
+        section.first_page_header.is_linked_to_previous = True
+        section.first_page_header.is_linked_to_previous = False
+        copy_source_header(section.first_page_header)
+        if index:
+            section.header.is_linked_to_previous = True
+            section.header.is_linked_to_previous = False
+            copy_source_header(section.header)
+    footer_element = document.sections[2].footer._element
+    for child in list(footer_element):
+        footer_element.remove(child)
+    footer_element.append(OxmlElement('w:p'))
+    footer = document.sections[2].footer.paragraphs[0]
+    footer.style = document.styles['Footer']
     footer.alignment = 2
     footer.add_run('Sida ')
     _field_run(footer, 'PAGE')
@@ -603,6 +708,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     update = OxmlElement('w:updateFields')
     update.set(qn('w:val'), 'true')
     document.settings.element.append(update)
+    apply_report_fonts(document)
     _highlight_document(document)
     return document
 

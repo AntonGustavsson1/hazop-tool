@@ -22,7 +22,7 @@ block_cipher = None
 # so it must actually work in the frozen build, not just import cleanly.
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('icons', 'icons')]
+datas = [('icons', 'icons'), ('report_templates', 'report_templates')]
 binaries = []
 hiddenimports = []
 

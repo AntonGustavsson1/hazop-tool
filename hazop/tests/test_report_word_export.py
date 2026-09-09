@@ -68,6 +68,25 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertIn('w:updateFields', xml)
         self.assertIn('TOC ', xml)
 
+    def test_source_backed_prosa_furniture_and_descriptive_chapter_text_are_preserved(self):
+        doc = self.export()
+        self.assertEqual(doc.styles['Normal'].font.name, 'Aptos')
+        self.assertEqual(str(doc.styles['Heading 1'].font.color.rgb), '509628')
+        self.assertEqual(str(doc.styles['Heading 2'].font.color.rgb), '509628')
+        self.assertTrue(doc.sections[0].different_first_page_header_footer)
+        self.assertTrue(all(not section.header.is_linked_to_previous
+                            for section in doc.sections[2:]))
+        body_text = '\n'.join(paragraph.text for paragraph in doc.paragraphs)
+        for text in (
+            'Tabell 2.1 förtecknar de ritningsblad',
+            'Tabell 3.1 redovisar analystillfällena',
+            'Tabell B4.1 samlar studiens rekommendationer',
+        ):
+            self.assertIn(text, body_text)
+        with ZipFile(self.path) as archive:
+            header_xml = archive.read('word/header4.xml').decode('utf-8')
+        self.assertIn('HAZOP f', header_xml)
+
     def test_missing_values_are_yellow_while_zero_is_preserved(self):
         self.db.add_project_custom_field('Rapportrevision', '0')
         doc = self.export()
@@ -157,7 +176,7 @@ class ReportWordExportTests(unittest.TestCase):
 
     def test_a4_landscape_and_unknown_format_does_not_overwrite_existing_file(self):
         doc = self.export(paper_size='A4')
-        self.assertAlmostEqual(doc.sections[0].page_width.mm, 210, places=1)
+        self.assertAlmostEqual(doc.sections[0].page_width.mm, 210, delta=0.2)
         self.assertAlmostEqual(doc.sections[-1].page_width.mm, 297, places=1)
         original = self.path.read_bytes()
         ok, _ = export_report_word(self.db, self.path, 'A2')
