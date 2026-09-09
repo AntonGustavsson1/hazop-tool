@@ -737,7 +737,9 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     suggested_report_number = f'{project_number_raw}-R-001' if project_number_raw else ''
     report_number = _value(field('Rapportnummer') or db.get_config('report_number', '') or suggested_report_number, 'rapportnummer')
     revision = _value(field('Rapportrevision') or data['latest_revision'].get('label'), 'rapportrevision')
-    date = _value(field('Rapportdatum') or db.get_config('report_date', '') or data['latest_revision'].get('date'), 'rapportdatum')
+    # The cover date is the date of the latest revision; a separate report
+    # date can otherwise become inconsistent with the revision history.
+    date = _value(data['latest_revision'].get('date'), 'revisionsdatum')
     issued_by = field('Utfärdad av') or field('Framtagen av') or db.get_config('report_prepared_by', '')
     reviewed_by = field('Granskad av') or field('Godkänd av') or field('Kvalitetsgranskad av') or db.get_config('report_reviewed_by', '') or db.get_config('report_approved_by', '')
     contact_person = field('Kontaktperson') or field('Kontaktperson kund') or db.get_config('report_contact_by', '')
