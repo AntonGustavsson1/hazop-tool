@@ -455,6 +455,27 @@ def _add_matrix(document, db, data):
         element.set(qn('w:color'), 'D9D9D9')
     _set_repeat_table_header(table.rows[1])
     document.add_paragraph().paragraph_format.space_after = Pt(0)
+    level_defs = matrix.get('risk_level_definitions') or []
+    if not level_defs:
+        derived = {}
+        for row_colors, row_labels in zip(matrix.get('cell_colors', []), matrix.get('cell_labels', [])):
+            for color, label in zip(row_colors, row_labels):
+                color, label = str(color or '').strip(), str(label or '').strip()
+                if color and label and color not in derived:
+                    derived[color] = label
+        level_defs = [{'color': color, 'label': label, 'definition': ''}
+                      for color, label in derived.items()]
+    if level_defs:
+        document.add_paragraph('Risknivåerna i matrisen beskrivs i tabell 4-1a. Färg och nivånamn följer den aktiva projektmatrisen.')
+        _caption(document, '4-1a', 'Risknivåer och definitioner')
+        level_table = _table(document, ['Färg', 'Risknivå', 'Definition'], [
+            [item.get('color', ''), item.get('label', ''),
+             item.get('definition') or missing('risknivådefinition')]
+            for item in level_defs], [30, 40, 100])
+        for row, item in zip(level_table.rows[1:], level_defs):
+            color = str(item.get('color') or '')
+            if color:
+                _set_cell_shading(row.cells[0], color.lstrip('#'))
     x_codes, y_codes = matrix['x_codes'], matrix['y_codes']
     document.add_heading('4.2 Frekvensskala', 2)
     document.add_paragraph(

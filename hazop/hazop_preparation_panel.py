@@ -33,6 +33,7 @@ from ui_helpers import freq_axis_label
 from equipment_panel import TagDatabasePanel, PIDAnalysisPanel
 from participant_matrix_panel import ParticipantMatrixPanel
 from standard_causes_panel import StandardCausesSettingsPanel
+import spellcheck
 
 
 _PALETTE_MIME = 'application/x-hazop-palette-color'
@@ -197,7 +198,7 @@ class MatrixCellButton(QPushButton):
         left = "border-left:1px solid #444;" if self._is_left else ""
         self.setStyleSheet(
             f"QPushButton{{"
-            f"background:{self._color}; color:{self._fg_color}; font-weight:bold;"
+            f"background:{self._color}; color:{self._fg_color}; font-weight:bold; font-size:9px;"
             f"border-bottom:1px solid #444; border-right:1px solid #444;"
             f"{top}{left}"
             f"border-radius:0px; margin:0px; padding:0px;}}"
@@ -1635,9 +1636,10 @@ class HAZOPPreparationPanel(QWidget):
     sheets_changed = pyqtSignal()
     structure_changed = pyqtSignal()   # a node was added/renamed from the Noder tab
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, spellcheck_context=None):
         super().__init__()
         self.db = db
+        self.spellcheck_context = spellcheck_context
         self._cell_buttons   = []
         self._x_label_edits  = []   # QLineEdit per column
         self._y_label_edits  = []   # QLineEdit per row (high→low)
@@ -1647,6 +1649,7 @@ class HAZOPPreparationPanel(QWidget):
         self._matrix_cell_width = _MATRIX_CELL_WIDTH_DEFAULT
         self._axes_loading = False
         self._axes_dirty = False
+        self._axes_frequency_reversed = False
 
         tabs = QTabWidget()
         self._tabs = tabs   # kept as an attribute for testability (tabText() lookups)
@@ -1663,22 +1666,25 @@ class HAZOPPreparationPanel(QWidget):
         pl.setContentsMargins(16, 16, 16, 16)
         proj_outer.addWidget(proj_form_w)
 
-        self._proj_name = QLineEdit()
+        self._proj_name = spellcheck.SpellCheckLineEdit(context=self.spellcheck_context)
         self._proj_name.editingFinished.connect(
             lambda: self.db.set_config('project_name', self._proj_name.text()))
         pl.addRow("Projektnamn:", self._proj_name)
 
+        # Not a SpellCheckLineEdit -- a project number is an identifier,
+        # not prose (same reasoning excludes tag numbers/name fields
+        # everywhere else spellcheck is wired in, see NOTES.md).
         self._proj_number = QLineEdit()
         self._proj_number.editingFinished.connect(
             lambda: self.db.set_config('project_number', self._proj_number.text()))
         pl.addRow("Projektnummer:", self._proj_number)
 
-        self._proj_client = QLineEdit()
+        self._proj_client = spellcheck.SpellCheckLineEdit(context=self.spellcheck_context)
         self._proj_client.editingFinished.connect(
             lambda: self.db.set_config('project_client', self._proj_client.text()))
         pl.addRow("Kund/Företag:", self._proj_client)
 
-        self._proj_facility = QLineEdit()
+        self._proj_facility = spellcheck.SpellCheckLineEdit(context=self.spellcheck_context)
         self._proj_facility.editingFinished.connect(
             lambda: self.db.set_config('project_facility', self._proj_facility.text()))
         pl.addRow("Anläggning:", self._proj_facility)
@@ -1720,8 +1726,8 @@ class HAZOPPreparationPanel(QWidget):
         # ── Revision: flera rader (Rev/Datum/Beskrivning) ────────────────────
         rev_box = QGroupBox("Revision")
         rev_lay = QVBoxLayout(rev_box)
-        self._proj_rev_table = QTableWidget(0, 3)
-        self._proj_rev_table.setHorizontalHeaderLabels(["Rev", "Datum", "Beskrivning"])
+        self._proj_rev_table = QTableWidget(0, 4)
+        self._proj_rev_table.setHorizontalHeaderLabels(["Rev", "Datum", "Utfört av", "Beskrivning"])
         self._proj_rev_table.horizontalHeader().setStretchLastSection(True)
         self._proj_rev_table.setColumnWidth(0, 60)
         self._proj_rev_table.setColumnWidth(1, 120)
@@ -1752,6 +1758,44 @@ class HAZOPPreparationPanel(QWidget):
 
         tabs.addTab(proj_tab, "Projekt")
 
+        # ── Tab: Företagsuppgifter ─────────────────────────────────────────
+        company_tab = QWidget()
+        company_form = QFormLayout(company_tab)
+        company_form.setSpacing(10)
+        company_form.setContentsMargins(16, 16, 16, 16)
+        self._company_fields = {}
+        for key, label, default in (
+                ('company_name', 'Företagsnamn:', 'ProSa Process Safety Consulting AB'),
+                ('company_street', 'Gatuadress:', ''),
+                ('company_postal_code', 'Postnummer:', ''),
+                ('company_city', 'Ort:', ''),
+                ('company_country', 'Land:', 'Sverige'),
+                ('company_contact', 'Kontaktuppgifter:', '')):
+            edit = QLineEdit()
+            edit.setText(self.db.get_config(key, default) or default)
+            edit.editingFinished.connect(lambda k=key, e=edit: self.db.set_config(k, e.text().strip()))
+            self._company_fields[key] = edit
+            company_form.addRow(label, edit)
+        company_form.addRow(QLabel('Uppgifterna används på rapportens försättsblad och i dokumentstyrningen.'))
+        company_form.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
+        tabs.addTab(company_tab, "Företagsuppgifter")
+
+        # ── Tab: Riskacceptanskriterier ────────────────────────────────────
+        criteria_tab = QWidget()
+        criteria_form = QFormLayout(criteria_tab)
+        criteria_form.setSpacing(10)
+        criteria_form.setContentsMargins(16, 16, 16, 16)
+        self._risk_acceptance_fields = {}
+        for level in range(1, 6):
+            edit = QTextEdit()
+            edit.setFixedHeight(52)
+            edit.setPlainText(self.db.get_config(f'risk_acceptance_{level}', '') or '')
+            edit.textChanged.connect(lambda l=level, e=edit: self.db.set_config(f'risk_acceptance_{l}', e.toPlainText().strip()))
+            self._risk_acceptance_fields[level] = edit
+            criteria_form.addRow(f'Risknivå {level}:', edit)
+        criteria_form.addRow(QLabel('Kriterierna återges i rapportens avsnitt 4.4 när de har definierats.'))
+        tabs.addTab(criteria_tab, "Riskacceptanskriterier")
+
         # ── Tab: Deltagare ────────────────────────────────────────────────────
         # Replaces the old free-text "Deltagare" field (2026-08-11, user
         # request: "skulle även gilla ... en till flik med deltagare
@@ -1760,7 +1804,8 @@ class HAZOPPreparationPanel(QWidget):
         # means this REPLACES the free-text field, not adds to it). See
         # ParticipantMatrixPanel below and NOTES.md for the schema/UI
         # design rationale.
-        self._participant_matrix_panel = ParticipantMatrixPanel(self.db)
+        self._participant_matrix_panel = ParticipantMatrixPanel(
+            self.db, spellcheck_context=self.spellcheck_context)
         tabs.addTab(self._participant_matrix_panel, "Deltagare")
 
         # ── Tab: ToR and Report ───────────────────────────────
@@ -1844,6 +1889,16 @@ class HAZOPPreparationPanel(QWidget):
 
         pal_lay.addStretch()
         ml.addWidget(pal_box)
+
+        levels_box = QGroupBox("Risknivåer – definition per celltyp")
+        levels_lay = QVBoxLayout(levels_box)
+        levels_lay.addWidget(QLabel("Ange vad exempelvis grönt, gult och rött innebär i den aktuella matrisen."))
+        self._risk_level_table = QTableWidget(0, 3)
+        self._risk_level_table.setHorizontalHeaderLabels(["Färg", "Risknivå", "Definition"])
+        self._risk_level_table.setMinimumHeight(80)
+        self._risk_level_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._risk_level_table.itemChanged.connect(lambda _item: setattr(self, '_matrix_levels_dirty', True))
+        levels_lay.addWidget(self._risk_level_table)
 
         # ── Matrix grid ───────────────────────────────────────────────────────
         # Use a wrapper so matrix stays at natural size (top-left) while the
@@ -2010,8 +2065,9 @@ class HAZOPPreparationPanel(QWidget):
         subnav.setContentsMargins(8, 6, 8, 0)
         self._risk_matrix_btn = QPushButton("Riskmatris")
         self._risk_axes_btn = QPushButton("Axlar")
+        self._risk_levels_btn = QPushButton("Risknivåer")
         self._risk_lopa_btn = QPushButton("LOPA")
-        for btn in (self._risk_matrix_btn, self._risk_axes_btn, self._risk_lopa_btn):
+        for btn in (self._risk_matrix_btn, self._risk_axes_btn, self._risk_levels_btn, self._risk_lopa_btn):
             btn.setCheckable(True)
             btn.setAutoExclusive(True)
             subnav.addWidget(btn)
@@ -2021,6 +2077,7 @@ class HAZOPPreparationPanel(QWidget):
         self._risk_substack.addWidget(matrix_editor)
         self._axes_page = self._create_axes_page()
         self._risk_substack.addWidget(self._axes_page)
+        self._risk_substack.addWidget(levels_box)
         self._lopa_settings_page = self._create_lopa_settings_page()
         self._risk_substack.addWidget(self._lopa_settings_page)
         risk_lay.addWidget(self._risk_substack)
@@ -2038,8 +2095,10 @@ class HAZOPPreparationPanel(QWidget):
             lambda: self._set_risk_subview(0))
         self._risk_axes_btn.clicked.connect(
             lambda: self._set_risk_subview(1))
-        self._risk_lopa_btn.clicked.connect(
+        self._risk_levels_btn.clicked.connect(
             lambda: self._set_risk_subview(2))
+        self._risk_lopa_btn.clicked.connect(
+            lambda: self._set_risk_subview(3))
         self._set_risk_subview(0)
 
         # ── Tab: Kategorier ───────────────────────────────────────────────────
@@ -2098,7 +2157,8 @@ class HAZOPPreparationPanel(QWidget):
         tabs.addTab(combined_tab, "Riskmatris")
 
         # ── Tab: Standardorsaker ─────────────────────────────────────────────
-        self._std_causes_panel = StandardCausesSettingsPanel(self.db)
+        self._std_causes_panel = StandardCausesSettingsPanel(
+            self.db, spellcheck_context=self.spellcheck_context)
         tabs.addTab(self._std_causes_panel, "Avvikelser & Orsaker")
 
         # ── Tab: Blad (moved from Studiehantering → PID-hantering, 2026-08-17,
@@ -2168,15 +2228,15 @@ class HAZOPPreparationPanel(QWidget):
         add_node_btn.clicked.connect(self._add_node_from_noder_tab)
         nodes_hdr.addWidget(add_node_btn)
         nodes_layout.addLayout(nodes_hdr)
-        self._nodes_table = QTableWidget(0, 7)
+        self._nodes_table = QTableWidget(0, 6)
         self._nodes_table.setHorizontalHeaderLabels([
-            "Nod nummer", "Namn", "Blad", "Objekt per blad", "Objekttyp",
+            "Nod nummer", "Namn", "Blad", "Objekttyp / tagg",
             "Avvikelser per objekt", "Antal"])
         self._nodes_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._nodes_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._nodes_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self._nodes_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        self._nodes_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self._nodes_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self._nodes_table.setWordWrap(True)
         self._nodes_table.verticalHeader().setVisible(False)
         self._nodes_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -2200,6 +2260,12 @@ class HAZOPPreparationPanel(QWidget):
         self._proj_number.setText(self.db.get_config('project_number', ''))
         self._proj_client.setText(self.db.get_config('project_client', ''))
         self._proj_facility.setText(self.db.get_config('project_facility', ''))
+        for key, edit in getattr(self, '_company_fields', {}).items():
+            edit.setText(self.db.get_config(key, edit.text()) or edit.text())
+        for level, edit in getattr(self, '_risk_acceptance_fields', {}).items():
+            edit.blockSignals(True)
+            edit.setPlainText(self.db.get_config(f'risk_acceptance_{level}', '') or '')
+            edit.blockSignals(False)
 
         today = QDate.currentDate()
         start_str = self.db.get_config('project_date_start', '')
@@ -2221,10 +2287,19 @@ class HAZOPPreparationPanel(QWidget):
         form = QFormLayout(box)
         form.setContentsMargins(12, 10, 12, 10)
         form.setSpacing(7)
-        for key, label in (
-                ("prepared", "Framtagen av:"),
-                ("reviewed", "Kvalitetsgranskad av:"),
-                ("approved", "Godkänd av:")):
+        rows = (("prepared", "Utfärdad av:"), ("reviewed", "Granskad av:"), ("contact", "Kontaktperson:")) if section == 'report' else (("prepared", "Framtagen av:"), ("reviewed", "Kvalitetsgranskad av:"), ("approved", "Godkänd av:"))
+        if section == 'report':
+            for key, label, default in (("number", "Rapportnummer:", ''), ("date", "Rapportdatum:", ''), ("distribution", "Distribution:", 'Enligt kundens anvisning')):
+                edit = QLineEdit()
+                value = self.db.get_config(f'{section}_{key}', default) or default
+                if key == 'number' and not value:
+                    project_number = self.db.get_config('project_number', '') or ''
+                    value = f'{project_number}-R-001' if project_number else ''
+                edit.setText(value)
+                edit.editingFinished.connect(lambda text=None, k=f'{section}_{key}', e=edit: self.db.set_config(k, e.text().strip()))
+                self._tor_report_fields[(section, key)] = edit
+                form.addRow(label, edit)
+        for key, label in rows:
             combo = QComboBox()
             combo.setEditable(True)
             combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
@@ -2256,6 +2331,8 @@ class HAZOPPreparationPanel(QWidget):
     def _load_tor_report_fields(self):
         names = self._participant_display_names()
         for (section, key), combo in self._tor_report_fields.items():
+            if not isinstance(combo, QComboBox):
+                continue
             value = self.db.get_config(f"{section}_{key}_by", '') or ''
             combo.blockSignals(True)
             combo.clear()
@@ -2457,23 +2534,23 @@ class HAZOPPreparationPanel(QWidget):
             self._nodes_table.setItem(row, 1, name_item)
             pages = self.db.analysis_pages_for_node(node['id'])
             sheet_names = [sheets_by_page.get(p, f"sida {p + 1}") for p in pages]
-            objects_by_page = self.db.analysis_objects_for_node(node['id'])
             details_by_page = self.db.analysis_object_details_for_node(node['id'])
-            object_lines = [', '.join(objects_by_page.get(p, [])) or '—' for p in pages]
             detail_lines = [details_by_page.get(p, []) for p in pages]
             self._nodes_table.setItem(row, 2, QTableWidgetItem('\n'.join(sheet_names)))
-            self._nodes_table.setItem(row, 3, QTableWidgetItem('\n'.join(object_lines)))
+            self._nodes_table.setItem(row, 3, QTableWidgetItem('\n'.join(
+                '\n'.join(
+                    (f"{obj['tag']} ({obj['type']})" if obj['tag'] and obj['type']
+                     else obj['tag'] or obj['type'] or '—')
+                    for obj in objs) or '—' for objs in detail_lines)))
             self._nodes_table.setItem(row, 4, QTableWidgetItem('\n'.join(
-                '\n'.join(obj['type'] or '—' for obj in objs) or '—' for objs in detail_lines)))
-            self._nodes_table.setItem(row, 5, QTableWidgetItem('\n'.join(
                 '\n'.join(', '.join(obj['deviations']) or '—' for obj in objs) or '—'
                 for objs in detail_lines)))
-            self._nodes_table.setItem(row, 6, QTableWidgetItem('\n'.join(
+            self._nodes_table.setItem(row, 5, QTableWidgetItem('\n'.join(
                 '\n'.join(str(obj['count']) for obj in objs) or '0' for objs in detail_lines)))
             self._nodes_table.resizeRowToContents(row)
 
     def _add_node_from_noder_tab(self):
-        self.db.add_node()
+        self.db.add_node(system_id=self.db.default_system_id())
         self.refresh_nodes()
         self.structure_changed.emit()
 
@@ -2525,9 +2602,16 @@ class HAZOPPreparationPanel(QWidget):
                 lambda d, id_=row['id']: self.db.update_project_revision(
                     id_, date=d.toString('yyyy-MM-dd')))
             self._proj_rev_table.setCellWidget(r, 1, date_edit)
+            performed = QComboBox()
+            performed.setEditable(True)
+            performed.addItems(self._participant_display_names())
+            performed.setCurrentText(row.get('performed_by') or '')
+            performed.currentTextChanged.connect(
+                lambda text, id_=row['id']: self.db.update_project_revision(id_, performed_by=text.strip()))
+            self._proj_rev_table.setCellWidget(r, 2, performed)
             item_desc = QTableWidgetItem(row['description'])
             item_desc.setData(Qt.ItemDataRole.UserRole, row['id'])
-            self._proj_rev_table.setItem(r, 2, item_desc)
+            self._proj_rev_table.setItem(r, 3, item_desc)
         self._proj_rev_table.blockSignals(False)
 
     def _add_project_revision_row(self):
@@ -2541,7 +2625,7 @@ class HAZOPPreparationPanel(QWidget):
             return
         if item.column() == 0:
             self.db.update_project_revision(id_, label=item.text())
-        elif item.column() == 2:
+        elif item.column() == 3:
             self.db.update_project_revision(id_, description=item.text())
 
     def _proj_rev_context_menu(self, pos):
@@ -2669,19 +2753,20 @@ class HAZOPPreparationPanel(QWidget):
         """Select the local Riskmatris/Axlar/LOPA view without touching data."""
         if not hasattr(self, '_risk_substack'):
             return
-        index = max(0, min(2, int(index)))
+        index = max(0, min(3, int(index)))
         if index == 1 and self._risk_substack.currentIndex() != 1:
             # Bring unsaved matrix header/cell edits into the same working
             # configuration before showing the larger, spreadsheet-style
             # axis editor.  This is presentation only; Save remains explicit.
             self._apply_size()
             self._reload_axes_tables()
-        if index == 2:
+        if index == 3:
             self._load_lopa_settings()
         self._risk_substack.setCurrentIndex(index)
         self._risk_matrix_btn.setChecked(index == 0)
         self._risk_axes_btn.setChecked(index == 1)
-        self._risk_lopa_btn.setChecked(index == 2)
+        self._risk_levels_btn.setChecked(index == 2)
+        self._risk_lopa_btn.setChecked(index == 3)
 
     def _create_lopa_settings_page(self):
         """Editable TEL, escalation and safeguard-type settings for LOPA.
@@ -2952,6 +3037,19 @@ class HAZOPPreparationPanel(QWidget):
         self._frequency_axis_table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.ResizeMode.ResizeToContents)
         self._frequency_axis_table.itemChanged.connect(self._on_axes_item_changed)
+        frequency_order_row = QHBoxLayout()
+        frequency_order_row.addWidget(QLabel("Ordning på gränser:"))
+        self._axes_frequency_order_btn = QPushButton()
+        self._axes_frequency_order_btn.setCheckable(True)
+        self._axes_frequency_order_btn.setText("Lägsta → högsta")
+        self._axes_frequency_order_btn.setMinimumWidth(150)
+        self._axes_frequency_order_btn.setToolTip(
+            "Visar lägsta frekvens överst; klicka för högsta först.")
+        self._axes_frequency_order_btn.toggled.connect(
+            self._set_axes_frequency_order)
+        frequency_order_row.addWidget(self._axes_frequency_order_btn)
+        frequency_order_row.addStretch()
+        freq_lay.addLayout(frequency_order_row)
         freq_lay.addWidget(self._frequency_axis_table)
         axis_split.addWidget(freq_box)
 
@@ -3002,6 +3100,7 @@ class HAZOPPreparationPanel(QWidget):
 
     @staticmethod
     def _configure_axes_table(table):
+        table.setStyleSheet("QTableWidget { font-size: 9px; } QHeaderView::section { font-size: 9px; }")
         table.setAlternatingRowColors(True)
         table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
@@ -3025,6 +3124,17 @@ class HAZOPPreparationPanel(QWidget):
         self._axes_dirty = True
         QTimer.singleShot(0, self._resize_axes_category_rows)
 
+    def _set_axes_frequency_order(self, reversed_order):
+        """Change only the editor display order; data remains low-to-high."""
+        self._axes_frequency_reversed = bool(reversed_order)
+        self._axes_frequency_order_btn.setText(
+            "Högsta → lägsta" if reversed_order else "Lägsta → högsta")
+        self._axes_frequency_order_btn.setToolTip(
+            "Visar högsta frekvens överst; klicka för lägsta först."
+            if reversed_order else
+            "Visar lägsta frekvens överst; klicka för högsta först.")
+        self._reload_axes_tables()
+
     def _reload_axes_tables(self, cfg=None):
         """Reload the Axlar page from its current in-memory working copy."""
         if not hasattr(self, '_frequency_axis_table'):
@@ -3045,14 +3155,15 @@ class HAZOPPreparationPanel(QWidget):
         try:
             self._frequency_axis_table.setRowCount(n_freq)
             for row in range(n_freq):
-                label = freq_labels[row] if row < len(freq_labels) else ''
-                code = freq_codes[row] if row < len(freq_codes) else f"F{row - 1}"
-                bound = '' if row >= n_freq - 1 else (
-                    f"{float(boundaries[row]):.8g}" if row < len(boundaries) else '')
+                data_row = n_freq - 1 - row if self._axes_frequency_reversed else row
+                label = freq_labels[data_row] if data_row < len(freq_labels) else ''
+                code = freq_codes[data_row] if data_row < len(freq_codes) else f"F{data_row - 1}"
+                bound = '—' if data_row >= n_freq - 1 else (
+                    f"{float(boundaries[data_row]):.8g}" if data_row < len(boundaries) else '')
                 self._frequency_axis_table.setItem(row, 0, self._axes_item(code))
                 self._frequency_axis_table.setItem(row, 1, self._axes_item(label))
                 self._frequency_axis_table.setItem(
-                    row, 2, self._axes_item(bound if row < n_freq - 1 else "—", row < n_freq - 1))
+                    row, 2, self._axes_item(bound, data_row < n_freq - 1))
 
             self._consequence_axis_table.setRowCount(n_cons)
             for row in range(n_cons):
@@ -3175,32 +3286,39 @@ class HAZOPPreparationPanel(QWidget):
 
     def _generate_frequency_labels(self):
         table = self._frequency_axis_table
-        bounds = []
-        for row in range(max(0, table.rowCount() - 1)):
+        display_bounds = {}
+        for row in range(table.rowCount()):
             item = table.item(row, 2)
             try:
                 value = float(item.text().strip()) if item else 0
             except ValueError:
                 value = 0
-            bounds.append(value if value > 0 else None)
+            data_row = table.rowCount() - 1 - row if self._axes_frequency_reversed else row
+            if data_row < table.rowCount() - 1:
+                display_bounds[data_row] = value if value > 0 else None
+        bounds = [display_bounds.get(row) for row in range(table.rowCount() - 1)]
 
         def _format(value):
             return f"{value:.4g}/år" if value and value >= 0.001 else f"{value:.2e}/år"
 
+        labels = []
+        for row in range(table.rowCount()):
+            left = bounds[row - 1] if row > 0 else None
+            right = bounds[row] if row < len(bounds) else None
+            if left is None and right is not None:
+                labels.append(f"< {_format(right)}")
+            elif left is not None and right is None:
+                labels.append(f"≥ {_format(left)}")
+            elif left is not None and right is not None:
+                labels.append(f"{_format(left)} – {_format(right)}")
+            else:
+                labels.append('')
+
         self._axes_loading = True
         try:
             for row in range(table.rowCount()):
-                left = bounds[row - 1] if row > 0 else None
-                right = bounds[row] if row < len(bounds) else None
-                if left is None and right is not None:
-                    label = f"< {_format(right)}"
-                elif left is not None and right is None:
-                    label = f"≥ {_format(left)}"
-                elif left is not None and right is not None:
-                    label = f"{_format(left)} – {_format(right)}"
-                else:
-                    label = ''
-                table.item(row, 1).setText(label)
+                data_row = table.rowCount() - 1 - row if self._axes_frequency_reversed else row
+                table.item(row, 1).setText(labels[data_row])
         finally:
             self._axes_loading = False
         self._axes_dirty = True
@@ -3216,16 +3334,21 @@ class HAZOPPreparationPanel(QWidget):
             getattr(self, '_last_built_cfg', None) or self.db.get_risk_matrix() or DEFAULT_MATRIX))
         n_freq, n_cons = self._frequency_axis_table.rowCount(), self._consequence_axis_table.rowCount()
         cfg['cols'], cfg['rows'] = n_freq, n_cons
-        cfg['x_codes'] = [self._frequency_axis_table.item(row, 0).text().strip()
-                          for row in range(n_freq)]
+        cfg['x_codes'] = [''] * n_freq
+        cfg['x_labels'] = [''] * n_freq
+        for row in range(n_freq):
+            data_row = n_freq - 1 - row if self._axes_frequency_reversed else row
+            cfg['x_codes'][data_row] = self._frequency_axis_table.item(row, 0).text().strip()
+            cfg['x_labels'][data_row] = self._frequency_axis_table.item(row, 1).text().strip()
         cfg['y_codes'] = [self._consequence_axis_table.item(row, 0).text().strip()
                           for row in range(n_cons)]
-        cfg['x_labels'] = [self._frequency_axis_table.item(row, 1).text().strip()
-                           for row in range(n_freq)]
         cfg['y_labels'] = [self._consequence_axis_table.item(row, 1).text().strip()
                            for row in range(n_cons)]
-        boundaries = []
-        for row in range(max(0, n_freq - 1)):
+        boundaries = [None] * max(0, n_freq - 1)
+        for row in range(n_freq):
+            data_row = n_freq - 1 - row if self._axes_frequency_reversed else row
+            if data_row >= n_freq - 1:
+                continue
             raw = self._frequency_axis_table.item(row, 2).text().strip()
             try:
                 value = float(raw)
@@ -3237,7 +3360,11 @@ class HAZOPPreparationPanel(QWidget):
                 QMessageBox.warning(self, "Ogiltig gräns",
                                     "Frekvensgränser måste vara större än noll.")
                 return
-            boundaries.append(value)
+            boundaries[data_row] = value
+        if any(value is None for value in boundaries):
+            QMessageBox.warning(self, "Ogiltiga gränser",
+                                "Alla frekvensgränser måste vara ifyllda.")
+            return
         if any(right <= left for left, right in zip(boundaries, boundaries[1:])):
             QMessageBox.warning(self, "Ogiltiga gränser",
                                 "Frekvensgränserna måste öka rad för rad.")
@@ -3281,6 +3408,7 @@ class HAZOPPreparationPanel(QWidget):
         # first because the snapshot is deliberately authoritative.
         cfg['consequence_categories'] = self.db._project_category_template(
             n_cons, cfg.get('consequence_categories'))
+        cfg['risk_level_definitions'] = self._risk_level_definitions_from_ui()
         self.db.set_risk_matrix(cfg)
 
         self._last_built_cfg = cfg
@@ -3356,6 +3484,34 @@ class HAZOPPreparationPanel(QWidget):
 
     def _load_matrix_ui(self):
         cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        level_defs = cfg.get('risk_level_definitions') or []
+        if not level_defs:
+            # Older matrices stored the colour and label only on each cell.
+            # Build the editable risk-level list from those cells on first load.
+            derived = {}
+            for row_colors, row_labels in zip(cfg.get('cell_colors', []), cfg.get('cell_labels', [])):
+                for color, label in zip(row_colors, row_labels):
+                    color, label = str(color or '').strip(), str(label or '').strip()
+                    if color and label and color not in derived:
+                        derived[color] = label
+            level_defs = [
+                {'color': color, 'label': label, 'definition': ''}
+                for color, label in derived.items()
+            ]
+        self._risk_level_table.blockSignals(True)
+        self._risk_level_table.setRowCount(len(level_defs))
+        for row, item in enumerate(level_defs):
+            for col, key in enumerate(('color', 'label', 'definition')):
+                table_item = QTableWidgetItem(str(item.get(key, '') or ''))
+                if col == 0 and item.get('color'):
+                    color = QColor(str(item['color']))
+                    if color.isValid():
+                        table_item.setBackground(QBrush(color))
+                        fg = QColor('#000000' if color.lightness() > 160 else '#ffffff')
+                        table_item.setForeground(QBrush(fg))
+                self._risk_level_table.setItem(row, col, table_item)
+        self._risk_level_table.blockSignals(False)
+        self._matrix_levels_dirty = False
         self._last_built_cfg = None   # reset before blocking so _apply_size sees None
         # Block all signals that would trigger _apply_size while we populate controls
         _senders = (self._rows_spin, self._cols_spin, self._axis_combo,
@@ -3490,6 +3646,7 @@ class HAZOPPreparationPanel(QWidget):
             'freq_boundaries': old.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES),
         }
         self._last_built_cfg = new_cfg
+        new_cfg['risk_level_definitions'] = json.loads(json.dumps(old.get('risk_level_definitions', [])))
         self._build_matrix_grid(new_cfg)
 
     def _build_matrix_grid(self, cfg):
@@ -3920,6 +4077,15 @@ class HAZOPPreparationPanel(QWidget):
             btn.update()
             self._matrix_grid.activate()
 
+    def _risk_level_definitions_from_ui(self):
+        result = []
+        for row in range(self._risk_level_table.rowCount()):
+            values = [self._risk_level_table.item(row, col).text().strip()
+                      if self._risk_level_table.item(row, col) else '' for col in range(3)]
+            if any(values):
+                result.append({'color': values[0], 'label': values[1], 'definition': values[2]})
+        return result
+
     def _save_matrix_values(self, show_confirmation=True):
         n_cons = self._rows_spin.value()   # consequence levels (rows in data)
         n_freq = self._cols_spin.value()   # frequency levels  (cols in data)
@@ -3987,6 +4153,7 @@ class HAZOPPreparationPanel(QWidget):
             'cell_colors':    colors,
             'cell_labels':    labels,
             'cell_fg_colors': fg_colors,
+            'risk_level_definitions': self._risk_level_definitions_from_ui(),
             # LOPA settings are part of the same reusable risk-matrix
             # template.  Matrix-grid/axis editing must therefore carry them
             # forward instead of resetting user-entered TEL/SIL values.
