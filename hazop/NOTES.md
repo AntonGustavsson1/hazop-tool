@@ -6078,3 +6078,16 @@ matrisvyer: `x_reversed` placerar hög nivå till vänster och `y_reversed`
 placerar låg nivå överst. Den tidigare rapportlogiken vände Y-axeln åt motsatt
 håll när `y_reversed=False`, vilket gjorde att den exporterade matrisen kunde
 få omvänd radordning jämfört med programmet.
+
+## 2026-09-09 — Metod redovisas under genomförande i dåtid
+
+Wordrapportens metodbeskrivning har flyttats från en fristående metodbilaga
+till avsnitt 3.1 `Metod och arbetssätt`. Texten beskriver hur studien har
+genomförts med dåtidsformen "har", inklusive nodindelning, avvikelseanalys,
+riskbedömning och fortsatt hantering. Analystillfällen, deltagare och närvaro
+har därför fått underrubrikerna 3.2–3.4, medan tabellnumren 3.1–3.3 har
+behållits.
+
+Bilaga 1 heter nu `Avvikelser och förkortningar` och innehåller endast den
+registrerade avvikelselistan och rapportens förkortningar. Bilaga 3 och dess
+HAZOP-protokoll har inte ändrats i denna justering.

@@ -403,19 +403,59 @@ def _add_matrix(document, db, data):
     _prose(document, data, 'Barriärunderlag', '4.6 Underlag för barriärer och enablers')
 
 
-def _add_participants(document, db):
+def _add_participants(document, db, data):
     _chapter(document, '3 Genomförande och deltagare')
     document.add_paragraph(
-        'HAZOP-arbetet bygger på en gemensam och tvärdisciplinär genomgång där '
-        'deltagarnas kunskap om process, teknik, drift och underhåll tas till '
-        'vara. Kapitlet beskriver hur studien har organiserats och vilka '
-        'personer som har medverkat.')
+        'HAZOP-arbetet har genomförts som en gemensam och tvärdisciplinär '
+        'genomgång där deltagarnas kunskap om process, teknik, drift och '
+        'underhåll har tagits till vara. Kapitlet beskriver det arbetssätt som '
+        'har använts, hur studien har organiserats och vilka personer som har '
+        'medverkat.')
+    document.add_heading('3.1 Metod och arbetssätt', 2)
+    document.add_paragraph(
+        'Studien har genomförts som en strukturerad HAZOP-genomgång av möjliga '
+        'avvikelser från anläggningens avsedda funktion. Analysobjektet har '
+        'delats in i hanterbara noder med definierade gränser och en beskriven '
+        'designavsikt. Indelningen har gjort det möjligt att behandla varje '
+        'funktion sammanhållet och samtidigt uppmärksamma viktiga gränssnitt '
+        'mot angränsande system.')
+    document.add_paragraph(
+        'Inför analystillfällena har tillgängliga ritningar, '
+        'processbeskrivningar och övriga referensunderlag samlats in. Under '
+        'genomgången har analysgruppen utgått från nodens funktion och aktuella '
+        'driftfall. Parametrar och ledord har därefter använts för att formulera '
+        'relevanta avvikelser och följa händelseförloppet från möjlig orsak till '
+        'tänkbar konsekvens.')
+    document.add_paragraph('Arbetsgången har varit följande:')
+    _numbered_list(document, (
+        'Nodens avsedda funktion, gränser och relevanta driftfall har bekräftats.',
+        'Relevanta avvikelser har formulerats med hjälp av parametrar och ledord.',
+        'Trovärdiga orsaker och möjliga konsekvenser har identifierats och beskrivits.',
+        'Befintliga barriärer och andra förhållanden som påverkar händelseförloppet har dokumenterats.',
+        'Frekvens och konsekvens har bedömts för de konsekvenskategorier som har berörts.',
+        'Rekommendationer har registrerats när ytterligare utredning, verifiering eller åtgärd har bedömts behövas.',
+        'Varje nod har avslutningsvis gåtts igenom för att fånga relevanta avvikelser och öppna frågor.',
+    ))
+    document.add_paragraph(
+        'Riskbedömningarna har gjorts med projektets sparade riskmatris. '
+        'Analysgruppen har först bedömt det formulerade scenariot och därefter '
+        'beaktat registrerade barriärer och enablers. Valda nivåer har '
+        'dokumenterats tillsammans med scenarioinformationen för att '
+        'bedömningens bakgrund ska kunna följas i rapporten.')
+    document.add_paragraph(
+        'Öppna frågor och rekommendationer har sammanställts för fortsatt '
+        'hantering. Saknade uppgifter och osäkerheter har lämnats synliga som '
+        'kompletteringspunkter, så att de kan behandlas vid granskning och '
+        'uppföljning utan att ersättas av antaganden i rapportexporten.')
+    document.add_paragraph(
+        'Studien har utgått från följande metodreferens: ' +
+        _value(data['field']('Metodreferens'), 'Metodreferens'))
     document.add_paragraph(
         'Uppgifterna återges så som de är registrerade i projektet. En saknad '
         'närvaroregistrering ska därför inte automatiskt tolkas som att en '
         'person varit frånvarande.')
     sessions = [dict(s) for s in db.list_analysis_sessions()]
-    document.add_heading('3.1 Analystillfällen', 2)
+    document.add_heading('3.2 Analystillfällen', 2)
     document.add_paragraph(
         'Studiens planerade eller genomförda analystillfällen sammanställs i '
         'tabell 3.1 med datum, tid och plats eller digital mötesform.')
@@ -427,7 +467,7 @@ def _add_participants(document, db):
     _caption(document, '3.1', 'Analystillfällen')
     _table(document, ['Tillfälle', 'Datum', 'Tid', 'Plats'], session_rows or [
         ['1', missing('analystillfälle'), '', '']], [17, 28, 43, 72])
-    document.add_heading('3.2 Deltagare', 2)
+    document.add_heading('3.3 Deltagare', 2)
     document.add_paragraph(
         'Tabell 3.2 visar deltagarna och de roller eller övriga '
         'deltagaruppgifter som har registrerats för studien.')
@@ -449,7 +489,7 @@ def _add_participants(document, db):
     _caption(document, '3.2', 'Deltagare och roller')
     _table(document, ['Förnamn', 'Efternamn', 'Deltagaruppgifter'],
            participant_rows or [[missing('deltagare'), '', '']], [32, 40, 88])
-    document.add_heading('3.3 Närvaro', 2)
+    document.add_heading('3.4 Närvaro', 2)
     document.add_paragraph(
         'Närvaron vid respektive analystillfälle redovisas i tabell 3.3. '
         'Eventuella anteckningar kan exempelvis förklara om en deltagare '
@@ -683,7 +723,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
          _value(s.get('drawing_date'), 'ritningsdatum'), str(s['physical_page'] + 1)]
         for s in sheets] or [[missing('referensdokument'), '', '', '', '']], [34, 51, 23, 32, 20])
     _prose(document, data, 'Övriga referensdokument', '2.2 Övriga referensdokument')
-    _add_participants(document, db)
+    _add_participants(document, db, data)
     if standard_template:
         _chapter(document, '4 Riskbedömning')
         document.add_paragraph(
@@ -739,83 +779,12 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'innebär inte automatiskt att kvarvarande risk är bedömd eller accepterad.')
     _prose(document, data, 'Uppföljning', '5.3 Uppföljning och ansvar')
 
-    _chapter(document, 'Bilaga 1 HAZOP metodik')
+    _chapter(document, 'Bilaga 1 Avvikelser och förkortningar')
     document.add_paragraph(
-        'HAZOP är en strukturerad gruppbaserad genomgång av hur en process eller '
-        'anläggningsdel kan avvika från sin avsedda funktion. Metoden ger '
-        'deltagarna ett gemensamt arbetssätt för att samtala om risker och '
-        'driftproblem utan att analysen blir beroende av en enskild persons '
-        'erfarenhet eller perspektiv.')
-    document.add_paragraph(
-        'Arbetet delas upp i hanterbara noder. För varje nod prövar gruppen '
-        'systematiskt relevanta avvikelser och följer händelseförloppet från '
-        'möjlig orsak till tänkbar konsekvens. Befintliga barriärer vägs in och '
-        'frågor som behöver utredas eller åtgärdas förs vidare som '
-        'rekommendationer. Den projektspecifika omfattningen och '
-        'riskbedömningen beskrivs i rapportens huvuddel.')
-    _prose(document, data, 'Metodreferens', 'B1.1 Metodgrund')
-    document.add_heading('B1.2 Förberedelse och nodindelning', 2)
-    document.add_paragraph(
-        'Inför analysmötena samlas relevanta ritningar, processbeskrivningar '
-        'och andra underlag. Materialet behöver vara tillräckligt aktuellt för '
-        'att gruppen ska kunna förstå den avsedda funktionen och se viktiga '
-        'gränssnitt mot angränsande system. Eventuella osäkerheter i underlaget '
-        'bör göras synliga i stället för att ersättas med antaganden.')
-    document.add_paragraph(
-        'Anläggningen delas därefter in i noder med tydliga gränser och en '
-        'begriplig designavsikt. En bra nod är tillräckligt sammanhållen för att '
-        'kunna diskuteras som en funktion, men inte så omfattande att viktiga '
-        'skillnader i media, driftförhållanden eller skydd försvinner i '
-        'genomgången. Nodbeskrivningen blir därför en central utgångspunkt för '
-        'hela analysen.')
-    document.add_heading('B1.3 Genomförande av analysen', 2)
-    document.add_paragraph(
-        'Varje nod inleds med att analysledaren och gruppen bekräftar funktion, '
-        'gränser och aktuellt driftfall. Därefter används parametrar och ledord '
-        'för att formulera avvikelser. Frågorna behandlas i en återkommande '
-        'ordning så att resonemanget går att följa och resultatet blir '
-        'jämförbart mellan noderna.')
-    _numbered_list(document, (
-        'Bekräfta nodens avsedda funktion, gränser och relevanta driftfall.',
-        'Välj parameter och ledord och formulera en tydlig avvikelse från den avsedda funktionen.',
-        'Identifiera trovärdiga orsaker och beskriv vad som kan hända om avvikelsen uppstår.',
-        'Dokumentera befintliga barriärer och andra förhållanden som påverkar händelseförloppet.',
-        'Bedöm risk för de konsekvenskategorier som berörs och dokumentera gruppens motivering.',
-        'Registrera rekommendationer när ytterligare utredning, verifiering eller åtgärd behövs.',
-        'Gå igenom noden som helhet och kontrollera att relevanta avvikelser och öppna frågor har fångats.',
-    ))
-    document.add_paragraph(
-        'Analysledaren håller ihop samtalet och ser till att formuleringarna '
-        'blir entydiga, medan deltagarna bidrar med sin sakkunskap. Metoden '
-        'bygger på gruppens gemensamma bedömning; där underlaget inte räcker '
-        'bör osäkerheten dokumenteras och hanteras som en öppen fråga.')
-    document.add_heading('B1.4 Riskbedömning och dokumentation', 2)
-    document.add_paragraph(
-        'För varje relevant konsekvens bedöms frekvens och konsekvens med '
-        'projektets sparade riskmatris. Bedömningen görs först för det '
-        'scenario som gruppen har formulerat och därefter med hänsyn till de '
-        'barriärer och enablers som har registrerats. Det är viktigt att '
-        'beskrivningen av scenariot och valet av nivåer går att läsa '
-        'tillsammans; en siffra eller färg ensam förklarar inte gruppens '
-        'resonemang.')
-    document.add_paragraph(
-        'Protokollet ska återge vad som faktiskt diskuterats och beslutats '
-        'under studien. Formuleringar bör vara korta men tillräckligt precisa '
-        'för att en person som inte deltog vid mötet ska kunna förstå orsak, '
-        'konsekvens, befintligt skydd och bakgrunden till en rekommendation.')
-    document.add_heading('B1.5 Kvalitetssäkring och uppföljning', 2)
-    document.add_paragraph(
-        'Efter genomgången kontrolleras att nodernas relevanta avvikelser har '
-        'behandlats, att scenariokedjorna är begripliga och att '
-        'rekommendationerna har en tydlig koppling till analysen. Saknade '
-        'uppgifter, motstridiga bedömningar och frågor som kräver nytt underlag '
-        'ska vara synliga för granskaren och inte döljas av rapportens format.')
-    document.add_paragraph(
-        'När en rekommendation genomförs behöver resultatet följas upp med '
-        'lämpligt verifieringsunderlag. Om åtgärden ändrar processens funktion, '
-        'nodens gränser eller en grundläggande analysförutsättning bör berörda '
-        'scenarier omprövas innan frågan avslutas.')
-    document.add_heading('B1.6 Registrerade avvikelser', 2)
+        'Bilagan ger en överblick över de avvikelser som har behandlats i '
+        'studien och förklarar de förkortningar som används i rapporten. '
+        'Studiens metod och genomförande har beskrivits i avsnitt 3.1.')
+    document.add_heading('B1.1 Registrerade avvikelser', 2)
     document.add_paragraph(
         'Tabell B1.1 visar de avvikelser som finns registrerade för studiens '
         'noder. Förteckningen ger en överblick över analysens frågeställningar '
@@ -825,7 +794,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     _caption(document, 'B1.1', 'Registrerade avvikelser')
     _table(document, ['Avvikelse'], [[v] for v in deviations if v]
            or [[missing('avvikelser och ledord')]])
-    document.add_heading('B1.7 Förkortningar', 2)
+    document.add_heading('B1.2 Förkortningar', 2)
     document.add_paragraph(
         'De förkortningar som används återkommande i rapporten förklaras i '
         'tabell B1.2.')

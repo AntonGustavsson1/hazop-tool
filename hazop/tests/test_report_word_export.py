@@ -82,10 +82,13 @@ class ReportWordExportTests(unittest.TestCase):
             'De ritningsblad som finns registrerade i studien förtecknas i tabell 2.1',
             'Studiens planerade eller genomförda analystillfällen sammanställs i tabell 3.1',
             'Tabell B4.1 redovisar rekommendationerna',
-            'HAZOP är en strukturerad gruppbaserad genomgång',
-            'B1.5 Kvalitetssäkring och uppföljning',
+            'HAZOP-arbetet har genomförts som en gemensam och tvärdisciplinär genomgång',
+            '3.1 Metod och arbetssätt',
+            'Arbetsgången har varit följande',
+            'Bilaga 1 Avvikelser och förkortningar',
         ):
             self.assertIn(text, body_text)
+        self.assertNotIn('Bilaga 1 HAZOP metodik', body_text)
         with ZipFile(self.path) as archive:
             header_xml = archive.read('word/header4.xml').decode('utf-8')
         self.assertIn('HAZOP f', header_xml)
@@ -203,7 +206,7 @@ class ReportWordExportTests(unittest.TestCase):
         numbered = [p for p in doc.paragraphs if p.style.name == 'List Number']
         self.assertTrue(node_names.issubset({p.text for p in numbered}))
         node_sequence = next(p for p in numbered if p.text in node_names)
-        method_sequence = next(p for p in numbered if p.text.startswith('Bekräfta nodens'))
+        method_sequence = next(p for p in numbered if p.text.startswith('Nodens avsedda'))
         self.assertNotEqual(node_sequence._p.pPr.numPr.numId.val,
                             method_sequence._p.pPr.numPr.numId.val)
 
