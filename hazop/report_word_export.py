@@ -262,7 +262,20 @@ def _table(document, headers, rows, widths=None):
 
 def _caption(document, number, title):
     number = str(number).replace('.', '-')
-    paragraph = document.add_paragraph(f'Tabell {number} {title}', 'Caption')
+    paragraph = document.add_paragraph(style='Caption')
+    match = re.match(r'^(.*-)(\d+)$', number)
+    if match:
+        prefix, ordinal = match.groups()
+        paragraph.add_run(f'Tabell {prefix}')
+        _field_run(paragraph, f'SEQ Tabell \\r {ordinal}', ordinal)
+        paragraph.add_run(f' {title}')
+    else:
+        paragraph.add_run(f'Tabell {number} {title}')
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    paragraph.paragraph_format.space_before = Pt(3)
+    paragraph.paragraph_format.space_after = Pt(3)
     paragraph.paragraph_format.left_indent = None
     paragraph.paragraph_format.first_line_indent = None
     paragraph.paragraph_format.right_indent = None
@@ -484,7 +497,7 @@ def _add_matrix(document, db, data):
     portrait_section = document.add_section(WD_SECTION_START.NEW_PAGE)
     _page_setup(portrait_section, landscape=False, paper='A4')
     document.add_heading('4.4 Riskacceptanskriterier', 2)
-    document.add_paragraph('Riskacceptanskriterierna har använts för att tolka de nivåer som har valts i riskmatrisen. De kriterier som har definierats för projektet redovisas i tabell 4.4.')
+    document.add_paragraph('Riskacceptanskriterierna har använts för att tolka de nivåer som har valts i riskmatrisen. De kriterier som har definierats för projektet redovisas i tabell 4-4.')
     criteria = [(str(i), db.get_config(f'risk_acceptance_{i}', '')) for i in range(1, 6)]
     criteria = [(level, value) for level, value in criteria if value.strip()]
     if not criteria:
@@ -568,7 +581,7 @@ def _add_participants(document, db, data):
     sessions = [dict(s) for s in db.list_analysis_sessions()]
     document.add_heading('3.2 Analystillfällen', 2)
     document.add_paragraph(
-        'Genomförda analystillfällen sammanställs i tabell 3.1 med datum, tid och plats.')
+        'Genomförda analystillfällen sammanställs i tabell 3-1 med datum, tid och plats.')
     session_rows = [[str(i), _value(s.get('date'), 'datum'),
                      _value(s.get('start_time'), 'starttid') + '–' +
                      _value(s.get('end_time'), 'sluttid'),
@@ -579,7 +592,7 @@ def _add_participants(document, db, data):
         ['1', missing('analystillfälle'), '', '']], [17, 28, 43, 72])
     document.add_heading('3.3 Deltagare', 2)
     document.add_paragraph(
-        'Tabell 3.2 visar deltagarna och de roller eller övriga '
+        'Tabell 3-2 visar deltagarna och de roller eller övriga '
         'deltagaruppgifter som har registrerats för studien.')
     participants = [dict(p) for p in db.list_participants()]
     columns = db.list_participant_columns()
@@ -601,7 +614,7 @@ def _add_participants(document, db, data):
            participant_rows or [[missing('deltagare'), '', '']], [32, 40, 88])
     document.add_heading('3.4 Närvaro', 2)
     document.add_paragraph(
-        'Närvaron vid respektive analystillfälle redovisas i tabell 3.3. '
+        'Närvaron vid respektive analystillfälle redovisas i tabell 3-3. '
         'Eventuella anteckningar kan exempelvis förklara om en deltagare '
         'medverkat under endast en del av mötet.')
     attendance = db.get_attendance_details()
@@ -657,7 +670,12 @@ def _node_appendix(document, db, data):
             columns.append(key)
     document.add_paragraph('Tabell B2-1 sammanställer nodernas P&ID-referenser och registrerade processförutsättningar. Tomma uppgifter har utelämnats för att hålla tabellen överskådlig.')
     _caption(document, 'B2-1', 'Nod- och processuppgifter')
-    _table(document, columns, [[row[key] or missing(key.lower()) for key in columns] for row in rows] or [[missing('noder'), '']], [34, 75] + [42] * (len(columns) - 2))
+    if len(columns) > 2:
+        remaining = 267 - 45 - 105
+        widths = [45, 105] + [remaining / (len(columns) - 2)] * (len(columns) - 2)
+    else:
+        widths = [60, 207]
+    _table(document, columns, [[row[key] or missing(key.lower()) for key in columns] for row in rows] or [[missing('noder'), '']], widths)
     if not data['nodes']:
         document.add_paragraph(missing('noder och designavsikt'))
 
@@ -884,7 +902,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     document.add_heading('2.1 Ritningsunderlag', 2)
     document.add_paragraph(
         'Det underlag som användes för HAZOP-studien omfattade P&ID-ritningar '
-        'och övriga projektdokument enligt tabell 2.1. Uppgifterna identifierar '
+        'och övriga projektdokument enligt tabell 2-1. Uppgifterna identifierar '
         'det grafiska underlag som nodindelningen och scenarioanalysen baserades på.')
     sheets = [dict(s) for s in db.get_sheets()]
     _caption(document, '2.1', 'Dokumentunderlag')
@@ -906,12 +924,12 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             'resultatet kan förstås och följas upp på ett enhetligt sätt.')
         document.add_heading('4.1 Riskmatris', 2)
         document.add_paragraph(
-            'Tabell 4.1 återger samma axelval, visningsriktning, '
+            'Tabell 4-1 återger samma axelval, visningsriktning, '
             'risknivåer och färger som i det aktuella HAZOP-projektet.')
         document.add_paragraph(missing('studiens riskmatris'))
         document.add_heading('4.2 Frekvensskala', 2)
         document.add_paragraph(
-            'Tabell 4.2 återger de frekvensnivåer och definitioner som '
+            'Tabell 4-2 återger de frekvensnivåer och definitioner som '
             'analysgruppen ska använda.')
         document.add_paragraph(missing('frekvensskala och definitioner'))
         document.add_heading('4.3 Konsekvensdefinitioner', 2)
@@ -940,9 +958,9 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         _prose(document, data, 'Resultat och slutsatser', '5.1 Resultat och slutsatser')
     document.add_heading('5.2 Rekommendationernas status', 2)
     document.add_paragraph(
-        'Tabell 5.1 ger en översikt över rekommendationernas registrerade '
+        'Tabell 5-1 ger en översikt över rekommendationernas registrerade '
         'status. Fullständig rekommendationstext, ansvarig, åtgärdsdatum och '
-        'koppling till berörda scenarier redovisas i tabell B4.1.')
+        'koppling till berörda scenarier redovisas i tabell B4-1.')
     status_counts = Counter(str(r.get('status') or 'Ej angiven') for r in data['recommendations'])
     _caption(document, '5.1', 'Rekommendationer per registrerad status')
     _table(document, ['Registrerad status', 'Antal'], sorted(status_counts.items())
@@ -969,7 +987,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'Studiens metod och genomförande har beskrivits i avsnitt 3.1.')
     document.add_heading('B1.1 Registrerade avvikelser', 2)
     document.add_paragraph(
-        'Tabell B1.1 visar de avvikelser som finns registrerade för studiens '
+        'Tabell B1-1 visar de avvikelser som finns registrerade för studiens '
         'noder. Förteckningen ger en överblick över analysens frågeställningar '
         'men ersätter inte scenarioredovisningen i protokollet.')
     deviations = list(dict.fromkeys(
@@ -996,7 +1014,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             document.add_page_break()
         node_label = group[0]['values'][0] if group and group[0].get('values') else ''
         document.add_paragraph(
-            f"Tabell B3.{index + 1} redovisar HAZOP-protokollet för "
+            f"Tabell B3-{index + 1} redovisar HAZOP-protokollet för "
             f"{node_label or 'den aktuella noden'}. Rekommendationer i tabellen "
             'återfinns även i rekommendationslistan med referens tillbaka till '
             'berört scenario.')
@@ -1016,7 +1034,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'fortsatt uppföljning.')
     document.add_heading('B4.1 Rekommendationsregister', 2)
     document.add_paragraph(
-        'Tabell B4.1 redovisar rekommendationerna med ansvarig, åtgärdsdatum '
+        'Tabell B4-1 redovisar rekommendationerna med ansvarig, åtgärdsdatum '
         'och registrerad status. Scenarioreferenserna visar var varje '
         'rekommendation hör hemma i bilaga 3 och gör det möjligt att följa '
         'åtgärden tillbaka till analysen.')
