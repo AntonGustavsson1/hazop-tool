@@ -778,12 +778,12 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     document.add_page_break()
     _front_heading('Förkortningar')
-    document.add_paragraph('Följande förkortningar används återkommande i rapporten och i HAZOP-protokollet.')
+    document.add_paragraph('Följande förkortningar används återkommande i rapporten.')
     _table(document, ['Förkortning', 'Förklaring'], [
+        ['BPCS', 'Basic Process Control System – ordinarie processtyrsystem'],
         ['HAZOP', 'Hazard and Operability Study – risk- och driftanalys'],
         ['P&ID', 'Piping and Instrumentation Diagram – rör- och instrumentdiagram'],
         ['RRF', 'Risk Reduction Factor – riskreduktionsfaktor'],
-        ['BPCS', 'Basic Process Control System – ordinarie processtyrsystem'],
     ], [28, 132])
     document.add_page_break()
     document.add_paragraph('Innehåll', 'TOC Heading')
