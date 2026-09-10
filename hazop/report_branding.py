@@ -70,7 +70,9 @@ def new_report_document(values, revisions):
                                     bold = rpr.find(qn('w:b'))
                                     if bold is not None:
                                         rpr.remove(bold)
-                                clone.find(qn('w:t')).text = rest
+                                clone_text = clone.find(qn('w:t'))
+                                clone_text.set(qn('xml:space'), 'preserve')
+                                clone_text.text = ' ' + rest.lstrip()
                                 run._r.addnext(clone)
         # The customer contact block is Swedish prose; explicitly mark its
         # runs as Swedish so Word does not apply English proofing/formatting.

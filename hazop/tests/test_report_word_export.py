@@ -69,6 +69,19 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertIn('w:updateFields', xml)
         self.assertIn('TOC ', xml)
 
+    def test_cover_metadata_labels_have_a_space_before_their_values(self):
+        self.db.add_project_custom_field('Distribution', 'Enligt kundens anvisning')
+        doc = self.export()
+        metadata = [
+            paragraph.text
+            for row in doc.tables[0].rows
+            for cell in row.cells
+            for paragraph in cell.paragraphs
+        ]
+        self.assertTrue(any(text.startswith('Titel: HAZOP för ') for text in metadata))
+        self.assertTrue(any(text.startswith('Datum: ') for text in metadata))
+        self.assertTrue(any(text.startswith('Distribution: Enligt ') for text in metadata))
+
     def test_source_backed_prosa_furniture_and_descriptive_chapter_text_are_preserved(self):
         doc = self.export()
         self.assertEqual(doc.styles['Normal'].font.name, 'Aptos')
