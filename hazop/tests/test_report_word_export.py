@@ -91,10 +91,15 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertTrue(all(not section.header.is_linked_to_previous
                             for section in doc.sections[2:]))
         for section in doc.sections[2:]:
-            self.assertIsNotNone(next(
-                section.header._element.iter(qn('a:blip')), None))
-            self.assertIsNotNone(next(
-                section.first_page_header._element.iter(qn('a:blip')), None))
+            for header in (section.header, section.first_page_header):
+                blip = next(header._element.iter(qn('a:blip')), None)
+                self.assertIsNotNone(blip)
+                image_relation = header.part.rels[blip.get(qn('r:embed'))]
+                self.assertEqual(
+                    str(image_relation.target_part.partname),
+                    '/word/media/image4.wmf',
+                    'The generated header must retain the complete ProSa logo '
+                    'from the source running header.')
         body_text = '\n'.join(paragraph.text for paragraph in doc.paragraphs)
         for text in (
             'P&ID-ritningarna och övriga registrerade dokument för riskanalysen redovisas i tabell 2-1',

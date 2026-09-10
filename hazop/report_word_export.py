@@ -923,6 +923,13 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'REVISION_AUTHOR': missing('utfört av'),
     }]
     document = new_report_document(values, revision_rows)
+    # The final source section contains ProSa's complete running header:
+    # round logo, wordmark, metadata table and green rule.  Retain its XML
+    # and image relationships before generated sections change the document's
+    # section indexes.
+    source_header_part = document.sections[-1].header.part
+    source_header_elements = deepcopy(list(source_header_part._element))
+    source_header_relationships = tuple(source_header_part.rels.items())
     for text in document.element.iter(qn('w:t')):
         if text.text:
             text.text = text.text.replace('Version ', 'Revision ')
@@ -1312,11 +1319,9 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     # floating source artwork can disappear after generated section breaks.
     # Each generated section therefore receives its own relationship to the
     # same image parts and a copy of the source header XML.
-    source_header = document.sections[2].header
-
     def copy_source_header(target_header):
         relationship_ids = {}
-        for old_id, relationship in source_header.part.rels.items():
+        for old_id, relationship in source_header_relationships:
             if relationship.is_external:
                 new_id = target_header.part.relate_to(
                     relationship.target_ref, relationship.reltype, is_external=True)
@@ -1326,7 +1331,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             relationship_ids[old_id] = new_id
         for child in list(target_header._element):
             target_header._element.remove(child)
-        for child in deepcopy(list(source_header._element)):
+        for child in deepcopy(source_header_elements):
             target_header._element.append(child)
         for element in target_header._element.iter():
             for attribute in (qn('r:embed'), qn('r:id'), qn('r:link')):
@@ -1334,7 +1339,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
                 if old_id in relationship_ids:
                     element.set(attribute, relationship_ids[old_id])
 
-    for index, section in enumerate(document.sections[2:]):
+    for section in document.sections[2:]:
         # Word treats the first body page of some generated sections as a
         # first-page-header even when titlePg is absent. Define that header
         # explicitly as well, rather than inheriting the cover's first header.
@@ -1342,10 +1347,9 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         section.first_page_header.is_linked_to_previous = True
         section.first_page_header.is_linked_to_previous = False
         copy_source_header(section.first_page_header)
-        if index:
-            section.header.is_linked_to_previous = True
-            section.header.is_linked_to_previous = False
-            copy_source_header(section.header)
+        section.header.is_linked_to_previous = True
+        section.header.is_linked_to_previous = False
+        copy_source_header(section.header)
     footer_element = document.sections[2].footer._element
     for child in list(footer_element):
         footer_element.remove(child)
@@ -1360,32 +1364,6 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     update = OxmlElement('w:updateFields')
     update.set(qn('w:val'), 'true')
     document.settings.element.append(update)
-    # New-page sections inherit the running metadata header but not the logo
-    # drawing from the template's first header. Copy that image relationship
-    # into each report section so the ProSa mark remains visible throughout.
-    from docx.opc.constants import RELATIONSHIP_TYPE
-    source_header = document.sections[0].header.part
-    source_blip = next(source_header._element.iter(qn('a:blip')), None)
-    if source_blip is not None:
-        source_rid = source_blip.get(qn('r:embed'))
-        source_rel = source_header.rels.get(source_rid)
-        if source_rel is not None:
-            for section in document.sections[1:]:
-                # Generated sections explicitly define both a normal and a
-                # first-page header. Word can select either variant after a
-                # section break, so both must carry their own logo relation.
-                for header in (section.header, section.first_page_header):
-                    target_header = header.part
-                    if next(target_header._element.iter(qn('a:blip')), None) is not None:
-                        continue
-                    new_rid = target_header.relate_to(
-                        source_rel._target, RELATIONSHIP_TYPE.IMAGE)
-                    paragraph = deepcopy(next(
-                        source_header._element.iter(qn('w:p')),
-                        source_header._element))
-                    for blip in paragraph.iter(qn('a:blip')):
-                        blip.set(qn('r:embed'), new_rid)
-                    target_header._element.insert(0, paragraph)
     _replace_table_references(document)
     apply_report_fonts(document)
     _highlight_document(document)
