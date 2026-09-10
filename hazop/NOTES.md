@@ -6091,3 +6091,10 @@ behållits.
 Bilaga 1 heter nu `Avvikelser och förkortningar` och innehåller endast den
 registrerade avvikelselistan och rapportens förkortningar. Bilaga 3 och dess
 HAZOP-protokoll har inte ändrats i denna justering.
+
+## 2026-09-10 — Frekvens väljs uttryckligen för nya orsaker
+
+Nya orsaker markeras nu som att frekvens ännu inte har valts. Utan standardorsak
+eller manuellt frekvensval visas därför varken frekvens eller risknivå. Val av
+standardorsak eller manuell frekvens aktiverar frekvensen igen. Befintliga
+orsaker ändras inte automatiskt.
