@@ -579,7 +579,7 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertIn('<strong>SG-TRUE</strong>', html)
             self.assertIn('<strong>REC-TRUE</strong>', html)
             self.assertIn('(RRF: 10)', html)
-            self.assertIn('1 (10)', html)
+            self.assertIn('Enabler: 10', html)
             self.assertIn('(RRF: 10)', plain_text)
             self.assertNotIn('CAUSE-WRONG', html)
             self.assertNotIn('REC-WRONG', html)

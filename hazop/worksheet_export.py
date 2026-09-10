@@ -89,6 +89,30 @@ def _rrf_reduction_steps(rrf):
     return int(math.floor(math.log10(value))) if value > 1 else 0
 
 
+def _format_rrf(rrf):
+    """Format a factor without displaying a needless decimal part."""
+    try:
+        return f'{float(rrf):g}'
+    except (TypeError, ValueError):
+        return '1'
+
+
+def _format_enablers(factors):
+    """Return the active enablers with their own RRF values.
+
+    The former compact summary (for example ``2 (100)``) concealed which
+    enablers were credited.  A line per enabler remains legible in the narrow
+    Worksheet/Word column and makes the scenario assessment traceable.
+    """
+    lines = []
+    for factor in factors:
+        if not factor.get('active'):
+            continue
+        description = str(factor.get('description') or 'Enabler').strip()
+        lines.append(f'{description or "Enabler"}: {_format_rrf(factor.get("rrf", 1))}')
+    return '\n'.join(lines)
+
+
 def total_freq_reduction(base_frequency, safeguard_rrf, fa_active,
                          fa_probability, ignition_active, ignition_probability,
                          extra_factors):
@@ -269,17 +293,7 @@ def _worksheet_rows(db):
                     final_overrides = final_severity_by_consequence.get(
                         consequence_id, {})
 
-                    active_factors = [factor for factor in factors
-                                      if factor.get('active')]
-                    aggregate_rrf = 1.0
-                    for factor in active_factors:
-                        try:
-                            aggregate_rrf *= max(1.0, float(factor.get('rrf') or 1))
-                        except (TypeError, ValueError):
-                            continue
-                    enablers_label = (
-                        f'{len(active_factors)} ({aggregate_rrf:g})'
-                        if active_factors else '')
+                    enablers_label = _format_enablers(factors)
 
                     excluded_cause_safeguards = {
                         sg['id'] for sg in safeguards

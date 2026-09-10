@@ -47,6 +47,7 @@ class WorksheetWordExportTests(unittest.TestCase):
         self.db.update_safeguard(first, description='Stäng ventil', rrf=10)
         self.db.update_safeguard(second, description='Larma operatör', rrf=1)
         self.db.conn.commit()
+        return consequence_id
 
     def test_word_export_uses_worksheet_merges_and_node_page_breaks(self):
         self._make_populated_node('Nod A', 1)
@@ -88,6 +89,22 @@ class WorksheetWordExportTests(unittest.TestCase):
             section = Document(path).sections[0]
             self.assertGreater(section.page_width, section.page_height)
             self.assertGreater(section.page_width, 5000000)
+        finally:
+            os.unlink(path)
+
+    def test_word_export_lists_each_enabler_with_its_rrf(self):
+        consequence_id = self._make_populated_node('Nod A', 1)
+        self.db.add_reduction_factor(consequence_id, 'Ant', 10)
+        self.db.add_reduction_factor(consequence_id, 'Esk', 10)
+        fd, path = tempfile.mkstemp(suffix='.docx')
+        os.close(fd)
+        try:
+            ok, error = export_worksheet_word(self.db, path, paper_size='A4')
+            self.assertTrue(ok, error)
+            from docx import Document
+            text = Document(path).tables[0].cell(1, 8).text.strip()
+            self.assertEqual(text, 'Ant: 10\nEsk: 10')
+            self.assertNotIn('2 (100)', text)
         finally:
             os.unlink(path)
 

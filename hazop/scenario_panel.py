@@ -10039,16 +10039,10 @@ class ScenarioTablePanel(QWidget):
                 text = f'{text} (RRF: {rrf})'
 
         if col == self._C_LOPA and cons_id:
+            from worksheet_export import _format_enablers
             active_factors = [dict(factor) for factor in self.db.reduction_factors(cons_id)
                               if factor['active']]
-            total_rrf = 1.0
-            for factor in active_factors:
-                try:
-                    total_rrf *= max(1.0, float(factor.get('rrf') or 1))
-                except (TypeError, ValueError):
-                    continue
-            text = (f'{len(active_factors)} ({_LopaWidget._format_rrf(total_rrf)})'
-                    if active_factors else '')
+            text = _format_enablers(active_factors)
         elif item is not None and col == self._C_REK:
             recommendation_id = (self._row_recommendation_ids[row]
                                  if row < len(self._row_recommendation_ids) else None)
