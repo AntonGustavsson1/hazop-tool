@@ -1126,7 +1126,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     if other_documents:
         document.add_heading('2.1 Ritningsunderlag', 2)
     document.add_paragraph(
-        'P&ID-ritningarna och övriga registrerade underlag redovisas i '
+        'P&ID-ritningarna och övriga registrerade dokument för riskanalysen redovisas i '
         'tabell 2-1. Dessa dokument utgjorde underlag för nodindelningen och '
         'den efterföljande scenarioanalysen.')
     sheets = [dict(s) for s in db.get_sheets()]
