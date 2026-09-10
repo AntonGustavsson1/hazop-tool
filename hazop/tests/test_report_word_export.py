@@ -103,11 +103,13 @@ class ReportWordExportTests(unittest.TestCase):
                 instructions = [instruction.text or '' for instruction
                                 in header._element.iter(qn('w:instrText'))]
                 self.assertIn('REF rapportdatum', instructions)
+                self.assertIn('REF rapportnummer', instructions)
         bookmark_names = {
             bookmark.get(qn('w:name'))
             for bookmark in doc.element.iter(qn('w:bookmarkStart'))
         }
         self.assertIn('rapportdatum', bookmark_names)
+        self.assertIn('rapportnummer', bookmark_names)
         body_text = '\n'.join(paragraph.text for paragraph in doc.paragraphs)
         for text in (
             'P&ID-ritningarna och övriga registrerade dokument för riskanalysen redovisas i tabell 2-1',
