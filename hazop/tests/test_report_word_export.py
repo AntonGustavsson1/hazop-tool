@@ -98,6 +98,16 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertTrue(doc.sections[0].different_first_page_header_footer)
         self.assertTrue(all(not section.header.is_linked_to_previous
                             for section in doc.sections[2:]))
+        self.assertEqual(
+            doc.sections[2]._sectPr.find(qn('w:pgNumType')).get(qn('w:start')),
+            '1',
+        )
+        for section in doc.sections[:2]:
+            self.assertNotIn(
+                'PAGE',
+                [instruction.text or ''
+                 for instruction in section.footer._element.iter(qn('w:instrText'))],
+            )
         for section in doc.sections[2:]:
             for header in (section.header, section.first_page_header):
                 blip = next(header._element.iter(qn('a:blip')), None)

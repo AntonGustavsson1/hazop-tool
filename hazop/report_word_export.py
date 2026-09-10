@@ -1453,6 +1453,12 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     _field_run(footer, 'PAGE')
     footer.add_run(' av ')
     _field_run(footer, 'NUMPAGES')
+    # The cover, report information, summary, abbreviations and TOC are
+    # front matter without visible page numbers. Start the visible sequence
+    # at the continuous section that begins with "1 Inledning".
+    page_number_type = OxmlElement('w:pgNumType')
+    page_number_type.set(qn('w:start'), '1')
+    document.sections[2]._sectPr.append(page_number_type)
     update = OxmlElement('w:updateFields')
     update.set(qn('w:val'), 'true')
     document.settings.element.append(update)
