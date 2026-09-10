@@ -136,6 +136,7 @@ class ReportWordExportTests(unittest.TestCase):
             'HAZOP-studien genomfördes som en gemensam, tvärdisciplinär genomgång',
             'Resultatet ska användas som underlag för fortsatt riskhantering av systemet.',
             'Resultatet har dokumenterats i ett gemensamt protokoll som kan användas vid fortsatt riskhantering.',
+            'Nodindelningen redovisas i bilaga 2 och tillhörande P&ID-nodmarkeringar redovisas i bilaga 5.',
             'Tabell 4-1 visar den riskmatris som användes i studien. Axelriktning, färger och nivånamn framgår av tabellen.',
             'vid utfärdande av rapport.',
             '3.1 Metod och arbetssätt',

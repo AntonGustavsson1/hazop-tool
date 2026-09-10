@@ -1194,7 +1194,8 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     if data['nodes']:
         document.add_paragraph(
             f"Analysen har omfattat {count_phrase(len(data['nodes']), 'nod')}. "
-            'Nodindelningen och tillhörande P&ID-referenser redovisas i bilaga 2.')
+            'Nodindelningen redovisas i bilaga 2 och tillhörande '
+            'P&ID-nodmarkeringar redovisas i bilaga 5.')
     else:
         document.add_paragraph(missing('omfattning och nodindelning'))
     if field('Driftfall'):
