@@ -224,6 +224,8 @@ class ReportWordExportTests(unittest.TestCase):
         body_text = '\n'.join(p.text for p in doc.paragraphs)
         self.assertIn('Studien genomfördes vid 1 analystillfälle', body_text)
         self.assertIn('Studerade noder', body_text)
+        self.assertIn('Analysen omfattade 1 nod.', body_text)
+        self.assertNotIn('Analysgruppen dokumenterade', body_text)
         node_names = {row['name'] for row in self.db.nodes()}
         numbered = [p for p in doc.paragraphs if p.style.name == 'List Number']
         self.assertTrue(node_names.issubset({p.text for p in numbered}))

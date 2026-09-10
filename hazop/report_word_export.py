@@ -1040,18 +1040,10 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         _numbered_list(document, [missing('numrerad nodlista')])
     _front_heading('Huvudresultat')
     if standard_template:
-        document.add_paragraph(
-            missing('antal noder, konsekvensposter och rekommendationer'))
+        document.add_paragraph(missing('antal noder'))
     else:
         node_phrase = count_phrase(len(data['nodes']), 'nod')
-        consequence_phrase = count_phrase(
-            data['consequence_count'], 'konsekvenspost', 'konsekvensposter')
-        recommendation_phrase = count_phrase(
-            len(data['recommendations']), 'rekommendation')
-        document.add_paragraph(
-            f'Analysen omfattade {node_phrase}. Analysgruppen dokumenterade '
-            f'{consequence_phrase} och formulerade {recommendation_phrase} '
-            'för fortsatt hantering.')
+        document.add_paragraph(f'Analysen omfattade {node_phrase}.')
         if data['recommendations']:
             most_items = [
                 f'nod {number} ({count})'
