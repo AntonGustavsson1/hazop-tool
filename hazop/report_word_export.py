@@ -874,25 +874,6 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             if match:
                 linked_nodes.add(int(match.group(1)))
         recommendation_nodes.update(linked_nodes)
-    residual_by_consequence = {}
-    for row in data['rows']:
-        consequence_id = row['merge_key'][3]
-        risk_after = row.get('risk_after')
-        if consequence_id is not None and risk_after and str(risk_after[0]).strip():
-            residual_by_consequence[consequence_id] = str(risk_after[0]).strip()
-    residual_risks = Counter(residual_by_consequence.values())
-    matrix_level_order = {
-        str(item.get('label') or '').strip().casefold(): index
-        for index, item in enumerate(data['matrix'].get('risk_level_definitions') or [])
-    }
-    ordered_residual_risks = sorted(
-        residual_risks.items(),
-        key=lambda item: (matrix_level_order.get(item[0].casefold(), 999), item[0].casefold()))
-    residual_risk_summary = ', '.join(
-        f'{label}: {count}' for label, count in ordered_residual_risks)
-    high_risk_count = sum(
-        count for label, count in residual_risks.items()
-        if re.search(r'krit|hög|high|oaccept|röd|red|extrem', label, re.IGNORECASE))
     project = _value(db.get_config('project_name', ''), 'system')
     client = _value(db.get_config('project_client', ''), 'kund')
     field = data['field']
@@ -1064,8 +1045,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     if field('Resultat och slutsatser'):
         document.add_paragraph(field('Resultat och slutsatser'))
     document.add_paragraph(
-        'En sammanställning av huvudresultaten finns i tabell 5-1. Det '
-        'fullständiga analysresultatet redovisas i HAZOP-protokollet och '
+        'Det fullständiga analysresultatet redovisas i HAZOP-protokollet och '
         'rekommendationsregistret i bilaga 3 och bilaga 4.')
 
     document.add_page_break()
@@ -1206,71 +1186,40 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'Detta kapitel sammanfattar studiens resultat och beskriver hur '
         'rekommendationerna ska hanteras efter avslutad analys. Den detaljerade '
         'bakgrunden till varje rekommendation finns i HAZOP-protokollet.')
-    document.add_heading('5.1 Huvudresultat', 2)
-    document.add_paragraph(
-        'Tabell 5-1 sammanfattar studiens omfattning och de resultat som behöver '
-        'beaktas i den fortsatta hanteringen. Den fullständiga redovisningen '
-        'finns i rapportens bilagor.')
-    most_result_items = [
-        f'nod {number} ({count})'
-        for number, count in recommendation_nodes.most_common(3)]
-    if len(most_result_items) > 1:
-        most_result_text = ', '.join(most_result_items[:-1]) + ' och ' + most_result_items[-1]
-    else:
-        most_result_text = most_result_items[0] if most_result_items else ''
+    document.add_heading('5.1 Resultat', 2)
     if standard_template:
-        result_rows = [
-            ['Analystillfällen', missing('antal analystillfällen')],
-            ['Analyserade noder', missing('antal noder')],
-            ['Dokumenterade konsekvensposter', missing('antal konsekvensposter')],
-            ['Rekommendationer', missing('antal rekommendationer')],
-            ['Öppna rekommendationer', missing('antal öppna rekommendationer')],
-            ['Risknivåer efter barriärer', missing('risknivåer efter barriärer')],
-            ['Höga eller kritiska riskbedömningar efter barriärer', missing('antal höga eller kritiska riskbedömningar')],
-            ['Noder med flest kopplade rekommendationer', missing('berörda noder')],
-        ]
+        document.add_paragraph(missing('antal analystillfällen, noder och rekommendationer'))
     else:
-        result_rows = [
-            ['Analystillfällen', len(data['sessions'])],
-            ['Analyserade noder', len(data['nodes'])],
-            ['Dokumenterade konsekvensposter', data['consequence_count']],
-            ['Rekommendationer', len(data['recommendations'])],
-            ['Öppna rekommendationer', open_recommendation_count],
-            ['Risknivåer efter barriärer', residual_risk_summary or 'Inga registrerade riskbedömningar'],
-            ['Höga eller kritiska riskbedömningar efter barriärer', high_risk_count],
-            ['Noder med flest kopplade rekommendationer', most_result_text or 'Inga kopplade rekommendationer'],
-        ]
-    _caption(document, '5.1', 'Sammanställning av huvudresultat')
-    _table(document, ['Resultatmått', 'Utfall'], result_rows, [105, 55])
+        document.add_paragraph(
+            f"Studien omfattade {count_phrase(len(data['sessions']), 'analystillfälle')} "
+            f"och {count_phrase(len(data['nodes']), 'nod')}. Analysgruppen "
+            f"registrerade {count_phrase(len(data['recommendations']), 'rekommendation')}, "
+            f"varav {count_phrase(open_recommendation_count, 'öppen rekommendation', 'öppna rekommendationer')} "
+            'vid rapportens export.')
     if field('Resultat och slutsatser'):
         document.add_paragraph(field('Resultat och slutsatser'))
-    document.add_heading('5.2 Rekommendationernas status', 2)
-    document.add_paragraph(
-        'Tabell 5-2 sammanfattar rekommendationerna efter registrerad status. '
-        'Rekommendationstext, ansvarig, åtgärdsdatum och koppling till '
-        'berörda scenarier redovisas i tabell B4-1.')
-    status_counts = Counter(str(r.get('status') or 'Ej angiven') for r in data['recommendations'])
-    _caption(document, '5.2', 'Rekommendationer per registrerad status')
-    _table(document, ['Registrerad status', 'Antal'], sorted(status_counts.items())
-           or ([[missing('status'), missing('antal')]] if standard_template
-               else [['Inga rekommendationer registrerade', 0]]), [125, 35])
-    document.add_paragraph(
-        'Tabellen återger den status som var registrerad när rapporten '
-        'exporterades. En rekommendation bör inte stängas förrän beslutet är '
-        'dokumenterat och en genomförd åtgärd har verifierats.')
-    document.add_heading('5.3 Rekommendationer', 2)
-    document.add_paragraph(
-        'Analysgruppen formulerade rekommendationerna utifrån de scenarier som '
-        'behandlades under studien. Varje rekommendation ska bedömas och '
-        'antingen genomföras, avslås eller utredas vidare. Ansvarig, beslut, '
-        'motivering och planerad tidpunkt för uppföljning ska dokumenteras i '
-        'rekommendationsregistret.')
-    document.add_heading('5.4 Fortsatt hantering', 2)
+    document.add_heading('5.2 Fortsatt hantering', 2)
     document.add_paragraph(
         'Efter studien ska varje öppen rekommendation tilldelas en ansvarig och '
         'föras till ett dokumenterat beslut. En rekommendation kan genomföras, '
         'avslås eller utredas vidare. Beslutet och dess grund ska dokumenteras '
-        'tillsammans med planerat datum för genomförande eller fortsatt utredning.')
+        'tillsammans med planerat datum för genomförande eller fortsatt utredning. '
+        'Rekommendationstext, ansvarig, åtgärdsdatum och koppling till berörda '
+        'scenarier redovisas i tabell B4-1.')
+    document.add_paragraph(
+        'Alla HAZOP-rekommendationer baseras på de diskussioner och överväganden '
+        'som gjordes under HAZOP-workshopen och speglar HAZOP-teamets kollektiva '
+        'bedömning vid studietillfället. Även om enskilda rekommendationer inte '
+        'nödvändigtvis följer beskrivningarna nedan kan de generellt prioriteras '
+        'enligt följande ordning. Röda risker ska åtgärdas med högst prioritet, '
+        'därefter gula och sist gröna:')
+    _numbered_list(document, [
+        'Begränsning genom egensäker design',
+        'Begränsning med hjälp av mekanisk barriär',
+        'Begränsning genom elektriska system',
+        'Begränsning genom instrumenterade system',
+        'Riskreducering genom procedurer',
+    ])
     document.add_paragraph(
         'En genomförd åtgärd ska verifieras innan rekommendationen stängs. '
         'Verifieringen ska visa att den beslutade åtgärden är införd och att '

@@ -62,7 +62,7 @@ class ReportWordExportTests(unittest.TestCase):
             xml = '\n'.join(archive.read(n).decode('utf-8') for n in archive.namelist()
                             if n.endswith('.xml'))
         for value in ('Projekt ÅÄÖ', 'Testkund', 'Författare', 'Tank och lastning',
-                      '262054-Report-02', 'Bilaga 4', '5.4 Fortsatt hantering'):
+                      '262054-Report-02', 'Bilaga 4', '5.2 Fortsatt hantering'):
             self.assertIn(value, xml)
         for value in ('Mondi', 'Aurora', 'HEAD Engineering', '53 åtgärder', 'SIL 3'):
             self.assertNotIn(value, xml)
@@ -104,8 +104,10 @@ class ReportWordExportTests(unittest.TestCase):
             '3.1 Metod och arbetssätt',
             'Arbetsgången har varit följande',
             'Bilaga 1 Avvikelser',
-            '5.1 Huvudresultat',
-            '5.4 Fortsatt hantering',
+            '5.1 Resultat',
+            '5.2 Fortsatt hantering',
+            'Begränsning genom egensäker design',
+            'Riskreducering genom procedurer',
             'Bilaga 5 Nodmarkeringar',
         ):
             self.assertIn(text, body_text)
@@ -221,7 +223,8 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertTrue(any('studiens riskmatris' in p.text for p in doc.paragraphs))
         self.assertNotIn('noder och designavsikt', body_text)
         self.assertIn('Datum / analystillfälle', table_text)
-        self.assertIn('Höga eller kritiska riskbedömningar efter barriärer', table_text)
+        self.assertIn('[KOMPLETTERA: antal analystillfällen, noder och rekommendationer]', body_text)
+        self.assertNotIn('Sammanställning av huvudresultat', body_text)
 
     def test_summary_reports_sessions_and_lists_nodes_in_numbered_style(self):
         self.db.add_analysis_session('Tillfälle 1', '2026-09-09', 'Kontoret')
@@ -280,7 +283,7 @@ class ReportWordExportTests(unittest.TestCase):
         ]
         self.assertTrue(ref_instructions)
         self.assertIn('REF tabell_4_1 \\h', ref_instructions)
-        self.assertIn('REF tabell_5_1 \\h', ref_instructions)
+        self.assertNotIn('REF tabell_5_1 \\h', ref_instructions)
         for instruction in ref_instructions:
             self.assertIn(instruction.split()[1], bookmark_names)
         self.assertFalse(doc.styles['Appendix Node Heading'].paragraph_format.page_break_before)
