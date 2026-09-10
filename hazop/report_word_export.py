@@ -1084,7 +1084,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'Analysgruppen behövde därför gå igenom systemets funktioner, gränssnitt '
         'och planerade driftfall på ett sammanhållet sätt. Resultatet har '
         'dokumenterats i ett gemensamt protokoll som kan användas vid fortsatt '
-        'projektering, verifiering och riskhantering.')
+        'riskhantering.')
     if field('Bakgrund'):
         document.add_paragraph(field('Bakgrund'))
     document.add_heading('1.2 Syfte och omfattning', 2)

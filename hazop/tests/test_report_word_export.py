@@ -102,6 +102,7 @@ class ReportWordExportTests(unittest.TestCase):
             'Tabell B4-1 redovisar varje rekommendation',
             'HAZOP-studien genomfördes som en gemensam, tvärdisciplinär genomgång',
             'Resultatet ska användas som underlag för fortsatt riskhantering av systemet.',
+            'Resultatet har dokumenterats i ett gemensamt protokoll som kan användas vid fortsatt riskhantering.',
             '3.1 Metod och arbetssätt',
             'Arbetsgången har varit följande',
             'Bilaga 1 Avvikelser',
