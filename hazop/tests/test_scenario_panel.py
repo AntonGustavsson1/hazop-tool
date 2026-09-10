@@ -4702,6 +4702,42 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
         header = popup.layout().itemAt(0).widget()
         self.assertIn("Ingen standardorsak", header.text())
 
+    def test_cause_without_standard_cause_has_no_default_frequency_or_risk(self):
+        cause_id = self._make_cause(comp_type='')
+        consequence_id = self.db.add_consequence(cause_id)
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(consequence_id, category['id'], 3)
+
+        self.panel.load_node(self.node_id)
+        row = next(r for r, meta in enumerate(self.panel._row_meta)
+                   if meta[1] == cause_id)
+        self.assertTrue(self.db.get_cause(cause_id)['frequency_cleared'])
+        self.assertIsNone(self.panel._table.item(row, self.panel._C_ORS).data(
+            Qt.ItemDataRole.UserRole + 3))
+        self.assertEqual(self.panel._table.item(row, self.panel._C_RFORE).text(), '')
+        self.assertEqual(self.panel._table.item(row, self.panel._C_SLUT).text(), '')
+
+    def test_picking_standard_cause_reactivates_its_frequency(self):
+        standard_id = self.db.add_standard_cause_with_object(
+            self.std_dev_id, self.obj_id, 'Ventil felaktigt stängd')
+        self.db.conn.execute(
+            'UPDATE standard_causes SET frequency=? WHERE id=?',
+            (0.02, standard_id))
+        self.db.commit()
+        cause_id = self._make_cause()
+        self._start_edit(cause_id)
+        popup = self._popup()
+        self.assertIsNotNone(popup)
+
+        popup._pick('Ventil felaktigt stängd')
+        from PyQt6.QtTest import QTest
+        QTest.qWait(20)
+
+        cause = self.db.get_cause(cause_id)
+        self.assertEqual(cause['standard_cause_id'], standard_id)
+        self.assertEqual(cause['base_frequency'], 0.02)
+        self.assertFalse(cause['frequency_cleared'])
+
     def test_picking_a_standard_cause_saves_it_and_closes_the_editor(self):
         self.db.add_standard_cause_with_object(self.std_dev_id, self.obj_id, "Felar stängd")
         cause_id = self._make_cause()

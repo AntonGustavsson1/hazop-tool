@@ -7279,7 +7279,8 @@ class Database:
         dev = self.get_deviation(deviation_id)
         node_id = dev['node_id'] if dev else None
         cur = self.conn.execute(
-            "INSERT INTO causes (node_id,deviation_id,description,likelihood) VALUES (?,?,'Ny orsak',1)",
+            "INSERT INTO causes (node_id,deviation_id,description,likelihood,frequency_cleared) "
+            "VALUES (?,?,'Ny orsak',1,1)",
             (node_id, deviation_id))
         self.commit()
         return cur.lastrowid
@@ -7303,8 +7304,8 @@ class Database:
                 (order + (1 if order >= insert_at else 0), sibling_id))
         cur = self.conn.execute(
             "INSERT INTO causes "
-            "(node_id,deviation_id,description,likelihood,sort_order) "
-            "VALUES (?,?,'Ny orsak',1,?)",
+            "(node_id,deviation_id,description,likelihood,frequency_cleared,sort_order) "
+            "VALUES (?,?,'Ny orsak',1,1,?)",
             (node_id, deviation_id, insert_at))
         self.commit()
         return cur.lastrowid

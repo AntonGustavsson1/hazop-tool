@@ -259,8 +259,8 @@ def _worksheet_rows(db):
 
             for cause_number, cause in enumerate(causes, 1):
                 frequency = db.cause_frequency_level(cause)
-                frequency_label = ('' if _cause_frequency_is_cleared(cause)
-                                   else freq_axis_label(frequency))
+                frequency_unset = _cause_frequency_is_cleared(cause)
+                frequency_label = ('' if frequency_unset else freq_axis_label(frequency))
                 cause_label = _number(cause_text(cause), cause_number)
                 consequences = [dict(cons) for cons in
                                 consequences_by_cause.get(cause['id'], [])]
@@ -339,7 +339,8 @@ def _worksheet_rows(db):
                             category_short = (category.get('name') or '')[:3]
                             risk_before = (
                                 f'{category_short}  {frequency_label}  '
-                                f'{cons_axis_label(severity)}')
+                                f'{cons_axis_label(severity)}'
+                                if not frequency_unset else None)
                         else:
                             severity = consequence.get('severity') or 1
                             sg_rrf = 1
@@ -357,7 +358,7 @@ def _worksheet_rows(db):
                         risk_after = (
                             f'{category_short}  {freq_axis_label(final_frequency)}  '
                             f'{cons_axis_label(final_severity)}'
-                            if category else None)
+                            if category and not frequency_unset else None)
                         safeguard_label = (
                             _number(safeguard.get('description'), sg_index + 1)
                             if safeguard else '')

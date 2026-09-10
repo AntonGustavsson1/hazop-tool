@@ -111,6 +111,22 @@ class WorksheetExportTests(unittest.TestCase):
         self.assertEqual(row['values'][2], '')
         self.assertEqual(row['values'][3], '')
 
+    def test_new_cause_without_standard_cause_keeps_frequency_and_risk_blank(self):
+        node_id = self._node('Node A')
+        deviation_id = self._deviation(node_id, 'Högt flöde', 1)
+        cause_id = self.db.add_cause(deviation_id)
+        consequence_id = self.db.add_consequence(cause_id)
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(consequence_id, category['id'], 3)
+
+        cause = self.db.get_cause(cause_id)
+        self.assertTrue(cause['frequency_cleared'])
+        row = next(row for row in _worksheet_rows(self.db)
+                   if row['merge_key'][2] == cause_id)
+        self.assertEqual(row['values'][3], '')
+        self.assertEqual(row['values'][5], '')
+        self.assertEqual(row['values'][9], '')
+
     def test_group_cause_export_keeps_and_or_and_arrow_operators(self):
         node_id = self._node('Node A')
         deviation_id = self._deviation(node_id, 'High flow', 1)

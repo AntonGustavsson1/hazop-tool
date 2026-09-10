@@ -3776,6 +3776,7 @@ class StandardCauseSuggestPopup(QWidget):
         self._cause_id = cause_id
         self._editor = editor
         self._equipment_id = equipment_id
+        self._standard_cause_rows = rows or []
 
         layout = QVBoxLayout(self)
         layout.setSpacing(3)
@@ -3866,11 +3867,20 @@ class StandardCauseSuggestPopup(QWidget):
         self._freq_btn.setText(label or "Ange frekvens…")
 
     def _pick(self, description):
-        """A chosen standard cause commits the description and closes
-        editing immediately (confirmed with Anton via AskUserQuestion —
-        the fast "pick and you're done" path, not "just fill the field
-        and keep editing"), same commitData/closeEditor emit pattern
-        the Enter key already uses (eventFilter(), scenario_panel.py)."""
+        """Apply the selected standard cause and its frequency, then close."""
+        description = str(description or '')
+        selected = next(
+            (row for row in self._standard_cause_rows
+             if row.get('description') == description), None)
+        if selected:
+            frequency = selected.get('frequency')
+            self._panel.db.update_cause(
+                self._cause_id,
+                standard_cause_id=selected.get('id'),
+                likelihood=(freq_to_f_level(frequency)
+                            if frequency is not None else None),
+                base_frequency=frequency,
+                frequency_cleared=False)
         equipment_bound = False
         if self._equipment_id is not None:
             equipment_bound = self._panel._bind_recognized_cause_equipment(
@@ -6310,7 +6320,8 @@ class ScenarioTablePanel(QWidget):
         # action (pre-existing in _on_risk_cell_clicked, previously dead code
         # since nothing ever emitted it) instead of 'risk_click_cat' when
         # there's no real category_id/severity_id to edit.
-        if cat_info:
+        frequency_unset = bool(cause_d.get('_frequency_unset'))
+        if cat_info and not frequency_unset:
             cat_short = (cat_name or '')[:3]
             rb_text = f"{cat_short}  {freq_axis_label(freq)}  {cons_axis_label(sev)}"
         else:
@@ -6319,7 +6330,9 @@ class ScenarioTablePanel(QWidget):
         rb = QTableWidgetItem(rb_text)
         rb.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         rb.setFlags(rb.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        rb.setToolTip(f"🖱 Klicka för att ändra i riskmatrisen\n{level_b}")
+        rb.setToolTip(
+            "🖱 Klicka för att välja frekvens i riskmatrisen"
+            if frequency_unset else f"🖱 Klicka för att ändra i riskmatrisen\n{level_b}")
         if cat_info:
             rb.setData(Qt.ItemDataRole.UserRole,
                        ('risk_click_cat', cause_d['id'], cid, cat_id, sev_id, freq, sev))
@@ -6396,7 +6409,7 @@ class ScenarioTablePanel(QWidget):
         # Shown for every row now (2026-08-09, see NOTES.md) — same fallback
         # rationale as RFORE above; final_f/sev/bg_s/fg_s are already
         # computed unconditionally regardless of cat_info.
-        if cat_info:
+        if cat_info and not frequency_unset:
             cat_short = (cat_name or '')[:3]
             slut_text = f"{cat_short}  {freq_axis_label(final_f)}  {cons_axis_label(final_sev)}"
         else:
@@ -6406,9 +6419,11 @@ class ScenarioTablePanel(QWidget):
         rs.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         rs.setFlags(rs.flags() & ~Qt.ItemFlag.ItemIsEditable)
         rs.setToolTip(
-            "Klicka för att ändra risknivå per kategori\n"
-            f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(final_sev)}  "
-            f"(−{total_steps} steg totalt)")
+            "Välj först en frekvens innan risk efter barriärer kan visas"
+            if frequency_unset else
+            ("Klicka för att ändra risknivå per kategori\n"
+             f"{level_s} — {freq_axis_label(final_f)}  {cons_axis_label(final_sev)}  "
+             f"(−{total_steps} steg totalt)"))
         rs.setBackground(QBrush(QColor(bg_s)))
         rs.setForeground(QBrush(QColor(fg_s)))
         rs.setFont(QFont("Consolas", 9))
