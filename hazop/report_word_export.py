@@ -981,7 +981,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         f'{project} vid {client}. Studien har granskat hur avvikelser från '
         'systemets avsedda funktion kan uppstå, vilka konsekvenser de kan få '
         'och vilka befintliga skydd som påverkar händelseförloppet. Resultatet '
-        'ska användas som underlag för projektets fortsatta riskhantering.')
+        'ska användas som underlag för fortsatt riskhantering av systemet.')
     if not standard_template:
         session_count = len(data['sessions'])
         session_label = 'analystillfälle' if session_count == 1 else 'analystillfällen'

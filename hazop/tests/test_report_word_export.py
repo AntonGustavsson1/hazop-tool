@@ -101,6 +101,7 @@ class ReportWordExportTests(unittest.TestCase):
             'Datum, tid och plats för genomförda analystillfällen redovisas i tabell 3-1',
             'Tabell B4-1 redovisar varje rekommendation',
             'HAZOP-studien genomfördes som en gemensam, tvärdisciplinär genomgång',
+            'Resultatet ska användas som underlag för fortsatt riskhantering av systemet.',
             '3.1 Metod och arbetssätt',
             'Arbetsgången har varit följande',
             'Bilaga 1 Avvikelser',
