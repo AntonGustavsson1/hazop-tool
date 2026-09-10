@@ -261,6 +261,24 @@ class ReportWordExportTests(unittest.TestCase):
         node_heading = next(p for p in doc.paragraphs if p.text == 'B3.1 Ny nod')
         self.assertEqual(node_heading.style.name, 'Appendix Node Heading')
 
+    def test_protocol_starts_each_node_after_the_first_on_a_new_page(self):
+        second_node = self.db.add_node()
+        self.db.update_node(second_node, 'Nod två', '', '')
+        second_deviation = self.db.deviations(second_node)[0]['id']
+        second_cause = self.db.add_cause(second_deviation)
+        self.db.update_cause(second_cause, description='Pump stannar', likelihood=2)
+        second_consequence = self.db.add_consequence(second_cause)
+        self.db.update_consequence(second_consequence, 'Processavbrott', 3)
+        self.db.commit()
+
+        doc = self.export()
+        paragraphs = list(doc.paragraphs)
+        second_heading_index = next(
+            index for index, paragraph in enumerate(paragraphs)
+            if paragraph.text == 'B3.2 Nod två')
+
+        self.assertIn('w:type="page"', paragraphs[second_heading_index - 1]._p.xml)
+
     def test_table_captions_and_prose_references_use_word_fields(self):
         doc = self.export()
         captions = [p for p in doc.paragraphs

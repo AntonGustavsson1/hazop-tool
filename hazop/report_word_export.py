@@ -1256,6 +1256,12 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'rekommendationsregistret för att koppla en rekommendation till rätt '
         'del av protokollet.')
     for index, group in enumerate(_group_rows(_annotated_worksheet_rows(db, data['rows']))):
+        # Keep a complete node protocol together and let the next node start
+        # on a fresh page.  Adding the break before nodes after the first
+        # avoids both splitting a node and leaving a trailing blank page
+        # before the following appendix.
+        if index:
+            document.add_page_break()
         node_label = group[0]['values'][0] if group and group[0].get('values') else ''
         node_name = re.sub(r'^\s*\d+\.\s*', '', node_label).strip()
         node_heading = document.add_paragraph(
