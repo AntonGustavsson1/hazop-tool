@@ -104,6 +104,7 @@ class ReportWordExportTests(unittest.TestCase):
             'Resultatet ska användas som underlag för fortsatt riskhantering av systemet.',
             'Resultatet har dokumenterats i ett gemensamt protokoll som kan användas vid fortsatt riskhantering.',
             'Tabell 4-1 visar den riskmatris som användes i studien. Axelriktning, färger och nivånamn framgår av tabellen.',
+            'vid utfärdande av rapport.',
             '3.1 Metod och arbetssätt',
             'Arbetsgången har varit följande',
             'Bilaga 1 Avvikelser',

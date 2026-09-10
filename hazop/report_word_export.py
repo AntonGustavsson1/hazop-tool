@@ -1194,7 +1194,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             f"och {count_phrase(len(data['nodes']), 'nod')}. Analysgruppen "
             f"registrerade {count_phrase(len(data['recommendations']), 'rekommendation')}, "
             f"varav {count_phrase(open_recommendation_count, 'öppen rekommendation', 'öppna rekommendationer')} "
-            'vid rapportens export.')
+            'vid utfärdande av rapport.')
     if field('Resultat och slutsatser'):
         document.add_paragraph(field('Resultat och slutsatser'))
     document.add_heading('5.2 Fortsatt hantering', 2)
