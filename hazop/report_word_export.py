@@ -905,8 +905,32 @@ def _node_appendix(document, db, data):
 
 
 def _annotated_worksheet_rows(db, rows):
-    """Return protocol rows without editorial completion markers."""
-    return deepcopy(rows)
+    """Return protocol rows without editorial completion markers.
+
+    Correct only a missing space immediately beside the standalone conjunction
+    ``och`` in the Word protocol. The project data is deliberately left
+    unchanged; this is presentation cleanup for a known export typo.
+    """
+    copied_rows = deepcopy(rows)
+    for row in copied_rows:
+        values = row.get('values')
+        if not isinstance(values, list):
+            continue
+        row['values'] = [
+            _normalise_protocol_conjunction_spacing(value)
+            for value in values
+        ]
+    return copied_rows
+
+
+def _normalise_protocol_conjunction_spacing(value):
+    """Add a missing adjacent space around standalone Swedish ``och``."""
+    if not isinstance(value, str):
+        return value
+    value = re.sub(r'(?<!\s)(?i:och)(?=\s)',
+                   lambda match: ' ' + match.group(0), value)
+    return re.sub(r'(?<=\s)(?i:och)(?=[A-Za-z\u00c5\u00c4\u00d6\u00e5\u00e4\u00f6])',
+                  lambda match: match.group(0) + ' ', value)
 
 
 def build_report(db, *, paper_size='A3', standard_template=False):

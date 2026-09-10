@@ -17,7 +17,7 @@ import database
 from database import Database, load_matrix
 from report_word_export import (
     export_report_word, _matrix_display_values, _report_snapshot,
-    collect_report_data, _worksheet_references,
+    collect_report_data, _worksheet_references, _annotated_worksheet_rows,
 )
 from worksheet_export import _worksheet_rows
 from worksheet_word_export import export_worksheet_word
@@ -81,6 +81,14 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertTrue(any(text.startswith('Titel: HAZOP för ') for text in metadata))
         self.assertTrue(any(text.startswith('Datum: ') for text in metadata))
         self.assertTrue(any(text.startswith('Distribution: Enligt ') for text in metadata))
+
+    def test_protocol_export_repairs_a_missing_space_beside_och_only_in_output(self):
+        rows = [{'values': ['barriäroch kontroll', 'ventiler ochstängning']}]
+        exported_rows = _annotated_worksheet_rows(self.db, rows)
+        self.assertEqual(
+            exported_rows[0]['values'],
+            ['barriär och kontroll', 'ventiler och stängning'])
+        self.assertEqual(rows[0]['values'][0], 'barriäroch kontroll')
 
     def test_source_backed_prosa_furniture_and_descriptive_chapter_text_are_preserved(self):
         doc = self.export()
