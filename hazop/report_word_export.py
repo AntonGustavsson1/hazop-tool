@@ -500,7 +500,7 @@ def _add_matrix(document, db, data):
     document.add_paragraph(
         'Protokollet redovisar bedömningen före och efter tillgodoräknade '
         'barriärer samt de enablers som har beaktats. Färgen i matrisen visar '
-        'risknivån, och tabell 4-1a beskriver hur respektive nivå ska hanteras.')
+        'risknivån, och tabell 4-2 beskriver hur respektive nivå ska hanteras.')
     document.add_heading('4.1 Riskmatris och acceptanskriterier', 2)
     document.add_paragraph(
         'Tabell 4-1 visar den riskmatris som användes i studien. Axelriktning, '
@@ -587,9 +587,9 @@ def _add_matrix(document, db, data):
                       for color, label in derived.items()]
     if level_defs:
         document.add_paragraph(
-            'Tabell 4-1a beskriver acceptanskriterierna för matrisens '
+            'Tabell 4-2 beskriver acceptanskriterierna för matrisens '
             'risknivåer. Nivånamn och färger är desamma som i tabell 4-1.')
-        _caption(document, '4-1a', 'Acceptanskriterier')
+        _caption(document, '4-2', 'Acceptanskriterier')
         level_table = _table(document, ['Risknivå', 'Definition'], [
             [item.get('label', ''), item.get('definition') or missing('risknivådefinition')]
             for item in level_defs], [70, 100])
@@ -611,10 +611,10 @@ def _add_matrix(document, db, data):
     x_codes, y_codes = matrix['x_codes'], matrix['y_codes']
     document.add_heading('4.2 Frekvensskala', 2)
     document.add_paragraph(
-        'Tabell 4-2 redovisar de frekvensnivåer som användes i '
+        'Tabell 4-3 redovisar de frekvensnivåer som användes i '
         'scenarioanalysen. Definitionerna anger hur ofta en händelse bedöms '
         'kunna inträffa och ger stöd för jämförbara bedömningar genom studien.')
-    _caption(document, '4.2', 'Frekvensnivåer och definitioner')
+    _caption(document, '4-3', 'Frekvensnivåer och definitioner')
     _table(document, ['Nivå', 'Definition'],
            [[code, _value(label, 'frekvensdefinition')]
             for code, label in zip(x_codes, matrix['x_labels'])], [25, 135])
@@ -626,7 +626,7 @@ def _add_matrix(document, db, data):
     document.add_heading('4.3 Konsekvensdefinitioner', 2)
     document.add_paragraph(
         'Konsekvenserna bedömdes separat för de kategorier som ingick i '
-        'studien. Tabell 4-3 redovisar benämning och definition för varje '
+        'studien. Tabell 4-4 redovisar benämning och definition för varje '
         'konsekvensnivå inom person, miljö och ekonomi, i den mån dessa '
         'kategorier har använts.')
     categories = [dict(c) for c in db.consequence_categories()]
@@ -649,7 +649,7 @@ def _add_matrix(document, db, data):
                   for category, value in zip(active_categories, values)],
             ])
     if consequence_rows:
-        _caption(document, '4.3', 'Konsekvensdefinitioner')
+        _caption(document, '4-4', 'Konsekvensdefinitioner')
         headers = ['Nivå', 'Benämning'] + [category['name'] for category in active_categories]
         widths = [16, 30] + [max(35, int(204 / max(1, len(active_categories))))] * len(active_categories)
         _table(document, headers, consequence_rows, widths)
@@ -674,7 +674,7 @@ def _add_matrix(document, db, data):
             enabler_rrfs.setdefault(description, set()).add(
                 '' if rf.get('rrf') is None else f"{float(rf['rrf']):g}")
     if enabler_rrfs:
-        _caption(document, '4-4', 'Typer av använda enablers och RRF')
+        _caption(document, '4-5', 'Typer av använda enablers och RRF')
         _table(document, ['Typ av enabler', 'RRF'], [
             [description, ', '.join(sorted(values, key=lambda v: (v == '', float(v) if v else 0))) or missing('RRF')]
             for description, values in sorted(enabler_rrfs.items())
@@ -710,7 +710,7 @@ def _add_participants(document, db, data, *, standard_template=False):
         'Trovärdiga orsaker och möjliga konsekvenser har identifierats och beskrivits.',
         'Befintliga barriärer och andra förhållanden som påverkar händelseförloppet har dokumenterats.',
         'Frekvens och konsekvens har bedömts i protokollets riskkolumner för de konsekvenskategorier som har berörts.',
-        'Rekommendationer har formulerats när ytterligare utredning, verifiering eller åtgärd har bedömts behövas. Gruppen har även beaktat ansvar, tidplan och behov av uppföljning.',
+        'Rekommendationer har formulerats när ytterligare utredning, verifiering eller åtgärd har bedömts behövas.',
     ))
     document.add_paragraph(
         'Riskbedömningarna genomfördes med studiens riskmatris. Gruppen bedömde '
@@ -1159,24 +1159,24 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         document.add_paragraph(
             'Tabell 4-1 ska redovisa studiens riskmatris med valda axlar, '
             'nivånamn och färger. Acceptanskriterierna för risknivåerna ska '
-            'redovisas i tabell 4-1a.')
+            'redovisas i tabell 4-2.')
         _caption(document, '4-1', 'Riskmatris')
         document.add_paragraph(missing('studiens riskmatris'))
-        _caption(document, '4-1a', 'Acceptanskriterier')
+        _caption(document, '4-2', 'Acceptanskriterier')
         document.add_paragraph(missing('acceptanskriterier för risknivåerna'))
         document.add_heading('4.2 Frekvensskala', 2)
         document.add_paragraph(
-            'Tabell 4-2 ska redovisa de frekvensnivåer och definitioner som '
+            'Tabell 4-3 ska redovisa de frekvensnivåer och definitioner som '
             'analysgruppen använder i studien.')
-        _caption(document, '4-2', 'Frekvensnivåer och definitioner')
+        _caption(document, '4-3', 'Frekvensnivåer och definitioner')
         document.add_paragraph(missing('frekvensskala och definitioner'))
         if field('Frekvensunderlag'):
             document.add_paragraph(field('Frekvensunderlag'))
         document.add_heading('4.3 Konsekvensdefinitioner', 2)
         document.add_paragraph(
-            'Tabell 4-3 ska redovisa konsekvensdefinitionerna för de kategorier '
+            'Tabell 4-4 ska redovisa konsekvensdefinitionerna för de kategorier '
             'som ingår i studien.')
-        _caption(document, '4-3', 'Konsekvensdefinitioner')
+        _caption(document, '4-4', 'Konsekvensdefinitioner')
         document.add_paragraph(missing('konsekvenskategorier och definitioner'))
         document.add_heading('4.4 Barriärer och enablers', 2)
         document.add_paragraph(PROSE_INTROS['Barriärunderlag'])

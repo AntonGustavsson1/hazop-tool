@@ -285,10 +285,28 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertIn('w:type="page"', paragraphs[second_heading_index - 1]._p.xml)
 
     def test_table_captions_and_prose_references_use_word_fields(self):
+        self.db.add_reduction_factor(self.cons, 'Nivåmätning', 10)
         doc = self.export()
         captions = [p for p in doc.paragraphs
                     if p.style.name == 'Caption' and p.text.startswith('Tabell ')]
-        self.assertIn('Tabell 4-1 Riskmatris', [p.text for p in captions])
+        caption_texts = [p.text for p in captions]
+        self.assertIn('Tabell 4-1 Riskmatris', caption_texts)
+        self.assertIn('Tabell 4-2 Acceptanskriterier', caption_texts)
+        self.assertIn('Tabell 4-3 Frekvensnivåer och definitioner', caption_texts)
+        self.assertIn('Tabell 4-5 Typer av använda enablers och RRF', caption_texts)
+        self.assertNotIn('Tabell 4-1a Acceptanskriterier', caption_texts)
+        standard_template = self.export(standard_template=True)
+        template_captions = [
+            paragraph.text for paragraph in standard_template.paragraphs
+            if paragraph.style.name == 'Caption' and paragraph.text.startswith('Tabell ')
+        ]
+        for caption in (
+            'Tabell 4-1 Riskmatris',
+            'Tabell 4-2 Acceptanskriterier',
+            'Tabell 4-3 Frekvensnivåer och definitioner',
+            'Tabell 4-4 Konsekvensdefinitioner',
+        ):
+            self.assertIn(caption, template_captions)
         for paragraph in captions:
             instructions = [
                 field.text or ''
