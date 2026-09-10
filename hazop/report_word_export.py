@@ -259,6 +259,62 @@ def _next_bookmark_id(paragraph):
     return max(values, default=0) + 1
 
 
+_REPORT_DATE_BOOKMARK = 'rapportdatum'
+
+
+def _bookmark_cover_date(document, date_text):
+    """Bookmark the report date on the cover for use in running headers."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    # The ProSa template keeps the cover metadata in the first table. Add the
+    # bookmark around the value run only, so that the ``Datum:`` label remains
+    # ordinary editable text while the date becomes the single source of truth.
+    for paragraph in document.tables[0].rows[1].cells[1].paragraphs:
+        for run in paragraph.runs:
+            if (run.text or '').strip() != str(date_text).strip():
+                continue
+            bookmark_id = str(_next_bookmark_id(paragraph))
+            start = OxmlElement('w:bookmarkStart')
+            start.set(qn('w:id'), bookmark_id)
+            start.set(qn('w:name'), _REPORT_DATE_BOOKMARK)
+            end = OxmlElement('w:bookmarkEnd')
+            end.set(qn('w:id'), bookmark_id)
+            run._r.addprevious(start)
+            run._r.addnext(end)
+            return True
+    return False
+
+
+def _link_header_dates_to_cover(document, date_text):
+    """Replace generated-header dates with Word REF fields to the cover date."""
+    from docx.oxml.ns import qn
+
+    seen_headers = set()
+    for section in document.sections[2:]:
+        for header in (section.header, section.first_page_header):
+            header_key = str(header.part.partname)
+            if header_key in seen_headers:
+                continue
+            seen_headers.add(header_key)
+            for text in list(header._element.iter(qn('w:t'))):
+                if (text.text or '').strip() != str(date_text).strip():
+                    continue
+                run = text.getparent()
+                if run.tag != qn('w:r'):
+                    continue
+                paragraph = run.getparent()
+                if paragraph.tag != qn('w:p'):
+                    continue
+                run_properties = run.find(qn('w:rPr'))
+                index = paragraph.index(run)
+                for element in _field_elements(
+                        f'REF {_REPORT_DATE_BOOKMARK}', str(date_text).strip(), run_properties):
+                    paragraph.insert(index, element)
+                    index += 1
+                paragraph.remove(run)
+
+
 def _append_bookmarked_table_number(paragraph, number):
     """Add an editable caption number and bookmark it for Word REF fields."""
     from docx.oxml import OxmlElement
@@ -923,6 +979,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'REVISION_AUTHOR': missing('utfört av'),
     }]
     document = new_report_document(values, revision_rows)
+    cover_date_bookmarked = _bookmark_cover_date(document, date)
     # The final source section contains ProSa's complete running header:
     # round logo, wordmark, metadata table and green rule.  Retain its XML
     # and image relationships before generated sections change the document's
@@ -1350,6 +1407,8 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         section.header.is_linked_to_previous = True
         section.header.is_linked_to_previous = False
         copy_source_header(section.header)
+    if cover_date_bookmarked:
+        _link_header_dates_to_cover(document, date)
     footer_element = document.sections[2].footer._element
     for child in list(footer_element):
         footer_element.remove(child)
