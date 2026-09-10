@@ -123,6 +123,110 @@ ST1_RISK_MATRIX_PRESET = {
 }
 
 
+def _ips_risk_matrix_preset(red_risk_label):
+    """Return the complete ProSa IPS 5×7 risk-matrix profile.
+
+    IPS has historically been saved as a project-local template.  Keeping the
+    profile here makes IPS and IPS5 available for every new project, including
+    their axes, colours, risk-level definitions and consequence definitions.
+    """
+    red_definition = (
+        'Person- eller miljörelaterad risk i det röda området är ej tolerabel. '
+        'Prioriterade och vid behov långtgående åtgärder är motiverade i syfte '
+        'att föra risken ur matrisens högriskområde. Det kan dock vara tolerabelt '
+        'med ledningens godkännande att ligga i det röda området om det '
+        'uteslutande är den ekonomiska risken som bedöms som röd')
+    return {
+        'rows': 5,
+        'cols': 7,
+        'x_axis': 'consequence',
+        'x_reversed': False,
+        'y_reversed': False,
+        'x_codes': ['AAA', 'AA', 'A', 'B', 'C', 'D', 'E'],
+        'y_codes': ['1', '2', '3', '4', '5'],
+        'x_labels': [
+            '<1/100 000 år', '10 000 - 100 000 år', '1 000 - 10 000 år',
+            '100 - 1 000 år', '10 - 1 000 år', '1 - 10 år',
+            'Frekvent (>1/år)',
+        ],
+        'y_labels': ['Försumbar', 'Liten', 'Måttlig', 'Allvarlig', 'Katastrofal'],
+        'cell_colors': [
+            ['#27ae60', '#27ae60', '#27ae60', '#27ae60', '#27ae60', '#ffff00', '#ffff00'],
+            ['#27ae60', '#27ae60', '#27ae60', '#27ae60', '#ffff00', '#ffff00', '#e74c3c'],
+            ['#27ae60', '#27ae60', '#27ae60', '#ffff00', '#ffff00', '#e74c3c', '#e74c3c'],
+            ['#27ae60', '#27ae60', '#ffff00', '#ffff00', '#e74c3c', '#e74c3c', '#e74c3c'],
+            ['#27ae60', '#ffff00', '#ffff00', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c'],
+        ],
+        'cell_labels': [
+            ['Låg', 'Låg', 'Låg', 'Låg', 'Låg', 'Medium', 'Medium'],
+            ['Låg', 'Låg', 'Låg', 'Låg', 'Medium', 'Medium', red_risk_label],
+            ['Låg', 'Låg', 'Låg', 'Medium', 'Medium', red_risk_label, red_risk_label],
+            ['Låg', 'Låg', 'Medium', 'Medium', red_risk_label, red_risk_label, red_risk_label],
+            ['Låg', 'Medium', 'Medium', red_risk_label, red_risk_label, red_risk_label, red_risk_label],
+        ],
+        'cell_fg_colors': [
+            ['#ffffff', '#ffffff', '#ffffff', '#ffffff', '#ffffff', '#000000', '#000000'],
+            ['#ffffff', '#ffffff', '#ffffff', '#ffffff', '#000000', '#000000', '#ffffff'],
+            ['#ffffff', '#ffffff', '#ffffff', '#000000', '#000000', '#ffffff', '#ffffff'],
+            ['#ffffff', '#ffffff', '#000000', '#000000', '#ffffff', '#ffffff', '#ffffff'],
+            ['#ffffff', '#000000', '#000000', '#ffffff', '#ffffff', '#ffffff', '#ffffff'],
+        ],
+        'freq_boundaries': [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0],
+        'risk_level_definitions': [
+            {
+                'color': '#27ae60',
+                'label': 'Låg',
+                'definition': (
+                    'Risken är acceptabel. Inga riskreducerande åtgärder är '
+                    'normalt nödvändiga såvida de inte kan införas enkelt och '
+                    'till låg kostnad.'),
+            },
+            {
+                'color': '#ffff00',
+                'label': 'Medium',
+                'definition': (
+                    'Detta område benämns som ”ALARP” området (As Low As '
+                    'Reasonably Practicable). Åtgärder skall genomföras där '
+                    'minskningen av risken står i rimlig proportion till '
+                    'kostnaden och/eller svårigheten.'),
+            },
+            {'color': '#e74c3c', 'label': red_risk_label, 'definition': red_definition},
+        ],
+        'consequence_categories': [
+            {
+                'key': 'person', 'name': 'Person', 'color': '#64748b',
+                'descriptions': [
+                    'Övergående lindriga obehag. Lättare blessyr. Övergående obehag',
+                    'Enstaka skadade. Varaktiga obehag.',
+                    'Enstaka svårt skadade. Svåra obehag. Längre frånvaro',
+                    'Ett dödsfall eller flera svårt skadade.',
+                    'Flera döda eller 10-tals svårt skadade',
+                ],
+            },
+            {
+                'key': 'miljö', 'name': 'Miljö', 'color': '#64748b',
+                'descriptions': [
+                    'Ingen sanering, liten utbredning',
+                    'Övergående kortvarig skada med liten utbredning',
+                    'Reversibel långvarig skada med liten utbredning, eller kortvarig skada med stor utbredning',
+                    'Permanent skada med liten utbredning eller långvarig skada med stor utbredning',
+                    'Permanent skada med stor utbredning',
+                ],
+            },
+            {
+                'key': 'ekonomi', 'name': 'Ekonomi', 'color': '#64748b',
+                'descriptions': ['< 50 kSEK', '< 500 kSEK', '< 5 MSEK', '< 50 MSEK', '> 50 MSEK'],
+            },
+            {'key': 'anläggning', 'name': 'Anläggning', 'color': '#64748b', 'descriptions': ['', '', '', '', '']},
+            {'key': 'rykte', 'name': 'Rykte', 'color': '#64748b', 'descriptions': ['', '', '', '', '']},
+        ],
+    }
+
+
+IPS_RISK_MATRIX_PRESET = _ips_risk_matrix_preset('Kritisk')
+IPS5_RISK_MATRIX_PRESET = _ips_risk_matrix_preset('Hög')
+
+
 class DraggableColorSwatch(QLabel):
     """Draggable color swatch in the palette — drag onto a matrix cell."""
 
@@ -2017,6 +2121,18 @@ class HAZOPPreparationPanel(QWidget):
             "annars laddas mallen som en arbetskopia.")
         st1_btn.clicked.connect(lambda: self._request_matrix_template(
             ST1_RISK_MATRIX_PRESET, "ST1 Sverige AB"))
+        ips_btn = QPushButton("IPS")
+        ips_btn.setToolTip(
+            "Läser in ProSas IPS-riskmatris (5×7) med komplett axel-, "
+            "risknivå- och konsekvensinformation.")
+        ips_btn.clicked.connect(lambda: self._request_matrix_template(
+            IPS_RISK_MATRIX_PRESET, "IPS"))
+        ips5_btn = QPushButton("IPS5")
+        ips5_btn.setToolTip(
+            "Läser in ProSas IPS5-riskmatris (5×7) med komplett axel-, "
+            "risknivå- och konsekvensinformation.")
+        ips5_btn.clicked.connect(lambda: self._request_matrix_template(
+            IPS5_RISK_MATRIX_PRESET, "IPS5"))
         norsok_btn = QPushButton("NORSOK Z-013  (AAA – E)")
         norsok_btn.setToolTip(
             "Fyll frekvensaxeln med NORSOK Z-013-etiketter:\n"
@@ -2038,6 +2154,8 @@ class HAZOPPreparationPanel(QWidget):
             [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0], "F-skala",
             ['F-1', 'F0', 'F1', 'F2', 'F3', 'F4', 'F5']))
         preset_row.addWidget(st1_btn)
+        preset_row.addWidget(ips_btn)
+        preset_row.addWidget(ips5_btn)
         preset_row.addWidget(norsok_btn)
         preset_row.addWidget(fscale_btn)
         preset_row.addStretch()
