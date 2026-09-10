@@ -504,8 +504,7 @@ def _add_matrix(document, db, data):
     document.add_heading('4.1 Riskmatris och acceptanskriterier', 2)
     document.add_paragraph(
         'Tabell 4-1 visar den riskmatris som användes i studien. Axelriktning, '
-        'färger och nivånamn överensstämmer med den matris som finns sparad i '
-        'projektet.')
+        'färger och nivånamn framgår av tabellen.')
     _caption(document, '4-1', 'Riskmatris')
     headers, rows, horizontal, vertical, x_frequency = _matrix_display_values(matrix)
     from docx.oxml import OxmlElement
