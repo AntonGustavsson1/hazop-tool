@@ -197,18 +197,145 @@ def _highlight_document(document):
             parent.remove(run)
 
 
-def _field_run(paragraph, instruction, cached='1'):
+def _field_elements(instruction, cached='1', run_properties=None):
+    """Build a complex Word field with a visible cached result.
+
+    Keeping the result in an ordinary ``w:r`` makes captions and references
+    readable both before Word updates the fields and through python-docx.
+    """
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
-    field = OxmlElement('w:fldSimple')
-    field.set(qn('w:instr'), instruction)
-    field.set(qn('w:dirty'), 'true')
-    run = OxmlElement('w:r')
+
+    begin_run = OxmlElement('w:r')
+    begin = OxmlElement('w:fldChar')
+    begin.set(qn('w:fldCharType'), 'begin')
+    begin.set(qn('w:dirty'), 'true')
+    begin_run.append(begin)
+
+    instruction_run = OxmlElement('w:r')
+    instruction_text = OxmlElement('w:instrText')
+    instruction_text.set(qn('xml:space'), 'preserve')
+    instruction_text.text = instruction
+    instruction_run.append(instruction_text)
+
+    separate_run = OxmlElement('w:r')
+    separate = OxmlElement('w:fldChar')
+    separate.set(qn('w:fldCharType'), 'separate')
+    separate_run.append(separate)
+
+    result_run = OxmlElement('w:r')
+    if run_properties is not None:
+        result_run.append(deepcopy(run_properties))
     text = OxmlElement('w:t')
+    text.set(qn('xml:space'), 'preserve')
     text.text = cached
-    run.append(text)
-    field.append(run)
-    paragraph._p.append(field)
+    result_run.append(text)
+
+    end_run = OxmlElement('w:r')
+    end = OxmlElement('w:fldChar')
+    end.set(qn('w:fldCharType'), 'end')
+    end_run.append(end)
+    return [begin_run, instruction_run, separate_run, result_run, end_run]
+
+
+def _field_run(paragraph, instruction, cached='1'):
+    for element in _field_elements(instruction, cached):
+        paragraph._p.append(element)
+
+
+def _table_bookmark_name(number):
+    normalized = re.sub(r'[^A-Za-z0-9]+', '_', str(number).replace('.', '-')).strip('_')
+    return f'tabell_{normalized}'
+
+
+def _next_bookmark_id(paragraph):
+    from docx.oxml.ns import qn
+    values = []
+    for element in paragraph.part.element.iter(qn('w:bookmarkStart')):
+        try:
+            values.append(int(element.get(qn('w:id'))))
+        except (TypeError, ValueError):
+            continue
+    return max(values, default=0) + 1
+
+
+def _append_bookmarked_table_number(paragraph, number):
+    """Add an editable caption number and bookmark it for Word REF fields."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    normalized = str(number).replace('.', '-')
+    match = re.match(r'^(.*?)(\d+)([A-Za-z]?)$', normalized)
+    if not match:
+        raise ValueError(f'Ogiltigt tabellnummer: {number}')
+    prefix, ordinal, suffix = match.groups()
+    bookmark_id = str(_next_bookmark_id(paragraph))
+    start = OxmlElement('w:bookmarkStart')
+    start.set(qn('w:id'), bookmark_id)
+    start.set(qn('w:name'), _table_bookmark_name(normalized))
+    paragraph._p.append(start)
+    paragraph.add_run(prefix)
+    _field_run(paragraph, f'SEQ Tabell \\r {ordinal} \\* ARABIC', ordinal)
+    if suffix:
+        paragraph.add_run(suffix)
+    end = OxmlElement('w:bookmarkEnd')
+    end.set(qn('w:id'), bookmark_id)
+    paragraph._p.append(end)
+
+
+_TABLE_REFERENCE_RE = re.compile(r'\b([Tt]abell)(\s+)((?:B\d+|\d+)-\d+[A-Za-z]?)\b')
+
+
+def _replace_table_references(document):
+    """Replace visible table-number text in prose with bookmarked REF fields."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    bookmarks = {
+        element.get(qn('w:name'))
+        for element in document.element.iter(qn('w:bookmarkStart'))
+    }
+    for paragraph in document.paragraphs:
+        if paragraph.style.name == 'Caption':
+            continue
+        for run in list(paragraph._p.findall(qn('w:r'))):
+            texts = list(run.iter(qn('w:t')))
+            content = ''.join(text.text or '' for text in texts)
+            matches = [
+                match for match in _TABLE_REFERENCE_RE.finditer(content)
+                if _table_bookmark_name(match.group(3)) in bookmarks
+            ]
+            if not matches:
+                continue
+            parent = run.getparent()
+            index = parent.index(run)
+            properties = run.find(qn('w:rPr'))
+            cursor = 0
+
+            def insert_text(value):
+                nonlocal index
+                if not value:
+                    return
+                new_run = OxmlElement('w:r')
+                if properties is not None:
+                    new_run.append(deepcopy(properties))
+                text = OxmlElement('w:t')
+                text.set(qn('xml:space'), 'preserve')
+                text.text = value
+                new_run.append(text)
+                parent.insert(index, new_run)
+                index += 1
+
+            for match in matches:
+                insert_text(content[cursor:match.start(3)])
+                number = match.group(3)
+                for element in _field_elements(
+                        f'REF {_table_bookmark_name(number)} \\h',
+                        number,
+                        properties):
+                    parent.insert(index, element)
+                    index += 1
+                cursor = match.end(3)
+            insert_text(content[cursor:])
+            parent.remove(run)
 
 
 def _page_setup(section, landscape=False, paper='A4'):
@@ -263,14 +390,9 @@ def _table(document, headers, rows, widths=None):
 def _caption(document, number, title):
     number = str(number).replace('.', '-')
     paragraph = document.add_paragraph(style='Caption')
-    match = re.match(r'^(.*-)(\d+)$', number)
-    if match:
-        prefix, ordinal = match.groups()
-        paragraph.add_run(f'Tabell {prefix}')
-        _field_run(paragraph, f'SEQ Tabell \\r {ordinal}', ordinal)
-        paragraph.add_run(f' {title}')
-    else:
-        paragraph.add_run(f'Tabell {number} {title}')
+    paragraph.add_run('Tabell ')
+    _append_bookmarked_table_number(paragraph, number)
+    paragraph.add_run(f' {title}')
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt
     paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
@@ -384,6 +506,7 @@ def _add_matrix(document, db, data):
         'Tabell 4-1 visar den riskmatris som användes i studien. Axelriktning, '
         'färger och nivånamn överensstämmer med den matris som finns sparad i '
         'projektet.')
+    _caption(document, '4-1', 'Riskmatris')
     headers, rows, horizontal, vertical, x_frequency = _matrix_display_values(matrix)
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
@@ -1059,12 +1182,15 @@ def build_report(db, *, paper_size='A3', standard_template=False):
             'Tabell 4-1 ska redovisa studiens riskmatris med valda axlar, '
             'nivånamn och färger. Acceptanskriterierna för risknivåerna ska '
             'redovisas i tabell 4-1a.')
+        _caption(document, '4-1', 'Riskmatris')
         document.add_paragraph(missing('studiens riskmatris'))
+        _caption(document, '4-1a', 'Acceptanskriterier')
         document.add_paragraph(missing('acceptanskriterier för risknivåerna'))
         document.add_heading('4.2 Frekvensskala', 2)
         document.add_paragraph(
             'Tabell 4-2 ska redovisa de frekvensnivåer och definitioner som '
             'analysgruppen använder i studien.')
+        _caption(document, '4-2', 'Frekvensnivåer och definitioner')
         document.add_paragraph(missing('frekvensskala och definitioner'))
         if field('Frekvensunderlag'):
             document.add_paragraph(field('Frekvensunderlag'))
@@ -1072,6 +1198,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         document.add_paragraph(
             'Tabell 4-3 ska redovisa konsekvensdefinitionerna för de kategorier '
             'som ingår i studien.')
+        _caption(document, '4-3', 'Konsekvensdefinitioner')
         document.add_paragraph(missing('konsekvenskategorier och definitioner'))
         document.add_heading('4.4 Barriärer och enablers', 2)
         document.add_paragraph(PROSE_INTROS['Barriärunderlag'])
@@ -1306,6 +1433,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
                 for blip in paragraph.iter(qn('a:blip')):
                     blip.set(qn('r:embed'), new_rid)
                 target_header._element.insert(0, paragraph)
+    _replace_table_references(document)
     apply_report_fonts(document)
     _highlight_document(document)
     return document

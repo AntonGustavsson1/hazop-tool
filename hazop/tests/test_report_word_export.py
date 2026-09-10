@@ -233,11 +233,43 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertIn('B3.1 Ny nod', body_text)
         node_heading = next(p for p in doc.paragraphs if p.text == 'B3.1 Ny nod')
         self.assertEqual(node_heading.style.name, 'Appendix Node Heading')
+
+    def test_table_captions_and_prose_references_use_word_fields(self):
+        doc = self.export()
+        captions = [p for p in doc.paragraphs
+                    if p.style.name == 'Caption' and p.text.startswith('Tabell ')]
+        self.assertIn('Tabell 4-1 Riskmatris', [p.text for p in captions])
+        for paragraph in captions:
+            instructions = [
+                field.text or ''
+                for field in paragraph._p.iter(qn('w:instrText'))
+            ]
+            self.assertTrue(any(instruction.startswith('SEQ Tabell ') for instruction in instructions),
+                            paragraph.text)
+            self.assertTrue(any(True for _ in paragraph._p.iter(qn('w:bookmarkStart'))),
+                            paragraph.text)
+
+        bookmark_names = {
+            bookmark.get(qn('w:name'))
+            for bookmark in doc.element.iter(qn('w:bookmarkStart'))
+        }
+        ref_instructions = [
+            field.text or ''
+            for field in doc.element.iter(qn('w:instrText'))
+            if (field.text or '').startswith('REF tabell_')
+        ]
+        self.assertTrue(ref_instructions)
+        self.assertIn('REF tabell_4_1 \\h', ref_instructions)
+        self.assertIn('REF tabell_5_1 \\h', ref_instructions)
+        for instruction in ref_instructions:
+            self.assertIn(instruction.split()[1], bookmark_names)
         self.assertFalse(doc.styles['Appendix Node Heading'].paragraph_format.page_break_before)
+        headings = [p.text for p in doc.paragraphs
+                    if p.style.name in ('Heading 1', 'Heading 2')]
         self.assertIn('Bilaga 5 Nodmarkeringar', headings)
         with ZipFile(self.path) as archive:
             document_xml = archive.read('word/document.xml').decode('utf-8')
-        self.assertIn('TOC \\o &quot;1-2&quot;', document_xml)
+        self.assertIn('TOC \\o "1-2"', document_xml)
 
     def test_document_subheadings_are_added_when_other_documents_exist(self):
         self.db.add_project_custom_field('Övriga referensdokument', 'Driftinstruktion 100')
