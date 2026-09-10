@@ -1116,6 +1116,7 @@ class Database:
                 "ALTER TABLE analysis_sessions ADD COLUMN start_time TEXT DEFAULT ''",
             "ALTER TABLE analysis_sessions ADD COLUMN end_time TEXT DEFAULT ''",
             "ALTER TABLE participant_attendance ADD COLUMN note TEXT DEFAULT ''",
+            "ALTER TABLE participants ADD COLUMN company TEXT DEFAULT ''",
             "ALTER TABLE pid_sheets ADD COLUMN drawing_number TEXT DEFAULT ''",
             "ALTER TABLE pid_sheets ADD COLUMN drawing_name TEXT DEFAULT ''",
             "ALTER TABLE pid_sheets ADD COLUMN drawing_revision TEXT DEFAULT ''",
@@ -1135,6 +1136,7 @@ class Database:
                 self.conn.execute(statement)
             except sqlite3.OperationalError:
                 pass
+        self._migrate_participant_company_column()
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS reduction_factor_catalog ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -1876,6 +1878,7 @@ class Database:
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 first_name TEXT NOT NULL DEFAULT '',
                 last_name  TEXT NOT NULL DEFAULT '',
+                company    TEXT DEFAULT '',
                 role       TEXT DEFAULT '',
                 sort_order INTEGER DEFAULT 0
             );
@@ -5288,21 +5291,22 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM participants ORDER BY sort_order, id").fetchall()
 
-    def add_participant(self, first_name='', last_name='', role=''):
+    def add_participant(self, first_name='', last_name='', role='', company=''):
         cur = self.conn.execute(
-            "INSERT INTO participants (first_name, last_name, role) VALUES (?,?,?)",
-            (first_name, last_name, role))
+            "INSERT INTO participants (first_name, last_name, company, role) VALUES (?,?,?,?)",
+            (first_name, last_name, company, role))
         self.commit()
         return cur.lastrowid
 
-    def update_participant(self, id_, first_name=None, last_name=None, role=None):
+    def update_participant(self, id_, first_name=None, last_name=None, role=None, company=None):
         row = self.conn.execute("SELECT * FROM participants WHERE id=?", (id_,)).fetchone()
         if not row:
             return
         self.conn.execute(
-            "UPDATE participants SET first_name=?, last_name=?, role=? WHERE id=?",
+            "UPDATE participants SET first_name=?, last_name=?, company=?, role=? WHERE id=?",
             (first_name if first_name is not None else row['first_name'],
              last_name if last_name is not None else row['last_name'],
+             company if company is not None else row['company'],
              role if role is not None else row['role'],
              id_))
         self.commit()
@@ -5310,6 +5314,27 @@ class Database:
     def delete_participant(self, id_):
         self.conn.execute("DELETE FROM participants WHERE id=?", (id_,))
         self.commit()
+
+    def _migrate_participant_company_column(self):
+        """Promote a previous optional ``Företag`` column to the standard one."""
+        try:
+            columns = self.list_participant_columns()
+        except sqlite3.OperationalError:
+            return
+        for column in columns:
+            if str(column['name'] or '').strip().casefold() != 'företag':
+                continue
+            values = self.conn.execute(
+                "SELECT participant_id, value FROM participant_column_values WHERE column_id=?",
+                (column['id'],)).fetchall()
+            for value in values:
+                self.conn.execute(
+                    "UPDATE participants SET company=? "
+                    "WHERE id=? AND TRIM(COALESCE(company, ''))=''",
+                    (value['value'] or '', value['participant_id']))
+            self.conn.execute(
+                "DELETE FROM participant_column_values WHERE column_id=?", (column['id'],))
+            self.conn.execute("DELETE FROM participant_columns WHERE id=?", (column['id'],))
 
     def list_analysis_sessions(self):
         return self.conn.execute(

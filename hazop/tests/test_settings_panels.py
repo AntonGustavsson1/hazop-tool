@@ -1956,6 +1956,16 @@ class ParticipantMatrixTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_panel_editing_company_cell_persists_to_db(self):
+        from hazop import ParticipantMatrixPanel
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            panel._add_participant()
+            panel._table.item(0, 2).setText('ProSa')
+            self.assertEqual(self.db.list_participants()[0]['company'], 'ProSa')
+        finally:
+            panel.deleteLater()
+
     def test_panel_editing_custom_column_cell_persists_to_db(self):
         """Roll is no longer a hardcoded column (2026-08-17) — a free,
         user-named column (e.g. "Roll") between Efternamn and the session
@@ -2049,7 +2059,7 @@ class ParticipantMatrixTests(unittest.TestCase):
             panel.deleteLater()
 
     def test_custom_column_sits_before_session_columns(self):
-        """Egna kolumner ska ligga mellan Efternamn och analystillfällena,
+        """Egna kolumner ska ligga mellan standardkolumnerna och analystillfällena,
         inte efter dem (2026-08-17 user request)."""
         from hazop import ParticipantMatrixPanel
         panel = ParticipantMatrixPanel(self.db)
@@ -2063,7 +2073,11 @@ class ParticipantMatrixTests(unittest.TestCase):
             panel.refresh()
             headers = [panel._table.horizontalHeaderItem(c).text()
                        for c in range(panel._table.columnCount())]
-            self.assertEqual(headers, ["Förnamn", "Efternamn", "E-post", "2026-09-01"])
+            self.assertEqual(
+                headers,
+                ["Förnamn", "Efternamn", "Företag", "E-post",
+                 self.db.list_analysis_sessions()[0]['date']],
+            )
         finally:
             panel.deleteLater()
 
@@ -2096,6 +2110,7 @@ class ParticipantMatrixTests(unittest.TestCase):
             self.assertEqual(panel._table.rowCount(), 1)
             self.assertEqual(panel._table.item(0, 0).text(), "Anna")
             self.assertEqual(panel._table.item(0, 1).text(), "Andersson")
+            self.assertEqual(panel._table.item(0, 2).text(), "")
             self.assertEqual(panel._table.item(0, len(panel._FIXED_COLS)).text(), "Processägare")
             self.assertTrue(panel._table.item(0, len(panel._FIXED_COLS) + 1)
                             .data(Qt.ItemDataRole.UserRole + 20))

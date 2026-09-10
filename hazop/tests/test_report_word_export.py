@@ -208,6 +208,18 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertEqual(table.cell(2, 1).text, 'Närvarande\nDel av dagen')
         self.assertEqual(table.cell(3, 1).text, '[KOMPLETTERA: närvaro]')
 
+    def test_participant_company_is_a_standard_report_column(self):
+        self.db.add_participant('Anna', 'Andersson', company='ProSa')
+        doc = self.export()
+        table = next(t for t in doc.tables if t.cell(0, 0).text == 'Förnamn')
+        self.assertEqual(
+            [cell.text for cell in table.rows[0].cells],
+            ['Förnamn', 'Efternamn', 'Företag', 'Roll och övriga deltagaruppgifter'],
+        )
+        self.assertEqual(table.cell(1, 2).text, 'ProSa')
+        body_text = '\n'.join(paragraph.text for paragraph in doc.paragraphs)
+        self.assertNotIn('Anteckningar kan användas för', body_text)
+
     def test_duplicate_guide_words_follow_worksheet_numbering_in_both_reports(self):
         equipment = self.db.add_equipment_item('V-200', 'V-200', 'V', 0, 'Ventil', '', False)
         deviation = self.db.conn.execute(

@@ -811,15 +811,14 @@ def _add_participants(document, db, data, *, standard_template=False):
             details.insert(0, 'Roll: ' + p['role'])
         participant_rows.append([
             _value(p.get('first_name'), 'förnamn'), _value(p.get('last_name'), 'efternamn'),
-            '\n'.join(details) or missing('företag och roll eller disciplin'),
+            _value(p.get('company'), 'företag'),
+            '\n'.join(details) or missing('roll eller disciplin'),
         ])
     _caption(document, '3.2', 'Deltagare och roller')
-    _table(document, ['Förnamn', 'Efternamn', 'Deltagaruppgifter'],
-           participant_rows or [[missing('deltagare'), '', '']], [32, 40, 88])
+    _table(document, ['Förnamn', 'Efternamn', 'Företag', 'Roll och övriga deltagaruppgifter'],
+           participant_rows or [[missing('deltagare'), '', '', '']], [28, 32, 42, 58])
     document.add_paragraph(
-        'Deltagarnas närvaro vid respektive analystillfälle redovisas i tabell 3-3. '
-        'Anteckningar kan användas för att ange om någon endast deltog under '
-        'en del av genomgången.')
+        'Deltagarnas närvaro vid respektive analystillfälle redovisas i tabell 3-3.')
     attendance = db.get_attendance_details()
     attendance_rows = []
     short_status = len(sessions) > 5

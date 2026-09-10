@@ -30,7 +30,7 @@ from equipment_panel import TagDatabasePanel, PIDAnalysisPanel
 
 
 class ParticipantMatrixPanel(QWidget):
-    """Deltagarmatris: participants as rows (Förnamn/Efternamn/Roll) ×
+    """Deltagarmatris: participants as rows (Förnamn/Efternamn/Företag) ×
     analystillfällen as columns, with a checkbox per cell marking
     attendance. Replaces the old free-text "Deltagare" field in the
     Projekt tab (2026-08-11, user request: "en till flik med deltagare
@@ -38,7 +38,7 @@ class ParticipantMatrixPanel(QWidget):
     analystillfälen på x axeln så det blir en matris" — see NOTES.md for
     the full design rationale)."""
 
-    _FIXED_COLS = ['Förnamn', 'Efternamn']
+    _FIXED_COLS = ['Förnamn', 'Efternamn', 'Företag']
 
     def __init__(self, db, parent=None):
         super().__init__(parent)
@@ -53,7 +53,7 @@ class ParticipantMatrixPanel(QWidget):
         layout.setSpacing(8)
 
         lbl = QLabel(
-            "<b>Deltagarmatris</b> — en rad per deltagare (förnamn, efternamn, roll) "
+            "<b>Deltagarmatris</b> — en rad per deltagare (förnamn, efternamn, företag) "
             "och en kolumn per analystillfälle. Bocka i cellen för att markera att "
             "deltagaren var med vid det tillfället.")
         lbl.setWordWrap(True)
@@ -143,6 +143,7 @@ class ParticipantMatrixPanel(QWidget):
             for row, p in enumerate(participants):
                 self._table.setItem(row, 0, QTableWidgetItem(p['first_name'] or ''))
                 self._table.setItem(row, 1, QTableWidgetItem(p['last_name'] or ''))
+                self._table.setItem(row, 2, QTableWidgetItem(p['company'] or ''))
                 for ci, col_def in enumerate(columns):
                     val = col_values.get((p['id'], col_def['id']), '')
                     self._table.setItem(row, len(self._FIXED_COLS) + ci, QTableWidgetItem(val))
@@ -249,6 +250,8 @@ class ParticipantMatrixPanel(QWidget):
             self.db.update_participant(pid, first_name=item.text())
         elif col == 1:
             self.db.update_participant(pid, last_name=item.text())
+        elif col == 2:
+            self.db.update_participant(pid, company=item.text())
         elif col < n_base + len(self._column_ids):
             col_id = self._column_ids[col - n_base]
             self.db.set_participant_column_value(pid, col_id, item.text())
