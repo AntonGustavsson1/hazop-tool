@@ -97,7 +97,7 @@ class ReportWordExportTests(unittest.TestCase):
                 section.first_page_header._element.iter(qn('a:blip')), None))
         body_text = '\n'.join(paragraph.text for paragraph in doc.paragraphs)
         for text in (
-            'P&ID-ritningarna och övriga registrerade projektdokument redovisas i tabell 2-1',
+            'P&ID-ritningarna och övriga registrerade underlag redovisas i tabell 2-1',
             'Datum, tid och plats för genomförda analystillfällen redovisas i tabell 3-1',
             'Tabell B4-1 redovisar varje rekommendation',
             'HAZOP-studien genomfördes som en gemensam, tvärdisciplinär genomgång',

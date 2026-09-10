@@ -410,7 +410,7 @@ PROSE_INTROS = {
     'Syfte': 'Detta avsnitt anger vad studien skulle uppnå och hur resultatet är avsett att användas i det fortsatta arbetet.',
     'Omfattning': 'Detta avsnitt anger vilka systemdelar, funktioner och gränssnitt som ingick i studien. Omfattningen ska läsas tillsammans med nodindelningen och de ritningar som anges i rapporten.',
     'Avgränsningar': 'Detta avsnitt beskriver de avgränsningar och antaganden som gällde under studien. De behöver beaktas när resultaten används i projektering, drift eller fortsatt riskhantering.',
-    'Övriga referensdokument': 'Utöver ritningsunderlaget användes de beskrivningar, instruktioner och övriga projektdokument som anges nedan. Förteckningen visar vilket underlag som var tillgängligt när studien genomfördes.',
+    'Övriga referensdokument': 'Utöver ritningsunderlaget användes de beskrivningar, instruktioner och övriga dokument som anges nedan. Förteckningen visar vilket underlag som var tillgängligt när studien genomfördes.',
     'Riskacceptanskriterier': 'Acceptanskriterierna beskriver hur risknivåerna ska tolkas och hanteras efter studien.',
     'Frekvensunderlag': 'Frekvensbedömningen grundades på analysgruppens gemensamma bedömning av hur ofta den aktuella orsaken eller händelsen kan inträffa.',
     'Barriärunderlag': 'Detta avsnitt beskriver de principer som användes när barriärer och enablers beaktades i riskbedömningen.',
@@ -1117,7 +1117,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
 
     _chapter(document, '2 Dokumentunderlag')
     document.add_paragraph(
-        'Studien genomfördes med stöd av de ritningar och projektdokument som '
+        'Studien genomfördes med stöd av de ritningar och den övriga dokumentation som '
         'var tillgängliga för analysgruppen. Underlaget användes för att '
         'fastställa nodernas gränser, beskriva systemets avsedda funktion och '
         'bedöma de scenarier som behandlades. Dokumentnummer och revisioner '
@@ -1126,7 +1126,7 @@ def build_report(db, *, paper_size='A3', standard_template=False):
     if other_documents:
         document.add_heading('2.1 Ritningsunderlag', 2)
     document.add_paragraph(
-        'P&ID-ritningarna och övriga registrerade projektdokument redovisas i '
+        'P&ID-ritningarna och övriga registrerade underlag redovisas i '
         'tabell 2-1. Dessa dokument utgjorde underlag för nodindelningen och '
         'den efterföljande scenarioanalysen.')
     sheets = [dict(s) for s in db.get_sheets()]
