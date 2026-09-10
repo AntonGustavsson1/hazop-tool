@@ -83,6 +83,75 @@ from test_helpers import (
     _TempDbMainWindow, _find_tree_item,
 )
 
+class ShapePreviewRubberBandTests(unittest.TestCase):
+    """Similar-symbol previews must not remove an active rubber band."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_clearing_shape_preview_keeps_rubber_band_item(self):
+        from PyQt6.QtCore import QPointF
+        from pid_viewer import PIDGraphicsView, Z_TEMP
+
+        view = PIDGraphicsView()
+        shape_item = view.add_shape_highlight([
+            (0.0, 0.0), (20.0, 0.0), (20.0, 20.0),
+        ])
+        rubber_band = view._scene.addRect(0.0, 0.0, 30.0, 30.0)
+        rubber_band.setZValue(Z_TEMP)
+        view._rband_preview_item = rubber_band
+        view._rband_start_scene = QPointF(0.0, 0.0)
+
+        view.clear_shape_preview()
+
+        self.assertIsNone(shape_item.scene())
+        self.assertIs(rubber_band.scene(), view._scene)
+        self.assertIs(view._rband_preview_item, rubber_band)
+
+    def test_right_click_without_drag_does_not_open_sheet_context_menu(self):
+        from PyQt6.QtCore import QPoint, QPointF
+        from pid_viewer import PIDGraphicsView, MODE_NAV
+
+        view = PIDGraphicsView()
+        view.mode = MODE_NAV
+        view._rband_start_scene = QPointF(0.0, 0.0)
+        view._rband_dragging = False
+        view.mapToScene = lambda _point: QPointF(0.0, 0.0)
+        event = unittest.mock.MagicMock()
+        event.button.return_value = Qt.MouseButton.RightButton
+        event.position.return_value.toPoint.return_value = QPoint(0, 0)
+
+        with unittest.mock.patch.object(view, '_show_context_menu') as show_menu:
+            view.mouseReleaseEvent(event)
+
+        show_menu.assert_not_called()
+        self.assertIsNone(view._rband_start_scene)
+
+    def test_right_click_on_rubber_band_object_opens_context_menu(self):
+        from PyQt6.QtCore import QPoint, QPointF
+        from pid_viewer import PIDGraphicsView, MODE_NAV
+
+        view = PIDGraphicsView()
+        view.mode = MODE_NAV
+        marker = view._scene.addEllipse(-5.0, -5.0, 10.0, 10.0)
+        marker.setData(view._DATA_TYPE, 'equipment')
+        marker.setData(view._DATA_ID, 7)
+        view._type_items.setdefault('equipment', []).append(marker)
+        view._rband_start_scene = QPointF(0.0, 0.0)
+        view._rband_dragging = False
+        view.mapToScene = lambda _point: QPointF(0.0, 0.0)
+        event = unittest.mock.MagicMock()
+        event.button.return_value = Qt.MouseButton.RightButton
+        event.position.return_value.toPoint.return_value = QPoint(0, 0)
+
+        with unittest.mock.patch.object(view, '_show_context_menu') as show_menu:
+            view.mouseReleaseEvent(event)
+
+        show_menu.assert_called_once()
+        self.assertIsNone(view._rband_start_scene)
+
+
 class EquipmentMultiSelectTests(unittest.TestCase):
     """Multi-select of equipment markers on the P&ID (2026-08-08, see
     NOTES.md): Ctrl+click toggles, Ctrl+drag rubber-bands several at once,
@@ -1118,6 +1187,77 @@ class SmartPolylineRemovedTests(unittest.TestCase):
         event = unittest.mock.MagicMock()
         event.key.return_value = Qt.Key.Key_Escape
         view.keyPressEvent(event)  # must not raise
+
+
+class MarkupHoverCursorSettingTests(unittest.TestCase):
+    """(2026-09-06) Anton: hovering many polylines/polygons in navigation
+    mode kept flipping the cursor from the mode's own open hand to a
+    pointing hand. 'set_markup_hover_cursor_enabled' lets the setting in
+    SettingsPanel ("Muspekare på P&ID-markeringar") turn that hover cursor
+    off, keeping whichever cursor the current mode already set."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_polyline_markup_gets_pointing_hand_cursor_by_default(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.add_markup_overlay(1, 'polyline', [[0, 0], [10, 0], [10, 10]],
+                                '', '#ff0000', 1.0, 2)
+        item = view._markup_items[1][0]
+        self.assertTrue(item.hasCursor())
+        self.assertEqual(item.cursor().shape(), Qt.CursorShape.PointingHandCursor)
+
+    def test_disabling_setting_clears_cursor_on_existing_markup_items(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.add_markup_overlay(1, 'polygon', [[0, 0], [10, 0], [10, 10]],
+                                '', '#00ff00', 1.0, 2)
+        item = view._markup_items[1][0]
+
+        view.set_markup_hover_cursor_enabled(False)
+
+        self.assertFalse(item.hasCursor())
+
+    def test_disabling_setting_before_placing_new_markup_items_skips_cursor(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.set_markup_hover_cursor_enabled(False)
+        view.add_markup_overlay(1, 'polyline', [[0, 0], [10, 0]],
+                                '', '#0000ff', 1.0, 2)
+        item = view._markup_items[1][0]
+        self.assertFalse(item.hasCursor())
+
+    def test_re_enabling_setting_restores_cursor_on_existing_items(self):
+        from pid_viewer import PIDGraphicsView
+        view = PIDGraphicsView()
+        view.add_markup_overlay(1, 'polyline', [[0, 0], [10, 0]],
+                                '', '#0000ff', 1.0, 2)
+        item = view._markup_items[1][0]
+
+        view.set_markup_hover_cursor_enabled(False)
+        self.assertFalse(item.hasCursor())
+        view.set_markup_hover_cursor_enabled(True)
+        self.assertTrue(item.hasCursor())
+        self.assertEqual(item.cursor().shape(), Qt.CursorShape.PointingHandCursor)
+
+    def test_setting_does_not_add_a_cursor_to_plain_label_text_items(self):
+        """Plain (non-comment) markup text/labels never had a hover cursor
+        of their own — re-enabling the setting must not start adding one,
+        since that would be a new, unrelated behaviour change."""
+        from pid_viewer import PIDGraphicsView
+        from PyQt6.QtWidgets import QGraphicsSimpleTextItem
+        view = PIDGraphicsView()
+        view.add_markup_overlay(1, 'text', [[0, 0]], 'Hello',
+                                '#000000', 1.0, 2)
+        item = next(i for i in view._markup_items[1]
+                    if isinstance(i, QGraphicsSimpleTextItem))
+
+        view.set_markup_hover_cursor_enabled(False)
+        view.set_markup_hover_cursor_enabled(True)
+
+        self.assertFalse(item.hasCursor())
 
 
 if __name__ == "__main__":

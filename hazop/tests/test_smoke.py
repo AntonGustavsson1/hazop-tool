@@ -199,12 +199,16 @@ class SmokeTests(unittest.TestCase):
             p.activate_lopa(created['lopa_id'], created['revision_id'])
             # A populated LOPA is a working sheet, not a dashboard wider or
             # multiple screens taller than a normal desktop workspace.
+            # BERÄKNINGSÖVERSIKT/YTTERLIGARE ÅTGÄRDER OCH KRAV/KOMMENTARER
+            # always stack as three rows now (2026-09-04, see NOTES.md)
+            # instead of three side-by-side columns, so this legitimately
+            # needs a bit more scroll headroom than before.
             p.resize(1720, 1040)
             p.show()
             self.app.processEvents()
             self.app.processEvents()
             self.assertEqual(0, p._detail_scroll.horizontalScrollBar().maximum())
-            self.assertLessEqual(p._detail_scroll.verticalScrollBar().maximum(), 220)
+            self.assertLessEqual(p._detail_scroll.verticalScrollBar().maximum(), 320)
             self.assertEqual(0, p._detail_scroll.verticalScrollBar().value())
             self.assertFalse(p._barrier_detail_area.isVisible())
             p._barrier_details_toggle.click()
@@ -214,6 +218,11 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(QBoxLayout.Direction.LeftToRight, p._drive_layout.direction())
             self.assertEqual(QBoxLayout.Direction.LeftToRight, p._overview_layout.direction())
             self.assertEqual(4, p._header_columns)
+            # BERÄKNINGSÖVERSIKT/YTTERLIGARE ÅTGÄRDER OCH KRAV/KOMMENTARER
+            # stack as three rows unconditionally (2026-09-04, see NOTES.md),
+            # unlike every other responsive row on this page -- true even at
+            # this wide, non-breakpoint width.
+            self.assertEqual(QBoxLayout.Direction.TopToBottom, p._bottom_layout.direction())
 
             # The Claude layout contract uses 1200/900/600 px breakpoints.
             p.resize(1150, 1040)
@@ -225,7 +234,6 @@ class SmokeTests(unittest.TestCase):
             self.app.processEvents()
             self.app.processEvents()
             self.assertEqual(QBoxLayout.Direction.TopToBottom, p._drive_layout.direction())
-            self.assertEqual(QBoxLayout.Direction.TopToBottom, p._bottom_layout.direction())
             self.assertEqual(2, p._header_columns)
             self.assertFalse(p._analysis_panel.isVisible())
             self.assertTrue(p._analysis_toggle.isVisible())
@@ -348,7 +356,10 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual('1oo1', p._sensor_voting.currentText())
             self.assertEqual(1, p._final_members.rowCount())
             self.assertEqual('1oo1', p._final_voting.currentText())
-            self.assertEqual(1, p._barrier_matrix.rowCount())
+            # One source row plus a "Totalt" summary row (2026-09-04, see
+            # NOTES.md) summing the Återstående frekvens column.
+            self.assertEqual(2, p._barrier_matrix.rowCount())
+            self.assertEqual('Totalt', p._barrier_matrix.item(1, 0).text())
             self.assertIn('Återstående frekvens', p._barrier_summary.text())
             self.assertIn('Dimensionerande kriterium', p._dimensioning_summary.text())
             self.assertEqual('2026-09-02', p._document_date.text())

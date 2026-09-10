@@ -618,6 +618,31 @@ class HAZOPPreparationBladNoderTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_noder_tab_includes_object_tag_in_object_type_column(self):
+        from hazop import HAZOPPreparationPanel
+        self.db.ensure_sheets_initialized(1, '/x/MinFil.pdf')
+        node_id = self.db.add_node()
+        equipment_id = self.db.add_equipment_item(
+            'FV-101', 'FV-101', 'FV', 0, 'Reglerventil', '', 0)
+        self.db.conn.execute(
+            'UPDATE equipment_catalog SET node_id=? WHERE id=?',
+            (node_id, equipment_id))
+        self.db.commit()
+        self.db.add_equipment_marker(
+            equipment_id, '', 0, 10, 10, 'Reglerventil')
+
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            panel.refresh_nodes()
+            row = next(r for r in range(panel._nodes_table.rowCount())
+                       if panel._nodes_table.item(r, 1).data(
+                           Qt.ItemDataRole.UserRole) == node_id)
+            self.assertIn(
+                'FV-101 (Reglerventil)',
+                panel._nodes_table.item(row, 3).text())
+        finally:
+            panel.deleteLater()
+
     def test_add_node_from_noder_tab_emits_structure_changed_and_syncs_to_tree(self):
         with _TempDbMainWindow() as win:
             before = len(win.db.nodes())
@@ -1059,6 +1084,29 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             panel._freq_boundary_edits[0].setText("0.1")
             panel._sync_freq_label_from_boundary(panel._freq_boundary_edits[0], 0)
             self.assertEqual(panel._x_label_edits[0].text(), "A")
+        finally:
+            panel.deleteLater()
+
+    def test_frequency_boundary_editor_can_show_highest_first(self):
+        """The Axlar editor may display frequency limits in either direction."""
+        from hazop import HAZOPPreparationPanel
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            panel._set_risk_subview(1)
+            original = dict(panel._last_built_cfg)
+            panel._axes_frequency_order_btn.setChecked(True)
+
+            table = panel._frequency_axis_table
+            self.assertEqual(table.item(0, 0).text(), original['x_codes'][-1])
+            self.assertEqual(table.item(table.rowCount() - 1, 0).text(), original['x_codes'][0])
+            self.assertEqual(table.item(0, 2).text(), '—')
+            self.assertEqual(float(table.item(1, 2).text()), float(original['freq_boundaries'][-1]))
+
+            with unittest.mock.patch.object(QMessageBox, 'information'):
+                panel._save_axes_and_categories_values()
+            saved = self.db.get_risk_matrix()
+            self.assertEqual(saved['freq_boundaries'], original['freq_boundaries'])
+            self.assertEqual(saved['x_codes'], original['x_codes'])
         finally:
             panel.deleteLater()
 
@@ -2204,6 +2252,37 @@ class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_markup_hover_cursor_setting_persists_and_can_be_disabled(self):
+        """(2026-09-06) Anton: navigation mode's open-hand cursor kept
+        switching to a pointing hand while hovering many polylines. Adds
+        an option to keep the mode's own cursor instead."""
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            self.assertTrue(panel._markup_hover_cursor_chk.isChecked())
+            panel._markup_hover_cursor_chk.setChecked(False)
+            self.assertEqual(
+                self.db.get_config('pid_markup_hover_cursor_enabled'), '0')
+            panel._markup_hover_cursor_chk.setChecked(True)
+            self.assertEqual(
+                self.db.get_config('pid_markup_hover_cursor_enabled'), '1')
+        finally:
+            panel.deleteLater()
+
+    def test_markup_hover_cursor_setting_reloads(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            panel._markup_hover_cursor_chk.setChecked(False)
+        finally:
+            panel.deleteLater()
+
+        panel2 = SettingsPanel(self.db)
+        try:
+            self.assertFalse(panel2._markup_hover_cursor_chk.isChecked())
+        finally:
+            panel2.deleteLater()
+
     def test_risk_bar_setting_persists_and_reloads(self):
         from hazop import SettingsPanel
         panel = SettingsPanel(self.db)
@@ -2323,6 +2402,62 @@ class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
             self.assertTrue(use_ocr)
 
 
+class SpellCheckLanguageSettingTests(unittest.TestCase):
+    """Fas 3 (2026-09-06, see NOTES.md "Stavningskontroll") -- the
+    "Stavningskontroll" language picker in the HAZOP-inställningar tab."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_settings_spellcheck_test_")
+        self.db_path = os.path.join(self._tmpdir, "test_project.db")
+        self.db = Database(path=self.db_path)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_defaults_to_swedish(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            self.assertEqual(panel._spellcheck_language_combo.currentData(), 'sv')
+        finally:
+            panel.deleteLater()
+
+    def test_changing_language_persists_and_emits_signal(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            received = []
+            panel.spellcheck_settings_changed.connect(lambda: received.append(True))
+            idx = panel._spellcheck_language_combo.findData('en')
+            self.assertGreaterEqual(idx, 0)
+            panel._spellcheck_language_combo.setCurrentIndex(idx)
+            self.assertEqual(self.db.get_config('spellcheck_language'), 'en')
+            self.assertTrue(received)
+        finally:
+            panel.deleteLater()
+
+    def test_language_setting_reloads(self):
+        from hazop import SettingsPanel
+        panel = SettingsPanel(self.db)
+        try:
+            idx = panel._spellcheck_language_combo.findData('en')
+            panel._spellcheck_language_combo.setCurrentIndex(idx)
+        finally:
+            panel.deleteLater()
+
+        panel2 = SettingsPanel(self.db)
+        try:
+            self.assertEqual(panel2._spellcheck_language_combo.currentData(), 'en')
+        finally:
+            panel2.deleteLater()
 
 
 if __name__ == "__main__":

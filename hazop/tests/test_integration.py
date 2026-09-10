@@ -506,6 +506,39 @@ class MarkerNavigateCrashTests(unittest.TestCase):
             finally:
                 lopa.deleteLater()
 
+    def test_custom_enabler_text_is_saved_and_reused_in_another_consequence(self):
+        from hazop import ReductionFactorsDialog
+
+        with _TempDbMainWindow() as win:
+            ids = self._make_full_chain(win.db)
+            dialog = ReductionFactorsDialog(win.db, ids['cons_id'])
+            try:
+                dialog._add()
+                row = dialog._tbl.rowCount() - 1
+                dialog._tbl.item(row, 1).setText('Operatörsverifiering')
+                dialog._on_cell(row, 1)
+
+                saved = [dict(rf) for rf in win.db.reduction_factors(ids['cons_id'])]
+                self.assertTrue(any(
+                    rf['description'] == 'Operatörsverifiering' for rf in saved))
+                self.assertTrue(any(
+                    rf['description'] == 'Operatörsverifiering'
+                    for rf in win.db.reduction_factor_catalog()))
+
+                other_cause = win.db.add_cause(ids['deviation_id'])
+                other_cons = win.db.add_consequence(other_cause)
+                other_dialog = ReductionFactorsDialog(win.db, other_cons)
+                try:
+                    descriptions = {
+                        other_dialog._tbl.item(i, 1).text()
+                        for i in range(other_dialog._tbl.rowCount())
+                    }
+                    self.assertIn('Operatörsverifiering', descriptions)
+                finally:
+                    other_dialog.deleteLater()
+            finally:
+                dialog.deleteLater()
+
     def test_rebuild_clears_focus_before_teardown(self):
         """Belt-and-suspenders fix: _rebuild() must clear focus from any
         active cell editor before calling setRowCount(0), so the focus-out
@@ -906,7 +939,7 @@ class SafeguardCreatedDoubleRebuildTests(unittest.TestCase):
     def test_on_props_changed_refreshes_pid_overlays_for_a_node(self):
         """"När jag sedan uppdaterar namnet på noden vill jag att detta
         uppdateras även på P&ID" (2026-08-17, see NOTES.md) — renaming a
-        node via PropertiesRibbon's Namn-popup (_edit_node_name) already
+        node via PropertiesRibbon's Nod-popup (_edit_node_info) already
         syncs node_markups.label via Database.update_node(), but nothing
         on that path redrew the P&ID until this fix — the on-canvas
         "Lägg ut nodnamn" label stayed visibly stale. _on_props_changed
@@ -1299,6 +1332,20 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
                 win.worksheet.refresh()
             except sqlite3.ProgrammingError as e:
                 self.fail(f"worksheet.refresh() must not touch the closed old db, raised: {e!r}")
+
+    def test_lopa_panel_gets_new_db_and_refreshes_after_db_swap(self):
+        """LOPA must use the new database after a project reload."""
+        with _TempDbMainWindow() as win:
+            old_db = win.db
+            old_db.conn.close()
+            win.db = hazop.Database(path=old_db.path)
+            win._reload_all_panels()
+
+            self.assertIs(win.lopa_panel.db, win.db)
+            try:
+                win._switch_view(8)
+            except sqlite3.ProgrammingError as e:
+                self.fail(f"switching to LOPA must not touch the closed old db, raised: {e!r}")
 
     def test_equipment_panel_and_its_model_get_new_db(self):
         """Same bug class as the Worksheet one above, found via a real crash
@@ -2999,6 +3046,78 @@ class EquipmentTagDragToConsequenceTests(unittest.TestCase):
             self.assertEqual(cause['equipment_id'], eq_id)
             self.assertEqual(cause['comp_tag'], 'HV-102')
 
+    def test_drop_equipment_on_single_object_cause_converts_to_double_or_group(self):
+        """(2026-09-06) Anton: "Om ett element dras till en befintlig
+        enkel orsak, ska den konverteras/göras om till en dubbelorsak.
+        De två orsakerna ska kopplas samman med villkoret 'OR'. Det nya
+        objektet ska hamna under." Dropping a second object onto a cause
+        that already carries exactly one must extend it into a group,
+        never silently replace the original object."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+
+            eq1_id = win.db.add_equipment_item("HV-101", "HV-101", "HV", 0, "Ventil", '', 0)
+            m1 = win.db.add_equipment_marker(
+                eq1_id, "HV-101", 0, 10.0, 10.0, "Ventil", confidence=0.9,
+                link_method='leader')
+            event1 = self._make_drop_event(
+                panel, f'hzp:equipment:{m1}:-1:-1', row, panel._C_ORS)
+            panel._handle_drop(event1)
+
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(cause['equipment_id'], eq1_id)
+            self.assertIsNone(cause['secondary_equipment_id'])
+
+            eq2_id = win.db.add_equipment_item("HV-102", "HV-102", "HV", 0, "Ventil", '', 0)
+            m2 = win.db.add_equipment_marker(
+                eq2_id, "HV-102", 0, 20.0, 20.0, "Ventil", confidence=0.9,
+                link_method='leader')
+            event2 = self._make_drop_event(
+                panel, f'hzp:equipment:{m2}:-1:-1', row, panel._C_ORS)
+            panel._handle_drop(event2)
+
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(cause['equipment_id'], eq1_id,
+                "the original object must stay first, not be replaced")
+            self.assertEqual(cause['secondary_equipment_id'], eq2_id,
+                "the newly dropped object must land second/below")
+            self.assertEqual(cause['comp_tag'], 'HV-101 OR HV-102')
+            self.assertEqual(win.db.group_equipment_ids_for_cause(cause),
+                             [eq1_id, eq2_id])
+
+    def test_drop_equipment_on_double_object_cause_extends_to_triple_with_or(self):
+        """"Om ett element dras till en befintlig dubbelavvikelse, ska den
+        utökas till en trippelavvikelse. Det nya elementet ska läggas
+        till med ytterligare ett 'OR'-villkor. Det nya objektet ska
+        hamna under." — a third drop must append, keep "OR", never
+        replace either existing object."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            _n, _d, cause_id, cons_id = self._make_full_chain(win.db)
+            panel.load_cause(cause_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+
+            eq_ids = []
+            for i, tag in enumerate(("HV-101", "HV-102", "HV-103")):
+                eq_id = win.db.add_equipment_item(tag, tag, "HV", 0, "Ventil", '', 0)
+                marker_id = win.db.add_equipment_marker(
+                    eq_id, tag, 0, 10.0 * (i + 1), 10.0, "Ventil", confidence=0.9,
+                    link_method='leader')
+                eq_ids.append(eq_id)
+                event = self._make_drop_event(
+                    panel, f'hzp:equipment:{marker_id}:-1:-1', row, panel._C_ORS)
+                panel._handle_drop(event)
+
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(win.db.group_equipment_ids_for_cause(cause), eq_ids,
+                "must end up as [first, second, third] in that order")
+            self.assertEqual(cause['comp_tag'], 'HV-101 OR HV-102 OR HV-103')
+            self.assertEqual(cause['equipment_id'], eq_ids[0])
+            self.assertEqual(cause['secondary_equipment_id'], eq_ids[1])
+
     def test_drop_equipment_marker_with_no_linked_catalog_row_is_ignored(self):
         """A marker whose equipment_id is NULL (untagged shape hit) must be
         a silent no-op, matching _on_marker_clicked's own guard for the
@@ -4236,6 +4355,25 @@ class RecommendationAssistPopupTests(unittest.TestCase):
         finally:
             editor.deleteLater()
 
+    def test_hidden_editor_retry_reopens_recommendation_popup(self):
+        from PyQt6.QtCore import QRect
+        delegate = self.panel._delegate
+        editor = QLineEdit()
+        try:
+            with unittest.mock.patch('scenario_panel.QTimer.singleShot') as timer:
+                delegate._show_recommendation_assist_popup(
+                    editor, 0, self.cons_id, QRect(0, 0, 260, 32), 17)
+                retry = timer.call_args.args[1]
+
+            with unittest.mock.patch.object(
+                    delegate, '_show_recommendation_assist_popup') as show:
+                retry()
+
+            show.assert_called_once_with(
+                editor, 0, self.cons_id, QRect(0, 0, 260, 32), 17)
+        finally:
+            editor.deleteLater()
+
     def test_typed_recommendation_text_filters_catalog_anywhere(self):
         first_id = self.db.add_recommendation(description='Verify shutdown function')
         second_id = self.db.add_recommendation(description='Inspect pressure relief valve')
@@ -4717,8 +4855,8 @@ class EquipmentDropOnSafeguardAndMultiTests(unittest.TestCase):
 
 class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
     """Dragging equipment marker(s) onto a HAZOP-tree deviation item (e.g.
-    "Lågt flöde") creates one empty, tagged cause per marker directly — no
-    popup (2026-08-08, see NOTES.md, decision: 'Skapa tom orsak direkt')."""
+    "Lågt flöde") creates one empty, tagged cause and opens the same inline
+    ORS editor path that provides standard-cause suggestions."""
 
     @classmethod
     def setUpClass(cls):
@@ -4867,33 +5005,78 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             self.assertEqual(resolved['node_id'], node_id)
             self.assertEqual(resolved['description'], "Lågt flöde")
 
-    def test_tree_drop_on_merged_single_equipment_cause_row_resolves_its_own_deviation(self):
-        """The other tree shape an equipped guide word can collapse into
-        (2026-08-09 'kaka på kaka'): a CAUSE_T-typed merged row when the
-        linked equipment's only cause is still trivial/untouched. This
-        must resolve back to that SAME equipment's own deviation, not
-        be rejected either."""
+    def test_tree_drop_on_existing_cause_row_adds_to_it_instead_of_creating_a_sibling(self):
+        """(2026-09-06) Anton: "Jag vill alltså att du gör skillnad på när
+        man droppar till trädet till en avikelse ... och en orsak/objekt
+        ... Om man dropppar till ett objekt till en redan befintlig
+        objekt/orsak så skall detta läggas till." Dropping directly on an
+        existing CAUSE_T row must add the object to THAT cause, not
+        resolve up to its parent deviation and create a sibling.
+
+        Supersedes the pre-2026-09-06 behavior this same scenario used to
+        have (once named "kaka på kaka" here, from back when a trivial
+        single-cause guide word rendered as one combined row) — that
+        older test asserted a plain single-object cause drop resolved to
+        its deviation (equipment_dropped_on_deviation); the tree row
+        itself was always a real, distinct CAUSE_T item even then (see
+        add_cause_item in tree_panel.py, unconditional since 2026-08-25),
+        so today's fix is the deliberate reverse for that same target:
+        emit equipment_dropped_on_cause with the SPECIFIC cause_id the
+        row represents."""
         with _TempDbMainWindow() as win:
             tree_panel = win.tree_panel
             eq_id = win.db.add_equipment_item("=M1.GPA6", "=M1.GPA6", "M1", 0, "Pump", '', 0)
             node_id = win.db.add_node()
             dev_id = win.db.get_or_create_deviation(node_id, "Lågt flöde", equipment_id=eq_id)
             from hazop import _create_tagged_cause
-            _create_tagged_cause(win.db, dev_id, "Pump", "=M1.GPA6")
+            cause_id, _cons_id = _create_tagged_cause(win.db, dev_id, "Pump", "=M1.GPA6")
             tree_panel.refresh()
             tree_panel.tree.expandAll()
-            merged_item = _find_tree_item(tree_panel.tree, CAUSE_T)
-            self.assertIsNotNone(merged_item,
-                "sanity: the trivial tagged cause must have merged into a CAUSE_T row")
-            pos = tree_panel.tree.visualItemRect(merged_item).center()
+            cause_item = _find_tree_item(tree_panel.tree, CAUSE_T, cause_id)
+            self.assertIsNotNone(cause_item, "sanity: the tagged cause must be in the tree")
+            pos = tree_panel.tree.visualItemRect(cause_item).center()
 
-            captured = []
+            on_deviation = []
+            on_cause = []
             tree_panel.equipment_dropped_on_deviation.connect(
-                lambda d, ids: captured.append((d, ids)))
+                lambda d, ids: on_deviation.append((d, ids)))
+            tree_panel.equipment_dropped_on_cause.connect(
+                lambda c, ids: on_cause.append((c, ids)))
             event = self._make_drop_event('hzp:equipment:43:-1:-1', pos)
             tree_panel.eventFilter(tree_panel.tree.viewport(), event)
 
-            self.assertEqual(captured, [(dev_id, [43])])
+            self.assertEqual(on_deviation, [],
+                "must NOT resolve up to the parent deviation any more")
+            self.assertEqual(on_cause, [(cause_id, [43])],
+                "must emit the new signal with the SPECIFIC cause row dropped on")
+
+    def test_tree_drop_on_deviation_with_existing_causes_still_creates_a_sibling(self):
+        """Point 1 of the same spec, explicit regression guard: dropping
+        directly on the Avvikelse row itself must keep creating a new
+        cause, even when that deviation already has one or more causes
+        under it — unaffected by the CAUSE_T behavior change above."""
+        with _TempDbMainWindow() as win:
+            tree_panel = win.tree_panel
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            win.db.add_cause(dev_id)   # an existing sibling cause already present
+            tree_panel.refresh()
+            tree_panel.tree.expandAll()
+            dev_item = _find_tree_item(tree_panel.tree, DEV_T, dev_id)
+            self.assertIsNotNone(dev_item)
+            pos = tree_panel.tree.visualItemRect(dev_item).center()
+
+            on_deviation = []
+            on_cause = []
+            tree_panel.equipment_dropped_on_deviation.connect(
+                lambda d, ids: on_deviation.append((d, ids)))
+            tree_panel.equipment_dropped_on_cause.connect(
+                lambda c, ids: on_cause.append((c, ids)))
+            event = self._make_drop_event('hzp:equipment:44:-1:-1', pos)
+            tree_panel.eventFilter(tree_panel.tree.viewport(), event)
+
+            self.assertEqual(on_cause, [])
+            self.assertEqual(on_deviation, [(dev_id, [44])])
 
     def test_tree_drop_on_non_deviation_item_is_ignored(self):
         with _TempDbMainWindow() as win:
@@ -4930,7 +5113,9 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             with unittest.mock.patch(
                     'hazop.MainWindow._choose_drop_group_operator',
                     return_value=('separate', None)):
-                win._on_equipment_dropped_on_deviation(dev_id, [m1, m2])
+                with unittest.mock.patch.object(
+                        win.scenario_panel, 'select_item') as select_item:
+                    win._on_equipment_dropped_on_deviation(dev_id, [m1, m2])
 
             causes = win.db.causes(node_id)
             tagged = {c['comp_tag'] for c in causes}
@@ -4938,6 +5123,8 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             for c in causes:
                 self.assertEqual(dict(c)['description'], '')
                 self.assertEqual(len(win.db.consequences(c['id'])), 1)
+            last_cause_id = max(c['id'] for c in causes)
+            select_item.assert_called_once_with(CAUSE_T, last_cause_id)
 
     def test_on_equipment_dropped_on_deviation_assigns_node_when_missing(self):
         with _TempDbMainWindow() as win:
@@ -4951,6 +5138,87 @@ class EquipmentDropOnTreeDeviationTests(unittest.TestCase):
             win._on_equipment_dropped_on_deviation(dev_id, [marker_id])
 
             self.assertEqual(win.db.equipment_node_id(eq_id), node_id)
+
+    def test_on_equipment_dropped_on_cause_converts_single_to_double_with_or(self):
+        """(2026-09-06) The tree counterpart of the ORS-column drop fix:
+        dropping an object on an existing single-object cause converts it
+        to a double, joined by "OR", new object below."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            eq1 = win.db.add_equipment_item("V-1", "V-1", "V", 0, "Ventil", '', 0)
+            win.db.update_cause(cause_id, comp_type="Ventil", comp_tag="V-1",
+                                equipment_id=eq1)
+            eq2 = win.db.add_equipment_item("V-2", "V-2", "V", 0, "Ventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq2, "V-2", 0, 2.0, 2.0, "Ventil", confidence=0.9, link_method='leader')
+
+            win._on_equipment_dropped_on_cause(cause_id, [marker_id])
+
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(cause['equipment_id'], eq1)
+            self.assertEqual(cause['secondary_equipment_id'], eq2)
+            self.assertEqual(cause['comp_tag'], 'V-1 OR V-2')
+            self.assertEqual(win.db.group_equipment_ids_for_cause(cause), [eq1, eq2])
+
+    def test_on_equipment_dropped_on_cause_extends_double_to_triple(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            eq_ids = []
+            for tag in ("V-1", "V-2"):
+                eq_id = win.db.add_equipment_item(tag, tag, "V", 0, "Ventil", '', 0)
+                eq_ids.append(eq_id)
+            win.db.update_cause(
+                cause_id, comp_type="Ventil", comp_tag="V-1 OR V-2",
+                equipment_id=eq_ids[0], secondary_equipment_id=eq_ids[1],
+                group_equipment_ids=eq_ids)
+            eq3 = win.db.add_equipment_item("V-3", "V-3", "V", 0, "Ventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq3, "V-3", 0, 3.0, 3.0, "Ventil", confidence=0.9, link_method='leader')
+
+            win._on_equipment_dropped_on_cause(cause_id, [marker_id])
+
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(win.db.group_equipment_ids_for_cause(cause), eq_ids + [eq3])
+            self.assertEqual(cause['comp_tag'], 'V-1 OR V-2 OR V-3')
+
+    def test_on_equipment_dropped_on_cause_ignores_unlinked_markers(self):
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            marker_id = win.db.add_equipment_marker(
+                None, '', 0, 1.0, 1.0, "Ventil", confidence=0.6, link_method='shape')
+
+            try:
+                win._on_equipment_dropped_on_cause(cause_id, [marker_id])
+            except Exception as e:
+                self.fail(f"must not raise for a marker with no linked equipment row: {e!r}")
+
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertIsNone(cause['equipment_id'])
+
+    def test_on_equipment_dropped_on_cause_dedupes_repeated_marker_ids(self):
+        """A multi-selection can contain the same marker more than once —
+        must be treated as one object, mirroring the equivalent dedup in
+        _on_equipment_dropped_on_deviation_inner."""
+        with _TempDbMainWindow() as win:
+            node_id = win.db.add_node()
+            dev_id = win.db.deviations(node_id)[0]['id']
+            cause_id = win.db.add_cause(dev_id)
+            eq_id = win.db.add_equipment_item("V-1", "V-1", "V", 0, "Ventil", '', 0)
+            marker_id = win.db.add_equipment_marker(
+                eq_id, "V-1", 0, 1.0, 1.0, "Ventil", confidence=0.9, link_method='leader')
+
+            win._on_equipment_dropped_on_cause(cause_id, [marker_id, marker_id])
+
+            cause = dict(win.db.get_cause(cause_id))
+            self.assertEqual(cause['equipment_id'], eq_id)
+            self.assertIsNone(cause['secondary_equipment_id'],
+                "the duplicated marker must not create a fake second object")
 
     def test_grouped_control_and_affected_objects_create_functional_chain(self):
         with _TempDbMainWindow() as win:
@@ -6849,7 +7117,10 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         col_x = panel._table.columnViewportPosition(panel._C_ORS)
         cell_right = col_x + panel._table.columnWidth(panel._C_ORS) - 1
         item = panel._table.item(self.row, panel._C_ORS)
-        return panel._ors_freq_zone_geometry(item, col_x + 2, cell_right - 2)
+        # cell_right unindented, matching the app's own paint()/click-
+        # handler convention (2026-09-06, aligned with the RRF badge's
+        # own zone so both start the same distance from their cell edge).
+        return panel._ors_freq_zone_geometry(item, col_x + 2, cell_right)
 
     def _click(self, x, y):
         from PyQt6.QtGui import QMouseEvent
@@ -6925,7 +7196,26 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         cause = self.db.get_cause(self.cause_id)
         self.assertEqual(cause['likelihood'], 2)
         self.assertIsNone(cause['base_frequency'])
+        self.assertEqual(cause['frequency_override'], 2)
         rebuild_spy.assert_called_once()
+
+    def test_preset_frequency_overrides_linked_standard_cause_frequency(self):
+        standard_deviation = self.db.conn.execute(
+            'SELECT id FROM standard_deviations LIMIT 1').fetchone()
+        deviation_id = (standard_deviation['id'] if standard_deviation
+                        else self.db.add_standard_deviation('Testavvikelse'))
+        standard_id = self.db.add_standard_cause(deviation_id, 'Högt flöde')
+        self.db.update_standard_cause(standard_id, frequency=0.02)
+        self.db.update_cause(
+            self.cause_id, standard_cause_id=standard_id,
+            base_frequency=0.02, likelihood=3, frequency_cleared=False)
+
+        self.panel._on_ors_frequency_picked(self.cause_id, 2, None)
+
+        cause = self.db.get_cause(self.cause_id)
+        self.assertEqual(cause['standard_cause_id'], standard_id)
+        self.assertEqual(self.db.cause_frequency_level(cause), 2)
+        self.assertIsNone(self.db.cause_base_frequency_per_year(cause))
 
     def test_picking_a_numeric_frequency_sets_base_frequency(self):
         rebuild_spy = unittest.mock.Mock()
@@ -6935,6 +7225,7 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
 
         cause = self.db.get_cause(self.cause_id)
         self.assertEqual(cause['base_frequency'], 0.5)
+        self.assertIsNone(cause['frequency_override'])
         rebuild_spy.assert_called_once()
 
     def test_clearing_frequency_hides_only_this_causes_frequency(self):

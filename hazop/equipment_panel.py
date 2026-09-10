@@ -1367,10 +1367,12 @@ class EquipmentPanel(QWidget):
         # Each selected equipment item creates a node plus its initial
         # metadata.  The whole "create nodes" action should be one undo step,
         # even when several rows are selected.
+        system_id = self.db.default_system_id()
         with self.db.history_group():
             for tag, pg, et, desc in to_create:
                 nid = self.db.add_node_with_markup(
-                    tag, [], {'color': '#FF8C00', 'width': 2, 'alpha': 180}, pg)
+                    tag, [], {'color': '#FF8C00', 'width': 2, 'alpha': 180}, pg,
+                    system_id=system_id)
                 self.db.conn.execute(
                     "UPDATE nodes SET name=?, pid_ref=?, description=? WHERE id=?",
                     (tag, f"Sida {pg + 1}", f"{et}{': ' + desc if desc else ''}", nid))

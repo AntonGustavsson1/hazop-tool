@@ -12,7 +12,7 @@ Or double-click `starta_hazop.bat` (installs dependencies automatically on Windo
 
 Install dependencies manually:
 ```
-pip install PyQt6 openpyxl reportlab PyMuPDF opencv-python numpy
+pip install PyQt6 openpyxl python-docx reportlab PyMuPDF opencv-python numpy spylls
 ```
 
 Optional OCR (for scanning scanned P&ID PDFs):

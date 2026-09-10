@@ -1,5 +1,97 @@
 # NOTES.md — Beslut och kontext
 
+## Kraschgenomgång + verkliga buggar hittade via testtriage (2026-09-10)
+
+Anton bad om en fullständig genomgång av samtliga kraschrapporter
+(`hazop/crashes/`, 110 filer) och att åtgärda det som behövdes, eventuellt
+redan fixat via ChatGPT. De flesta nya/oanalyserade kraschar sedan
+2026-08-27 visade sig redan vara åtgärdade i koden (dels committat, dels
+i den då okommitterade arbetskopian). Ett fynd krävde en riktig fix:
+
+**Riktig bugg: `ScenarioTablePanel._rebuild()` visade en modal dialog även
+för den kända "closed database"-racen.** Undantagshanteraren anropade
+ovillkorligen `QMessageBox.critical(...)` — inklusive när ett köat
+`_rebuild()`-anrop (via `_schedule_rebuild`/`QTimer.singleShot`) kom in
+efter att projektets databas redan stängts (t.ex. vid fönster-teardown
+eller projektbyte). En modal dialog mitt i en sådan teardown kunde krascha
+hela processen hårt (inget catchbart Python-undantag, ingen traceback) —
+detta var anledningen till att `tests.test_scenario_panel` alltid dog
+tyst efter `CompactScenarioDragGhostTests` utan att någonsin nå de
+återstående ~180 testerna i filen (alfabetisk klassordning). Fixat genom
+att särskilja `'closed database'`-fallet (samma mönster som redan används
+i `_show_standard_cause_popup`) — logga och returnera tyst istället för
+att visa dialogen. Ny regressionstest `RebuildClosedDatabaseTests`.
+
+**Sekundäreffekt: 27 dolda testfel/fel avslöjades** när kraschen väl var
+borta. Grävde igenom dem och hittade ytterligare tre verkliga,
+produktionspåverkande buggar (utöver flera föråldrade testfixturer som
+bara behövde uppdateras mot redan avsiktliga ändringar):
+
+1. **"—"-platshållaren för tomma KON/SG/SLUT/REK-celler försvann av
+   misstag** i commit `d03509b9` (2026-08-28, "guard inline P&ID tag
+   renames" — dess egentliga syfte var orelaterat). Sex ställen i
+   `scenario_panel.py` bytte `beskrivning or '—'` mot `beskrivning or ''`.
+   Återställt. Hittade även att `_PidDelegate.setEditorData()` (skriven
+   samma dag, 47 minuter senare) anropar `super().setEditorData()` som
+   skriver tillbaka den RÅA (odashade) EditRole-texten och därmed river
+   upp `createEditor()`s egen "—"-strippning — utan denna andra fix hade
+   en användare fått en dold "—" kvar i slutet av varje ny KON/SG-text de
+   skrev. Fixat med samma strippning i `setEditorData`.
+2. **`frequency_cleared`-flaggan (avgör om frekvensbadgen visas) sattes
+   inte i fem verkliga UI-vägar** som ändå sätter en riktig frekvens:
+   `scenario_panel._apply_risk_from_matrix`/`_apply_risk_from_matrix_cat`
+   (riskmatris-klick), `pid_panel_mod.py`s orsak-skapande vid P&ID-drag
+   med frekvens, `node_markup.py`s manuella frekvensdialog, och
+   `database.sync_lopa_cause_frequency_to_hazop` (LOPA→HAZOP-synk). Alla
+   fem lämnade en vald frekvens osynlig (dold badge/färg) i Scenario.
+   Fixat samtliga fem, plus ~15 testställen som hade samma lucka.
+3. **Försökt fix som var FEL:** trodde först att `Database.
+   causes_for_equipment()` saknade `deviations.equipment_id`-matchning
+   (P&ID-klick-filtret i Scenario). Lade till en SQL-join för det — men
+   det bröt 8 redan existerande, avsiktliga tester i `test_database.py`
+   (`CausesForEquipmentTests`/`EquipmentLinkTypesInScopeTests`) som
+   uttryckligen kräver att en orsak under en utrustningsägd avvikelse UTAN
+   annan förekomst (tagg/text) ska EXKLUDERAS. Återställt SQL:en till
+   originalet; rättade istället det enda testet
+   (`test_only_matching_causes_appear_in_row_meta`) som hade fel
+   förväntan, genom att ge dess orsak en riktig `comp_tag` istället för
+   att förlita sig på avvikelse-ägarskap ensamt.
+
+**Kvarstående, medvetet uppskjutet** (låg prioritet/djupare grävande,
+inte rört): 2 tester i `OrsStandardCausesForRowTests` + 1 i
+`CauseCompleterFallbackTests` — på en helt ny databas hamnar VARJE
+seedad `standard_deviations`-rad på `active=0` via
+`_migrate_reduced_standard_catalog()`, vilket gör att
+`_resolve_std_deviation_id`/`standard_cause_options` aldrig hittar en
+std_dev_id för en ny avvikelse — ändå finns 130+ `standard_causes`-rader
+redan med `active=1` kopplade till samma (nu inaktiva) avvikelse-id:n,
+så någon annan seedningsväg (inte hittad än) måste sätta dem aktiva.
+Även `_resolve_std_deviation_id`s SQL har ett felplacerat `COLLATE
+NOCASE` (binder till `active=1` istället för `description=?`) — en
+riktig men just nu icke-blockerande SQL-bugg. Också ej utredda: 2 fel i
+`OrsInlineTagPrefixTests`, 1 i `OrsStripReworkTests`, 1 i
+`RiskCellActualRenderColorTests` (SLUT-cellens faktiska målade färg), 1 i
+`SafeguardEditorTopAlignmentTests` (redigerarbredd 67px fel — ser ut som
+en RRF-badge-breddskonstant som glidit).
+
+**Bekräftat OREGENDE (inte orsakat av något i denna session), redan
+dokumenterat i denna fil (~rad 6633) av en tidigare session**:
+`EquipmentLinkTypesInScopeTests` (7 fel), `EquipmentForeignKeyCleanupTests`
+(2 fel), `RiskMatrixTemplateMigrationTests` (1 fel) i `test_database.py`,
+`EquipmentDeviationBarTests` (7 fel) i `test_pid_panel_mod.py`, och ett
+odokumenterat ångra/LOPA-spegel-fel i `test_lopa_panel.py`
+(`test_sync_frequency_updates_hazop_and_mirror_as_one_undo_step` —
+`lopa_source_scenarios.base_frequency` återställs inte korrekt efter
+`db.undo()`). Verifierat empiriskt genom att temporärt återställa var och
+en av dagens ändringar och köra om — alla dessa fel kvarstod identiskt
+utan dagens ändringar.
+
+Verifiering: `tests.test_smoke` (14), full `tests.test_scenario_panel`
+(237, 8 kvarstående kända/uppskjutna fel ovan), `tests.test_database`
+(122, 10 kända föregående fel ovan), `tests.test_pid_panel_mod`,
+`tests.test_node_markup`, `tests.test_lopa_panel` — inga nya regressioner
+mot en ren checkout.
+
 ## Samlad HAZOP rapport till Word (2026-09-08)
 
 `Export → Exportera Word-rapport…` skapar en svensk rapport från en
@@ -40,6 +132,508 @@ sidgranskning genomförd för standardmall (13 sidor) och GFC Landvetter-exempel
 och deras regressionstest ingår som beroende för oförändrad orsakssemantik.
 Qt-kontrollen är headless; exportmenyn är inte visuellt accepterad i native GUI.
 Övriga redan pågående ändringar lämnas utanför rapportcommitten.
+
+## Exportoperatorer och valfri stavningsersättning (2026-09-08)
+
+Grupporsaker behåller nu sina kopplingar i Excel- och Word-exporten. `&` och
+`AND` skrivs ut som `AND`, medan `OR` och `->` behålls. Den manuella
+stavningskontrollen har dessutom fält och knappar för att ersätta det aktuella
+ordet, eller alla förekomster, med valfri text utan att vara beroende av ett
+ordboksförslag.
+
+## Word-export av rekommendationer (2026-09-08)
+
+Export -> Åtgärder (Word) exporterar hela rekommendationskatalogen med nummer,
+text, ansvarig, åtgärdsdatum, status och hierarkiska referenser i formatet
+`studie.nod.avvikelse.orsak.konsekvens`. Användaren väljer
+liggande A4 eller A3 och den färdiga filen öppnas automatiskt i Word.
+
+## Word-export av HAZOP Worksheet (2026-09-08)
+
+## Noder visar objekttagg i Objekttyp (2026-09-08)
+
+SQL-fallbacken använder nu katalogtaggen när en P&ID-markörs lokala taggfält
+är tomt. Detta behövs för äldre eller automatiskt skapade markörer.
+
+Noder-flikens kolumn `Objekttyp` visar nu både tagg och typ, exempelvis
+`FV-101 (Reglerventil)`. Den tidigare kolumnen `Objekt per blad` är borttagen
+för att minska tabellens höjd.
+
+Worksheet kan nu exporteras till Word i liggande A4 eller A3 via Export ->
+Word (Worksheet). Exporten återanvänder samma `_worksheet_rows` och stabila
+Office-merge-nycklar som Ctrl+C/Ctrl+V och Excel-exporten. Dokumentet saknar
+Excel-rubriken "HAZOP Scenario - redigerbar sammanställning", upprepar
+tabellrubriken på varje Word-sida och börjar varje ny nod på en ny sida.
+Kräver `python-docx`. Verifierat med Word-exporttester för vertikala
+sammanslagningar, sidbrytning och A3/A4-landskap.
+
+## Fix: LOPA använde stängd databas efter öppning av arbetsfil (2026-09-07)
+
+Kraschrapporten `crash_20260907_143135_ProgrammingError.json` visade att
+LOPA-vyn anropade `Database.lopa_records()` efter att arbetsfilen laddats.
+`_load_hzp()` hade stängt den gamla databasen, men `_reload_all_panels()`
+uppdaterade inte `LopaPanel.db`.
+
+`_reload_all_panels()` binder nu om LOPA-panelens databasanslutning. Ett
+regressionstest simulerar databytet och kör `LopaPanel.refresh()` mot den nya
+anslutningen.
+
+## Fix: Enter i Safeguard-redigeraren kunde tappa texten helt + Qt-varning (2026-09-07)
+
+Anton: "När jag klickar enter vid safeguard på hazop scenario får jag
+någon form av fel. Qt [QtWarningMsg] QAbstractItemView::closeEditor
+called with an editor that does not belong to this view."
+
+**Grundorsak, bekräftad genom isolerad återskapning (inte antagen):**
+Varje `ScenarioTablePanel` installerar sig själv som ett
+APPLIKATIONS-nivå-filter (`QApplication.instance().installEventFilter
+(self)` i `__init__`, avsiktligt — kommentaren "Listen at application
+level..." förklarar varför: en klick i en syskonpanel ska kunna
+avsluta en öppen redigering). Den riktiga appen har alltid MINST två
+`ScenarioTablePanel`-instanser levande samtidigt (huvud-Scenario +
+Worksheet:s egen inbäddade panel). `eventFilter()`s Enter-i-redigerare-
+gren matchade bara på widgetens TYP/egenskaper (`isinstance(...,
+_BoldTagTextEdit)`, `editing_row`-property) — INTE på vilken panels
+tabell den faktiskt tillhör. Vilken panels filter som råkar köras
+FÖRST för en given Enter-tangenttryckning "vann" (och `return True`
+hindrade sedan den ANDRA, verkliga ägarpanelen, från att någonsin få
+sin egen tur) — så `commitData`/`closeEditor` emitterades på en
+redigerare som den panelens EGEN delegate/vy aldrig öppnat.
+
+**Detta var INTE bara en kosmetisk varning.** Verifierat genom att
+tillfälligt neutralisera fixen och köra om det nya regressionstestet:
+den nyskrivna texten hamnade som TOM STRÄNG i databasen — dvs Enter i
+en ny säkerhetsåtgärd (efter "+"-knappen, `_quick_add_safeguard` →
+`new_item_created` → ombygge → `select_item`/`_try_start_edit`) kunde
+tyst TAPPA HELA den inskrivna texten, inte bara skriva ut en varning.
+
+**Fix (`scenario_panel.py`, `eventFilter()`):** lade till
+`obj.parentWidget() is self._table.viewport()` i villkoret som
+avgör om `obj` är en redigerare den HÄR panelen ska hantera —
+delegate-skapade redigerare parentas alltid till vyns viewport av Qt
+självt, så detta är en pålitlig ägarskapskontroll (bekräftat empiriskt).
+
+**Minsta återskapning som hittades** (efter flera missvisande försök
+med en fristående panel, som ALDRIG återskapade felet): en ANDRA
+`ScenarioTablePanel(db)`-instans som bara finns (aldrig visad, aldrig
+rörd) räcker för att den FÖRSTA panelens Enter-hantering ska krascha
+på det sättet. Stilmall, MainWindows eget applikations-filter för
+Ångra/Gör om och fönstrets synlighet uteslöts alla under utredningen.
+
+Test: ny klass `tests.test_scenario_panel.MultiplePanelEnterKeyOwnershipTests`
+(2 tester) — ett som återskapar exakt detta (en andra panel levande,
+Enter i den FÖRSTA panelens SG-redigerare måste ändå spara rätt), och
+ett som bekräftar att ägarskapskontrollen inte går för långt (den ANDRA
+panelens EGEN redigerare måste fortfarande fungera via sitt eget filter).
+Bekräftat att båda faktiskt fångar regressionen genom att tillfälligt
+ta bort fixen och se testet misslyckas (tom sträng istället för den
+skrivna texten), sedan återställa och se det passera igen.
+
+## Stavningskontroll — Fas 5: statisk understrykning + fler fält (2026-09-07)
+
+Anton: "implementera steg 5 av språkkontrollen... visa taggigt under
+felstavade ord även utanför inlineredigerarn" + "det finns redan engelska
+och svenska? Då behöver du inte lägga till [en språkmeny] men fixa gärna
+den taggiga texten." (Bekräftade att den befintliga språkväljaren i
+Inställningar räcker — ingen ny meny, ingen engelsk-UK-ordbok.)
+
+**Statisk (icke-redigerande) understrykning — ny funktionalitet:**
+Tidigare syntes den röda vågiga understrykningen bara MEDAN man aktivt
+redigerade en ORS/KON/SG/REK-cell (highlighter/paint-overlay på själva
+redigeraren). Den vanliga, målade cell-texten (`_ScenarioDelegate.paint()`/
+`_PidDelegate.paint()`) hade ingen egen spellcheck-koppling alls.
+
+- `ui_helpers._draw_text_with_bold_tags()` (delad rit-hjälpare för
+  fetmarkerade P&ID-taggar i fri text) fick en ny valfri
+  `misspelled_ranges`-parameter — samma `QTextLayout`/`FormatRange`-
+  mekanism som redan användes för fetmarkering återanvänds för att också
+  lägga på `QTextCharFormat.UnderlineStyle.SpellCheckUnderline` på
+  felstavade ord, i SAMMA rit-pass.
+- `SpellCheckContext` (spellcheck.py) fick `misspelled_ranges_cached()` —
+  ett cachat omslag runt `checker.misspelled_ranges()`, eftersom ett enda
+  anrop mättes till **~15 ms** för en enda mening och `paint()` körs
+  betydligt oftare per sekund än redigering någonsin gör (varje scroll/
+  hover/markering över tabellens många synliga rader) — utan cache hade
+  detta blivit synligt hackigt. Cachen rensas i `refresh()`.
+- `SpellCheckContext._register_repaint_target()` — nytt tredje registret
+  (utöver highlighters/paint-widgets) så `refresh()` (språkbyte, på/av,
+  ny ordlista) även ritar om Scenario/Worksheet-tabellernas viewport.
+- `_ScenarioDelegate._static_misspelled_ranges(text)` — ny delad
+  hjälpmetod, kopplad in i de 4 "ej under redigering"-grenarna av
+  paint() (REK, SG, ORS, KON) — INTE i grenarna som bara visar
+  strukturell kontext medan en live-redigerare är öppen (den ritar redan
+  sin egen understrykning).
+- **Riktig bugg hittad och fixad under arbetet:** ORS-cellens fetmarkerade
+  objekttagg-prefix (t.ex. "V-101") tokeniseras till bara bokstaven "V"
+  (siffror/bindestreck räknas inte som ordtecken) — inte i sig
+  registrerad som känd tagg, så en naiv koppling på hela `combined`-
+  strängen hade flaggat "V" som felstavat i varje ORS-rad med synlig
+  tagg. Löst genom att bara spellchecka den råa `desc`-delen (inte hela
+  `combined`) och förskjuta träffarnas positioner med prefixets längd.
+
+**Verifiering:** Precis som `RiskCellActualRenderColorTests` redan gör i
+denna fil — konstruktion-och-hoppas räcker inte, verifierat genom att
+faktiskt RITA cellen och läsa av RIKTIGA pixelfärger
+(`tests.test_scenario_panel.StaticSpellcheckUnderlineRenderTests`, 6
+tester). Ett tekniskt hack värt att komma ihåg: Qt ritar
+`SpellCheckUnderline` som en kantutjämnad (anti-aliased) vågig linje —
+de riktiga pixlarna blandas mot bakgrunden och träffar ALDRIG exakt
+målfärgen (`#E53935`), bara nyanser däremellan. En exakt färgjämförelse
+hittade ingenting trots att understrykningen faktiskt målades korrekt;
+lösningen var en generös per-kanal-tolerans. Ett andra separat fynd under
+samma verifiering: en panel som INTE gjorts tillräckligt bred (900px)
+"glömde" tyst en manuellt satt kolumnbredd när den visades — bara en
+bredare panel (1400px) höll kvar den satta bredden, annars klipptes
+testordet bort på en radbruten andra rad innan pixel-jämförelsen ens
+nådde det.
+
+**Fas 5 — bredda till fler fält (projektfält, deltagaranteckningar,
+standardorsaks-biblioteket):**
+- `HAZOPPreparationPanel.__init__` tar nu `spellcheck_context=None` och
+  trädar det vidare till `ParticipantMatrixPanel`/
+  `StandardCausesSettingsPanel` (nya konstruktorparametrar där också) —
+  `hazop.py` skickar in `self.spellcheck_context` vid konstruktion
+  (samma mönster som `PropertiesRibbon(db, main_window=mw)`).
+- Projekt-fliken: `Projektnamn`/`Kund/Företag`/`Anläggning` är nu
+  `SpellCheckLineEdit`. `Projektnummer` medvetet INTE — ett ID, ingen
+  löptext (samma undantag som tagg-nummer/namnfält överallt annars).
+- Deltagarmatrisens anteckningsfält (`note_edit` per deltagare×tillfälle)
+  är nu `SpellCheckLineEdit`.
+- Standardorsaks-biblioteket (`StandardCausesSettingsPanel._cause_list`,
+  en `QListWidget` med Qt:s inbyggda dubbelklick-redigering) hade INGEN
+  egen delegate tidigare — ny `_SpellCheckListItemDelegate` bytar ut
+  Qt:s standard-QLineEdit mot en `SpellCheckLineEdit` i `createEditor()`,
+  annars oförändrat (en `SpellCheckLineEdit` ÄR en `QLineEdit`, så Qt:s
+  vanliga delegate-avläsning/skrivning av `.text()` fungerar oförändrat).
+
+**Explicit avstått denna gång (Anton bekräftade att det inte behövs):**
+ny "Språk"-meny i Redigera (den befintliga comboboxen i Inställningar
+räcker), en separat engelsk-UK-ordbok (spylls bundlar bara `en_US`, ingen
+`en_GB` alls — skulle annars ha krävt att ladda ner och bunta en fri
+Hunspell-ordbok separat).
+
+**Genomgående utredningslärdom denna session:** flera testfel/hängningar
+som DIREKT verkade vara regressioner av dagens arbete visade sig vara
+förbefintliga när de isolerades noggrant (`faulthandler.dump_traceback_
+later` för en exakt stackspårning, plus jämförelse mot `git show HEAD:...`
+istället för `git stash` — stash återställer HELA sessionens ackumulerade
+diff, inte bara den aktuella ändringen, vilket gav missvisande resultat
+tidigare i sessionen). Konkret: `ParticipantMatrixTests
+.test_inline_header_edit_renames_session`/`test_panel_add_session_starts_
+inline_header_edit` öppnar en riktig, ej mockad `QDialog.exec()`
+(`_edit_session_details`) som blockerar för evigt headless — bekräftat
+existera identiskt i `git show HEAD:hazop/participant_matrix_panel.py`,
+alltså aldrig orsakat av något denna session gjort.
+
+## Stavningskontroll — prestandafix i granskningsdialogen (2026-09-06)
+
+Anton: "Jag upplever att det tar lite lång tid emellan varje." (i "Kör
+stavningskontroll…"-dialogen, mellan varje Ändra/Ignorera-klick).
+
+**Grundorsak, uppmätt (inte antagen):** `spylls`s `suggest()` (Hunspell-
+förslagsalgoritmen, ren Python) är genuint långsam — uppmätt 200 ms för
+"stavningskontrol" upp till **5.4 sekunder** för
+"processanlaggningen" (långa/sammansatta svenska ord, vanligt i
+processäkerhetstext). Anropades synkront på UI-tråden i `_present()` för
+VARJE ord, vilket frös hela dialogen mellan varje knapptryck.
+
+**Fix (`spellcheck.py`):**
+- Ny `_SuggestWorker(QThread)` — kör `checker.suggest()` i bakgrunden,
+  samma etablerade mönster som `pid_viewer.py`s
+  `EquipmentTagSearchWorker` (emitterar alltid exakt en gång, även vid
+  fel).
+- `SpellCheckReviewDialog`: `_suggestion_cache` (word.casefold() →
+  förslag) — samma felstavning som återkommer flera gånger i studiet
+  (vanligt: eget fikonspråk/facktermer) kör `suggest()` bara EN gång per
+  körning, inte en gång per förekomst.
+- `_present()` visar ordet/sammanhanget direkt; om förslaget inte redan
+  är cachat visas "Beräknar förslag…" (inaktiverad platshållare) och
+  Ändra/Ändra alla inaktiveras tills `_on_suggestions_ready` levererar
+  det riktiga resultatet — skyddat mot att en FÖRÅLDRAD bakgrundsberäkning
+  (användaren har redan gått vidare, eller stängt dialogen) skriver över
+  ett senare presenterat ords lista.
+
+Test: `tests.test_spellcheck.SpellCheckReviewDialogTests` utökad med
+`test_change_buttons_are_disabled_until_suggestions_arrive` och
+`test_repeated_word_reuses_the_cached_suggestion_without_a_new_worker`
+(båda väntar in den riktiga bakgrundstråden via en ny
+`_wait_for_suggestions`-hjälpare istället för att läsa förslagslistan
+innan den riktiga beräkningen hunnit klart — annars hade testerna av
+misstag kunnat godkännas mot platshållartexten).
+
+## Cellredigerare för Orsak/Konsekvens/Barriär växer nu live (2026-09-06)
+
+Anton: "texten i inlineredigeraren [ska växa] så jag kan se helheten."
+REK (Rekommendation) hade redan detta (`_resize_recommendation_editor`,
+kopplad på `textChanged` samt vid `updateEditorGeometry`) — generaliserat
+till ORS/KON/SG också (samma metod, omdöpt till `_resize_cell_editor`).
+En befintlig lång ORS/KON/SG-text visas nu i sin helhet direkt när
+redigering öppnas, inte bara efter att man skrivit mer.
+
+**Felaktig regressionsmisstanke, sedan avskriven:** ett test
+(`OrsInlineTagPrefixTests.test_tag_click_zone_matches_the_actual_rendered_prefix_width`)
+hänger sig och öppnar en riktig `FrequencyPickerPopup.exec()` (blockerar
+för evigt i den headless testmiljön). Verifierades **grundligt** (via
+`faulthandler.dump_traceback_later` för en exakt stackspårning, samt
+genom att provisoriskt ta bort ALLA mina ändringar i `updateEditorGeometry`
+och testa igen) att detta hänger sig **identiskt även med varje egen
+ändring helt borttagen** — ett redan existerande, av mig oberoende fel
+i den städa arbetskatalogens tidigare (redan innan denna uppgift)
+ocommittade kod, inte en regression av detta arbete. Två separata
+`git stash`-jämförelser gav initialt MISSVISANDE resultat eftersom
+`git stash` återställer HELA sessionens ackumulerade ocommittade diff
+(531 rader i scenario_panel.py, långt mer än denna uppgifts ändring),
+inte bara den aktuella ändringen — lärdom: isolera en enskild ändring
+genom att manuellt återställa/ta bort just DEN koden, inte via
+`git stash`, när arbetskatalogen redan har annat ocommittat innehåll.
+
+En riktig regression hittades OCH fixades under samma utredning: ett
+test (`RecommendationInlineAddRowTests
+.test_recommendation_editor_resizes_on_open_for_its_narrower_width`)
+patchade metoden vid dess GAMLA namn (`_resize_recommendation_editor`)
+— uppdaterat till det nya namnet `_resize_cell_editor`.
+
+Test: ny klass `tests.test_scenario_panel.OrsKonSgEditorAutoGrowTests`
+(KON/SG växer vid skrivning, ORS växer direkt vid öppning av en
+befintlig lång text — speglar REK:s egna motsvarande tester).
+
+## Stavningskontroll — Fas 1 + Fas 2 (kärna + huvudfälten) (2026-09-06)
+
+Ny genomgripande funktion, planerad via /remote-control-prompten om
+"Redigera > Stavningskontroll" (se den fullständiga kravspecen i
+sessionens plan-fil-historik). Byggs fasvis — se
+`.claude/plans/buzzing-percolating-horizon.md` (eller dess efterträdare)
+för hela planen; detta är statusen efter Fas 1+2.
+
+**Bibliotek:** `spylls` (ren Python, `pip install spylls`) — verifierat
+fungera rent på miljöns Python 3.14.5. Bonusfynd: spylls bundlar INTE
+bara `en_US` (dokumenterat) utan även **`sv_SE`** och `ru` — ingen
+separat svensk ordlista behövde sökas upp/paketeras alls, tvärtemot vad
+planen ursprungligen antog innan detta upptäcktes empiriskt
+(`spylls/hunspell/data/{en,ru,sv}/`).
+
+**Fas 1 — `spellcheck.py` (ny fil), ingen UI:**
+- `SpellChecker` (checker per språk, tag-/användarordlista-uteslutning
+  INNAN ordboken ens frågas), `tokenize()`, `make_checker(db)`.
+- `Database.spellcheck_user_words()`/`add_...`/`remove_...` + ny tabell
+  `spellcheck_user_words` (COLLATE NOCASE), nya `app_config`-nycklar
+  `spellcheck_enabled`/`spellcheck_language`.
+
+**Fas 2 — realtidsmarkering + högerklick, kopplat in på huvudfälten:**
+- `SpellCheckContext` — ett delat state-objekt (på `MainWindow.
+  spellcheck_context`), återanvänds (inte återskapas) vid projektbyte
+  i `_reload_all_panels`.
+- `SpellCheckHighlighter` (QSyntaxHighlighter) för QTextEdit-fält.
+  **Verifierat empiriskt** (inte bara antaget) att den samexisterar
+  korrekt med `_BoldTagTextEdit`s egen manuella fetstils-formatering
+  (`ui_helpers.py`) — båda lagren renderas oberoende av Qt, bekräftat
+  via `tests.test_spellcheck.HighlighterIntegrationTests
+  .test_coexists_with_bold_tag_text_edits_own_manual_formatting`.
+- `SpellCheckLineEdit` — QLineEdit har ingen highlighter-motsvarighet i
+  Qt, så den målar sin egen röda vågiga understrykning via
+  `cursorRect()`-kalibrerade pixelpositioner (hanterar horisontell
+  scroll korrekt utan att återuppfinna QLineEdits interna marginaler).
+- Högerklicksmeny: förslag + "Lägg till i ordlista" (sparas i DB) /
+  "Ignorera" (bara denna session — separat `_session_words`-mängd i
+  `SpellCheckContext`, se buggen nedan).
+- Inkopplat på: nod-namn + nod-beskrivning (`node_markup.py`
+  `_edit_node_info`), ORS/KON/SG-cellredigeraren (`_BoldTagTextEdit`
+  via `_PidDelegate.createEditor`, `scenario_panel.py` — täcker
+  Orsak/Konsekvens/Barriär i både Scenario OCH Worksheet, samma delade
+  `ScenarioTablePanel`), samt orsaks-kommentarpopupen. P&ID-ref/media/
+  tryck/temperatur/rekommendation-ansvarig m.fl. korta/namn-fält
+  medvetet INTE inkopplade (matchar planens uttryckliga undantag).
+- `ScenarioTablePanel.spellcheck_context` default `None` — varje
+  befintligt test som bygger panelen direkt (utan MainWindow) berörs
+  inte alls.
+
+**Två riktiga buggar hittade och fixade under testning** (inte bara
+antagna korrekta):
+1. `SpellCheckContext.add_user_word(word, persist=False)` ("Ignorera")
+   anropade `refresh()` direkt efter att bara ha muterat den GAMLA
+   checker-instansen — `refresh()` bygger om checkern från grunden och
+   kastade alltså bort just den ändringen omedelbart. Fixat med en
+   separat `_session_words`-mängd som `refresh()`/`_build_checker()`
+   själv återapplicerar.
+2. (Mindre, testbugg) en highlighter-test saknade `app.processEvents()`
+   efter `attach_spellcheck()` — `QSyntaxHighlighter` kräver en
+   event-loop-pump för sin första körning.
+
+Test: `tests/test_spellcheck.py` (40 tester — ren logik + riktiga Qt-
+widgets/pixmap-rendering, ingen ren "konstruera och hoppas"-typ).
+
+## Stavningskontroll — Fas 3 + Fas 4 (meny/inställningar + manuell genomgång) (2026-09-06)
+
+Fortsättning på ovanstående, samma session.
+
+**Fas 3 — Redigera-meny + språkval:**
+- `hazop.py`: `MainWindow.spellcheck_context` (skapas i `__init__`,
+  återpekas + `refresh()`:as i `_reload_all_panels` vid projektbyte).
+  Redigera-menyn får "Slå på/av stavningskontroll" (kryssbar) och
+  "Kör stavningskontroll…" efter Ångra/Gör om.
+  `_on_spellcheck_toggle_action` → `context.set_enabled(checked)`.
+  `_on_run_spellcheck` → öppnar `SpellCheckReviewDialog` (Fas 4), sedan
+  samma bred tree/scenario-refresh som `_on_matrix_changed` redan gör.
+- `settings_panels.py`: ny grupp "Stavningskontroll" i HAZOP-fliken
+  (`_spellcheck_language_combo`, Svenska/Engelska), ny signal
+  `spellcheck_settings_changed`, kopplad i `hazop.py` till
+  `spellcheck_context.refresh()` — språkbyte bygger om checkern och
+  rit-uppdaterar alla inkopplade fält direkt, ingen omstart krävs.
+
+**Fas 4 — `SpellCheckReviewDialog` ("Kör stavningskontroll…"):**
+- `_collect_project_text_fields(db)` — går igenom hela det öppna
+  studiet (samma batchade `nodes()`/`deviations_for_nodes()`/
+  `causes_for_deviations()`/... som `tree_panel.py` redan använder,
+  inga N+1-frågor). Hoppar över en konsekvens med icke-tom
+  `consequence_chain` (dess `description` styrs av kedjeredigeraren,
+  inte fri text) och deduplicerar en rekommendation delad av flera
+  konsekvenser (visas bara en gång).
+- `_APPLY_FUNCS` — en skriv-tillbaka-funktion per fälttyp
+  (`_apply_node_name`/`_apply_node_desc`/`_apply_cause_desc`/
+  `_apply_cause_comment`/`_apply_cons_desc`/`_apply_sg_desc`/
+  `_apply_rec_desc`), alla via befintliga `Database.update_*`-metoder
+  (kopplade till Ctrl+Z/Ctrl+Y-historiken som vanligt). `_apply_cons_desc`
+  hämtar raden först och skickar med `category`/`consequence_chain` —
+  annars skulle `update_consequence`s obligatoriska positionsargument
+  tyst nolla dem.
+- Dialogen går ord för ord (Ändra / Ändra alla / Ignorera / Ignorera
+  alla / Lägg till i ordlista), samma flöde som ett vanligt
+  ordbehandlar-stavningsverktyg. "Ändra alla"/"Ignorera alla" kommer
+  ihåg valet (per `word.casefold()`) resten av körningen. "Ignorera"
+  (bara denna förekomst) håller reda på antal redan ignorerade
+  förekomster per (fältindex, ord) eftersom `misspelled_ranges()`
+  räknas om från grunden efter varje ändring (teckenoffsets skiftar) —
+  ett känt, ofarligt specialfall: om en TIDIGARE förekomst av exakt
+  samma ord i samma fält redigeras senare i samma körning kan en redan
+  ignorerad SENARE förekomst komma upp en gång till (ingen dataförlust,
+  bara en extra fråga).
+
+Test: nya klasser i `tests/test_spellcheck.py`
+(`CollectProjectTextFieldsTests`, `ReviewDialogWriteBackTests`,
+`SpellCheckReviewDialogTests` — 59 tester totalt nu), plus
+`SpellCheckMenuWiringTests` i `tests/test_hazop.py` och
+`SpellCheckLanguageSettingTests` i `tests/test_settings_panels.py`.
+
+**Alla fyra planerade faser (1–4) är nu klara.** Fas 5 (bredda till fler
+fritextfält — projektfält, deltagaranteckningar, standardorsaks-
+biblioteket) är explicit senare/ej blockerande och inte påbörjad.
+
+## Frekvens/RRF/Enablers-knapparna: hittade den kvarvarande höjdskillnaden via en riktig skärmdump (2026-09-06)
+
+Anton pekade på en skärmdump (`Pictures/Screenshots`, inte projektmappen)
+där Frekvens-, RRF- och Enablers-badgen i HAZOP Scenario fortfarande såg
+olika ut trots samma sessions tidigare höjdfix (`SUMMARY_BADGE_HEIGHT`).
+Verifierades genom att rendera panelen offscreen och mäta pixlar exakt
+(`panel._table.viewport().grab()` + `PIL`), inte genom att gissa utifrån
+koden.
+
+**Grundorsak:** `_ScenarioDelegate.updateEditorGeometry`s generiska
+fallback (`option.rect.adjusted(2, 2, -2, -2)`, ursprungligen till för
+REK-editorn) användes även för `_C_LOPA`s cellwidget (`_LopaWidget`).
+På en rad som är högre än widgetens `setFixedHeight` flyttade detta ner
+Enablers-knappen 2–3px jämfört med de målade RRF/Frekvens-badgens egen
+`r.top()+1`-positionering — mätt exakt: RRF/Frekvens y=0–23,
+Enablers y=3–24 innan fixen.
+
+**Fix del 1 (positionering):** `_C_LOPA` fick en egen gren i
+`updateEditorGeometry` som sätter `editor.setGeometry(option.rect)`
+oförändrad (widgetens egen `setFixedHeight` klipper redan höjden — bara
+positionen behövde fixas).
+
+**Fix del 2 (verklig pixelhöjd — upptäckt när Anton frågade igen "är det
+fortfarande olika höjd?"):** även efter del 1 mätte den MÅLADE badgen
+1–2px högre än den riktiga knappen vid en riktig rendering, trots
+identisk logisk höjd (`SUMMARY_BADGE_HEIGHT`). Två separata Qt-kvirkar i
+`_paint_summary_badge`: (1) `Antialiasing` påslaget på en helt
+axel-orienterad rektangel gör att pennan target ritas kluven mitt över
+kanten (halva pixeln utanför, halva innanför) — stängdes av, ingen nytta
+av AA på räta linjer. (2) `QPainter.drawRect(rect)` ritar en kant-till-
+kant-yta en pixel större än `rect`s egen höjd/bredd (dokumenterad
+Qt-egenhet) — kompenserad med `rect.adjusted(0, 0, -1, -1)` på själva
+`drawRect`-anropet (texten ritas fortfarande med den ojusterade `rect`
+så den förblir centrerad). Efter båda: Frekvens/RRF/Enablers renderar
+alla exakt y=1–22 (22px), pixel-för-pixel identiskt — verifierat genom
+att faktiskt rendera till en QPixmap och mäta, inte bara läsa koden.
+
+Test: `tests.test_scenario_panel.FrequencyRRFBadgeHeightAndHoverTests` —
+`test_enablers_cell_widget_top_aligns_with_the_row_like_the_badges`
+(del 1, faller mot gamla koden med exakt `2 != 0`) och
+`test_painted_badge_renders_at_exactly_summary_badge_height_pixels`
+(del 2, en riktig pixmap-rendering; faller mot gamla koden med exakt
+`24 != 22`).
+
+**Fix del 3 (sidled — Anton igen: "frekvens och rrf börjar fortfarande
+inte med samma avstånd på höjd eller i sidled"):** höjden var nu rätt,
+men de tre ORS-kolumnens anropsställen till `_ors_freq_zone_geometry`
+(paint(), updateEditorGeometry() och klick-hit-testet) skickade alla in
+`row_right = cell.right() - 2`, ett extra 2px-inset som
+`_sg_rrf_zone_geometry` (RRF-badgens motsvarighet) aldrig hade. Mätt
+exakt: Frekvens-badgens högerkant satt 4px från sin cells högerkant,
+RRF-badgens bara 2px. Fix: tog bort `-2` på alla tre anropsställen
+(samt i det speglande testet `OrsFrequencyZoneClickTests._freq_zone_geometry`
+i `tests/test_integration.py`) så båda nu börjar exakt 2px från sin
+respektive cellkant. Nytt test:
+`test_frequency_badge_horizontal_margin_matches_rrf_badge` (faller mot
+gamla koden med exakt `4 != 2`).
+
+## Drag-and-drop i trädet: skilj Avvikelse (ny orsak) från Orsak/Objekt (lägg till) (2026-09-06)
+
+**Bugg hittad + omdesign:** ALLA equipment-drop i HAZOP-trädet resolvade
+tidigare alltid upp till den överordnade avvikelsen och emittade
+`equipment_dropped_on_deviation` — även när man släppte direkt på en
+befintlig Orsak-rad (CAUSE_T). Ett drop på en existerande orsak skapade
+alltså alltid en ny SYSKON-orsak istället för att lägga till objektet i
+den man siktade på.
+
+**Verifierat under research:** den gamla "kaka på kaka"-sammanslagningen
+(en trivial encause-avvikelse visas som EN rad) är strukturellt borttagen
+sedan 2026-08-25 — varje CAUSE_T-rad i trädet är alltid en riktig,
+fristående orsak (se `tree_panel.py::add_cause_item`). Inget strukturellt
+specialfall att ta hänsyn till.
+
+**Nytt beteende:**
+- Drop på Avvikelse (DEV_T) → skapar ny orsak, oförändrat.
+- Drop på en befintlig Orsak/Objekt-rad (CAUSE_T) → lägger till objektet
+  i DEN orsaken: enkel → dubbel → trippel, alltid kopplat med "OR" om
+  inget annat villkor redan finns, nya objekt hamnar sist/under.
+
+**Delad logik (för att undvika att buggen återuppstår):** ny
+`Database.add_equipment_to_cause_group(cause_id, equipment_ids)` i
+`database.py`, använd av både `scenario_panel.py::_handle_drop` (ORS-
+kolumnen, refaktorerad — samma regel gällde redan där sedan tidigare
+denna session) och den nya `hazop.py::_on_equipment_dropped_on_cause`
+(kopplad till `tree_panel.py`s nya signal `equipment_dropped_on_cause`).
+`MAX_GROUP_OBJECTS` flyttad till `constants.py` för att båda modulerna
+ska kunna dela samma konstant.
+
+Test: `tests.test_database.AddEquipmentToCauseGroupTests` (8 tester, ny
+delad metod), `tests.test_integration.EquipmentDropOnTreeDeviationTests`
+(uppdaterat + 6 nya tester för trädets nya beteende). Ett äldre test
+(`..._merged_single_equipment_cause_row_resolves_its_own_deviation`) döpt
+om och omskrivet till att verifiera det NYA (avsiktligt omvända)
+beteendet för samma scenario.
+
+## PropertiesRibbon: slå ihop nod-knappar + klicka-för-att-ändra på nodmarkeringar (2026-09-06)
+
+- **Slå ihop de tre översta nod-knapparna** (namn/P&ID-ref, beskrivning,
+  processparametrar) till en enda 🏷-knapp/dialog (`_edit_node_info` i
+  `node_markup.py`, ersätter `_edit_node_name`/`_edit_node_desc`/
+  `_edit_node_params`) — bättre plats och fokus åt de sex knapparna på
+  en nod.
+- **Nodmarkeringar-tabellen** (bottenpanelen under markup-redigering):
+  klick direkt på Färg/Opacitet/Tjocklek/Font-cellerna öppnar nu
+  stilredigeraren (`MarkupTablePanel._edit_style`, delad med
+  högerklicksmenyns "Ändra stil...") istället för att kräva
+  högerklicksmenyn — P&ID:t uppdateras automatiskt via befintlig
+  `item_style_changed` → `refresh_markup_overlays()`-koppling.
+- **Markup-läge döljer de nu irrelevanta nod-knapparna:** när
+  ✏️-pennan är aktiv skippas namn/status/zoom-knapparna helt (de har
+  ingen funktion under markup-redigering) så markup-verktygen flyttar
+  upp till toppen av ribbonen istället för att ligga under en död
+  knappgrupp.
+
+Test: `tests.test_node_markup` (nya klasser `NodeInfoMergedButtonTests`,
+`MarkupTableClickToEditStyleTests`, `MarkupModeHidesPlainNodeButtonsTests`).
 
 ## LOPA: Inline-editing och lokala scenarier (2026-09-03)
 
@@ -6064,6 +6658,234 @@ och kräver att Orsak och Konsekvens redan i första vyn är bredare än 100 px.
 Verifierat med `py_compile`, hela `tests.test_smoke` (14 tester) och
 `git diff --check`. Visuell kontroll i en riktig Qt-display återstår.
 
+## Slå ihop scenario-/konsekvensskapande, HAZOP-synk vid inline-redigering, barriärstäd (2026-09-04)
+
+**Bakgrund:** LOPA-sidan hade två överlappande knappar ovanför
+HAZOP-SCENARIER-tabellen: "➕ Lägg till scenario" och "+ Egen
+LOPA-konsekvens". "Lägg till scenario" anropade `add_lopa_local_source()`,
+som hade två separata buggar (kolumnnamnet `frequency_source` istället för
+`frequency_origin`, och `_log_lopa(None, ...)` mot en NOT NULL-kolumn) —
+knappen kraschade tyst på varje klick sedan den lades till, vilket är precis
+"denna fungerar inte som den ska" som rapporterades. Båda är fixade i
+`Database.add_lopa_local_source`.
+
+**Knappar:** "Lägg till scenario" är borttagen. "+ Egen LOPA-konsekvens"
+skapar nu direkt ett nytt lokalt scenario **och** dess första konsekvens i
+samma klick, utan popup — raden läggs till direkt i tabellen och
+Konsekvens-cellen öppnas för redigering på en gång
+(`LopaPanel._add_custom_consequence`). `LopaNewConsequenceDialog`-klassen är
+borttagen (enda anropsstället).
+
+**Inline-redigering i HAZOP-SCENARIER-tabellen är nu på riktigt:**
+`_make_hazop_table_item()` satte aldrig `Qt.ItemFlag.ItemIsEditable`, så
+cellerna gick inte att redigera trots edit-triggers — och
+`_on_hazop_hierarchy_item_changed` fanns dessutom definierad **två gånger**
+i klassen, där den andra tyst skuggade den första (död kod, aldrig
+körd). Båda är fixade: Orsak är read-only för HAZOP-rader (den är en
+hopsatt "Objekt - Avvikelse"-sträng, inget enskilt HAZOP-fält att skriva
+till), men redigerbar på lokala rader. Grundfrekvens och Konsekvens är
+redigerbara på alla rader.
+
+**Ny HAZOP-synk, medveten avvikelse från tidigare mönster:** att redigera
+Grundfrekvens/Konsekvens på en HAZOP-länkad rad skriver nu igenom till
+riktig HAZOP-data (`causes.base_frequency` / `consequences.description`)
+**och** den lokala LOPA-spegeln, i samma `history_group()` så en enda
+Ctrl+Z ångrar båda sidor — se `Database.sync_lopa_cause_frequency_to_hazop`/
+`sync_lopa_consequence_description_to_hazop`. Detta är motsatsen till den
+äldre "fråga om frikoppling"-modellen som `update_lopa_consequence`/
+`set_lopa_source_scenario_text`/redigeringsdialogerna fortfarande använder
+(de är oförändrade) — på användarens uttryckliga begäran: LOPA-tabellen ska
+inte tyst divergera från HAZOP. Lokala (icke-HAZOP) rader skriver bara till
+LOPA-spegeln (`set_lopa_source_cause_text`/`set_lopa_source_frequency`).
+
+**OBEROENDE BARRIÄRER:** `_BarrierMatrixHeaderWidget` använde hårdkodade
+hex-färger (`#ddd`/`#666`) istället för `design.py`-tokens, vilket gjorde
+att den visuellt skilde sig från resten av sidan. Ny byggare
+`lopa_barrier_matrix_header_stylesheet()` i `design.py` återanvänder samma
+tokens som `lopa_table_stylesheet()`s `QHeaderView::section`. Matrisen har
+nu också en fetstilad "Totalt"-rad längst ner som summerar kolumnen
+Återstående frekvens över alla källscenarier.
+
+**Layout:** BERÄKNINGSÖVERSIKT / YTTERLIGARE ÅTGÄRDER OCH KRAV / KOMMENTARER
+staplas nu alltid som tre rader istället för tre kolumner sida vid sida,
+oavsett fönsterbredd (tidigare växlade detta responsivt vid
+`LOPA_BREAKPOINT_TWO_COLUMN`).
+
+Ny testfil `tests/test_lopa_panel.py` (7 tester): HAZOP-synk för
+frekvens/konsekvensbeskrivning som ett enda ångra-steg, att lokala
+radredigeringar bara rör LOPA-spegeln, att Orsak är read-only för
+HAZOP-rader men redigerbar lokalt, och att "Egen LOPA-konsekvens" skapar en
+rad utan popup. `tests/test_smoke.py`s befintliga LOPA-detaljtest är
+uppdaterat för den nya alltid-staplade layouten (högre scroll-tröskel) och
+den nya totalraden.
+
+Verifierat med `py_compile`, hela `tests.test_smoke` (14 tester), nya
+`tests.test_lopa_panel` (7 tester), `tests.test_lopa_models`,
+`tests.test_lopa_export` och `git diff --check`. `tests.test_database`
+kördes också — 7 befintliga fel/2 fel i `EquipmentLinkTypesInScopeTests`
+kvarstår oförändrat mot en ren checkout (obekräftat äldre, orelaterat till
+denna ändring). Visuell kontroll i en riktig Qt-display återstår.
+
+## Härdning mot "closeEditor called with an editor that does not belong to
+this view" i Safeguard (2026-09-04, ej slutgiltigt bekräftad)
+
+Anton: "Fixa denna bugg Qt [QtWarningMsg] QAbstractItemView::closeEditor
+called with an editor that does not belong to this view när jag trycker på
+enter i safeguard." Samma varningstext har ett dokumenterat, empiriskt
+bekräftat prejudikat i den här filen (se "Standardorsak-popup..."-avsnittet
+ovan): en riktig top-level `QDialog.exec()`-popup som visas MEDAN en
+celleditor fortfarande är öppen gör att `QAbstractItemDelegate`s egen
+FocusOut-hantering auto-committar+stänger editorn som sidoeffekt.
+
+Genomgången kod (`_on_hazop_hierarchy_item_changed`/motsvarande Enter-
+hantering i `eventFilter()`, samtliga `commitData`/`closeEditor`-emit-
+ställen) visade att `active_delegate`-valet (`_pid_delegate` för ORS/KON/SG,
+annars `_delegate`) redan konsekvent matchar vad `setItemDelegateForColumn`
+faktiskt registrerat — ingen statisk fel-delegate-matchning kvar. Däremot är
+`_show_rrf_popup_at` (RRF-badge-klick OCH kontextmenyns "Ändra RRF...") en
+riktig `.exec()`-modal (`RRFPopup`/`SgRRFCategoryPopup`), till skillnad från
+`StandardCauseSuggestPopup` som medvetet skrevs om till en icke-top-level
+barn-widget just för att undvika denna klass av bugg. Lade till samma
+"committa först"-mönster som redan används i
+`StandardCauseSuggestPopup._edit_frequency`: `_show_rrf_popup_at()` anropar
+nu `self._finish_inline_editor_for_external_click(None)` innan popupen
+visas, så en eventuellt öppen celleditor alltid stängs via vår egen,
+korrekt delegate-matchade väg innan ett nytt top-level-fönster kan trigga
+Qts interna FocusOut-auto-stängning.
+
+**Ej empiriskt bekräftad:** trots omfattande försök (riktiga `QTest`-
+tangenttryckningar på en riktig editor, både vanlig Enter och Ctrl+Enter
+för att lägga till nästa safeguard, med samma `new_item_created`-koppling
+som `hazop.py` faktiskt använder) gick varningen INTE att reproducera i
+denna headless/offscreen testmiljö — konsekvent med att motsvarande
+tidigare bugg (StandardCauseSuggestPopup) också krävde en RIKTIG display
+för att bekräftas empiriskt, inte gissning. Ändringen är en säker,
+lågrisk härdning grundad i ett redan etablerat mönster i samma fil, men
+inte en bekräftad fix för den exakta triggern. Om varningen kvarstår efter
+detta: nästa steg är att fråga Anton exakt vad som föregår den (bara Enter,
+eller Ctrl+Enter/RRF-klick precis innan) för en riktad reproduktion.
+
+Verifierat med `py_compile`, hela `tests.test_smoke` (14 tester) och
+riktade `tests.test_scenario_panel`-klasser (`SgRRFPopupTests`,
+`SafeguardObjectPickerTests`, `NewConsequenceSafeguardDashPlaceholderTests`,
+`SafeguardRowHeightCompactionTests`, 23 tester) — samma 2 fel/2 fel som på
+en ren checkout (mojibake-jämförelser och en Mock-relaterad TypeError i
+testuppsättningen, orelaterat). Hela `tests.test_scenario_panel`-filen
+(140+ tester) kraschar med "Cannot operate on a closed database" runt
+samma testklass även på en helt oförändrad checkout — bekräftat
+förbefintligt, inte orsakat av denna ändring, men inte utrett vidare här.
+
+## Orsak-källtext, lokal radpersistens, fetmarkerade objekt, objektsökning,
+per-kategori lokal nivå i LOPA (2026-09-04)
+
+Fyra relaterade önskemål om HAZOP-SCENARIER-tabellen, plus två riktiga,
+tidigare oupptäckta buggar som grävdes fram under utredningen:
+
+**1. Orsak-text från HAZOP.** `_build_original_cause_text` byggde
+"Objekt - Avvikelsetext" (avvikelsens/ledordets text). Anton: "Orsaksrutan
+när jag hämtar från HAZOP skall bestå av objekt + objekttext, inte som nu
+Objekt + Avvikelsetext." Bygger nu "Objekt - orsakens egen HAZOP-text"
+(`cause.description`) istället.
+
+**2. Riktig bugg: lokal Orsak-text sparades aldrig synligt.** Förra
+sessionens inline-redigering skrev en lokal rads Orsak-text till
+`lopa_source_scenarios.cause_text` — men den kolumnen används redan som
+"L-001"-referensetiketten för lokala källor
+(`add_lopa_local_source`/`_build_scenario_reference`). Värre: tabellen läste
+aldrig tillbaka den — en lokal rad visade alltid hårdkodat "Orsak saknas"
+oavsett vad som sparats. Ny kolumn `local_cause_text` (idempotent
+`ALTER TABLE`-migrering i `Database._migrate()`), `set_lopa_source_cause_text`
+skriver dit istället, och `_populate_hazop_hierarchy` läser den tillbaka för
+lokala rader.
+
+**3+4. Fetmarkerade objekt + objektsökning överallt.** `_hazop_hierarchy`
+hade ingen delegate alls — ingen fetmarkering, ingen taggkomplettering,
+till skillnad från motsvarande HAZOP Scenario-tabell. Ny
+`_LopaHierarchyDelegate` (lopa_panel.py) registrerad för Orsak/Konsekvens-
+kolumnerna: fetmarkerar objekttaggar via `ui_helpers._draw_text_with_bold_tags`
+och erbjuder en `QCompleter` mot P&ID-katalogen vid redigering, samma
+mönster som `scenario_panel.py`s `_PidDelegate`/`_BoldTagTextEdit`, men
+förenklat (ingen P&ID-placeringsikon, ingen grupperad-orsak-hantering — en
+LOPA-rad har alltid en orsak). `_BoldTagTextEdit` flyttades från
+`scenario_panel.py` till `ui_helpers.py` (bekräftat fristående — ingen
+koppling till `ScenarioTablePanel`) eftersom `scenario_panel.py` redan
+importerar från `lopa_panel.py` (`LopaLinkDialog`) — omvänd import hade
+varit en cirkulär import. `scenario_panel.py` re-exporterar namnet så
+befintliga `from scenario_panel import _BoldTagTextEdit`-anrop (inklusive i
+testsviten) fungerar oförändrat.
+
+**Dold cirkulär import grävdes fram av detta:** `ui_helpers.py` importerade
+`COMPONENT_TYPES`/`_equip_prefix_from_tag`/`_obj_type_matches` från
+`pid_viewer.py` på modulnivå — men `pid_viewer.py` beror (via
+`pid_panel_mod.py`, längst ner i filen) transitivt på `ui_helpers.py`. Detta
+fungerade av ren tur hittills eftersom ingen tidigare importerat
+`ui_helpers.py` som allra första modul i kedjan. `lopa_panel.py`s nya
+direkta import av `ui_helpers` exponerade detta (kraschade
+`tests/test_lopa_panel.py`s import). Fix: `COMPONENT_TYPES`/
+`_equip_prefix_from_tag` importeras nu direkt från `equipment_detection.py`
+(den egentliga, lägre-liggande källan — `pid_viewer.py` bara re-exporterar
+dem), och `_obj_type_matches` (som saknar en lägre-liggande hemvist) blev en
+uppskjuten, funktionslokal import i `standard_cause_options()`, samma mönster
+som `worksheet.py`/`scenario_panel.py` redan använder för motsvarande
+cirkulära beroenden.
+
+**5. Riktig bugg: kunde inte sätta konsekvensnivå på en egen LOPA-rad.**
+"Ändra lokal bedömning..." (`LopaConsequenceDialog`) slår upp raden via
+`_selected_hierarchy_consequence_id()`, som läser den HAZOP-sidans
+konsekvens-id — men jämför det mot `lopa_source_consequences.id` (ett annat
+id-utrymme). En lokal rad har inget HAZOP-id alls och kunde därför aldrig
+matcha; dialogen visade bara "Välj först...". Löst genom att kringgå den
+trasiga dialogen helt för lokala rader (lägre risk än att fixa
+id-utrymmesförväxlingen): "Egen LOPA-konsekvens" skapar nu EN
+`lopa_source_consequences`-rad per konfigurerad kategori istället för bara
+den första, länkade via en ny `local_group_id`-kolumn (idempotent migrering)
+så de renderas som EN rad med alla kategorikolumner ikryssningsbara —
+`lopa_source_consequence_groups` grupperar nu lokala bedömningar på detta
+sätt (tidigare en egen rad per bedömning). Varje kategori-cell på en lokal
+rad är nu en kryssruta + egen `QSpinBox` (0–99) istället för bara en
+läsbar siffra; `QSpinBox.editingFinished` (inte `valueChanged`) används
+eftersom handlern bygger om hela tabellen, vilket annars skulle riva upp
+och återskapa samma spinbox mitt i en tangenttryckning. Bekräftelserutan
+"Ska kategori-/riskbedömningen inkluderas..." hoppas nu över för lokala
+rader (`_on_hazop_category_active_changed(..., hazop_linked=False)`) — det
+finns inget att koppla loss från HAZOP på en rad som aldrig följde den.
+
+Ny testfil-utökning: 5 nya tester i `tests/test_lopa_panel.py` (nu 12
+totalt) täcker Orsak-källtext, lokal Orsak-persistens/visning,
+en-rad-per-kategori-skapande och att bekräftelserutan hoppas över lokalt
+men inte för HAZOP-rader.
+
+Verifierat med `py_compile` av hela modulgrafen, `tests.test_smoke` (14),
+`tests.test_lopa_panel` (12), `tests.test_lopa_models`, `tests.test_lopa_export`
+(39 tester totalt, alla gröna), samt `tests.test_database` (112 tester) —
+samma 7 fel/2 fel som på en ren checkout, orört av denna ändring. Visuell
+kontroll av fetmarkering och kryssruta+spinbox-layouten i en riktig
+Qt-display återstår (headless utvecklingsmiljö).
+## 2026-09-07 — Hitta liknande symbol får inte avbryta gummibandsdragning
+
+`SimilarSymbolSearchDialog` använde `clear_shape_preview()` under tröskel- och
+förhandsvisningsuppdateringar. Funktionen tog tidigare bort alla scenobjekt med
+`Z_TEMP`, men samma lager används även av aktiva gummiband och andra drag-
+förhandsvisningar. Det gjorde att gummibandet kunde försvinna eller kapas när
+liknande objekt uppdaterades. `PIDGraphicsView` spårar nu symbolförhandsvisningar
+separat och rensar bara dessa objekt. Regressionstestet
+`ShapePreviewRubberBandTests` säkerställer att ett aktivt gummiband ligger kvar.
+## 2026-09-07 — Tillfälligt avstängd P&ID-kontextmeny
+
+Högerklick utan drag på ett P&ID-ark öppnade tidigare en kontextmeny med bland
+annat `Hitta liknande symbol`. Den menyn är nu avstängd för att isolera den från
+gummibandsinteraktionen. Högerdragning för att skapa ett markerings-/objekt-
+område fungerar fortfarande. Återaktivering görs via
+`RIGHT_CLICK_CONTEXT_MENU_ENABLED` i `pid_graphics_view.py`.
+## 2026-09-07 — Standardorsaker åter i drag-drop-flödet
+
+Dragning av ett P&ID-objekt till en avvikelse skapade fortfarande en tom,
+taggad orsak, men stannade efter `load_cause()`. Eftersom standardorsaksväljaren
+öppnas av ORS-cellens inline-editor visades inga standardorsaker längre på
+samma sätt. Drag-drop-flödet anropar nu även `select_item(CAUSE_T, cause_id)`
+efter att raden laddats, vilket återanvänder den befintliga editorn och dess
+standardorsakspopup. Drop på en redan befintlig orsak påverkas inte.
+
 ## 2026-09-09 — Wordrapport: utvecklad metodik, sammanfattning och rätt matrisaxlar
 
 Wordrapportens sammanfattning anger nu antal analystillfällen och visar de
@@ -6091,7 +6913,139 @@ behållits.
 Bilaga 1 heter nu `Avvikelser och förkortningar` och innehåller endast den
 registrerade avvikelselistan och rapportens förkortningar. Bilaga 3 och dess
 HAZOP-protokoll har inte ändrats i denna justering.
+# 2026-09-09 – Rapportmall och HAZOP Prep
 
+- Word-exporten använder automatiskt `[Projektnummer]-R-001`, senaste revisionsdatum, standarddistribution och de nya fälten Utfärdad av/Granskad av.
+- HAZOP Prep har fått Företagsuppgifter samt Utfört av per projektrevision. Kapitel 1 och innehållsförteckningen följer den professionella slutrapportstrukturen; analysprotokollet är oförändrat.
+
+## 2026-09-10 — Word-captioner och korsreferenser för tabeller
+
+Rapportexportens samtliga tabelltexter skapas nu med Words `Caption`-stil och
+ett `SEQ Tabell`-fält. Tabellnumret omges av ett unikt bokmärke och varje
+tabellhänvisning i rapporttexten ersätts med ett hyperlänkat `REF`-fält. Det
+gör att hänvisningarna följer tabellnumret när fälten uppdateras i Word.
+
+Exporten behåller de kapitelbaserade numren, inklusive bilagenummer och
+suffixet i `4-1a`. Både projektrapporten och standardmallen har kontrollerats
+efter Word-uppdatering; inga brutna referenser påträffades.
+
+## 2026-09-10 — Mellanslag efter metadataetiketter
+
+På rapportens sida 2 läggs nu ett bevarat mellanslag mellan de fetstilta
+etiketterna och deras värden. Det gäller bland annat `Titel:`, `Datum:` och
+`Distribution:` i både projektrapporten och standardmallen.
+
+## 2026-09-10 — Kortare huvudresultat i sammanfattningen
+
+Sammanfattningens huvudresultat anger nu endast hur många noder analysen
+omfattade innan rekommendationsstatusen redovisas. Den separata meningen om
+antal dokumenterade konsekvensposter och formulerade rekommendationer har
+tagits bort från både projektrapporten och standardmallen.
+
+## 2026-09-10 — ProSa-logotyp i samtliga sidhuvuden
+
+Rapportexporten lägger nu in ProSa-logotypens bildrelation i både det vanliga
+sidhuvudet och sidhuvudets förstasidevariant för varje genererad sektion. Det
+förhindrar att logotypen försvinner när Word väljer förstasidehuvudet efter en
+sektionsbrytning. Projektrapportens 25 sidor och standardmallens 17 sidor har
+renderats och granskats med logotypen synlig i samtliga löpande sidhuvuden.
+
+## 2026-09-10 — Förenklat resultat och fortsatt hantering
+
+Kapitel 5 består nu av `5.1 Resultat` och `5.2 Fortsatt hantering`. De tidigare
+status- och resultattabellerna (tabell 5-1 och 5-2) är borttagna. Antal
+analystillfällen, noder, registrerade rekommendationer och öppna
+rekommendationer redovisas i löptext. Avsnittet om fortsatt hantering innehåller
+nu HAZOP-teamets prioriteringsprincip och den femstegade ordningen för
+riskreducering. Båda Word-filerna har uppdaterats, renderats och granskats.
+
+## 2026-09-10 — IPS och IPS5 som standardmallar
+
+Riskmatrisfliken har nu standardmallsknappar för `IPS` och `IPS5`. Båda
+profilerna innehåller den kompletta 5×7-matrisen, axlar, cellfärger,
+risknivådefinitioner samt konsekvensdefinitioner för person, miljö, ekonomi,
+anläggning och rykte. Den projektlokala mallen `IPS5` har tagits bort efter en
+innehållsjämförelse, så den inte visas dubbelt under Egna mallar.
+
+## 2026-09-10 — Språkjustering i sammanfattningen
+
+Sammanfattningen anger nu att resultatet ska användas som underlag för
+fortsatt riskhantering av systemet, i stället för projektets fortsatta
+riskhantering.
+
+Bakgrundstexten anger nu att det gemensamma protokollet kan användas vid
+fortsatt riskhantering, utan hänvisning till projektering eller verifiering.
+
+## 2026-09-10 — En sida per nod i HAZOP-protokollet
+
+Bilaga 3 infogar nu en sidbrytning före varje protokollnod efter den första.
+Varje nod börjar därmed på en ny sida, utan en tom slutsida före nästa bilaga.
+Detta täcks av ett regressionstest med två noder.
+
+## 2026-09-10 — Komplett ProSa-logotyp i rapportens sidhuvud
+
+Rapportexporten kopierar nu det kompletta sidhuvudet från grundmallens sista
+sektion, inklusive den runda ProSa-symbolen, ordmärket, metadata och den gröna
+linjen. Den tidigare logiken lade bara in ordmärket från omslagets sidhuvud,
+vilket gav fel placering och utelämnade den runda symbolen. Ett regressionstest
+kontrollerar att alla genererade sidhuvuden relaterar till samma originalbild.
+
+## 2026-09-10 — Löpande tabellnumrering i riskbedömningen
+
+Tabellen för acceptanskriterier heter nu tabell 4-2 i stället för 4-1a.
+Följande tabeller är omnumrerade till 4-3 för frekvensskala, 4-4 för
+konsekvensdefinitioner och 4-5 för enablers. Samma följd används i
+standardmallen. Metodtexten innehåller inte längre meningen om ansvar,
+tidplan och behov av uppföljning.
+
+## 2026-09-10 — Länkat rapportdatum i sidhuvud
+
+Datumet i alla genererade rapport-sidhuvuden är nu ett Word-REF-fält mot
+det bokmärkta datumet på första sidan. Datumet på första sidan är därmed
+den enda källan; när Word uppdaterar fält synkroniseras sidhuvudena.
+Ett regressionstest säkerställer både bokmärket och REF-fältet.
+
+## 2026-09-10 — Länkat uppdragsnummer i sidhuvud
+
+Sidhuvudets uppdragsnummer är nu ett Word-REF-fält mot rapportnumret på
+framsidan. Det hämtar därmed samma värde som `Rapport nr:` och kan inte
+skilja sig från förstasidan när fälten uppdateras i Word.
+
+## 2026-09-10 — Svensk prioriteringslista i fortsatt hantering
+
+Den femstegade listan för riskreducering i avsnittet om fortsatt hantering
+är nu skriven på svenska i både projektrapporten och standardmallen.
+
+## 2026-09-10 — Mellanslag vid och i HAZOP-protokollet
+
+Protokollbilagan normaliserar nu ett saknat mellanslag direkt före eller efter
+det fristående ordet `och`. Korrigeringen sker enbart i Word-exporten och
+ändrar inte källuppgifterna i HAZOP-databasen.
+
+## 2026-09-10 — Sidnumrering från introduktionen
+
+Framsida, rapportinformation, sammanfattning, förkortningar och
+innehållsförteckning saknar nu synliga sidnummer. Den första synliga sidan
+är introduktionen, som startar sidnumreringen på 1.
+
+## 2026-09-10 — Tydligare bilagehänvisning för noder
+
+Rapporten anger nu att nodindelningen redovisas i bilaga 2 och att tillhörande
+P&ID-nodmarkeringar redovisas i bilaga 5.
+
+## 2026-09-10 — Företag som standardkolumn för deltagare
+
+Deltagarmatrisen har nu den fasta kolumnen `Företag`. Tidigare frivilliga
+kolumner med samma namn flyttas automatiskt till den nya standardkolumnen vid
+databasuppgraderingen. Rapportens tabell 3-2 visar företag i en egen kolumn,
+och den tidigare meningen om deltagaranteckningar är borttagen.
+
+## 2026-09-10 — Enablers med egen RRF i protokollet
+
+HAZOP-protokollets enablerkolumn redovisar nu varje aktiv enabler med dess
+egen RRF, exempelvis `Antändning: 10` och `Eskalering: 10`, i stället för den
+sammanräknade formen `2 (100)`. Samma spårbara innehåll används i Word- och
+Excel-export samt vid kopiering av Worksheet till Office.
 ## 2026-09-10 — Frekvens väljs uttryckligen för nya orsaker
 
 Nya orsaker markeras nu som att frekvens ännu inte har valts. Utan standardorsak

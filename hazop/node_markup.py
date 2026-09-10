@@ -17,6 +17,7 @@ from PyQt6.QtGui import QColor, QFont, QPen, QPainter, QPixmap, QIcon, QCursor
 
 from constants import NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, MARKUP_COLORS, CONFIG
 from database import Database, freq_to_f_level
+from spellcheck import SpellCheckLineEdit, attach_spellcheck
 from pid_viewer import _icon, _mk_icon, _mk_pm, _EMOJI_ICON, _RED_MARKUP_SYMBOLS
 from ui_helpers import freq_axis_label, add_mini_popup_close_button
 from tree_panel import RRFPopup
@@ -349,7 +350,16 @@ class PropertiesRibbon(QWidget):
         self._btns.clear()
         self._tool_btns = {}
 
-        buttons = self._buttons_for_type()
+        # While actively editing P&ID markup for a node (the ✏️ toggle
+        # below is checked), the plain node buttons (namn/status/zoom)
+        # have no function — none of them apply to the markup being
+        # edited — so they're skipped entirely rather than just disabled,
+        # letting the markup toggle + tools move up to the top of the
+        # ribbon instead of sitting below an now-inert button group
+        # (2026-09-06, Anton: "släcka dom tre övre knapparna ... och
+        # flytta upp knapparna som har med nodmarkeringen att göra").
+        skip_plain_buttons = self._type == NODE_T and self._markup_active
+        buttons = [] if skip_plain_buttons else self._buttons_for_type()
         for spec in buttons:
             if spec is None:
                 sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
@@ -387,11 +397,16 @@ class PropertiesRibbon(QWidget):
         """✏️ checkable toggle — replaces NodeMarkupPanel's old one-shot
         "✕ Avsluta" button. See markup_mode_toggled's own docstring for
         why this needs to be a toggle rather than a close button."""
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(separator_line_stylesheet())
-        sep.setFixedHeight(CONFIG['H_SEP_LINE'])
-        self._outer.addWidget(sep)
-        self._btns.append(sep)
+        # No separator needed above this when it's the very first thing in
+        # the ribbon — the plain node buttons are skipped entirely while
+        # markup editing is active (see _rebuild's skip_plain_buttons), so
+        # there's nothing left above to separate from.
+        if self._outer.count() > 0:
+            sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+            sep.setStyleSheet(separator_line_stylesheet())
+            sep.setFixedHeight(CONFIG['H_SEP_LINE'])
+            self._outer.addWidget(sep)
+            self._btns.append(sep)
 
         emoji = '✏️'
         icon_name = _EMOJI_ICON.get(emoji)
@@ -612,10 +627,8 @@ class PropertiesRibbon(QWidget):
         if T == 1:   # NODE_T
             return [
                 "NOD",
-                ("🏷", "Redigera namn och P&ID-referens",    self._edit_node_name),
-                ("📄", "Redigera beskrivning",                self._edit_node_desc),
-                ("⚗", "Redigera processparametrar\n(media, tryck, temperatur)",
-                                                              self._edit_node_params),
+                ("🏷", "Redigera nod\n(namn, P&ID-ref, beskrivning, processparametrar)",
+                                                              self._edit_node_info),
                 None,
                 ("✅", "Sätt status / godkänn nod",          self._edit_node_status),
                 ("📍", "Visa nod på P&ID",                   self._zoom_to_node),
@@ -704,7 +717,13 @@ class PropertiesRibbon(QWidget):
         return None
 
     # ── NODE actions ──────────────────────────────────────────────────────────
-    def _edit_node_name(self, btn):
+    def _edit_node_info(self, btn):
+        """Combined name/P&ID-ref/description/process-parameter editor.
+
+        Merged from three separate popups (2026-09-06, Anton: "slå ihop de
+        tre övre... till en" — the ribbon had 6 node buttons and this
+        merges the top three into one) into a single dialog/button so the
+        node section takes less vertical space in the ribbon."""
         if not self._id: return
         n = self.db.get_node(self._id)
         if not n: return
@@ -712,71 +731,63 @@ class PropertiesRibbon(QWidget):
         dlg = QDialog(self)
         dlg.setWindowTitle("Nod")
         dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        dlg.setMinimumWidth(CONFIG['W_DIALOG_MD'])
-        lay = QFormLayout(dlg); lay.setContentsMargins(10,10,10,10)
-        name_e = QLineEdit(n['name'] or '')
+        dlg.setMinimumWidth(CONFIG['W_DIALOG_LG'])
+        lay = QVBoxLayout(dlg); lay.setContentsMargins(10, 10, 10, 10)
+
+        # Stavningskontroll (2026-09-06, see NOTES.md) på namn/beskrivning
+        # -- den löpande text-prosan -- inte P&ID-ref/media/tryck/
+        # temperatur, som är korta referens-/värdefält, inte fritext.
+        spellcheck_context = getattr(self._mw, 'spellcheck_context', None)
+
+        top_form = QFormLayout()
+        name_e = SpellCheckLineEdit(n['name'] or '', context=spellcheck_context)
+        name_e.setObjectName('node_name_edit')
         pid_e  = QLineEdit(n.get('pid_ref') or '')
-        lay.addRow("<b>Namn:</b>", name_e)
-        lay.addRow("P&ID-ref:", pid_e)
+        pid_e.setObjectName('node_pid_ref_edit')
+        top_form.addRow("<b>Namn:</b>", name_e)
+        top_form.addRow("P&ID-ref:", pid_e)
+        lay.addLayout(top_form)
+
+        lay.addWidget(QLabel("Beskrivning:"))
+        desc_e = QTextEdit()
+        desc_e.setObjectName('node_desc_edit')
+        desc_e.setPlainText(n.get('description', '') or '')
+        desc_e.setPlaceholderText("Beskriv noden...")
+        desc_e.setFixedHeight(CONFIG['H_EDIT_LG'])
+        if spellcheck_context is not None:
+            attach_spellcheck(desc_e, spellcheck_context)
+        lay.addWidget(desc_e)
+
+        param_form = QFormLayout()
+        me = QLineEdit(n.get('media', '') or '')
+        me.setObjectName('node_media_edit')
+        pe = QLineEdit(n.get('pressure', '') or '')
+        pe.setObjectName('node_pressure_edit')
+        te = QLineEdit(n.get('temperature', '') or '')
+        te.setObjectName('node_temperature_edit')
+        me.setPlaceholderText("t.ex. Vätgas, Vatten")
+        pe.setPlaceholderText("t.ex. 10 bar g")
+        te.setPlaceholderText("t.ex. 150 °C")
+        param_form.addRow("Media:", me)
+        param_form.addRow("Tryck:", pe)
+        param_form.addRow("Temperatur:", te)
+        lay.addLayout(param_form)
+
         row = QHBoxLayout()
         ok = QPushButton("OK"); ok.setDefault(True)
         ok.setStyleSheet(self._OK_BTN_SS)
         ok.clicked.connect(dlg.accept)
         cancel = QPushButton("Avbryt"); cancel.clicked.connect(dlg.reject)
         row.addStretch(); row.addWidget(cancel); row.addWidget(ok)
-        lay.addRow(row)
+        lay.addLayout(row)
         name_e.returnPressed.connect(dlg.accept)
+
         if self._show_popup(btn, dlg) == QDialog.DialogCode.Accepted:
             name = name_e.text().strip() or 'Ny nod'
-            self.db.update_node(self._id, name, n.get('description',''),
-                                pid_e.text().strip(),
-                                n.get('media',''), n.get('pressure',''),
-                                n.get('temperature',''))
-            self.item_changed.emit()
-
-    def _edit_node_desc(self, btn):
-        if not self._id: return
-        n = self.db.get_node(self._id)
-        if not n: return
-        n = dict(n)
-        val = self._text_popup(btn, "Beskrivning", n.get('description','') or '',
-                               multiline=True, placeholder="Beskriv noden...")
-        if val is not None:
-            self.db.update_node(self._id, n['name'], val,
-                                n.get('pid_ref',''), n.get('media',''),
-                                n.get('pressure',''), n.get('temperature',''))
-            self.item_changed.emit()
-
-    def _edit_node_params(self, btn):
-        if not self._id: return
-        n = self.db.get_node(self._id)
-        if not n: return
-        n = dict(n)
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Processparametrar")
-        dlg.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
-        dlg.setMinimumWidth(CONFIG['W_DIALOG_MD'])
-        lay = QFormLayout(dlg); lay.setContentsMargins(10,10,10,10)
-        me = QLineEdit(n.get('media','') or '')
-        pe = QLineEdit(n.get('pressure','') or '')
-        te = QLineEdit(n.get('temperature','') or '')
-        me.setPlaceholderText("t.ex. Vätgas, Vatten")
-        pe.setPlaceholderText("t.ex. 10 bar g")
-        te.setPlaceholderText("t.ex. 150 °C")
-        lay.addRow("Media:", me)
-        lay.addRow("Tryck:", pe)
-        lay.addRow("Temperatur:", te)
-        row = QHBoxLayout()
-        ok = QPushButton("OK"); ok.setDefault(True)
-        ok.setStyleSheet(self._OK_BTN_SS)
-        ok.clicked.connect(dlg.accept); cancel = QPushButton("Avbryt")
-        cancel.clicked.connect(dlg.reject)
-        row.addStretch(); row.addWidget(cancel); row.addWidget(ok)
-        lay.addRow(row)
-        if self._show_popup(btn, dlg) == QDialog.DialogCode.Accepted:
-            self.db.update_node(self._id, n['name'], n.get('description',''),
-                                n.get('pid_ref',''),
-                                me.text().strip(), pe.text().strip(), te.text().strip())
+            self.db.update_node(
+                self._id, name, desc_e.toPlainText().strip(),
+                pid_e.text().strip(),
+                me.text().strip(), pe.text().strip(), te.text().strip())
             self.item_changed.emit()
 
     def _edit_node_status(self, btn):
@@ -847,7 +858,8 @@ class PropertiesRibbon(QWidget):
                 freq = float(freq_e.text().strip()) if freq_e.text().strip() else None
             except ValueError:
                 freq = None
-            self.db.update_cause(self._id, base_frequency=freq)
+            self.db.update_cause(self._id, base_frequency=freq,
+                                 frequency_cleared=(freq is None))
             self.item_changed.emit()
 
     def _edit_cause_comment(self, btn):
@@ -1052,6 +1064,10 @@ class MarkupTablePanel(QWidget):
 
         self._table = QTableWidget(0, len(self._COLS))
         self._table.setHorizontalHeaderLabels(self._COLS)
+        for col in (2, 3, 4, 5):
+            hdr_item = self._table.horizontalHeaderItem(col)
+            if hdr_item is not None:
+                hdr_item.setToolTip("Klicka på en rad i denna kolumn för att ändra stilen")
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
@@ -1101,26 +1117,32 @@ class MarkupTablePanel(QWidget):
             lbl_item.setData(Qt.ItemDataRole.UserRole, mu_id)
             self._table.setItem(row, 1, lbl_item)
 
+            style_tip = "Klicka för att ändra stilen (färg, opacitet, tjocklek, font)"
+
             color_item = QTableWidgetItem(color)
             color_item.setData(Qt.ItemDataRole.UserRole, mu_id)
             color_item.setBackground(QColor(color))
             color_item.setForeground(QColor(color))
             color_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            color_item.setToolTip(style_tip)
             self._table.setItem(row, 2, color_item)
 
             op_item = QTableWidgetItem(f"{int(opacity * 100)}%")
             op_item.setData(Qt.ItemDataRole.UserRole, mu_id)
             op_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            op_item.setToolTip(style_tip)
             self._table.setItem(row, 3, op_item)
 
             w_item = QTableWidgetItem(str(width))
             w_item.setData(Qt.ItemDataRole.UserRole, mu_id)
             w_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            w_item.setToolTip(style_tip)
             self._table.setItem(row, 4, w_item)
 
             f_item = QTableWidgetItem(str(font_sz))
             f_item.setData(Qt.ItemDataRole.UserRole, mu_id)
             f_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            f_item.setToolTip(style_tip)
             self._table.setItem(row, 5, f_item)
 
             vis_item = QTableWidgetItem('👁' if visible else '○')
@@ -1146,8 +1168,35 @@ class MarkupTablePanel(QWidget):
         mu_id = item.data(Qt.ItemDataRole.UserRole)
         if col == 6:
             self._toggle_visibility(row, mu_id)
+        elif col in (2, 3, 4, 5):   # Färg / Opacitet / Tjocklek / Font
+            self._edit_style(mu_id)
         else:
             self.item_selected.emit(mu_id)
+
+    def _edit_style(self, mu_id):
+        """Open the style editor for one markup and, on save, push the
+        change straight to the DB and the live P&ID overlay — shared by
+        the Färg/Opacitet/Tjocklek/Font column clicks (2026-09-06, Anton:
+        "jag vill genom att kunna klicka på dessa och att värden på P&ID
+        ändras och uppdateras automatiskt") and the context menu's
+        "Ändra stil..." action."""
+        mu = self.db.get_node_markup(mu_id)
+        if not mu:
+            return
+        mu = dict(mu)
+        dlg = _MarkupStyleDialog(
+            mu.get('type', 'polygon'),
+            mu.get('color', '#E53935'),
+            float(mu.get('opacity', 0.7)),
+            int(mu.get('line_width', 2)),
+            int(mu.get('font_size', 12)),
+            self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            c, op, lw, fs = dlg.get_style()
+            self.db.update_node_markup(mu_id, color=c, opacity=op,
+                                       line_width=lw, font_size=fs)
+            self.item_style_changed.emit(mu_id)
+            self.refresh()
 
     def _toggle_visibility(self, row, mu_id):
         mu = self.db.get_node_markup(mu_id)
@@ -1189,22 +1238,7 @@ class MarkupTablePanel(QWidget):
             self.refresh()
         elif act_style is not None and result == act_style:
             mu_id = rows[0].data(Qt.ItemDataRole.UserRole)
-            mu = self.db.get_node_markup(mu_id)
-            if mu:
-                mu = dict(mu)
-                dlg = _MarkupStyleDialog(
-                    mu.get('type', 'polygon'),
-                    mu.get('color', '#E53935'),
-                    float(mu.get('opacity', 0.7)),
-                    int(mu.get('line_width', 2)),
-                    int(mu.get('font_size', 12)),
-                    self)
-                if dlg.exec() == QDialog.DialogCode.Accepted:
-                    c, op, lw, fs = dlg.get_style()
-                    self.db.update_node_markup(mu_id, color=c, opacity=op,
-                                               line_width=lw, font_size=fs)
-                    self.item_style_changed.emit(mu_id)
-                    self.refresh()
+            self._edit_style(mu_id)
         elif act_dup is not None and result == act_dup:
             mu_id = rows[0].data(Qt.ItemDataRole.UserRole)
             self.item_duplicated.emit(mu_id)

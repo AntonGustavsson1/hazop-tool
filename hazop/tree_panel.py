@@ -102,6 +102,11 @@ class TreePanel(QWidget):
     # "Lågt flöde") — 2026-08-08, see NOTES.md. Args: (deviation_id, list
     # of equipment_markers.id).
     equipment_dropped_on_deviation = pyqtSignal(int, object)
+    # Equipment marker(s) dragged from the P&ID directly onto an EXISTING
+    # Orsak/CAUSE_T row (2026-09-06, Anton: distinguish "drop on Avvikelse"
+    # -- new cause, above -- from "drop on an existing Orsak/Objekt" --
+    # add to it). Args: (cause_id, list of equipment_markers.id).
+    equipment_dropped_on_cause = pyqtSignal(int, object)
     # A Nod/Avvikelse/Orsak/Konsekvens/Safeguard's text was edited inline in
     # the tree (2026-08-17, see NOTES.md "Dubbelklick -> redigera direkt i
     # trädet") — args: (type_, id_), same shape as ScenarioTablePanel's own
@@ -958,6 +963,8 @@ class TreePanel(QWidget):
         # inside any System yet.
         type_, id_ = self._current()
         system_id = self._resolve_system_id(type_, id_) if type_ else None
+        if system_id is None:
+            system_id = self.db.default_system_id()
         new_id = self.db.add_node(system_id=system_id)
         self.refresh(NODE_T, new_id)
         self.structure_changed.emit()
@@ -1772,14 +1779,29 @@ class TreePanel(QWidget):
         if not marker_ids:
             event.ignore(); return
 
+        # Drop on an existing Orsak/CAUSE_T row means "add this object to
+        # THAT cause" (2026-09-06, Anton: distinguish drop-on-Avvikelse
+        # from drop-on-existing-Orsak/Objekt) -- checked directly against
+        # the tree item under the cursor, separately from
+        # _deviation_item_at (which only ever resolves UP to a deviation
+        # id, on purpose -- it's still used unchanged below for every
+        # other target, and by the DragMove hover-feedback path).
+        pos = self._event_pos_in_viewport(event, source_obj)
+        target = self.tree.itemAt(pos)
+        target_type = target.data(0, Qt.ItemDataRole.UserRole + 1) if target is not None else None
+        target_id = target.data(0, Qt.ItemDataRole.UserRole) if target is not None else None
+
         # Resolving a guide-word deviation and linking the dropped markers may
         # involve several writes in the connected panels. Keep the complete
         # drop, including synchronous signal handlers, as one undo step.
         with self.db.history_group():
-            dev_id = self._deviation_item_at(event, source_obj, create=True)
-            if dev_id is None:
-                event.ignore(); return
-            self.equipment_dropped_on_deviation.emit(dev_id, marker_ids)
+            if target_type == CAUSE_T:
+                self.equipment_dropped_on_cause.emit(target_id, marker_ids)
+            else:
+                dev_id = self._deviation_item_at(event, source_obj, create=True)
+                if dev_id is None:
+                    event.ignore(); return
+                self.equipment_dropped_on_deviation.emit(dev_id, marker_ids)
         event.acceptProposedAction()
 
     def _tree_reparent_target_at(self, event, source_obj):
@@ -2914,7 +2936,8 @@ class FrequencyPickerPopup(QDialog):
     # caller explicitly cleared the frequency for this one cause.
     frequency_selected = pyqtSignal(object, object)
 
-    def __init__(self, current_f_level=None, current_numeric_freq=None, parent=None):
+    def __init__(self, current_f_level=None, current_numeric_freq=None,
+                 parent=None, database_numeric_freq=None):
         super().__init__(parent)
         self.setWindowTitle("Ändra frekvens")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -2933,6 +2956,17 @@ class FrequencyPickerPopup(QDialog):
         header = QLabel("Frekvens")
         header.setStyleSheet(popup_compact_title_stylesheet())
         layout.addWidget(header)
+
+        self._database_numeric_freq = database_numeric_freq
+        if database_numeric_freq is not None:
+            changed = QLabel(
+                f"Databasvärde: {float(database_numeric_freq):g}/år. "
+                "Valet nedan ersätter detta för orsaken.")
+            changed.setWordWrap(True)
+            changed.setStyleSheet(
+                "color:#8A4B08; background:#FFF4D6; padding:3px; "
+                "border:1px solid #E6B85C;")
+            layout.addWidget(changed)
 
         cfg  = get_matrix()
         cols = cfg.get('cols', 7)
@@ -3018,7 +3052,8 @@ class FrequencyPickerPopup(QDialog):
 
     @classmethod
     def create_positioned(cls, global_pos, current_f_level=None,
-                           current_numeric_freq=None, parent=None):
+                           current_numeric_freq=None, parent=None,
+                           database_numeric_freq=None):
         """Construct the popup and position it near global_pos, clamped to
         the screen — mirrors the clamping pattern used at RRFPopup's and
         ConsCategoryMatrixPopup's call sites elsewhere in this file
@@ -3028,7 +3063,8 @@ class FrequencyPickerPopup(QDialog):
         `.exec()` themselves, exactly like the existing RRFPopup /
         ConsCategoryMatrixPopup call sites do.
         """
-        popup = cls(current_f_level, current_numeric_freq, parent)
+        popup = cls(current_f_level, current_numeric_freq, parent,
+                    database_numeric_freq=database_numeric_freq)
         popup.adjustSize()
         scr = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
         pw, ph = popup.sizeHint().width(), popup.sizeHint().height()

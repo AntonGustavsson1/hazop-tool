@@ -1367,6 +1367,17 @@ class SystemsHierarchyTests(unittest.TestCase):
         node_id = self.db.add_node(system_id=sid)
         self.assertEqual(self.db.get_node(node_id)['system_id'], sid)
 
+    def test_default_system_id_reuses_existing_system(self):
+        sid = self.db.default_system_id()
+        node_id = self.db.add_node(system_id=sid)
+        self.assertEqual(self.db.get_node(node_id)['system_id'], sid)
+
+    def test_node_with_markup_accepts_system_id(self):
+        sid = self.db.default_system_id()
+        node_id = self.db.add_node_with_markup(
+            'N-1', [], {'color': '#FF8C00'}, 0, system_id=sid)
+        self.assertEqual(self.db.get_node(node_id)['system_id'], sid)
+
     def test_add_node_without_system_id_is_ungrouped(self):
         node_id = self.db.add_node()
         self.assertIsNone(self.db.get_node(node_id)['system_id'])
@@ -1802,6 +1813,127 @@ class GroupCauseDescriptionNormalisationTests(unittest.TestCase):
             'FI-1 fails low after FV-1 output',
             'FV-1 opens fully',
         ])
+
+
+class AddEquipmentToCauseGroupTests(unittest.TestCase):
+    """(2026-09-06) Anton: drag-and-drop onto an existing Orsak/Objekt row
+    (in either the Scenario/Worksheet table or the HAZOP tree) must ADD
+    the dropped object rather than replace what's already there — single
+    becomes double, double becomes triple, always joined by "OR" unless
+    an existing operator is already present. Extracted into this one
+    Database method so ScenarioTablePanel._handle_drop and
+    MainWindow._on_equipment_dropped_on_cause share the exact same rules
+    (the original bug was found precisely because this logic used to be
+    duplicated and drifted)."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='hazop_add_equip_to_cause_group_')
+        self.db = Database(path=os.path.join(self.tmpdir, 'project.db'))
+        self.node_id = self.db.add_node()
+        self.dev_id = self.db.deviations(self.node_id)[0]['id']
+        self.cause_id = self.db.add_cause(self.dev_id)
+
+    def tearDown(self):
+        self.db.conn.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _add_equip(self, tag):
+        return self.db.add_equipment_item(tag, tag, tag[:2].upper(), 0, 'Ventil', '', 0)
+
+    def test_blank_cause_gets_a_plain_single_object_set(self):
+        eq_id = self._add_equip('V-1')
+
+        result = self.db.add_equipment_to_cause_group(self.cause_id, [eq_id])
+
+        self.assertEqual(result, [eq_id])
+        cause = dict(self.db.get_cause(self.cause_id))
+        self.assertEqual(cause['equipment_id'], eq_id)
+        self.assertIsNone(cause['secondary_equipment_id'])
+        self.assertEqual(cause['comp_tag'], 'V-1')
+        self.assertEqual(cause['group_equipment_ids'], '')
+
+    def test_single_object_cause_converts_to_double_joined_by_or(self):
+        eq1 = self._add_equip('V-1')
+        self.db.update_cause(self.cause_id, comp_type='Ventil', comp_tag='V-1',
+                             equipment_id=eq1)
+        eq2 = self._add_equip('V-2')
+
+        result = self.db.add_equipment_to_cause_group(self.cause_id, [eq2])
+
+        self.assertEqual(result, [eq1, eq2])
+        cause = dict(self.db.get_cause(self.cause_id))
+        self.assertEqual(cause['equipment_id'], eq1,
+            "the original object must stay first, not be replaced")
+        self.assertEqual(cause['secondary_equipment_id'], eq2)
+        self.assertEqual(cause['comp_tag'], 'V-1 OR V-2')
+
+    def test_double_object_cause_extends_to_triple_preserving_or(self):
+        eq1, eq2 = self._add_equip('V-1'), self._add_equip('V-2')
+        self.db.update_cause(
+            self.cause_id, comp_type='Ventil', comp_tag='V-1 OR V-2',
+            equipment_id=eq1, secondary_equipment_id=eq2,
+            group_equipment_ids=[eq1, eq2])
+        eq3 = self._add_equip('V-3')
+
+        result = self.db.add_equipment_to_cause_group(self.cause_id, [eq3])
+
+        self.assertEqual(result, [eq1, eq2, eq3])
+        cause = dict(self.db.get_cause(self.cause_id))
+        self.assertEqual(cause['comp_tag'], 'V-1 OR V-2 OR V-3')
+        self.assertEqual(self.db.group_equipment_ids_for_cause(cause), [eq1, eq2, eq3])
+
+    def test_preserves_a_non_default_existing_operator(self):
+        """An already-grouped cause that was deliberately joined with a
+        DIFFERENT operator (e.g. via the tree's own group/operator-choice
+        popup) must keep using that operator when extended further —
+        only the very first single -> double conversion defaults to
+        "OR"."""
+        eq1, eq2 = self._add_equip('V-1'), self._add_equip('V-2')
+        self.db.update_cause(
+            self.cause_id, comp_type='Ventil', comp_tag='V-1 & V-2',
+            equipment_id=eq1, secondary_equipment_id=eq2,
+            group_equipment_ids=[eq1, eq2])
+        eq3 = self._add_equip('V-3')
+
+        self.db.add_equipment_to_cause_group(self.cause_id, [eq3])
+
+        cause = dict(self.db.get_cause(self.cause_id))
+        self.assertEqual(cause['comp_tag'], 'V-1 & V-2 & V-3')
+
+    def test_dropping_two_objects_at_once_on_a_blank_cause_creates_a_group(self):
+        eq1, eq2 = self._add_equip('V-1'), self._add_equip('V-2')
+
+        result = self.db.add_equipment_to_cause_group(self.cause_id, [eq1, eq2])
+
+        self.assertEqual(result, [eq1, eq2])
+        cause = dict(self.db.get_cause(self.cause_id))
+        self.assertEqual(cause['comp_tag'], 'V-1 OR V-2')
+
+    def test_duplicate_equipment_id_is_not_added_twice(self):
+        eq1 = self._add_equip('V-1')
+        self.db.update_cause(self.cause_id, comp_type='Ventil', comp_tag='V-1',
+                             equipment_id=eq1)
+
+        result = self.db.add_equipment_to_cause_group(self.cause_id, [eq1])
+
+        self.assertEqual(result, [eq1])
+        cause = dict(self.db.get_cause(self.cause_id))
+        self.assertIsNone(cause['secondary_equipment_id'])
+
+    def test_unresolvable_equipment_ids_are_ignored(self):
+        result = self.db.add_equipment_to_cause_group(self.cause_id, [999999])
+        self.assertEqual(result, [])
+        cause = dict(self.db.get_cause(self.cause_id))
+        self.assertIsNone(cause['equipment_id'])
+
+    def test_group_is_capped_at_max_group_objects(self):
+        from constants import MAX_GROUP_OBJECTS
+        eq_ids = [self._add_equip(f'V-{i}') for i in range(MAX_GROUP_OBJECTS + 5)]
+
+        result = self.db.add_equipment_to_cause_group(self.cause_id, eq_ids)
+
+        self.assertEqual(len(result), MAX_GROUP_OBJECTS)
+        self.assertEqual(result, eq_ids[:MAX_GROUP_OBJECTS])
 
 
 class EquipmentRenameReferenceTests(unittest.TestCase):

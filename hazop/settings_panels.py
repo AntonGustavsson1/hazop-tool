@@ -47,6 +47,7 @@ class SettingsPanel(QWidget):
     matrix_changed = pyqtSignal()
     pid_render_settings_changed = pyqtSignal()
     scenario_render_settings_changed = pyqtSignal()
+    spellcheck_settings_changed = pyqtSignal()
 
     def __init__(self, db: Database):
         super().__init__()
@@ -235,6 +236,40 @@ class SettingsPanel(QWidget):
         line_gl.addLayout(line_row)
         pid_l.addWidget(line_grp)
 
+        # ── Muspekare på P&ID-markeringar ────────────────────────────────────
+        # Anton: när navigeringsläget (panorering) hovras över en P&ID-yta
+        # med många markeringar (polygoner/polylinjer/text/kommentarer/
+        # symboler) bytte muspekaren ständigt från navigeringslägets öppna
+        # hand till en pekfingerhand så fort den passerade en markering,
+        # vilket kändes flimrigt/oönskat vid panorering. Pekfingerhanden är
+        # annars en medveten hint om att markeringen går att klicka på i
+        # redigeringsläget för markeringar — så den behålls som standard,
+        # men kan stängas av här.
+        cursor_grp = QGroupBox("Muspekare på P&ID-markeringar")
+        cursor_gl = QVBoxLayout(cursor_grp)
+        cursor_gl.setSpacing(6)
+        cursor_lbl = QLabel(
+            "Styr muspekaren när den hovrar över en markering (polygon, "
+            "polylinje, text, kommentar eller symbol) som är ritad på P&ID:t "
+            "— t.ex. i navigeringsläget vid panorering.")
+        cursor_lbl.setWordWrap(True)
+        cursor_gl.addWidget(cursor_lbl)
+        self._markup_hover_cursor_chk = QCheckBox(
+            "Visa pekfingerhand vid hovring över markeringar")
+        self._markup_hover_cursor_chk.setToolTip(
+            "Ikryssad (standard): muspekaren byter till en pekfingerhand så "
+            "fort den är över en markering — en hint om att markeringen går "
+            "att klicka på i redigeringsläget för markeringar.\n"
+            "Avmarkerad: muspekaren behåller det aktiva lägets egna pekare "
+            "(t.ex. navigeringslägets öppna hand vid panorering) även över "
+            "markeringar. Användbart på P&ID-sidor med många markeringar/"
+            "polylinjer, där pekaren annars ständigt hoppar mellan hand och "
+            "pekfinger.")
+        self._markup_hover_cursor_chk.toggled.connect(
+            self._on_markup_hover_cursor_setting_changed)
+        cursor_gl.addWidget(self._markup_hover_cursor_chk)
+        pid_l.addWidget(cursor_grp)
+
         pid_l.addStretch()
         tabs.addTab(pid_tab, "P&ID-inställningar")
 
@@ -258,7 +293,44 @@ class SettingsPanel(QWidget):
             "Avmarkerad: hela cellen fylls med riskmatrisens färg.")
         self._risk_bars_chk.toggled.connect(self._on_risk_bar_setting_changed)
         risk_view_gl.addWidget(self._risk_bars_chk)
+        frequency_mode_row = QHBoxLayout()
+        frequency_mode_row.addWidget(QLabel("Frekvens i Orsak-rutan:"))
+        self._frequency_display_combo = QComboBox()
+        self._frequency_display_combo.addItem(
+            "Frekvenskategori", 'category')
+        self._frequency_display_combo.addItem(
+            "Frekvenskategori + numeriskt värde", 'category_numeric')
+        self._frequency_display_combo.addItem(
+            "Numeriskt värde", 'numeric')
+        self._frequency_display_combo.setToolTip(
+            "Välj hur frekvensen visas i HAZOP Scenario och HAZOP Worksheet.")
+        self._frequency_display_combo.currentIndexChanged.connect(
+            self._on_frequency_display_setting_changed)
+        frequency_mode_row.addWidget(self._frequency_display_combo, 1)
+        risk_view_gl.addLayout(frequency_mode_row)
         hazop_l.addWidget(risk_view_grp)
+
+        # ── Stavningskontroll ──────────────────────────────────────────────
+        # On/av-togglen bor i Redigera-menyn (samma pengarpar som
+        # Ångra/Gör om) — bara språkvalet hör hemma här, i stil med
+        # OCR-standardval ovan (2026-09-06, se NOTES.md
+        # "Stavningskontroll").
+        spell_grp = QGroupBox("Stavningskontroll")
+        spell_gl = QVBoxLayout(spell_grp)
+        spell_gl.setSpacing(6)
+        spell_lbl = QLabel(
+            "Språk för stavningskontrollens ordbok (understrykning i "
+            "realtid samt Redigera > \"Kör stavningskontroll…\").")
+        spell_lbl.setWordWrap(True)
+        spell_gl.addWidget(spell_lbl)
+        self._spellcheck_language_combo = QComboBox()
+        self._spellcheck_language_combo.addItem("Svenska", 'sv')
+        self._spellcheck_language_combo.addItem("Engelska", 'en')
+        self._spellcheck_language_combo.currentIndexChanged.connect(
+            self._on_spellcheck_language_changed)
+        spell_gl.addWidget(self._spellcheck_language_combo)
+        hazop_l.addWidget(spell_grp)
+
         hazop_l.addStretch()
         tabs.addTab(hazop_tab, "HAZOP-inställningar")
 
@@ -298,6 +370,17 @@ class SettingsPanel(QWidget):
         self._min_pid_lines_spin.setEnabled(self._min_pid_lines_chk.isChecked())
         self._risk_bars_chk.setChecked(
             self.db.get_config('scenario_risk_bars_enabled', '1') == '1')
+        idx = self._frequency_display_combo.findData(
+            self.db.get_config('scenario_frequency_display_mode', 'category'))
+        if idx < 0:
+            idx = 0
+        self._frequency_display_combo.setCurrentIndex(idx)
+        self._markup_hover_cursor_chk.setChecked(
+            self.db.get_config('pid_markup_hover_cursor_enabled', '1') == '1')
+        idx = self._spellcheck_language_combo.findData(
+            self.db.get_config('spellcheck_language', 'sv'))
+        if idx >= 0:
+            self._spellcheck_language_combo.setCurrentIndex(idx)
 
     def _add_replacement_row(self, source='', target=''):
         row = QWidget()
@@ -427,6 +510,20 @@ class SettingsPanel(QWidget):
     def _on_risk_bar_setting_changed(self, enabled):
         self.db.set_config('scenario_risk_bars_enabled', '1' if enabled else '0')
         self.scenario_render_settings_changed.emit()
+
+    def _on_frequency_display_setting_changed(self, _index):
+        mode = self._frequency_display_combo.currentData() or 'category'
+        self.db.set_config('scenario_frequency_display_mode', mode)
+        self.scenario_render_settings_changed.emit()
+
+    def _on_markup_hover_cursor_setting_changed(self, enabled):
+        self.db.set_config('pid_markup_hover_cursor_enabled', '1' if enabled else '0')
+        self.pid_render_settings_changed.emit()
+
+    def _on_spellcheck_language_changed(self):
+        self.db.set_config(
+            'spellcheck_language', self._spellcheck_language_combo.currentData())
+        self.spellcheck_settings_changed.emit()
 
     def refresh_tag_memory(self):
         """Refresh the Smart igenkänning tab so newly learned tags show up."""

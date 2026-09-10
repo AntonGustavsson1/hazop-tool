@@ -27,6 +27,7 @@ from database import (
 from pid_viewer import _icon, FREQ_LABELS, ocr_status
 from ui_helpers import freq_axis_label
 from equipment_panel import TagDatabasePanel, PIDAnalysisPanel
+import spellcheck
 
 
 class ParticipantMatrixPanel(QWidget):
@@ -40,9 +41,10 @@ class ParticipantMatrixPanel(QWidget):
 
     _FIXED_COLS = ['Förnamn', 'Efternamn', 'Företag']
 
-    def __init__(self, db, parent=None):
+    def __init__(self, db, spellcheck_context=None, parent=None):
         super().__init__(parent)
         self.db = db
+        self.spellcheck_context = spellcheck_context
         self._loading = False
         self._participant_ids = []
         self._session_ids = []
@@ -174,7 +176,8 @@ class ParticipantMatrixPanel(QWidget):
                     check.stateChanged.connect(
                         lambda state, r=row, c=col: self._set_attendance_from_cell(
                             r, c, state == Qt.CheckState.Checked.value))
-                    note_edit = QLineEdit(note)
+                    note_edit = spellcheck.SpellCheckLineEdit(
+                        note, context=self.spellcheck_context)
                     note_edit.setPlaceholderText("")
                     note_edit.setToolTip("Anteckning för deltagaren vid detta analystillfälle")
                     note_edit.editingFinished.connect(

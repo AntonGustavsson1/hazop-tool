@@ -1609,6 +1609,8 @@ class PIDPanel(QWidget):
         # ── Viewer ────────────────────────────────────────────────────────────
         self.viewer = PIDGraphicsView()
         self.viewer.set_min_pdf_line_width(self._configured_min_pdf_line_width())
+        self.viewer.set_markup_hover_cursor_enabled(
+            self._configured_markup_hover_cursor_enabled())
         self.viewer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.viewer.node_markup_finished.connect(self._on_markup_finished)
         self.viewer.context_action.connect(self._on_context_action)
@@ -2835,8 +2837,10 @@ class PIDPanel(QWidget):
         style = {'color': self._pen_color.name(),
                  'width': self.width_spin.value(),
                  'alpha': self.alpha_slider.value()}
+        system_id = self.db.default_system_id()
         node_id = self.db.add_node_with_markup(
-            name, self._pending_markup_pts, style, self._pending_markup_page)
+            name, self._pending_markup_pts, style, self._pending_markup_page,
+            system_id=system_id)
         self._pending_markup_pts  = None
         self._pending_markup_page = None
         self.create_node_btn.setEnabled(False)
@@ -3497,7 +3501,8 @@ class PIDPanel(QWidget):
                              equipment_id=equipment_id)
         if frequency is not None:
             f_level = self._compute_f_level(frequency)
-            self.db.update_cause(cause_id, likelihood=f_level, base_freq=frequency)
+            self.db.update_cause(cause_id, likelihood=f_level, base_freq=frequency,
+                                 frequency_cleared=False)
 
         # Auto-create an empty consequence + safeguard (2026-08-09, see
         # NOTES.md) so the HAZOP scenario row is immediately ready for
@@ -4393,8 +4398,14 @@ class PIDPanel(QWidget):
         except (TypeError, ValueError):
             return 2
 
+    def _configured_markup_hover_cursor_enabled(self):
+        """Return the project setting for the markup-hover pointing-hand cursor."""
+        return self.db.get_config('pid_markup_hover_cursor_enabled', '1') == '1'
+
     def refresh_pdf_rendering(self):
         """Re-render the open P&ID after a display rendering setting changes."""
+        self.viewer.set_markup_hover_cursor_enabled(
+            self._configured_markup_hover_cursor_enabled())
         width = self._configured_min_pdf_line_width()
         if self.viewer.pdf_doc is None:
             self.viewer.set_min_pdf_line_width(width)

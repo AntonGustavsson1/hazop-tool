@@ -93,6 +93,7 @@ class PIDGraphicsView(QGraphicsView):
     _DATA_BADGE_TEXT = 13
     _DATA_BADGE_COUNT = 14
     _DATA_EQUIPMENT_LABEL = 15
+    _DATA_HOVER_CURSOR = 16   # True on markup items eligible for the pointing-hand hover cursor
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -219,6 +220,7 @@ class PIDGraphicsView(QGraphicsView):
         self.draw_brush         = QBrush(QColor(255, 140, 0, 60))
         self.temp_items         = []
         self.rubber_line        = None
+        self._shape_preview_items = []
 
         # Cache for PDF line segments (for smart snapping to drawing details)
         self._pdf_line_segments: dict = {}  # page_num → list of line tuples (x1,y1,x2,y2)
@@ -262,6 +264,13 @@ class PIDGraphicsView(QGraphicsView):
         self._markup_items: dict = {}
         self._markup_highlighted: int = -1
         self._snap_enabled: bool = True
+        # Whether hovering a markup/red-markup item shows a pointing-hand
+        # cursor (default: on, matches historic behaviour). Some P&ID pages
+        # carry many overlapping polylines/polygons, which made the cursor
+        # flicker between the navigation mode's open-hand and this pointing
+        # hand while panning — see 'pid_markup_hover_cursor_enabled' setting
+        # in settings_panels.py.
+        self._markup_hover_cursor_enabled: bool = True
         self._markup_types: dict   = {}   # mu_id → 'polygon'|'polyline'|'text'|'comment'
         # Red markup overlay tracking (separate from node markup)
         self._red_markup_items: dict = {}
@@ -358,6 +367,37 @@ class PIDGraphicsView(QGraphicsView):
         self._cache_order.clear()
         self._page_display_scale.clear()
         return True
+
+    def _apply_markup_hover_cursor(self, item):
+        """Mark one markup item as eligible for the pointing-hand hover
+        cursor, and set or clear that cursor per the
+        'pid_markup_hover_cursor_enabled' setting. The eligibility flag
+        (stored as item data, independent of the cursor itself) is what
+        lets set_markup_hover_cursor_enabled() later tell these items
+        apart from ones that never had a hover cursor to begin with."""
+        item.setData(self._DATA_HOVER_CURSOR, True)
+        if self._markup_hover_cursor_enabled:
+            item.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            item.unsetCursor()
+
+    def set_markup_hover_cursor_enabled(self, enabled):
+        """Toggle the pointing-hand hover cursor on markup/red-markup
+        items. When disabled, hovering them leaves the current mode's own
+        cursor (e.g. navigation mode's open hand) untouched instead of
+        overriding it. Live-updates already-placed items so the change
+        takes effect without reloading the P&ID."""
+        enabled = bool(enabled)
+        if enabled == self._markup_hover_cursor_enabled:
+            return
+        self._markup_hover_cursor_enabled = enabled
+        for items in list(self._markup_items.values()) + list(self._red_markup_items.values()):
+            for item in items:
+                try:
+                    if item.data(self._DATA_HOVER_CURSOR):
+                        self._apply_markup_hover_cursor(item)
+                except RuntimeError:
+                    pass
 
     def load_pdf(self, path, page=0, layout_offsets=None, active_pages=None,
                  progress_cb=None, page_rotations=None):
@@ -1041,7 +1081,7 @@ class PIDGraphicsView(QGraphicsView):
             gi.setData(self._DATA_MARKUP_ID, mu_id)
             gi.setData(self._DATA_TYPE, 'markup')
             gi.setData(self._DATA_MARKUP_PTS, points_pdf)
-            gi.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._apply_markup_hover_cursor(gi)
             gi.setToolTip(f"Klicka för att markera  [{type_}]" + (f": {label}" if label else ""))
             self._scene.addItem(gi)
             items.append(gi)
@@ -1119,7 +1159,7 @@ class PIDGraphicsView(QGraphicsView):
             bg.setZValue(Z_OVERLAY)
             bg.setData(self._DATA_MARKUP_ID, mu_id)
             bg.setData(self._DATA_TYPE, 'markup')
-            bg.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._apply_markup_hover_cursor(bg)
             self._scene.addItem(bg)
             items.append(bg)
         self._scene.addItem(txt)
@@ -1357,7 +1397,7 @@ class PIDGraphicsView(QGraphicsView):
         gi.setData(self._DATA_SYMBOL_W, float(symbol_w))
         gi.setData(self._DATA_SYMBOL_H, float(symbol_h))
         gi.setData(self._DATA_SYMBOL_ROT, float(symbol_rot))
-        gi.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._apply_markup_hover_cursor(gi)
         gi.setToolTip(f"Symbol: {label}" if label else "P&ID-symbol")
         self._scene.addItem(gi)
         return [gi]
@@ -2516,15 +2556,22 @@ class PIDGraphicsView(QGraphicsView):
             QPolygonF(points), QPen(QColor(color), 1.5), QBrush(QColor(color)))
         item.setOpacity(0.30)
         item.setZValue(Z_TEMP)
+        self._shape_preview_items.append(item)
         return item
 
     def clear_shape_preview(self):
-        """Remove all "Visa på P&ID" preview polygons (Z_TEMP items) —
+        """Remove only "Visa på P&ID" preview polygons.
+
+        Rubber-band and drag previews also use Z_TEMP, so identifying preview
+        polygons by z-value would interrupt an active drag gesture.
+
         see add_shape_highlight()."""
-        for item in list(self._scene.items()):
-            if item.zValue() == Z_TEMP:
-                try: self._scene.removeItem(item)
-                except RuntimeError as e: logging.warning(f"Failed to remove preview item: {e}")
+        for item in self._shape_preview_items:
+            try:
+                self._scene.removeItem(item)
+            except RuntimeError as e:
+                logging.warning(f"Failed to remove preview item: {e}")
+        self._shape_preview_items.clear()
 
     def _conn_obstacles(self, src_page, dst_page):
         """Inflated scene rects of every page except the connection's own two."""
@@ -3167,11 +3214,17 @@ class PIDGraphicsView(QGraphicsView):
                 self._rband_dragging    = False
                 self.zone_drawn.emit(pdf_rect, self.current_page)
             else:
-                # No drag — show context menu as usual
+                # No drag — the sheet context menu is temporarily disabled
+                # while the rubber-band interaction is being isolated.
                 sp = self.mapToScene(event.position().toPoint())
                 self._rband_start_scene = None
                 self._rband_dragging    = False
-                self._show_context_menu(sp, event.globalPosition().toPoint())
+                clicked_object = any(
+                    item.data(self._DATA_TYPE) in ('equipment', 'equipment-label')
+                    for item in self._scene.items(sp)
+                )
+                if clicked_object:
+                    self._show_context_menu(sp, event.globalPosition().toPoint())
             event.accept(); return
 
         # ── Ctrl+drag rubber band end — commit the multi-selection ─────────────

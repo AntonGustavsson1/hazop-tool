@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
-    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QTableWidget,
+    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStyledItemDelegate, QTableWidget,
     QTableWidgetItem, QTabWidget, QTextEdit, QToolButton, QVBoxLayout,
     QWidget,
 )
@@ -27,14 +27,35 @@ from database import (
 from pid_viewer import _icon, FREQ_LABELS, ocr_status
 from ui_helpers import freq_axis_label
 from equipment_panel import TagDatabasePanel, PIDAnalysisPanel
+import spellcheck
+
+
+class _SpellCheckListItemDelegate(QStyledItemDelegate):
+    """Swaps in a spellcheck-aware QLineEdit for inline QListWidget item
+    editing (2026-09-07, Fas 5, see NOTES.md "Stavningskontroll") -- Qt's
+    own default delegate would otherwise always create a plain QLineEdit
+    for this. A SpellCheckLineEdit IS a QLineEdit, so every other default
+    delegate behavior (reading/writing .text() via Qt's editor user
+    property) keeps working unchanged; only createEditor() differs."""
+
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
+        self._panel = panel
+
+    def createEditor(self, parent, option, index):
+        context = getattr(self._panel, 'spellcheck_context', None)
+        if context is None:
+            return super().createEditor(parent, option, index)
+        return spellcheck.SpellCheckLineEdit(parent, context=context)
 
 
 class StandardCausesSettingsPanel(QWidget):
     """4-level editable hierarchy: Nodtyp → Avvikelse → Objekt → Orsaker."""
 
-    def __init__(self, db, parent=None):
+    def __init__(self, db, spellcheck_context=None, parent=None):
         super().__init__(parent)
         self.db = db
+        self.spellcheck_context = spellcheck_context
         self._loading = False
         self._loading_nt = False
         self._node_type_ids = []
@@ -120,6 +141,7 @@ class StandardCausesSettingsPanel(QWidget):
         self._cause_lbl = QLabel("<b>Orsaker</b>")
         c3.addWidget(self._cause_lbl)
         self._cause_list = QListWidget()
+        self._cause_list.setItemDelegate(_SpellCheckListItemDelegate(self, self._cause_list))
         self._cause_list.currentRowChanged.connect(self._on_cause_sel)
         c3.addWidget(self._cause_list)
 

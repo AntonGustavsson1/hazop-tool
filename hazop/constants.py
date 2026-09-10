@@ -120,6 +120,12 @@ MARKUP_COLORS = ['#E53935', '#F57C00', '#F9A825', '#388E3C',
                   '#00796B', '#1565C0', '#7B1FA2', '#FF4081']
 RISK_ICON   = {'Låg': '🟢', 'Medium': '🟡', 'Hög': '🟠', 'Kritisk': '🔴'}
 
+# Max number of equipment objects a single grouped ("OR"/"&"-joined) cause
+# may carry. Shared by database.py (Database.add_equipment_to_cause_group)
+# and scenario_panel.py (ScenarioTablePanel._handle_drop) so both drop
+# paths cap a group the same way.
+MAX_GROUP_OBJECTS = 20
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TREE NODE TYPES
 # ══════════════════════════════════════════════════════════════════════════════

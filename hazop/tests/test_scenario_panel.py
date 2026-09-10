@@ -1207,8 +1207,16 @@ class ScenarioPanelLoadEquipmentFilterTests(unittest.TestCase):
 
     def test_only_matching_causes_appear_in_row_meta(self):
         from hazop import ScenarioTablePanel
-        dev_id = self.db.get_or_create_deviation(self.node_id, "Lågt flöde", equipment_id=self.eq_id)
+        # A deviation being equipment-owned is not by itself a "mention" --
+        # Database.causes_for_equipment() deliberately excludes a cause with
+        # no other occurrence there (see
+        # tests.test_database.CausesForEquipmentTests
+        # .test_cause_under_equipment_owned_deviation_without_occurrence_is_excluded).
+        # Give this cause a direct tag instead, same as
+        # test_cause_tagged_directly_on_an_unrelated_deviation_is_included.
+        dev_id = self.db.deviations(self.node_id)[0]['id']
         matching_cause = self.db.add_cause(dev_id)
+        self.db.update_cause(matching_cause, comp_type='Ventil', comp_tag='PV-101')
         self.db.add_consequence(matching_cause)
 
         other_dev = self.db.get_or_create_deviation(self.node_id, "Högt flöde")
@@ -1232,7 +1240,11 @@ class ScenarioPanelLoadEquipmentFilterTests(unittest.TestCase):
         panel = ScenarioTablePanel(self.db)
         try:
             panel.load_equipment(self.eq_id)
-            self.assertIn("PV-101", panel._hdr_lbl.text())
+            # Header text is the fixed "HAZOP Scenario" title everywhere
+            # (2026-08-28, see NOTES.md "Finish remaining HAZOP interaction
+            # fixes") -- per-context detail (here, the equipment tag) lives
+            # in the tooltip instead of appended to the visible text.
+            self.assertIn("PV-101", panel._hdr_lbl.toolTip())
         finally:
             panel.deleteLater()
 
@@ -1242,7 +1254,7 @@ class ScenarioPanelLoadEquipmentFilterTests(unittest.TestCase):
         try:
             panel.load_equipment(self.eq_id)   # equipment exists, zero causes mention it
             self.assertEqual(panel._row_meta, [])
-            self.assertIn("PV-101", panel._hdr_lbl.text())
+            self.assertIn("PV-101", panel._hdr_lbl.toolTip())
         finally:
             panel.deleteLater()
 
@@ -1661,6 +1673,32 @@ class CompactScenarioDragGhostTests(unittest.TestCase):
                              'cell-only scope must not bring risk setup')
 
 
+class RebuildClosedDatabaseTests(unittest.TestCase):
+    """A queued _rebuild() (QTimer.singleShot/_schedule_rebuild) can fire
+    after the project database has already closed -- e.g. during window
+    teardown while a paste/edit-triggered rebuild is still pending, the
+    same race documented throughout database.py/hazop.py. Found via a real
+    interpreter crash: showing a modal QMessageBox from this path, rather
+    than treating a closed database as the harmless no-op every other
+    closed-database call site does, could hit a live widget mid-teardown."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_rebuild_after_db_closed_does_not_raise_or_show_dialog(self):
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            node_id = win.db.add_node()
+            panel._node_id = node_id
+            win.db.conn.close()
+            with unittest.mock.patch(
+                    'scenario_panel.QMessageBox.critical') as critical:
+                panel._rebuild()
+            critical.assert_not_called()
+            self.assertFalse(panel._rebuilding)
+
+
 class ConsequenceDoubleClickEditorTests(unittest.TestCase):
     """A real mouse double-click must reach KON's inline editor.
 
@@ -1795,6 +1833,201 @@ class BoldTagPaintSmokeTests(unittest.TestCase):
                 self._paint_cell(panel, row, panel._C_KON)
             except Exception as e:
                 self.fail(f"painting an untagged KON cell must not raise: {e!r}")
+
+
+class StaticSpellcheckUnderlineRenderTests(unittest.TestCase):
+    """Fas 5 (2026-09-07, see NOTES.md "Stavningskontroll") -- Anton: "visa
+    taggigt under felstavade ord även utanför inlineredigeraren". The red
+    squiggly underline must now also appear on the STATIC (painted,
+    non-editing) ORS/KON/SG/REK cell text, not only while the cell is
+    actively being edited. Verified by sampling REAL rendered pixels
+    (same technique as RiskCellActualRenderColorTests above) -- a
+    construct-only test wouldn't prove the underline is actually visible
+    on screen."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_static_spell_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _paint_cell_to_pixmap(self, panel, row, col):
+        # Wide enough that a manually-widened KON/SG column (below) actually
+        # keeps that width once shown -- verified empirically that a
+        # narrower panel silently shrinks a just-set column width back
+        # down once shown/laid out, unlike RiskCellActualRenderColorTests'
+        # narrower 900px (that class never resizes a column itself).
+        panel.resize(1400, 400)
+        panel.show()
+        self.app.processEvents()
+        panel._table.resizeRowsToContents()
+        self.app.processEvents()
+        cell_rect = panel._table.visualRect(panel._table.model().index(row, col))
+        pixmap = panel._table.viewport().grab(cell_rect)
+        panel.hide()
+        return pixmap
+
+    def _has_underline_color(self, pixmap):
+        """Qt draws SpellCheckUnderline as an anti-aliased wavy line, so
+        the real rendered pixels blend toward white rather than ever
+        equaling the exact target color (verified empirically -- a
+        strict equality check found nothing even when the underline was
+        genuinely painted). A generous per-channel tolerance around the
+        target still can't be confused with this table's other painted
+        colors (black text, white/light-grey backgrounds, risk-matrix
+        greens/yellows) since none of those are red-dominant."""
+        from PyQt6.QtGui import QColor
+        import spellcheck
+        target = QColor(spellcheck.SPELLCHECK_UNDERLINE_COLOR)
+        image = pixmap.toImage()
+        for y in range(image.height()):
+            for x in range(image.width()):
+                c = image.pixelColor(x, y)
+                if (abs(c.red() - target.red()) <= 40 and
+                        abs(c.green() - target.green()) <= 100 and
+                        abs(c.blue() - target.blue()) <= 100 and
+                        c.red() > c.green() + 30 and c.red() > c.blue() + 30):
+                    return True
+        return False
+
+    def test_misspelled_kon_cell_shows_the_underline_when_not_editing(self):
+        from hazop import ScenarioTablePanel
+        import spellcheck
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        # Just the one misspelled word -- a longer sentence can word-wrap
+        # to a second line that lands outside the row's own height (a
+        # pre-existing, unrelated row-height/wrap-estimate quirk this
+        # test isn't about), which would clip the very glyphs carrying
+        # the underline before this test ever samples their pixels.
+        self.db.update_consequence(cons_id, "stavningskontrol", 2)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.spellcheck_context = spellcheck.SpellCheckContext(self.db)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            panel._table.setColumnWidth(panel._C_KON, 300)
+            pixmap = self._paint_cell_to_pixmap(panel, row, panel._C_KON)
+            self.assertTrue(self._has_underline_color(pixmap),
+                "a misspelled word in a static (non-editing) KON cell must "
+                "still show the red squiggly underline")
+        finally:
+            panel.deleteLater()
+
+    def test_correctly_spelled_kon_cell_shows_no_underline(self):
+        from hazop import ScenarioTablePanel
+        import spellcheck
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(cons_id, "Detta är en korrekt beskrivning", 2)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.spellcheck_context = spellcheck.SpellCheckContext(self.db)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            pixmap = self._paint_cell_to_pixmap(panel, row, panel._C_KON)
+            self.assertFalse(self._has_underline_color(pixmap),
+                "a correctly-spelled KON cell must show no underline at all")
+        finally:
+            panel.deleteLater()
+
+    def test_no_spellcheck_context_shows_no_underline(self):
+        """Every existing test that builds ScenarioTablePanel directly
+        (no spellcheck_context) must render exactly as before -- default
+        spellcheck_context is None, so _static_misspelled_ranges must be
+        a silent no-op."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(cons_id, "Detta har en stavningskontrol", 2)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            self.assertIsNone(panel.spellcheck_context)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            pixmap = self._paint_cell_to_pixmap(panel, row, panel._C_KON)
+            self.assertFalse(self._has_underline_color(pixmap))
+        finally:
+            panel.deleteLater()
+
+    def test_misspelled_sg_cell_shows_the_underline_when_not_editing(self):
+        from hazop import ScenarioTablePanel
+        import spellcheck
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.db.update_safeguard(sg_id, description="stavningskontrol")
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.spellcheck_context = spellcheck.SpellCheckContext(self.db)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+            panel._table.setColumnWidth(panel._C_SG, 300)
+            pixmap = self._paint_cell_to_pixmap(panel, row, panel._C_SG)
+            self.assertTrue(self._has_underline_color(pixmap))
+        finally:
+            panel.deleteLater()
+
+    def test_ors_tag_prefix_is_never_flagged_as_a_false_positive(self):
+        """The ORS cell's bold object-tag prefix (e.g. "V-101") tokenizes
+        to a bare "V" (digits/hyphen aren't word characters) which isn't
+        itself a registered known tag -- must never be spellchecked as
+        part of the painted prefix, only the real description after it."""
+        from hazop import ScenarioTablePanel
+        import spellcheck
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, description="Detta är en korrekt beskrivning",
+                            comp_type='Ventil', comp_tag='V-101')
+        self.db.add_equipment_item('V-101', 'V-101', 'V', 0, 'Ventil', '', 0)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.spellcheck_context = spellcheck.SpellCheckContext(self.db)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+            pixmap = self._paint_cell_to_pixmap(panel, row, panel._C_ORS)
+            self.assertFalse(self._has_underline_color(pixmap),
+                "the bold 'V-101' tag prefix must never itself be flagged "
+                "as a misspelling")
+        finally:
+            panel.deleteLater()
+
+    def test_misspelled_rek_cell_shows_the_underline_when_not_editing(self):
+        from hazop import ScenarioTablePanel
+        import spellcheck
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.add_recommendation_to_consequence(cons_id, 'stavningskontrol')
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.spellcheck_context = spellcheck.SpellCheckContext(self.db)
+            panel.load_node(node_id)
+            row = next(r for r, m in enumerate(panel._row_meta) if m[2] == cons_id)
+            panel._table.setColumnWidth(panel._C_REK, 300)
+            pixmap = self._paint_cell_to_pixmap(panel, row, panel._C_REK)
+            self.assertTrue(self._has_underline_color(pixmap))
+        finally:
+            panel.deleteLater()
 
 
 class TagDetachContextMenuTests(unittest.TestCase):
@@ -1939,7 +2172,7 @@ class RiskCellColorTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(cause_id, likelihood=freq_level)
+        self.db.update_cause(cause_id, likelihood=freq_level, frequency_cleared=False)
         cons_id = self.db.add_consequence(cause_id)
         cat = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(cons_id, cat['id'], severity)
@@ -2036,7 +2269,7 @@ class RiskCellColorTests(unittest.TestCase):
             node_id = self.db.add_node()
             dev_id = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.update_cause(cause_id, likelihood=3)
+            self.db.update_cause(cause_id, likelihood=3, frequency_cleared=False)
             cons_id = self.db.add_consequence(cause_id)
             self.db.update_consequence(cons_id, 'Ny konsekvens', 4, '')
             panel.load_node(node_id)
@@ -2059,7 +2292,7 @@ class RiskCellColorTests(unittest.TestCase):
             node_id = self.db.add_node()
             dev_id = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.update_cause(cause_id, likelihood=3)
+            self.db.update_cause(cause_id, likelihood=3, frequency_cleared=False)
             cons_id = self.db.add_consequence(cause_id)
             self.db.update_consequence(cons_id, 'Ny konsekvens', 4, '')
             panel.load_node(node_id)
@@ -2084,7 +2317,7 @@ class RiskCellColorTests(unittest.TestCase):
             node_id = self.db.add_node()
             dev_id = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.update_cause(cause_id, likelihood=4)
+            self.db.update_cause(cause_id, likelihood=4, frequency_cleared=False)
             cons_id = self.db.add_consequence(cause_id)
             self.db.update_consequence(cons_id, 'Ny konsekvens', 3, '')
             sg_id = self.db.add_safeguard(cons_id)
@@ -2195,7 +2428,7 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
             node_id = self.db.add_node()
             dev_id = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.update_cause(cause_id, likelihood=5)
+            self.db.update_cause(cause_id, likelihood=5, frequency_cleared=False)
             cons_id = self.db.add_consequence(cause_id)
             self.db.update_consequence(cons_id, 'Ny konsekvens', 5, '')
             cat = self.db.consequence_categories()[0]
@@ -2255,7 +2488,7 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
             node_id = self.db.add_node()
             dev_id = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.update_cause(cause_id, likelihood=3)
+            self.db.update_cause(cause_id, likelihood=3, frequency_cleared=False)
             cons_id = self.db.add_consequence(cause_id)
             self.db.update_consequence(cons_id, 'Ny konsekvens', 3, '')
             category = self.db.consequence_categories()[0]
@@ -2287,7 +2520,7 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
             node_id = self.db.add_node()
             dev_id = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.update_cause(cause_id, likelihood=5)
+            self.db.update_cause(cause_id, likelihood=5, frequency_cleared=False)
             cons_id = self.db.add_consequence(cause_id)
             category = self.db.consequence_categories()[0]
             self.db.set_consequence_severity(cons_id, category['id'], 5)
@@ -2311,7 +2544,7 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
             node_id = self.db.add_node()
             dev_id = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.update_cause(cause_id, likelihood=5)
+            self.db.update_cause(cause_id, likelihood=5, frequency_cleared=False)
             cons_id = self.db.add_consequence(cause_id)
             self.db.update_consequence(cons_id, 'Ny konsekvens', 5, '')
             category = self.db.consequence_categories()[0]
@@ -2900,6 +3133,7 @@ class SgRRFPopupTests(unittest.TestCase):
         from PyQt6.QtWidgets import QCheckBox, QListWidget, QLabel
 
         db = unittest.mock.Mock()
+        db.safeguard_types.return_value = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
         db.get_severity_excluded_sgs.side_effect = lambda severity_id: (
             {1} if severity_id == 1 else set())
         popup = SgRRFCategoryPopup(
@@ -2925,7 +3159,11 @@ class SgRRFPopupTests(unittest.TestCase):
     def test_category_changes_preserve_other_exclusions_and_never_touch_causes(self):
         from scenario_panel import SgRRFCategoryPopup
 
-        db = unittest.mock.Mock()
+        # MagicMock, not Mock: _ok() wraps its save in `with
+        # self.db.history_group():`, which needs a context-manager-capable
+        # mock (2026-09-01, see NOTES.md Ctrl+Z/Ctrl+Y history rule).
+        db = unittest.mock.MagicMock()
+        db.safeguard_types.return_value = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
         # SG 9 currently applies to Människa, but not to Miljö. Other
         # safeguards' exclusions must remain intact when this popup saves.
         db.get_severity_excluded_sgs.side_effect = lambda severity_id: (
@@ -3156,6 +3394,19 @@ class RiskMatrixCategorySectionTests(unittest.TestCase):
         finally:
             popup.deleteLater()
 
+    def test_grid_click_selects_shared_frequency_without_category_assessment(self):
+        from hazop import RiskMatrixPopup
+        popup = RiskMatrixPopup(current_freq=2, current_cons=3,
+                                 db=self.db, cons_id=self.cons_id)
+        try:
+            selected = []
+            popup.frequency_selected.connect(selected.append)
+            popup._grid_buttons[(4, 4)][0].click()
+            self.assertEqual(selected, [4])
+            self.assertEqual(self.db.get_consequence_severities(self.cons_id), [])
+        finally:
+            popup.deleteLater()
+
     def test_final_popup_override_leaves_before_barrier_severity_unchanged(self):
         """A selected Slutkonsekvens level is an optional override, never
         a write to the category severity used by Risk före barriär."""
@@ -3268,7 +3519,7 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(cause_id, likelihood=4)
+        self.db.update_cause(cause_id, likelihood=4, frequency_cleared=False)
         cons_id = self.db.add_consequence(cause_id)
         cat = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(cons_id, cat['id'], 4)
@@ -3307,7 +3558,7 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(cause_id, likelihood=4)
+        self.db.update_cause(cause_id, likelihood=4, frequency_cleared=False)
         cons_id = self.db.add_consequence(cause_id)
         cat = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(cons_id, cat['id'], 3)
@@ -3330,7 +3581,7 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(cause_id, likelihood=3)
+        self.db.update_cause(cause_id, likelihood=3, frequency_cleared=False)
         cons_id = self.db.add_consequence(cause_id)
         cat = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(cons_id, cat['id'], 4)
@@ -3359,7 +3610,7 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(cause_id, likelihood=3)
+        self.db.update_cause(cause_id, likelihood=3, frequency_cleared=False)
         cons_id = self.db.add_consequence(cause_id)
         cats = self.db.consequence_categories()
         self.assertGreaterEqual(len(cats), 1)
@@ -3394,7 +3645,7 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(cause_id, likelihood=3)
+        self.db.update_cause(cause_id, likelihood=3, frequency_cleared=False)
         cons_id = self.db.add_consequence(cause_id)
         first_cat = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(cons_id, first_cat['id'], 3)
@@ -3424,7 +3675,7 @@ class KonCellCategoryBadgeMovedToRiskMatrixTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(cause_id, likelihood=3)
+        self.db.update_cause(cause_id, likelihood=3, frequency_cleared=False)
         cons_id = self.db.add_consequence(cause_id)
         cats = self.db.consequence_categories()
         self.db.set_consequence_severity(cons_id, cats[0]['id'], 3)
@@ -3542,8 +3793,8 @@ class RecommendationInlineAddRowTests(unittest.TestCase):
                        if meta[2] == cons_id)
             panel._table.setColumnWidth(panel._C_REK, 125)
             with unittest.mock.patch.object(
-                    panel, '_resize_recommendation_editor',
-                    wraps=panel._resize_recommendation_editor) as resize_editor:
+                    panel, '_resize_cell_editor',
+                    wraps=panel._resize_cell_editor) as resize_editor:
                 panel._try_start_edit(row, panel._C_REK)
                 self.app.processEvents()
             self.assertGreaterEqual(resize_editor.call_count, 1,
@@ -3560,6 +3811,237 @@ class RecommendationInlineAddRowTests(unittest.TestCase):
             self.assertGreaterEqual(panel._table.rowHeight(row), required)
         finally:
             panel.deleteLater()
+
+
+class OrsKonSgEditorAutoGrowTests(unittest.TestCase):
+    """ORS/KON/SG cell editors grow the row live while editing, the same
+    way REK already did (2026-09-06, Anton: "vill se helheten" -- opening
+    a long existing ORS/KON/SG value, or typing a long one, must show the
+    whole text instead of staying clamped to the static painted height)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_cell_autogrow_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _editor_for(self, panel, row, col):
+        from scenario_panel import _BoldTagTextEdit
+        return next(w for w in panel._table.viewport().findChildren(_BoldTagTextEdit)
+                    if w.property('editing_row') == row and w.property('editing_col') == col)
+
+    def test_kon_editor_grows_with_wrapped_text(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        self.db.update_consequence(cons_id, 'Kort', 1)
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, meta in enumerate(panel._row_meta) if meta[2] == cons_id)
+            panel._table.setColumnWidth(panel._C_KON, 120)
+            panel._try_start_edit(row, panel._C_KON)
+            self.app.processEvents()
+            editor = self._editor_for(panel, row, panel._C_KON)
+            before = panel._table.rowHeight(row)
+            editor.setText('Detta är en lång konsekvenstext som ska radbrytas '
+                           'och göra hela texten synlig under redigering.')
+            self.app.processEvents()
+            self.assertGreater(panel._table.rowHeight(row), before)
+        finally:
+            panel.deleteLater()
+
+    def test_sg_editor_grows_with_wrapped_text(self):
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.db.update_safeguard(sg_id, description='Kort')
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, meta in enumerate(panel._row_meta) if meta[3] == sg_id)
+            panel._table.setColumnWidth(panel._C_SG, 120)
+            panel._try_start_edit(row, panel._C_SG)
+            self.app.processEvents()
+            editor = self._editor_for(panel, row, panel._C_SG)
+            before = panel._table.rowHeight(row)
+            editor.setText('Detta är en lång barriärtext som ska radbrytas '
+                           'och göra hela texten synlig under redigering.')
+            self.app.processEvents()
+            self.assertGreater(panel._table.rowHeight(row), before)
+        finally:
+            panel.deleteLater()
+
+    def test_ors_editor_resizes_on_open_for_an_existing_long_value(self):
+        """Opening an existing long ORS cell must show it fully right
+        away, not only after the user types more (mirrors REK's own
+        test_recommendation_editor_resizes_on_open_for_its_narrower_width)."""
+        from hazop import ScenarioTablePanel
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(
+            cause_id,
+            description='En befintlig, ganska lång orsakstext som måste '
+                        'radbrytas flera gånger i den smala redigeraren.')
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(node_id)
+            row = next(r for r, meta in enumerate(panel._row_meta) if meta[1] == cause_id)
+            panel._table.setColumnWidth(panel._C_ORS, 150)
+            with unittest.mock.patch.object(
+                    panel, '_resize_cell_editor',
+                    wraps=panel._resize_cell_editor) as resize_editor:
+                panel._try_start_edit(row, panel._C_ORS)
+                self.app.processEvents()
+            self.assertGreaterEqual(resize_editor.call_count, 1,
+                                    'opening an existing ORS value must recalculate its height')
+            editor = self._editor_for(panel, row, panel._C_ORS)
+            fm = QFontMetrics(editor.font())
+            required = max(
+                fm.height() + 6,
+                fm.boundingRect(0, 0, max(40, editor.width()), 10000,
+                                Qt.TextFlag.TextWordWrap,
+                                editor.toPlainText()).height() + 4)
+            self.assertGreaterEqual(panel._table.rowHeight(row), required)
+        finally:
+            panel.deleteLater()
+
+
+class MultiplePanelEnterKeyOwnershipTests(unittest.TestCase):
+    """(2026-09-07, Anton: "När jag klickar enter vid safeguard på hazop
+    scenario får jag någon form av fel. Qt [QtWarningMsg]
+    QAbstractItemView::closeEditor called with an editor that does not
+    belong to this view") -- every ScenarioTablePanel installs itself as
+    an APPLICATION-level event filter (see the "Listen at application
+    level..." comment above installEventFilter(self) in __init__), and
+    the real app always has at least two alive at once (the main Scenario
+    panel plus Worksheet's separately-embedded one). Before this fix,
+    eventFilter()'s Enter-in-editor branch matched purely on the widget's
+    TYPE/properties, not on which panel's table it actually belongs to --
+    whichever panel's filter happened to run first for a KeyPress claimed
+    it (and `return True` then stopped the OTHER, actually-owning panel
+    from ever getting a turn), so commitData/closeEditor fired on an
+    editor that panel's own delegate/view never opened. Reproduced here
+    with the exact minimal ingredient (a second ScenarioTablePanel alive,
+    sharing the same db -- never shown, never touched) that isolates it
+    from every other candidate (stylesheets, MainWindow's own separate
+    app-level undo/redo filter, window visibility -- all ruled out during
+    the investigation)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='hazop_multipanel_enter_test_')
+        self.db = Database(path=os.path.join(self.tmpdir, 'project.db'))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_enter_in_sg_editor_commits_correctly_with_a_second_panel_alive(self):
+        from hazop import ScenarioTablePanel
+        from scenario_panel import _BoldTagTextEdit
+        from PyQt6.QtTest import QTest
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+
+        panel = ScenarioTablePanel(self.db)
+        # The second panel is the whole point of this test -- never shown,
+        # never interacted with, just alive (mirrors Worksheet's own
+        # embedded ScenarioTablePanel existing alongside the main one).
+        other_panel = ScenarioTablePanel(self.db)
+        try:
+            panel.resize(1000, 400)
+            panel.show()
+            self.app.processEvents()
+            panel.load_node(node_id)
+            self.app.processEvents()
+            panel._table.setColumnWidth(panel._C_SG, 200)
+            self.app.processEvents()
+
+            row = next(r for r, m in enumerate(panel._row_meta) if m[3] == sg_id)
+            panel._try_start_edit(row, panel._C_SG)
+            self.app.processEvents()
+            editor = next(w for w in panel._table.viewport().findChildren(_BoldTagTextEdit)
+                          if w.property('editing_col') == panel._C_SG)
+
+            editor.setFocus()
+            self.app.processEvents()
+            QTest.keyClicks(editor, 'Barriartext')
+            self.app.processEvents()
+            QTest.keyClick(editor, Qt.Key.Key_Return)
+            self.app.processEvents()
+
+            self.assertEqual(self.db.get_safeguard(sg_id)['description'],
+                             'Barriartext',
+                             "the edit must reach the panel that actually "
+                             "owns this editor, not be silently dropped "
+                             "because a second panel's event filter claimed it")
+        finally:
+            panel.deleteLater()
+            other_panel.deleteLater()
+
+    def test_second_panels_own_editor_is_still_reachable_by_its_own_filter(self):
+        """The ownership guard must narrow to "this panel's table", not
+        break Enter entirely -- the SECOND panel's own editor must still
+        commit correctly through its own eventFilter()."""
+        from hazop import ScenarioTablePanel
+        from scenario_panel import _BoldTagTextEdit
+        from PyQt6.QtTest import QTest
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+
+        panel = ScenarioTablePanel(self.db)
+        other_panel = ScenarioTablePanel(self.db)
+        try:
+            other_panel.resize(1000, 400)
+            other_panel.show()
+            self.app.processEvents()
+            other_panel.load_node(node_id)
+            self.app.processEvents()
+            other_panel._table.setColumnWidth(other_panel._C_SG, 200)
+            self.app.processEvents()
+
+            row = next(r for r, m in enumerate(other_panel._row_meta) if m[3] == sg_id)
+            other_panel._try_start_edit(row, other_panel._C_SG)
+            self.app.processEvents()
+            editor = next(w for w in other_panel._table.viewport().findChildren(_BoldTagTextEdit)
+                          if w.property('editing_col') == other_panel._C_SG)
+
+            editor.setFocus()
+            self.app.processEvents()
+            QTest.keyClicks(editor, 'Andra panelens text')
+            self.app.processEvents()
+            QTest.keyClick(editor, Qt.Key.Key_Return)
+            self.app.processEvents()
+
+            self.assertEqual(self.db.get_safeguard(sg_id)['description'],
+                             'Andra panelens text')
+        finally:
+            panel.deleteLater()
+            other_panel.deleteLater()
 
 
 class TooltipContrastTests(unittest.TestCase):
@@ -4323,10 +4805,20 @@ class OrsStandardCausesForRowTests(unittest.TestCase):
     def test_object_hierarchy_match_is_preferred(self):
         """Best case: a standard_deviations row with the same text AND
         a standard_causes row scoped to (that deviation, that object)."""
-        std_dev_id = self.db.conn.execute(
-            "INSERT INTO standard_deviations (description) VALUES (?)",
-            (self.dev_description,)).lastrowid
-        self.db.commit()
+        # A brand-new node's default deviation text is one of the seeded
+        # guide words, which already has its own standard_deviations row
+        # (unique index on description) -- reuse it instead of inserting
+        # a duplicate.
+        existing = self.db.conn.execute(
+            "SELECT id FROM standard_deviations WHERE description=?",
+            (self.dev_description,)).fetchone()
+        if existing:
+            std_dev_id = existing['id']
+        else:
+            std_dev_id = self.db.conn.execute(
+                "INSERT INTO standard_deviations (description) VALUES (?)",
+                (self.dev_description,)).lastrowid
+            self.db.commit()
         obj_id = self.db.add_standard_object("Xyzzyobjekt")
         self.db.add_standard_cause_with_object(std_dev_id, obj_id, "Via objekt-hierarki")
 
@@ -4343,9 +4835,15 @@ class OrsStandardCausesForRowTests(unittest.TestCase):
         named "Xyzzyobjekt" exists — the object-hierarchy step (step 1)
         therefore can't resolve an object_id and fails, falling back to
         a plain comp_type + deviation-text match (step 2) instead."""
-        std_dev_id = self.db.conn.execute(
-            "INSERT INTO standard_deviations (description) VALUES (?)",
-            (self.dev_description,)).lastrowid
+        existing = self.db.conn.execute(
+            "SELECT id FROM standard_deviations WHERE description=?",
+            (self.dev_description,)).fetchone()
+        if existing:
+            std_dev_id = existing['id']
+        else:
+            std_dev_id = self.db.conn.execute(
+                "INSERT INTO standard_deviations (description) VALUES (?)",
+                (self.dev_description,)).lastrowid
         self.db.conn.execute(
             "INSERT INTO standard_causes (deviation_id, description, comp_type) "
             "VALUES (?, 'Via comp_type+avvikelse', 'Xyzzyobjekt')", (std_dev_id,))
@@ -4452,10 +4950,17 @@ class CauseCompleterFallbackTests(unittest.TestCase):
             "helper's narrower cascade finds nothing")
 
     def test_completer_uses_narrow_cascade_result_when_available(self):
-        std_dev_id = self.db.conn.execute(
-            "INSERT INTO standard_deviations (description) VALUES (?)",
-            (self.db.get_deviation(self.dev_id)['description'],)).lastrowid
-        self.db.commit()
+        dev_description = self.db.get_deviation(self.dev_id)['description']
+        existing = self.db.conn.execute(
+            "SELECT id FROM standard_deviations WHERE description=?",
+            (dev_description,)).fetchone()
+        if existing:
+            std_dev_id = existing['id']
+        else:
+            std_dev_id = self.db.conn.execute(
+                "INSERT INTO standard_deviations (description) VALUES (?)",
+                (dev_description,)).lastrowid
+            self.db.commit()
         obj_id = self.db.add_standard_object("Xyzzyobjekt")
         self.db.add_standard_cause_with_object(std_dev_id, obj_id, "Specifik träff")
         # An unrelated global cause that must NOT appear once a specific match exists
@@ -4606,6 +5111,23 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
             self.db.update_cause(cause_id, comp_type=comp_type, comp_tag=comp_tag)
         return cause_id
 
+    def test_frequency_display_setting_controls_cause_frequency_label(self):
+        numeric = 0.02
+        expected_numeric = f"0.02/{chr(229)}r"
+
+        category = self.panel._ors_freq_label(3, None)
+        self.assertEqual(self.panel._ors_freq_label(3, numeric), category)
+
+        self.db.set_config('scenario_frequency_display_mode', 'category_numeric')
+        self.panel.refresh_visual_settings()
+        self.assertEqual(
+            self.panel._ors_freq_label(3, numeric),
+            f"{category} ({expected_numeric})")
+
+        self.db.set_config('scenario_frequency_display_mode', 'numeric')
+        self.panel.refresh_visual_settings()
+        self.assertEqual(self.panel._ors_freq_label(3, numeric), expected_numeric)
+
     def _start_edit(self, cause_id):
         self.panel.load_node(self.node_id)
         row = next(r for r, m in enumerate(self.panel._row_meta) if m[1] == cause_id)
@@ -4717,27 +5239,6 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
         self.assertEqual(self.panel._table.item(row, self.panel._C_RFORE).text(), '')
         self.assertEqual(self.panel._table.item(row, self.panel._C_SLUT).text(), '')
 
-    def test_picking_standard_cause_reactivates_its_frequency(self):
-        standard_id = self.db.add_standard_cause_with_object(
-            self.std_dev_id, self.obj_id, 'Ventil felaktigt stängd')
-        self.db.conn.execute(
-            'UPDATE standard_causes SET frequency=? WHERE id=?',
-            (0.02, standard_id))
-        self.db.commit()
-        cause_id = self._make_cause()
-        self._start_edit(cause_id)
-        popup = self._popup()
-        self.assertIsNotNone(popup)
-
-        popup._pick('Ventil felaktigt stängd')
-        from PyQt6.QtTest import QTest
-        QTest.qWait(20)
-
-        cause = self.db.get_cause(cause_id)
-        self.assertEqual(cause['standard_cause_id'], standard_id)
-        self.assertEqual(cause['base_frequency'], 0.02)
-        self.assertFalse(cause['frequency_cleared'])
-
     def test_picking_a_standard_cause_saves_it_and_closes_the_editor(self):
         self.db.add_standard_cause_with_object(self.std_dev_id, self.obj_id, "Felar stängd")
         cause_id = self._make_cause()
@@ -4756,6 +5257,25 @@ class StandardCauseSuggestPopupTests(unittest.TestCase):
         self.assertIsNone(self._editor_for_row(row),
             "picking a standard cause must close the cell editor")
         self.assertEqual(self.db.get_cause(cause_id)['description'], "Felar stängd")
+
+    def test_picking_a_standard_cause_applies_its_frequency(self):
+        standard_id = self.db.add_standard_cause_with_object(
+            self.std_dev_id, self.obj_id, "Ventil felaktigt stängd")
+        self.db.conn.execute(
+            "UPDATE standard_causes SET frequency=? WHERE id=?",
+            (0.02, standard_id))
+        self.db.commit()
+        cause_id = self._make_cause()
+        self._start_edit(cause_id)
+        popup = self._popup()
+        self.assertIsNotNone(popup)
+
+        popup._pick({'id': standard_id, 'description': "Ventil felaktigt stängd",
+                     'frequency': 0.02})
+        saved = dict(self.db.get_cause(cause_id))
+        self.assertEqual(saved['standard_cause_id'], standard_id)
+        self.assertAlmostEqual(saved['base_frequency'], 0.02)
+        self.assertEqual(saved['likelihood'], 3)
 
     def test_clicking_frequency_commits_unconfirmed_text_first(self):
         """Regression guard for the most fragile part of this feature:
@@ -5460,6 +5980,30 @@ class CellObjectReferenceEditTests(unittest.TestCase):
         finally:
             popup.deleteLater()
 
+    def test_object_list_selection_rebinds_the_cause(self):
+        from scenario_panel import _ObjectTagActionPopup
+
+        self.db.update_cause(
+            self.cause_id, comp_type='Ventil', comp_tag='PV-101',
+            equipment_id=self.old_id)
+        popup = _ObjectTagActionPopup(
+            self.db, self.db.get_equipment_by_id(self.old_id), parent=self.panel)
+        popup.object_selected.connect(
+            lambda equipment: self.panel._replace_object_reference(
+                {'kind': 'cause', 'id': self.cause_id, 'tag': 'PV-101'},
+                equipment))
+        try:
+            index = next(
+                i for i in range(popup._object_combo.count())
+                if (popup._object_combo.itemData(i) or {}).get('id') == self.new_id)
+            popup._show_object_picker()
+            popup._object_combo.setCurrentIndex(index)
+            cause = self.db.get_cause(self.cause_id)
+            self.assertEqual(cause['equipment_id'], self.new_id)
+            self.assertEqual(cause['comp_tag'], 'PV-102')
+        finally:
+            popup.deleteLater()
+
     def test_change_object_type_keeps_the_same_object_and_tag(self):
         emitted = []
         self.panel.equipment_renamed.connect(lambda: emitted.append(True))
@@ -5715,7 +6259,7 @@ class ReductionFactorsDialogTests(unittest.TestCase):
 
         category_id = self.db.add_category('Människa')
         self.db.set_consequence_severity(self.cons_id, category_id, 3)
-        self.db.update_cause(self.cause_id, likelihood=4)
+        self.db.update_cause(self.cause_id, likelihood=4, frequency_cleared=False)
         ignition_id = self.db.add_reduction_factor(self.cons_id, 'Antändning', 10)
         self.db.add_reduction_factor(self.cons_id, 'Eskalering', 10)
         severity_id = self.db.get_consequence_severities(self.cons_id)[0]['id']
@@ -5743,6 +6287,263 @@ class ReductionFactorsDialogTests(unittest.TestCase):
         final_f, total_rrf, steps = total_freq_reduction(
             4, 1, False, 10, False, 10, [{'rrf': 100, 'active': 1}])
         self.assertEqual((final_f, total_rrf, steps), (2, 100, 2))
+
+
+class FrequencyRRFBadgeHeightAndHoverTests(unittest.TestCase):
+    """(2026-09-06) Anton: "jag skulle gärna se att du ser över placering
+    av frekvensknappen och rrf-knappen så de får motsvarande samma höjd
+    som enablers" + "fixar så att de har samma effekt när man hovrar över
+    dem." The frequency badge (ORS column) used to be painted at
+    _ORS_FIRST_LINE_H (17px, minus the 2px .adjusted() trim = effectively
+    15px) while the RRF badge and the real Enablers QPushButton both use
+    SUMMARY_BADGE_HEIGHT (22px) — a visible height mismatch. And neither
+    delegate-painted badge ever showed a hover state in practice, because
+    QTableWidget only reports per-item State_MouseOver while the view has
+    mouse tracking enabled — which this table never turned on (the
+    Enablers button doesn't need it: as a real child QPushButton it gets
+    native hover for free)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_freq_rrf_badge_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_row_with_freq_and_rrf(self, panel):
+        node_id = self.db.add_node()
+        dev_id = self.db.deviations(node_id)[0]['id']
+        cause_id = self.db.add_cause(dev_id)
+        self.db.update_cause(cause_id, description='Test orsak', base_frequency=0.01,
+                             frequency_cleared=False)
+        cons_id = self.db.add_consequence(cause_id)
+        sg_id = self.db.add_safeguard(cons_id)
+        self.db.update_safeguard(sg_id, 'Test barriär', rrf=10)
+        panel.load_node(node_id)
+        row = next(r for r, m in enumerate(panel._row_meta) if m[1] == cause_id)
+        return row
+
+    def test_table_has_mouse_tracking_enabled_for_badge_hover(self):
+        from hazop import ScenarioTablePanel
+        panel = ScenarioTablePanel(self.db)
+        try:
+            self.assertTrue(
+                panel._table.hasMouseTracking(),
+                "mouse tracking must be on so RRF/frequency badges' "
+                "State_MouseOver hover branch is ever actually reached")
+        finally:
+            panel.deleteLater()
+
+    def test_frequency_badge_height_matches_rrf_badge_on_a_tall_row(self):
+        from hazop import ScenarioTablePanel
+        from design import SUMMARY_BADGE_HEIGHT
+        from PyQt6.QtGui import QPainter, QPixmap
+        from PyQt6.QtWidgets import QStyleOptionViewItem
+        from PyQt6.QtCore import QRect
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            row = self._make_row_with_freq_and_rrf(panel)
+
+            captured = []
+            def _capture(painter, rect, text, option, font=None):
+                captured.append((text, rect))
+
+            option = QStyleOptionViewItem()
+            option.rect = QRect(0, 0, 300, 60)   # plenty tall for a full badge
+            option.font = panel._table.font()
+            pixmap = QPixmap(option.rect.size())
+            painter = QPainter(pixmap)
+            try:
+                with unittest.mock.patch(
+                        'scenario_panel._paint_summary_badge', side_effect=_capture):
+                    panel._pid_delegate.paint(
+                        painter, option, panel._table.model().index(row, panel._C_ORS))
+                    panel._pid_delegate.paint(
+                        painter, option, panel._table.model().index(row, panel._C_SG))
+            finally:
+                painter.end()
+
+            self.assertEqual(len(captured), 2, captured)
+            freq_text, freq_rect = captured[0]
+            rrf_text, rrf_rect = captured[1]
+            self.assertEqual(rrf_text, '10')
+            self.assertEqual(rrf_rect.height(), SUMMARY_BADGE_HEIGHT,
+                "RRF badge height must match the Enablers button height")
+            self.assertEqual(freq_rect.height(), SUMMARY_BADGE_HEIGHT,
+                "frequency badge height must match the RRF/Enablers height, "
+                "not the shorter _ORS_FIRST_LINE_H text-line metric")
+            self.assertEqual(freq_rect.height(), rrf_rect.height())
+        finally:
+            panel.deleteLater()
+
+    def test_frequency_and_rrf_badges_clamp_identically_on_a_short_row(self):
+        """Both badges must degrade the same way when a row is shorter
+        than SUMMARY_BADGE_HEIGHT, not just when there's ample room."""
+        from hazop import ScenarioTablePanel
+        from PyQt6.QtGui import QPainter, QPixmap
+        from PyQt6.QtWidgets import QStyleOptionViewItem
+        from PyQt6.QtCore import QRect
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            row = self._make_row_with_freq_and_rrf(panel)
+
+            captured = []
+            def _capture(painter, rect, text, option, font=None):
+                captured.append((text, rect))
+
+            option = QStyleOptionViewItem()
+            option.rect = QRect(0, 0, 300, 10)   # shorter than the badge
+            option.font = panel._table.font()
+            pixmap = QPixmap(300, 10)
+            painter = QPainter(pixmap)
+            try:
+                with unittest.mock.patch(
+                        'scenario_panel._paint_summary_badge', side_effect=_capture):
+                    panel._pid_delegate.paint(
+                        painter, option, panel._table.model().index(row, panel._C_ORS))
+                    panel._pid_delegate.paint(
+                        painter, option, panel._table.model().index(row, panel._C_SG))
+            finally:
+                painter.end()
+
+            self.assertEqual(len(captured), 2, captured)
+            _freq_text, freq_rect = captured[0]
+            _rrf_text, rrf_rect = captured[1]
+            self.assertEqual(freq_rect.height(), rrf_rect.height(),
+                "on a short row the two badges must still clamp to the "
+                "same reduced height, not drift apart")
+        finally:
+            panel.deleteLater()
+
+    def test_enablers_cell_widget_top_aligns_with_the_row_like_the_badges(self):
+        """(2026-09-06) Anton, from a screenshot: "knapparna för Frekvens,
+        RRF och Enablers sitter på olika höjd och har olika känsla" — the
+        Enablers cell widget used to go through the generic REK-style
+        updateEditorGeometry fallback (adjusted(2,2,-2,-2)), landing
+        2-3px lower than the RRF/Frequency badges' own top+1 position on
+        any row taller than the widget's fixed height. It must now land
+        flush with the row's own top, exactly like the painted badges."""
+        from hazop import ScenarioTablePanel
+        from PyQt6.QtWidgets import QStyleOptionViewItem
+        from PyQt6.QtCore import QRect
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            row = self._make_row_with_freq_and_rrf(panel)
+            lopa_widget = panel._table.cellWidget(row, panel._C_LOPA)
+            self.assertIsNotNone(lopa_widget, "sanity: the Enablers cell widget must exist")
+
+            index = panel._table.model().index(row, panel._C_LOPA)
+            option = QStyleOptionViewItem()
+            option.rect = QRect(0, 0, 130, 60)   # a row much taller than the widget
+            panel._delegate.updateEditorGeometry(lopa_widget, option, index)
+
+            self.assertEqual(lopa_widget.geometry().top(), option.rect.top(),
+                "the Enablers cell widget must stay flush with the row's "
+                "own top, not be pushed down by the generic REK-style inset")
+        finally:
+            panel.deleteLater()
+
+    def test_frequency_badge_horizontal_margin_matches_rrf_badge(self):
+        """(2026-09-06 follow-up) Anton: "frekvens och rrf börjar
+        fortfarande inte med samma avstånd ... i sidled" — the ORS
+        column's call sites (paint(), updateEditorGeometry(), and the
+        click hit-test) all passed row_right as `cell.right() - 2`, an
+        extra inset _sg_rrf_zone_geometry (used for the RRF badge) never
+        applied, leaving the frequency badge starting 2px further from
+        its own cell's right edge than the RRF badge did from its own.
+        Both must now sit the exact same distance from their cell's
+        right edge."""
+        from hazop import ScenarioTablePanel
+        from PyQt6.QtGui import QPainter, QPixmap
+        from PyQt6.QtWidgets import QStyleOptionViewItem
+        from PyQt6.QtCore import QRect
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            row = self._make_row_with_freq_and_rrf(panel)
+
+            captured = []
+            def _capture(painter, rect, text, option, font=None):
+                captured.append((text, rect))
+
+            option = QStyleOptionViewItem()
+            option.rect = QRect(0, 0, 300, 60)
+            option.font = panel._table.font()
+            pixmap = QPixmap(option.rect.size())
+            painter = QPainter(pixmap)
+            try:
+                with unittest.mock.patch(
+                        'scenario_panel._paint_summary_badge', side_effect=_capture):
+                    panel._pid_delegate.paint(
+                        painter, option, panel._table.model().index(row, panel._C_ORS))
+                    panel._pid_delegate.paint(
+                        painter, option, panel._table.model().index(row, panel._C_SG))
+            finally:
+                painter.end()
+
+            self.assertEqual(len(captured), 2, captured)
+            _freq_text, freq_rect = captured[0]
+            _rrf_text, rrf_rect = captured[1]
+            freq_margin = option.rect.right() - freq_rect.right()
+            rrf_margin = option.rect.right() - rrf_rect.right()
+            self.assertEqual(freq_margin, rrf_margin,
+                "both badges must start the same distance from their "
+                "own cell's right edge")
+        finally:
+            panel.deleteLater()
+
+    def test_painted_badge_renders_at_exactly_summary_badge_height_pixels(self):
+        """(2026-09-06 follow-up) Anton: "ser ut som det är olika höjd på
+        Frekvens, RRF och enablers ... är det så?" — after the top-
+        alignment fix above, the painted badges still measured 1-2px
+        TALLER than the real Enablers button once actually rendered:
+        QPainter.drawRect() paints a border-to-border span one pixel
+        bigger than the QRect's own height (a documented Qt quirk), and
+        antialiasing on a purely axis-aligned rect added a further
+        sub-pixel bleed on top of that. Locks in the fix (AA off + a -1
+        draw-rect trim in _paint_summary_badge) by actually rendering to
+        a QPixmap and measuring the real painted pixel span — the
+        logical `rect` argument alone (checked by the tests above)
+        wouldn't have caught this."""
+        from scenario_panel import _paint_summary_badge
+        from design import SUMMARY_BADGE_HEIGHT
+        from PyQt6.QtGui import QPainter, QPixmap, QFont
+        from PyQt6.QtWidgets import QStyleOptionViewItem
+        from PyQt6.QtCore import QRect
+
+        width, height = 60, 30
+        pixmap = QPixmap(width, height)
+        pixmap.fill(Qt.GlobalColor.white)
+        painter = QPainter(pixmap)
+        option = QStyleOptionViewItem()
+        option.font = QFont()
+        try:
+            _paint_summary_badge(
+                painter, QRect(2, 2, 50, SUMMARY_BADGE_HEIGHT), '10', option)
+        finally:
+            painter.end()
+
+        image = pixmap.toImage()
+        def is_bg(y):
+            return image.pixelColor(30, y).name() == '#ffffff'
+        rows_with_content = [y for y in range(height) if not is_bg(y)]
+        self.assertTrue(rows_with_content, "sanity: the badge must have painted something")
+        top, bottom = min(rows_with_content), max(rows_with_content)
+        self.assertEqual(bottom - top + 1, SUMMARY_BADGE_HEIGHT,
+            "the painted badge must render at exactly its logical height, "
+            "not 1-2px taller due to AA bleed or drawRect's border-to-"
+            "border +1 convention")
 
 
 if __name__ == "__main__":

@@ -407,6 +407,33 @@ def lopa_table_stylesheet() -> str:
     )
 
 
+def lopa_barrier_matrix_header_stylesheet(
+        *, sub_label: bool = False, border_right: bool = True,
+        border_bottom: bool = False) -> str:
+    """Custom hierarchical header for the OBEROENDE BARRIÄRER matrix.
+
+    ``_BarrierMatrixHeaderWidget`` paints its own two-row header (type ->
+    Barriär/RRF) as plain QLabels instead of a real QHeaderView, since a
+    QHeaderView cannot express that grouping. Reusing the same tokens as
+    ``lopa_table_stylesheet()``'s ``QHeaderView::section`` (2026-09-04) makes
+    it read as one header with the rest of the LOPA page instead of a
+    visually distinct block. ``sub_label=True`` gives the smaller
+    'Barriär'/'RRF' row the same muted-secondary treatment
+    ``lopa_note_stylesheet()`` uses elsewhere on this page. ``border_right``/
+    ``border_bottom`` toggle the divider lines a given cell needs (the last
+    column in each row has no right border; the barrier-type row has a
+    bottom border over its own Barriär/RRF sub-row).
+    """
+    borders = ''
+    if border_right:
+        borders += f'border-right:1px solid {SEPARATOR};'
+    if border_bottom:
+        borders += f'border-bottom:1px solid {SEPARATOR};'
+    if sub_label:
+        return f'font-weight:500;font-size:8pt;padding:4px;color:{SECONDARY_TEXT};{borders}'
+    return f'font-weight:600;padding:6px;background:{SUBTLE_SURFACE};color:{TEXT};{borders}'
+
+
 def lopa_hierarchy_stylesheet() -> str:
     """Return the compact, readable HAZOP source hierarchy style for LOPA.
 

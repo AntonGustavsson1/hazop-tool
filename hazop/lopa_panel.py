@@ -9,6 +9,7 @@ entry build on the same Database methods in subsequent phases.
 from __future__ import annotations
 
 import json
+import re
 
 from PyQt6.QtCore import QDate, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (
     QBoxLayout,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
@@ -39,6 +41,8 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QStyle,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -47,6 +51,7 @@ from PyQt6.QtWidgets import (
 
 from database import Database
 from lopa_export import export_lopa_excel
+from ui_helpers import _BoldTagTextEdit, _draw_text_with_bold_tags
 from design import (
     LOPA_BREAKPOINT_HEADER_SINGLE,
     LOPA_BREAKPOINT_OVERVIEW,
@@ -59,6 +64,7 @@ from design import (
     MUTED_TEXT,
     SECONDARY_TEXT,
     TEXT,
+    lopa_barrier_matrix_header_stylesheet,
     lopa_card_stylesheet,
     lopa_category_badge_stylesheet,
     lopa_ghost_button_stylesheet,
@@ -89,7 +95,7 @@ class _BarrierMatrixHeaderWidget(QWidget):
         # Fixed columns
         for label_text in ['Källscenario', 'Grundfrekvens']:
             label = QLabel(label_text)
-            label.setStyleSheet(f'font-weight: 600; padding: 8px; border-right: 1px solid #ddd;')
+            label.setStyleSheet(lopa_barrier_matrix_header_stylesheet())
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             if col_idx < len(self.column_widths):
                 label.setFixedWidth(self.column_widths[col_idx])
@@ -109,8 +115,7 @@ class _BarrierMatrixHeaderWidget(QWidget):
             # Top: Barrier type
             type_label = QLabel(barrier_type)
             type_label.setStyleSheet(
-                'font-weight: 600; padding: 6px; text-align: center; '
-                'border-bottom: 1px solid #ddd; border-right: 1px solid #ddd;')
+                lopa_barrier_matrix_header_stylesheet(border_bottom=True))
             type_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             type_layout.addWidget(type_label)
 
@@ -122,8 +127,7 @@ class _BarrierMatrixHeaderWidget(QWidget):
             for sub_label_text in ['Barriär', 'RRF']:
                 sub_label = QLabel(sub_label_text)
                 sub_label.setStyleSheet(
-                    'font-weight: 500; font-size: 11px; padding: 4px; text-align: center; '
-                    'border-right: 1px solid #ddd; color: #666;')
+                    lopa_barrier_matrix_header_stylesheet(sub_label=True))
                 sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 if col_idx < len(self.column_widths):
                     sub_label.setFixedWidth(self.column_widths[col_idx])
@@ -135,7 +139,8 @@ class _BarrierMatrixHeaderWidget(QWidget):
 
         # Fixed column: Återstående frekvens
         remaining_label = QLabel('Återstående\nfrekvens')
-        remaining_label.setStyleSheet('font-weight: 600; padding: 8px; text-align: center;')
+        remaining_label.setStyleSheet(
+            lopa_barrier_matrix_header_stylesheet(border_right=False))
         remaining_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         remaining_label.setWordWrap(True)
         if col_idx < len(self.column_widths):
@@ -143,6 +148,91 @@ class _BarrierMatrixHeaderWidget(QWidget):
         layout.addWidget(remaining_label, 0)
 
         self.setFixedHeight(50)
+
+
+class _LopaHierarchyDelegate(QStyledItemDelegate):
+    """Bold object tags + tag-search completion for the Orsak/Konsekvens
+    cells of the HAZOP-SCENARIER table.
+
+    Mirrors scenario_panel.py's _PidDelegate/_BoldTagTextEdit treatment of
+    the equivalent HAZOP Scenario columns, simplified: no P&ID placement
+    icon, no grouped-cause multi-line handling (a LOPA row always has one
+    cause). Registered only for _HAZOP_CAUSE_COL/_HAZOP_CONSEQUENCE_COL --
+    Grundfrekvens keeps the table's default delegate (numeric, no tags).
+    """
+
+    def __init__(self, panel):
+        super().__init__(panel)
+        self._panel = panel
+
+    def _active_inline_editor(self, index):
+        """Return the live editor for exactly this cell, if any -- the
+        delegate paints before the editor widget, so a saved value must be
+        deliberately suppressed here instead of relying on the editor's
+        background to cover it (see the identical need in
+        scenario_panel.py's _ScenarioDelegate._active_inline_editor)."""
+        for editor in self._panel._hazop_hierarchy.viewport().findChildren(_BoldTagTextEdit):
+            if (editor.isVisible() and
+                    editor.property('editing_row') == index.row() and
+                    editor.property('editing_col') == index.column()):
+                return editor
+        return None
+
+    def paint(self, painter, option, index):
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ''
+        sel = bool(option.state & QStyle.StateFlag.State_Selected)
+        painter.save()
+        r = option.rect
+        if sel:
+            painter.fillRect(r, option.palette.highlight())
+            text_color = option.palette.highlightedText().color()
+        else:
+            painter.fillRect(r, option.palette.alternateBase() if index.row() % 2 == 1
+                              else option.palette.base())
+            text_color = option.palette.text().color()
+        if self._active_inline_editor(index) is None:
+            tags = self._panel._matching_pid_tags(text)
+            _draw_text_with_bold_tags(
+                painter, r.adjusted(4, 2, -4, -2), text, tags,
+                option.font, text_color, word_wrap=True)
+        painter.restore()
+
+    def createEditor(self, parent, option, index):
+        editor = _BoldTagTextEdit(parent)
+        editor.setStyleSheet(
+            "QTextEdit{border:none;border-radius:0px;padding:0px;background:#FFFFFF;}"
+            "QTextEdit:focus{border:none;padding:0px;}")
+        editor.setFrameStyle(QFrame.Shape.NoFrame)
+        editor.setProperty('editing_row', index.row())
+        editor.setProperty('editing_col', index.column())
+        editor.setText(str(index.data(Qt.ItemDataRole.EditRole) or ''))
+        editor.deselect()
+        self._attach_tag_completer(editor)
+        return editor
+
+    def _attach_tag_completer(self, editor):
+        db = getattr(self._panel, 'db', None)
+        if db is None:
+            return
+        try:
+            tags = sorted({str(row['tag']).strip() for row in db.equipment_items()
+                          if row['tag'] and str(row['tag']).strip()},
+                         key=str.casefold)
+        except Exception:
+            tags = []
+        if not tags:
+            return
+        completer = QCompleter(tags, editor)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        editor.setTagCompleter(completer)
+
+    def setEditorData(self, editor, index):
+        super().setEditorData(editor, index)
+        editor._tag_completion_min_length = 1
+        editor._tag_matcher = self._panel._matching_pid_tags
+        editor.set_bold_tags(self._panel._matching_pid_tags(editor.toPlainText()))
 
 
 class LopaPanel(QWidget):
@@ -314,9 +404,6 @@ class LopaPanel(QWidget):
         self._set_row_direction(
             self._overview_layout, self._overview_cards, (1,),
             width < LOPA_BREAKPOINT_OVERVIEW)
-        self._set_row_direction(
-            self._bottom_layout, self._bottom_cards, (1, 2, 2),
-            width < LOPA_BREAKPOINT_TWO_COLUMN)
 
         narrow_sidebar = width < LOPA_BREAKPOINT_SIDEBAR
         self._analysis_toggle.setVisible(narrow_sidebar)
@@ -547,15 +634,16 @@ class LopaPanel(QWidget):
         self._hazop_hierarchy.itemChanged.connect(self._on_hazop_hierarchy_item_changed)
         self._hazop_hierarchy.setWordWrap(True)
         self._hazop_hierarchy.setStyleSheet(lopa_table_stylesheet())
+        self._hazop_hierarchy_delegate = _LopaHierarchyDelegate(self)
+        self._hazop_hierarchy.setItemDelegateForColumn(
+            self._HAZOP_CAUSE_COL, self._hazop_hierarchy_delegate)
+        self._hazop_hierarchy.setItemDelegateForColumn(
+            self._HAZOP_CONSEQUENCE_COL, self._hazop_hierarchy_delegate)
         self._configure_hazop_hierarchy_columns([])
         self._configure_compact_table(self._hazop_hierarchy, 72, 192)
         self._hazop_hierarchy.currentCellChanged.connect(self._on_hazop_hierarchy_selection_changed)
         source_layout.addWidget(self._hazop_hierarchy)
         source_actions = QHBoxLayout()
-        self._add_scenario_btn = QPushButton('➕ Lägg till scenario')
-        self._add_scenario_btn.setStyleSheet(lopa_ghost_button_stylesheet())
-        self._add_scenario_btn.clicked.connect(self._add_local_scenario)
-        source_actions.addWidget(self._add_scenario_btn)
         source_actions.addStretch(1)
         self._source_sync_note = QLabel('')
         self._source_sync_note.setWordWrap(True)
@@ -945,15 +1033,18 @@ class LopaPanel(QWidget):
         self._add_comment_btn.clicked.connect(self._add_comment)
         comment_add.addWidget(self._add_comment_btn)
         comments_layout.addLayout(comment_add)
+        # BERÄKNINGSÖVERSIKT / YTTERLIGARE ÅTGÄRDER OCH KRAV / KOMMENTARER
+        # always stack as three rows (2026-09-04) rather than three side-by-
+        # side columns at any width -- unlike the other responsive rows on
+        # this page, this one no longer switches with window width.
         bottom_row = QWidget()
-        bottom_layout = QHBoxLayout(bottom_row)
+        bottom_layout = QVBoxLayout(bottom_row)
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.setSpacing(6)
-        bottom_layout.addWidget(calculation_card, 1, Qt.AlignmentFlag.AlignTop)
-        bottom_layout.addWidget(document_card, 2, Qt.AlignmentFlag.AlignTop)
-        bottom_layout.addWidget(comments_card, 2, Qt.AlignmentFlag.AlignTop)
+        bottom_layout.addWidget(calculation_card, 0)
+        bottom_layout.addWidget(document_card, 0)
+        bottom_layout.addWidget(comments_card, 0)
         self._bottom_layout = bottom_layout
-        self._bottom_cards = (calculation_card, document_card, comments_card)
         detail_layout.addWidget(bottom_row)
         detail_layout.addStretch(1)
         detail_shell = QWidget()
@@ -1254,7 +1345,8 @@ class LopaPanel(QWidget):
 
     def _make_hazop_table_item(self, text='', *, source_id, entity_id=None,
                                cause_id=None, consequence_id=None,
-                               checkable=False, checked=False, enabled=True):
+                               checkable=False, checked=False, enabled=True,
+                               editable=False):
         """Create a source-table cell while retaining its LOPA/HAZOP linkage."""
         item = QTableWidgetItem(text)
         flags = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
@@ -1262,6 +1354,8 @@ class LopaPanel(QWidget):
             flags &= ~Qt.ItemFlag.ItemIsEnabled
         if checkable and enabled:
             flags |= Qt.ItemFlag.ItemIsUserCheckable
+        if editable and enabled:
+            flags |= Qt.ItemFlag.ItemIsEditable
         item.setFlags(flags)
         if checkable:
             item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
@@ -1272,18 +1366,50 @@ class LopaPanel(QWidget):
         return item
 
     def _hazop_category_toggle(self, *, severity, entity_id, source_id, active,
-                               editable):
-        """Create a full-cell numeric toggle for one consequence category."""
-        toggle = QCheckBox(str(severity) if severity is not None else '—')
-        toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                               editable, hazop_linked=True):
+        """Create a full-cell control for one consequence category.
+
+        HAZOP-linked rows (``hazop_linked=True``, unchanged behaviour): a
+        checkbox whose label IS the read-only severity number imported from
+        HAZOP -- only active/inactive is toggled here; changing the value
+        itself still goes through "Ändra lokal bedömning...".
+
+        Local rows (``hazop_linked=False``): there is no HAZOP value to
+        defer to, so the checkbox is paired with its own settable
+        ``QSpinBox`` right in the cell.
+        """
+        toggle = QCheckBox(
+            (str(severity) if severity is not None else '—') if hazop_linked else '')
         toggle.setProperty('lopa_assessment_id', entity_id)
         toggle.setChecked(bool(active))
         toggle.setEnabled(editable)
         toggle.stateChanged.connect(
-            lambda state, assessment_id=entity_id, sid=source_id:
+            lambda state, assessment_id=entity_id, sid=source_id, linked=hazop_linked:
             self._on_hazop_category_active_changed(
-                assessment_id, sid, state == Qt.CheckState.Checked.value))
-        return toggle
+                assessment_id, sid, state == Qt.CheckState.Checked.value,
+                hazop_linked=linked))
+        if hazop_linked:
+            toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            return toggle
+
+        spin = QSpinBox()
+        spin.setRange(0, 99)
+        spin.setValue(int(severity or 0))
+        spin.setEnabled(editable)
+        # editingFinished (not valueChanged) -- the handler rebuilds the
+        # whole table, which would tear down and recreate this very spinbox
+        # mid-interaction on every single keystroke/arrow click otherwise.
+        spin.editingFinished.connect(
+            lambda assessment_id=entity_id, box=spin:
+            self._on_local_category_severity_changed(assessment_id, box.value()))
+        holder = QWidget()
+        holder.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        holder_layout = QHBoxLayout(holder)
+        holder_layout.setContentsMargins(2, 0, 2, 0)
+        holder_layout.setSpacing(3)
+        holder_layout.addWidget(toggle)
+        holder_layout.addWidget(spin, 1)
+        return holder
 
     def _hierarchy_reference_button(self, reference, *, cause_id=None, row=None):
         """Create the compact cause-only route back to HAZOP."""
@@ -1370,118 +1496,73 @@ class LopaPanel(QWidget):
                 return f'H-{ref}' if ref else 'H-?.?.?.?'
             return 'H-?.?.?.?'
 
-    def _on_hazop_hierarchy_item_changed(self, item):
-        """Handle inline edits in HAZOP scenarios table (cause, frequency, consequence)."""
-        if self._loading or not item:
-            return
-
-        row = self._hazop_hierarchy.row(item)
-        col = self._hazop_hierarchy.column(item)
-        source_id = item.data(self._ROLE_SOURCE_ID)
-
-        if not source_id:
-            return
-
-        try:
-            if col == self._HAZOP_CAUSE_COL:
-                # Update cause_text in lopa_source_scenarios
-                new_text = item.text()
-                self.db.conn.execute(
-                    "UPDATE lopa_source_scenarios SET cause_text=? WHERE id=?",
-                    (new_text, source_id))
-                self.db.commit()
-
-            elif col == self._HAZOP_FREQUENCY_COL:
-                # Parse frequency (format: "0.001 /år" or just number)
-                text = item.text().replace(' /år', '').strip()
-                try:
-                    freq = float(text) if text and text != '—' else None
-                    self.db.conn.execute(
-                        "UPDATE lopa_source_scenarios SET base_frequency=? WHERE id=?",
-                        (freq, source_id))
-                    self.db.commit()
-                except ValueError:
-                    QMessageBox.warning(self, 'Ogiltigt värde', 'Frekvensen måste vara ett tal (t.ex. 0.001)')
-                    self._populate_hazop_hierarchy()
-                    return
-
-            elif col == self._HAZOP_CONSEQUENCE_COL:
-                # Update scenario_text
-                new_text = item.text()
-                self.db.conn.execute(
-                    "UPDATE lopa_source_scenarios SET scenario_text=? WHERE id=?",
-                    (new_text, source_id))
-                self.db.commit()
-
-            self.changed.emit()
-            self._populate_barriers()
-            self._populate_escalation()
-            self._populate_calculation()
-
-        except Exception as exc:
-            QMessageBox.warning(self, 'Kunde inte spara ändring', str(exc))
-            self._populate_hazop_hierarchy()
-
-    def _add_local_scenario(self):
-        """Create a new local (non-HAZOP) LOPA scenario and prompt for first consequence."""
-        if not self._revision_id:
-            return
-
-        try:
-            source_id = self.db.add_lopa_local_source(self._revision_id)
-            self._source_id = source_id
-            self._populate_hazop_hierarchy(select_consequence_id=None)
-            # Automatically open consequence dialog for new local scenario
-            QTimer.singleShot(100, self._add_custom_consequence)
-            self.changed.emit()
-        except Exception as exc:
-            QMessageBox.warning(self, 'Kunde inte skapa scenario', str(exc))
+    def _cause_object_tags(self, cause):
+        """Return the object tag(s) linked to a HAZOP cause, for grouped or
+        single-object causes alike. Shared by _build_original_cause_text and
+        the bold-tag painting/editing in _LopaHierarchyDelegate, so the two
+        can never disagree about which tags belong to a row."""
+        group_ids_str = cause.get('group_equipment_ids')
+        if group_ids_str:
+            try:
+                group_ids = [int(x.strip()) for x in group_ids_str.split(',') if x.strip()]
+            except (ValueError, TypeError):
+                return []
+            tags = []
+            for eq_id in group_ids:
+                eq = self.db.get_equipment_by_id(eq_id)
+                if eq and eq.get('tag'):
+                    tags.append(eq['tag'])
+            return tags
+        eq_id = cause.get('equipment_id')
+        if eq_id:
+            eq = self.db.get_equipment_by_id(eq_id)
+            if eq and eq.get('tag'):
+                return [eq['tag']]
+        return []
 
     def _build_original_cause_text(self, cause_id):
-        """Build origin cause string: Object(s) - Deviation (guide word).
+        """Build origin cause string: Object(s) + the cause's own HAZOP
+        Orsak text (not the deviation/guide-word text).
 
         Supports multi-object systems via group_equipment_ids.
-        Example: "FI-1, V-2 - Högt flöde" or "V-1 - Lågt tryck"
+        Example: "FI-1, V-2 - Läcker vid hög belastning" or "V-1 - Öppnar inte"
         """
         cause = self.db.get_cause(cause_id) if cause_id else None
         if not cause:
             return 'Orsak saknas'
 
-        # Get the guide word (deviation)
-        deviation_id = cause.get('deviation_id')
-        deviation = self.db.conn.execute(
-            "SELECT description FROM deviations WHERE id=?",
-            (deviation_id,)).fetchone() if deviation_id else None
-        deviation_text = dict(deviation)['description'] if deviation else 'Okänd avvikelse'
+        cause_text = (cause.get('description') or '').strip() or 'Orsak saknas'
+        tags = self._cause_object_tags(cause)
+        object_text = ', '.join(tags) if tags else None
 
-        # Get objects for grouped causes or single object
-        group_ids_str = cause.get('group_equipment_ids')
-        if group_ids_str:
-            # Multiple objects in group
-            try:
-                group_ids = [int(x.strip()) for x in group_ids_str.split(',') if x.strip()]
-                tags = []
-                for eq_id in group_ids:
-                    eq = self.db.get_equipment_by_id(eq_id)
-                    if eq and eq.get('tag'):
-                        tags.append(eq['tag'])
-                object_text = ', '.join(tags) if tags else 'Objekt'
-            except (ValueError, TypeError):
-                object_text = 'Objekt'
-        else:
-            # Single object from equipment_id or comp_tag
-            eq_id = cause.get('equipment_id')
-            if eq_id:
-                eq = self.db.get_equipment_by_id(eq_id)
-                object_text = eq.get('tag') if eq else 'Objekt'
-            else:
-                object_text = None
-
-        # Build final text: "Object - Deviation" or just "Deviation"
         if object_text:
-            return f'{object_text} - {deviation_text}'
+            return f'{object_text} - {cause_text}'
         else:
-            return deviation_text
+            return cause_text
+
+    def _matching_pid_tags(self, text):
+        """Return catalogue tags occurring as complete tokens in *text*.
+
+        Small standalone port of ScenarioTablePanel._matching_pid_tags
+        (scenario_panel.py) -- same whole-word match against the current
+        P&ID catalogue, minus that method's ``_detached_tags`` exclusion
+        (a scenario_panel-only concept with no LOPA equivalent).
+        """
+        if not text:
+            return []
+        try:
+            catalogue = sorted(
+                {str(row['tag'] or '').strip() for row in self.db.equipment_items()
+                 if row['tag'] and str(row['tag']).strip()},
+                key=len, reverse=True)
+        except Exception:
+            return []
+        found = []
+        for tag in catalogue:
+            if re.search(r'(?<![A-Za-z0-9])' + re.escape(tag) +
+                         r'(?![A-Za-z0-9])', str(text), re.IGNORECASE):
+                found.append(tag)
+        return found
 
     def _hazop_category_columns(self, source_groups):
         """Keep configured category order and retain legacy imported values."""
@@ -1523,7 +1604,8 @@ class LopaPanel(QWidget):
         editable = self._revision_is_editable()
         for source, consequences in source_groups:
             cause_id = source.get('hazop_cause_id')
-            cause_text = self._build_original_cause_text(cause_id)
+            cause_text = (self._build_original_cause_text(cause_id) if cause_id else
+                          (source.get('local_cause_text') or 'Orsak saknas'))
             frequency_text = (f"{source['base_frequency']:.3g} /år"
                               if source.get('base_frequency') is not None
                               else 'Frekvens saknas')
@@ -1540,15 +1622,27 @@ class LopaPanel(QWidget):
                     row, self._HAZOP_REFERENCE_COL,
                     self._hierarchy_reference_button(
                         source_reference, cause_id=cause_id, row=row))
-                for column, text in (
-                        (self._HAZOP_CAUSE_COL, cause_text),
-                        (self._HAZOP_FREQUENCY_COL, frequency_text),
-                        (self._HAZOP_CONSEQUENCE_COL, description)):
+                # Orsak stays read-only for HAZOP-sourced rows: it is a
+                # synthesized "Object - Deviation" string (see
+                # _build_original_cause_text), not a single real HAZOP
+                # field, so there is nothing sensible to write it back to.
+                # Local (non-HAZOP) rows store it directly as free text.
+                # The Konsekvens item's entity_id (when present) is one
+                # representative lopa_source_consequences row id for this
+                # HAZOP-consequence/local-consequence group -- see
+                # _save_hazop_hierarchy_text_edit.
+                representative_assessment_id = assessments[0]['id'] if assessments else None
+                for column, text, col_editable, col_entity_id in (
+                        (self._HAZOP_CAUSE_COL, cause_text, editable and cause_id is None, None),
+                        (self._HAZOP_FREQUENCY_COL, frequency_text, editable, None),
+                        (self._HAZOP_CONSEQUENCE_COL, description, editable,
+                         representative_assessment_id)):
                     self._hazop_hierarchy.setItem(
                         row, column,
                         self._make_hazop_table_item(
                             text, source_id=source['id'], cause_id=cause_id,
-                            consequence_id=consequence_id))
+                            consequence_id=consequence_id, entity_id=col_entity_id,
+                            editable=col_editable))
                 assessments_by_category = {
                     assessment.get('category_key'): assessment
                     for assessment in assessments if assessment.get('category_key')
@@ -1562,7 +1656,8 @@ class LopaPanel(QWidget):
                             self._hazop_category_toggle(
                                 severity=assessment.get('severity'),
                                 entity_id=assessment['id'], source_id=source['id'],
-                                active=assessment['active'], editable=editable))
+                                active=assessment['active'], editable=editable,
+                                hazop_linked=consequence_id is not None))
                     else:
                         self._hazop_hierarchy.setItem(
                             row, column,
@@ -1624,17 +1719,100 @@ class LopaPanel(QWidget):
         self._update_hierarchy_actions()
 
     def _on_hazop_hierarchy_item_changed(self, item, column=None):
+        if self._loading or not item:
+            return
         if column is None:
             column = item.column()
+        if column in (self._HAZOP_CAUSE_COL, self._HAZOP_FREQUENCY_COL,
+                      self._HAZOP_CONSEQUENCE_COL):
+            self._save_hazop_hierarchy_text_edit(item, column)
+            return
         entity_id = item.data(self._ROLE_ENTITY_ID)
-        if self._loading or not entity_id:
+        if not entity_id:
             return
         self._on_hazop_category_active_changed(
             entity_id, item.data(self._ROLE_SOURCE_ID),
             item.checkState() == Qt.CheckState.Checked)
 
-    def _on_hazop_category_active_changed(self, entity_id, source_id, active):
-        """Persist a full-cell category toggle without changing table geometry."""
+    def _save_hazop_hierarchy_text_edit(self, item, column):
+        """Persist an inline edit in the HAZOP-SCENARIER table.
+
+        Grundfrekvens and Konsekvens sync back into the real HAZOP data when
+        the row has a HAZOP source, so the two stay consistent instead of
+        silently diverging -- per the user's explicit instruction (this
+        reverses the "ask to detach" pattern the modal editors still use,
+        deliberately: see NOTES.md). Orsak is only ever editable on a local
+        (non-HAZOP) row -- see _populate_hazop_hierarchy -- so it never
+        needs a HAZOP-sync branch here.
+        """
+        source_id = item.data(self._ROLE_SOURCE_ID)
+        if not source_id:
+            return
+        hazop_cause_id = item.data(self._ROLE_HAZOP_CAUSE_ID)
+        hazop_consequence_id = item.data(self._ROLE_HAZOP_CONSEQUENCE_ID)
+        text = item.text()
+        # select_id tracks a lopa_source_consequences row id (what
+        # _populate_hazop_hierarchy's select_consequence_id expects), not a
+        # hazop_consequence_id -- keep whatever row was already selected
+        # unless this edit touched a specific local assessment row.
+        select_id = self._selected_hierarchy_consequence_id()
+        try:
+            if column == self._HAZOP_CAUSE_COL:
+                self.db.set_lopa_source_cause_text(source_id, text)
+
+            elif column == self._HAZOP_FREQUENCY_COL:
+                cleaned = text.replace('/år', '').strip()
+                try:
+                    freq = float(cleaned.replace(',', '.')) if cleaned and cleaned != '—' else None
+                except ValueError:
+                    QMessageBox.warning(self, 'Ogiltigt värde',
+                                        'Frekvensen måste vara ett tal (t.ex. 0.001)')
+                    self._populate_hazop_hierarchy()
+                    return
+                if hazop_cause_id:
+                    self.db.sync_lopa_cause_frequency_to_hazop(source_id, hazop_cause_id, freq)
+                else:
+                    self.db.set_lopa_source_frequency(source_id, freq)
+
+            elif column == self._HAZOP_CONSEQUENCE_COL:
+                consequence_id = item.data(self._ROLE_ENTITY_ID)
+                if hazop_consequence_id:
+                    if consequence_id:
+                        self.db.sync_lopa_consequence_description_to_hazop(
+                            consequence_id, hazop_consequence_id, text)
+                        select_id = consequence_id
+                    else:
+                        # Not yet locally assessed under this source -- there is
+                        # no lopa_source_consequences row to mirror into yet.
+                        current = self.db.get_consequence(hazop_consequence_id)
+                        self.db.update_consequence(
+                            hazop_consequence_id, text,
+                            (current or {}).get('severity', 0),
+                            (current or {}).get('category', ''))
+                elif consequence_id:
+                    self.db.update_lopa_consequence(consequence_id, description=text)
+                    select_id = consequence_id
+                else:
+                    return
+
+            self.changed.emit()
+            self._populate_hazop_hierarchy(select_consequence_id=select_id)
+            self._populate_escalation()
+            self._populate_calculation()
+
+        except Exception as exc:
+            QMessageBox.warning(self, 'Kunde inte spara ändring', str(exc))
+            self._populate_hazop_hierarchy()
+
+    def _on_hazop_category_active_changed(self, entity_id, source_id, active,
+                                          *, hazop_linked=True):
+        """Persist a full-cell category toggle without changing table geometry.
+
+        The "ska det ingå i just den här LOPA-beräkningen"-style confirm is
+        skipped for a local (non-HAZOP) row -- there is nothing to detach
+        from HAZOP on a row that never followed it in the first place, so
+        the prompt's own wording would not apply.
+        """
         if self._loading:
             return
         table_geometry = {
@@ -1644,7 +1822,7 @@ class LopaPanel(QWidget):
             'row_heights': [self._hazop_hierarchy.rowHeight(row)
                             for row in range(self._hazop_hierarchy.rowCount())],
         }
-        if not self._confirm_lopa_only(
+        if hazop_linked and not self._confirm_lopa_only(
                 'Ska kategori-/riskbedömningen inkluderas i just denna LOPA-beräkning?'):
             self._populate_hazop_hierarchy(
                 select_consequence_id=entity_id, preserve_geometry=table_geometry)
@@ -1663,11 +1841,38 @@ class LopaPanel(QWidget):
         self._populate_calculation()
         self.changed.emit()
 
+    def _on_local_category_severity_changed(self, entity_id, value):
+        """Persist a local row's own settable category value (spinbox).
+
+        Only reachable for a local (non-HAZOP) assessment -- see
+        _hazop_category_toggle -- so update_lopa_consequence's severity-only
+        path is safe to reuse as-is: it only ever sets follows_hazop=0,
+        which a local assessment already has.
+        """
+        if self._loading:
+            return
+        table_geometry = {
+            'height': self._hazop_hierarchy.height(),
+            'column_widths': [self._hazop_hierarchy.columnWidth(column)
+                              for column in range(self._hazop_hierarchy.columnCount())],
+            'row_heights': [self._hazop_hierarchy.rowHeight(row)
+                            for row in range(self._hazop_hierarchy.rowCount())],
+        }
+        try:
+            self.db.update_lopa_consequence(entity_id, severity=value)
+        except Exception as exc:
+            QMessageBox.warning(self, 'Kunde inte ändra nivå', str(exc))
+        self._populate_hazop_hierarchy(
+            select_consequence_id=entity_id, preserve_geometry=table_geometry)
+        self._populate_escalation()
+        self._populate_calculation()
+        self.changed.emit()
+
     def _update_hierarchy_actions(self):
         editable = self._revision_is_editable()
         self._edit_consequence_btn.setEnabled(
             bool(self._selected_hierarchy_consequence_id()) and editable)
-        self._add_consequence_btn.setEnabled(bool(self._source_id) and editable)
+        self._add_consequence_btn.setEnabled(bool(self._revision_id) and editable)
 
     def _load_source_detail(self):
         source = next((row for row in self.db.lopa_sources(self._revision_id)
@@ -1685,7 +1890,7 @@ class LopaPanel(QWidget):
             self._barrier_matrix.setColumnCount(0)
             self._escalation.setRowCount(0)
             self._edit_consequence_btn.setEnabled(False)
-            self._add_consequence_btn.setEnabled(False)
+            self._add_consequence_btn.setEnabled(bool(self._revision_id) and editable)
             self._add_barrier_btn.setEnabled(False)
             self._edit_barrier_btn.setEnabled(False)
             self._control_frequency.clear()
@@ -1793,27 +1998,45 @@ class LopaPanel(QWidget):
         self.changed.emit()
 
     def _add_custom_consequence(self):
-        if not self._source_id:
+        """Start a brand-new local LOPA scenario directly as an editable row.
+
+        Replaces the old two-step flow (a separate "Lägg till scenario"
+        button that created an empty, invisible source, plus a popup dialog
+        for its first consequence). One click now creates the local source
+        and ONE assessment row per configured consequence category
+        together, so every category column is immediately checkable with
+        its own settable value -- not just the first category -- and opens
+        the new row's Konsekvens cell for typing immediately, no popup.
+        """
+        if not self._revision_id:
             return
         options = self._category_options()
         if not options:
             QMessageBox.warning(self, 'Kategori saknas',
                                 'Riskmatrisen saknar konsekvenskategorier för LOPA.')
             return
-        dialog = LopaNewConsequenceDialog(options, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
         try:
-            key, name = dialog.category()
-            consequence_id = self.db.add_lopa_custom_consequence(
-                self._source_id, key, name, dialog.severity(), dialog.description())
+            with self.db.history_group():
+                source_id = self.db.add_lopa_local_source(self._revision_id)
+                anchor_id = None
+                for key, name in options:
+                    new_id = self.db.add_lopa_custom_consequence(
+                        source_id, key, name, 0, '', local_group_id=anchor_id)
+                    if anchor_id is None:
+                        anchor_id = new_id
+                consequence_id = anchor_id
         except Exception as exc:
-            QMessageBox.warning(self, 'Kunde inte lägga till konsekvens', str(exc))
+            QMessageBox.warning(self, 'Kunde inte skapa scenario', str(exc))
             return
+        self._source_id = source_id
         self._populate_hazop_hierarchy(select_consequence_id=consequence_id)
         self._populate_escalation()
         self._populate_calculation()
         self.changed.emit()
+        row = self._hazop_hierarchy.currentRow()
+        item = self._hazop_hierarchy.item(row, self._HAZOP_CONSEQUENCE_COL) if row >= 0 else None
+        if item is not None:
+            self._hazop_hierarchy.editItem(item)
 
     def _populate_sensor_groups(self):
         groups = self.db.lopa_sensor_groups(self._revision_id) if self._revision_id else []
@@ -2209,7 +2432,9 @@ class LopaPanel(QWidget):
         self._barrier_matrix_header = _BarrierMatrixHeaderWidget(types, parent=self)
         self._barrier_container_layout.insertWidget(0, self._barrier_matrix_header)
 
-        self._barrier_matrix.setRowCount(len(sources))
+        self._barrier_matrix.setRowCount(len(sources) + 1 if sources else 0)
+        total_remaining = 0.0
+        any_remaining = False
         for row_index, source in enumerate(sources):
             cause = source.get('cause_text') or f"Källscenario {source['id']}"
             self._barrier_matrix.setItem(row_index, 0, self._readonly_cell(cause))
@@ -2241,8 +2466,27 @@ class LopaPanel(QWidget):
             result = self.db.lopa_source_calculation(source['id'])
             remaining = [item['remaining_frequency'] for item in result['categories']
                          if item['active'] and item['remaining_frequency'] is not None]
-            text = f'{max(remaining):.6g} /år' if remaining else '—'
+            if remaining:
+                row_remaining = max(remaining)
+                total_remaining += row_remaining
+                any_remaining = True
+                text = f'{row_remaining:.6g} /år'
+            else:
+                text = '—'
             self._barrier_matrix.setItem(row_index, len(headers) - 1, self._readonly_cell(text))
+        if sources:
+            total_row = len(sources)
+            bold_font = self._barrier_matrix.font()
+            bold_font.setBold(True)
+            total_label = self._readonly_cell('Totalt')
+            total_label.setFont(bold_font)
+            self._barrier_matrix.setItem(total_row, 0, total_label)
+            for column in range(1, len(headers) - 1):
+                self._barrier_matrix.setItem(total_row, column, self._readonly_cell(''))
+            total_text = f'{total_remaining:.6g} /år' if any_remaining else '—'
+            total_cell = self._readonly_cell(total_text)
+            total_cell.setFont(bold_font)
+            self._barrier_matrix.setItem(total_row, len(headers) - 1, total_cell)
         self._barrier_matrix.resizeRowsToContents()
         self._barrier_matrix.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self._fit_table_height(self._barrier_matrix, 48, 104)
@@ -2722,46 +2966,6 @@ class LopaConsequenceDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-
-    def description(self):
-        return self._description.toPlainText()
-
-    def severity(self):
-        return self._severity.value()
-
-
-class LopaNewConsequenceDialog(QDialog):
-    """Create an explicitly local LOPA consequence for the selected source."""
-
-    def __init__(self, category_options, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle('Egen LOPA-konsekvens')
-        self.setMinimumWidth(440)
-        layout = QVBoxLayout(self)
-        hint = QLabel('Raden skapas endast i den öppna LOPA-revisionen och ändrar inte HAZOP.')
-        hint.setWordWrap(True)
-        hint.setStyleSheet(lopa_note_stylesheet())
-        layout.addWidget(hint)
-        form = QFormLayout()
-        self._category = QComboBox()
-        for key, name in category_options:
-            self._category.addItem(name, (key, name))
-        self._description = QPlainTextEdit()
-        self._description.setFixedHeight(82)
-        self._severity = QSpinBox()
-        self._severity.setRange(1, 99)
-        self._severity.setValue(1)
-        form.addRow('Kategori', self._category)
-        form.addRow('Nivå', self._severity)
-        form.addRow('Beskrivning', self._description)
-        layout.addLayout(form)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def category(self):
-        return self._category.currentData()
 
     def description(self):
         return self._description.toPlainText()

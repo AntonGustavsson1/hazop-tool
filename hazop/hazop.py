@@ -41,6 +41,7 @@ from pid_viewer import (
     set_tree_context_link_color,
     _mk_pm, _mk_icon, _icon, _EMOJI_ICON,
 )
+import spellcheck
 from ui_helpers import (
     freq_axis_label, freq_axis_label_full, cons_axis_label,
     _equipment_type_options, _lookup_comp_type_for_tag, _make_tag_completer,
@@ -614,6 +615,16 @@ def export_excel(db: Database, filepath: str, merge_identical=False):
     from worksheet_export import export_worksheet_excel
     return export_worksheet_excel(db, filepath, merge_identical)
 
+
+def export_word(db: Database, filepath: str, paper_size='A4'):
+    from worksheet_word_export import export_worksheet_word
+    return export_worksheet_word(db, filepath, paper_size)
+
+
+def export_recommendations_word(db: Database, filepath: str, paper_size='A4'):
+    from recommendations_word_export import export_recommendations_word as _export
+    return _export(db, filepath, paper_size)
+
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -1108,6 +1119,15 @@ class MainWindow(QMainWindow):
         self._search_dialog = None
         self.db = Database()
         load_matrix(self.db)
+        # Shared spellcheck state (2026-09-06, see NOTES.md
+        # "Stavningskontroll") -- one instance for the whole window, so
+        # every attached field (across Scenario/Worksheet's several
+        # ScenarioTablePanel instances, node name/description, the
+        # comment popup, ...) reacts together to the on/off toggle, a
+        # language change, or a newly approved word. Re-pointed (not
+        # recreated) at the open project in _reload_all_panels, same
+        # convention as every other panel's own `.db` reassignment.
+        self.spellcheck_context = spellcheck.SpellCheckContext(self.db)
         self._markup_undo_stack  = []
         self.resize(1440, 900)
 
@@ -1140,12 +1160,23 @@ class MainWindow(QMainWindow):
         self._act_undo.setStatusTip("Ångra senaste ändringen (Ctrl+Z)")
         self._act_redo = edit_menu.addAction("Gör om", self._redo_last_change)
         self._act_redo.setStatusTip("Gör om senast ångrade ändring (Ctrl+Y)")
+        edit_menu.addSeparator()
+        self._act_spellcheck_toggle = edit_menu.addAction("Slå på/av stavningskontroll")
+        self._act_spellcheck_toggle.triggered.connect(self._on_spellcheck_toggle_action)
+        self._act_spellcheck_toggle.setCheckable(True)
+        self._act_spellcheck_toggle.setChecked(self.spellcheck_context.enabled)
+        self._act_spellcheck_toggle.setStatusTip(
+            "Visa/dölj röd understrykning under felstavade ord i realtid")
+        edit_menu.addAction("Kör stavningskontroll…", self._on_run_spellcheck)
 
         export_menu = mb.addMenu("Export")
         export_menu.addAction(_icon('document'), "Exportera Word-rapport…",
                               self._export_word_report)
         export_menu.addAction(_icon('chart'), "Excel",           self._export_excel)
+        export_menu.addAction(_icon('document'), "Word (Worksheet)",
+                              self._export_word)
         export_menu.addAction(_icon('chart'), "Åtgärder (Excel)", self._export_actions_excel)
+        export_menu.addAction(_icon('document'), "Åtgärder (Word)", self._export_actions_word)
         export_menu.addAction(_icon('document'), "PDF",             self._export_pdf)
         export_menu.addAction(_icon('clipboard'), "Åtgärder",        self._export_actions_pdf)
 
@@ -1290,7 +1321,8 @@ class MainWindow(QMainWindow):
         # Added FIRST so it becomes view_stack index 0 (QStackedWidget numbers
         # pages in addWidget() call order) — must precede every other
         # addWidget() call below, not just visually lead the nav rail.
-        self.hazop_prep_panel = HAZOPPreparationPanel(self.db)
+        self.hazop_prep_panel = HAZOPPreparationPanel(
+            self.db, spellcheck_context=self.spellcheck_context)
         self.view_stack.addWidget(self.hazop_prep_panel)
 
         # ── Page 1: P&ID view ─────────────────────────────────────────────────
@@ -1347,6 +1379,9 @@ class MainWindow(QMainWindow):
         self._v_splitter = QSplitter(Qt.Orientation.Vertical)
 
         self.scenario_panel = ScenarioTablePanel(self.db)
+        self.scenario_panel.spellcheck_context = self.spellcheck_context
+        self.spellcheck_context._register_repaint_target(
+            self.scenario_panel._table.viewport())
         # The scenario area is intentionally user-resizable without an
         # artificial height cap. Let both panes participate in the outer
         # splitter's available height so the handle can be dragged as far as
@@ -1379,6 +1414,9 @@ class MainWindow(QMainWindow):
 
         # ── Page 2: Worksheet ─────────────────────────────────────────────────
         self.worksheet = HAZOPWorksheet(self.db)
+        self.worksheet._table_panel.spellcheck_context = self.spellcheck_context
+        self.spellcheck_context._register_repaint_target(
+            self.worksheet._table_panel._table.viewport())
         self.view_stack.addWidget(self.worksheet)
 
         # ── Page 3: Recommendations ("Rekommendationer", 2026-08-26) ──────────
@@ -1416,6 +1454,8 @@ class MainWindow(QMainWindow):
             self.scenario_panel.refresh_visual_settings)
         self.settings_panel.scenario_render_settings_changed.connect(
             self.worksheet._table_panel.refresh_visual_settings)
+        self.settings_panel.spellcheck_settings_changed.connect(
+            self.spellcheck_context.refresh)
         self.hazop_prep_panel.matrix_changed.connect(self._on_matrix_changed)
         self.view_stack.addWidget(self.settings_panel)
 
@@ -1592,6 +1632,8 @@ class MainWindow(QMainWindow):
 
         self.tree_panel.equipment_dropped_on_deviation.connect(
             self._on_equipment_dropped_on_deviation)
+        self.tree_panel.equipment_dropped_on_cause.connect(
+            self._on_equipment_dropped_on_cause)
         self.tree_panel.edit_node_markup_requested.connect(self._on_edit_node_markup)
         self.tree_panel.node_markup_vis_requested.connect(self._on_node_markup_vis)
         self.tree_panel.node_jump_to_markup.connect(self._on_jump_to_node_markup)
@@ -2517,6 +2559,44 @@ class MainWindow(QMainWindow):
             # consequences), same as clicking that cause anywhere else
             # in the tree already does.
             self.scenario_panel.load_cause(last_cause_id)
+            # Keep the drag-and-drop workflow connected to the standard-cause
+            # suggestions: selecting the new ORS cell starts the same inline
+            # editor path as a manually created cause.
+            self.scenario_panel.select_item(CAUSE_T, last_cause_id)
+
+    def _on_equipment_dropped_on_cause(self, cause_id, marker_ids):
+        """Apply an equipment-to-cause drop as one undoable action."""
+        with self.db.history_group():
+            return self._on_equipment_dropped_on_cause_inner(cause_id, marker_ids)
+
+    def _on_equipment_dropped_on_cause_inner(self, cause_id, marker_ids):
+        """One or more equipment markers dragged from the P&ID directly
+        onto an EXISTING Orsak/CAUSE_T row (2026-09-06, Anton: distinguish
+        "drop on Avvikelse" -- new cause, _on_equipment_dropped_on_deviation
+        above -- from "drop on an existing Orsak/Objekt" -- add to it).
+        Extends the cause into (or further into) a multi-object "OR"-group
+        via Database.add_equipment_to_cause_group, shared with
+        ScenarioTablePanel._handle_drop's own ORS-column drop so the
+        grouping rules only exist once."""
+        if not self.db.get_cause(cause_id):
+            return
+        seen_equipment_ids = set()
+        equipment_ids = []
+        for marker_id in marker_ids:
+            equipment = self.db.get_equipment_by_marker_id(marker_id)
+            if not equipment:
+                continue
+            equipment_id = equipment['id']
+            if equipment_id in seen_equipment_ids:
+                continue
+            seen_equipment_ids.add(equipment_id)
+            equipment_ids.append(equipment_id)
+        if not equipment_ids:
+            return
+        self.db.add_equipment_to_cause_group(cause_id, equipment_ids)
+        self.tree_panel.refresh(CAUSE_T, cause_id)
+        self.scenario_panel.refresh_placed()
+        self.scenario_panel.load_cause(cause_id)
 
     def _edit_consequence_inline(self, cons_id: int):
         """Reveal *cons_id* and start the standard KON inline editor."""
@@ -2925,6 +3005,23 @@ class MainWindow(QMainWindow):
         if self._cur_type == CAUSE_T and self._cur_id:
             self.scenario_panel.load_cause(self._cur_id)
 
+    def _on_spellcheck_toggle_action(self, checked):
+        """Redigera > "Slå på/av stavningskontroll"."""
+        self.spellcheck_context.set_enabled(checked)
+
+    def _on_run_spellcheck(self):
+        """Redigera > "Kör stavningskontroll…" -- walks the whole open
+        study; refresh afterward, same broad-refresh pattern
+        _on_matrix_changed above already uses for a change that can
+        touch many different items across the whole tree at once."""
+        dlg = spellcheck.SpellCheckReviewDialog(self.db, self.spellcheck_context, parent=self)
+        dlg.exec()
+        self.tree_panel.refresh()
+        if self._cur_type == CAUSE_T and self._cur_id:
+            self.scenario_panel.load_cause(self._cur_id)
+        elif self._cur_type == NODE_T and self._cur_id:
+            self.scenario_panel.load_node(self._cur_id)
+
     def _export_word_report(self):
         from report_word_export import export_report_word
 
@@ -2972,6 +3069,25 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.critical(self, "Fel vid export", err)
 
+    def _export_word(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportera Worksheet till Word", "hazop_worksheet.docx",
+            "Word-dokument (*.docx)")
+        if not path:
+            return
+        paper_size, ok = QInputDialog.getItem(
+            self, "Word-export", "Pappersformat (liggande):",
+            ["A4", "A3"], 0, False)
+        if not ok:
+            return
+        exported, error = export_word(self.db, path, paper_size)
+        if exported:
+            self.status_bar.showMessage(f"Word-fil sparad: {path}", 6000)
+            QMessageBox.information(self, "Klar", f"Exporterad till:\n{path}")
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
+        else:
+            QMessageBox.critical(self, "Fel vid export", error)
+
     def _export_actions_excel(self):
         path, _ = QFileDialog.getSaveFileName(
             self, "Exportera rekommendationer", "rekommendationer.xlsx",
@@ -2984,6 +3100,25 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Klar", f"Exporterad till:\n{path}")
         else:
             QMessageBox.critical(self, "Fel vid export", err)
+
+    def _export_actions_word(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportera rekommendationer till Word", "rekommendationer.docx",
+            "Word-dokument (*.docx)")
+        if not path:
+            return
+        paper_size, ok = QInputDialog.getItem(
+            self, "Word-export", "Pappersformat (liggande):",
+            ["A4", "A3"], 0, False)
+        if not ok:
+            return
+        exported, error = export_recommendations_word(self.db, path, paper_size)
+        if exported:
+            self.status_bar.showMessage(f"Word-fil sparad: {path}", 6000)
+            QMessageBox.information(self, "Klar", f"Exporterad till:\n{path}")
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
+        else:
+            QMessageBox.critical(self, "Fel vid export", error)
 
     def _export_pdf(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -3905,6 +4040,13 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        # LopaPanel is a top-level page with its own Database reference.
+        # Rebind it before the page can be opened after a project reload.
+        try:
+            self.lopa_panel.db = db
+        except Exception:
+            pass
+
         # StudyManagementPanel (admin_panel) embeds its own PIDManagementPanel
         # (revision history + sheet reordering) — same nested-sub-panel-with-
         # its-own-db-reference pattern as equipment_panel._model/worksheet.
@@ -3921,6 +4063,17 @@ class MainWindow(QMainWindow):
         try:
             self.pid_panel.db = db
             self.pid_panel.viewer.db = db
+        except Exception:
+            pass
+
+        # Spellcheck (2026-09-06): re-point the shared context at the
+        # newly-opened project's db and rebuild its checker (new project
+        # -> different equipment tags and user dictionary) instead of
+        # recreating the context object itself, so every already-
+        # attached widget keeps working through the same instance.
+        try:
+            self.spellcheck_context.db = db
+            self.spellcheck_context.refresh()
         except Exception:
             pass
 

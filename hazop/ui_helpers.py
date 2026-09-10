@@ -7,15 +7,32 @@ this sits below both in the import layer graph."""
 import json
 import math
 import re
+import weakref
 
+from PyQt6 import sip
 from PyQt6.QtWidgets import (
-    QCompleter, QMessageBox, QInputDialog, QLineEdit, QToolButton,
+    QCompleter, QFrame, QMessageBox, QInputDialog, QLineEdit, QTextEdit, QToolButton,
 )
-from PyQt6.QtCore import Qt, QPointF, QEvent, QObject
-from PyQt6.QtGui import QFont, QFontMetrics, QTextLayout, QTextOption, QTextCharFormat
+from PyQt6.QtCore import Qt, QPointF, QRect, QEvent, QObject, QTimer
+from PyQt6.QtGui import (
+    QColor, QFont, QFontMetrics, QPainter, QTextCharFormat, QTextCursor, QTextLayout, QTextOption,
+)
 
+from constants import MARKUP_COLORS
 from database import get_matrix, freq_to_f_level
-from pid_viewer import COMPONENT_TYPES, _equip_prefix_from_tag, _obj_type_matches
+# COMPONENT_TYPES/_equip_prefix_from_tag are DEFINED in equipment_detection.py
+# (a lower layer than pid_viewer.py, which only re-exports them) -- import
+# them from there directly. pid_viewer.py itself (layer 4) eventually
+# depends on ui_helpers.py transitively via pid_panel_mod.py, so importing
+# straight from pid_viewer at ui_helpers' own module top level is a real
+# circular import whenever something imports ui_helpers.py before anything
+# else has already fully loaded pid_viewer.py (2026-09-04, surfaced by
+# lopa_panel.py importing ui_helpers directly). _obj_type_matches has no
+# lower-layer home -- it stays a deferred, function-local import in
+# standard_cause_options() below, the only place it's used, same pattern as
+# worksheet.py's/scenario_panel.py's own deferred imports for this exact
+# situation.
+from equipment_detection import COMPONENT_TYPES, _equip_prefix_from_tag
 
 
 class _MiniPopupCloseButton(QObject):
@@ -293,6 +310,10 @@ def standard_cause_options(db, deviation_description, comp_type):
     std_dev_id = _resolve_std_deviation_id(db, deviation_description)
     obj_id = None
     if comp_type:
+        # Deferred: pid_viewer.py (via pid_panel_mod.py) depends on this
+        # module, so importing it at ui_helpers' own top level would be
+        # circular -- see the note by this module's top-level imports.
+        from pid_viewer import _obj_type_matches
         try:
             for obj in db.standard_objects():
                 if _obj_type_matches(comp_type, obj['name']):
@@ -500,15 +521,33 @@ def find_bold_tag_at_position(text, tags, rect, point, base_font,
     return None
 
 
-def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_wrap):
+_SPELLCHECK_UNDERLINE_COLOR = MARKUP_COLORS[0]   # same '#E53935' spellcheck.py uses
+
+
+def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_wrap,
+                              misspelled_ranges=()):
     """Draw `text` inside `rect`, rendering any whole-word occurrence of a
     member of `tags` in bold (2026-08-09, see NOTES.md "fetmarkera
     objekttexten i konsekvensen så man ser att det är som ett objekt").
     Falls back to a single plain drawText call when there's nothing to
-    bold — the common case for untouched free text — so this stays as
-    cheap as the original code for every row that was never drag-tagged.
+    bold or misspelled — the common case for untouched, correctly-spelled
+    free text — so this stays as cheap as the original code for every row
+    that never needs either treatment.
     `word_wrap=True` mirrors the KON column's multi-line wrapping;
-    `word_wrap=False` mirrors the SG column's single-line elided text."""
+    `word_wrap=False` mirrors the SG column's single-line elided text.
+
+    `misspelled_ranges` (2026-09-07, see NOTES.md "Stavningskontroll —
+    statisk understrykning") is an optional list of (start, end, word)
+    tuples (the same shape `SpellChecker.misspelled_ranges()` yields) —
+    each gets the same red squiggly SpellCheckUnderline the live cell
+    editor already draws, so a misspelling is visible on the STATIC
+    (painted, non-editing) cell too, not only while actively editing it.
+    Composes with bold-tag formatting via the same QTextLayout
+    FormatRange mechanism, exactly like the live editor's independent
+    QSyntaxHighlighter layer already composes with this widget's own
+    manual bold formatting (verified empirically for that case, see
+    tests.test_spellcheck.HighlighterIntegrationTests
+    .test_coexists_with_bold_tag_text_edits_own_manual_formatting)."""
     # ``QTableWidgetItem`` is allowed to return no FontRole.  A recent real
     # crash came from forwarding that ``None`` to QPainter.setFont() for an
     # empty recommendation cell.  The active painter still has the table's
@@ -518,7 +557,7 @@ def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_
     if word_wrap:
         flags |= Qt.TextFlag.TextWordWrap
     ranges = find_tag_bold_ranges(text, tags) if tags else []
-    if not ranges:
+    if not ranges and not misspelled_ranges:
         painter.setFont(base_font)
         painter.setPen(color)
         painter.drawText(rect, flags, text)
@@ -530,7 +569,12 @@ def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_
         # loss the plain-text path already accepted for long descriptions.
         fm = QFontMetrics(base_font)
         text = fm.elidedText(text, Qt.TextElideMode.ElideRight, rect.width())
-        ranges = find_tag_bold_ranges(text, tags)
+        ranges = find_tag_bold_ranges(text, tags) if tags else []
+        # elidedText() always keeps the original text's exact prefix up to
+        # the truncation point, so a range that fits inside the elided
+        # text's new (shorter) length is still correct as-is; one that
+        # doesn't is in the truncated tail -- same accepted loss as above.
+        misspelled_ranges = [r for r in misspelled_ranges if r[1] < len(text)]
 
     layout = QTextLayout(text, base_font)
     opt = QTextOption()
@@ -549,6 +593,16 @@ def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_
         fr.length = e - s
         fr.format = bold_fmt
         formats.append(fr)
+    if misspelled_ranges:
+        spell_fmt = QTextCharFormat()
+        spell_fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
+        spell_fmt.setUnderlineColor(QColor(_SPELLCHECK_UNDERLINE_COLOR))
+        for s, e, _word in misspelled_ranges:
+            fr = QTextLayout.FormatRange()
+            fr.start = s
+            fr.length = e - s
+            fr.format = spell_fmt
+            formats.append(fr)
     layout.setFormats(formats)
 
     layout.beginLayout()
@@ -571,6 +625,345 @@ def _draw_text_with_bold_tags(painter, rect, text, tags, base_font, color, word_
 
     painter.setPen(color)
     layout.draw(painter, QPointF(rect.left(), rect.top()))
+
+
+class _BoldTagTextEdit(QTextEdit):
+    """Shared multiline scenario editor.
+
+    The table paints wrapped cell text itself, so using a one-line
+    ``QLineEdit`` as the delegate editor made the text jump or clip as soon
+    as a row became taller.  This editor keeps the same plain-text API used
+    by the existing delegate/popup code while letting Qt wrap the live text
+    in the same cell rectangle.
+
+    Moved here from scenario_panel.py (2026-09-04) so lopa_panel.py's own
+    inline-edit delegate can reuse it without a circular import --
+    scenario_panel.py already imports from lopa_panel.py (LopaLinkDialog),
+    so the reverse direction is only possible via a shared lower layer.
+    scenario_panel.py re-exports this name so its own call sites (and any
+    ``patch('scenario_panel._BoldTagTextEdit', ...)`` in tests) keep working
+    unchanged -- same layer + re-export pattern used throughout this codebase.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._bold_tags = []
+        self._completer = None
+        self._tag_completer = None
+        self._tag_completion_serial = 0
+        self._tag_completion_range = None
+        self._completion_serial = 0
+        self._completion_range = None
+        self.setAcceptRichText(False)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setTabChangesFocus(True)
+        self.setFrameStyle(QFrame.Shape.NoFrame)
+        self.setContentsMargins(0, 0, 0, 0)
+        self.document().setDocumentMargin(0)
+
+    def text(self):
+        return self.toPlainText()
+
+    def setText(self, text):
+        self.setPlainText('' if text is None else str(text))
+        self._apply_bold_formats()
+
+    def deselect(self):
+        cursor = self.textCursor()
+        cursor.clearSelection()
+        self.setTextCursor(cursor)
+
+    def selectedText(self):
+        return self.textCursor().selectedText()
+
+    def cursorPosition(self):
+        return self.textCursor().position()
+
+    def setCursorPosition(self, position):
+        cursor = self.textCursor()
+        cursor.setPosition(max(0, min(int(position), len(self.toPlainText()))))
+        self.setTextCursor(cursor)
+
+    def cursorPositionAt(self, point):
+        return self.cursorForPosition(point).position()
+
+    def setCompleter(self, completer):
+        self._completer = completer
+        completer.setWidget(self)
+        popup = completer.popup()
+        popup.setWindowFlag(Qt.WindowType.Popup, True)
+        popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        popup.setMinimumWidth(260)
+        popup.setStyleSheet(
+            "QAbstractItemView { background:#ffffff; color:#17191C; "
+            "border:1px solid #8D9299; padding:2px; }"
+            "QAbstractItemView::item { padding:3px 6px; }"
+        )
+        try:
+            completer.activated.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        completer.activated.connect(self._insert_completion)
+
+    def completer(self):
+        return self._completer
+
+    def setTagCompleter(self, completer):
+        """Attach the shared delayed P&ID-tag popup to this text editor."""
+        self._tag_completer = completer
+        completer.setWidget(self)
+        # A delegate editor lives inside QTableWidget's viewport.  The
+        # default completer view can consequently be clipped/painted behind
+        # the table on some Windows styles.  Make it an explicit non-modal
+        # popup window so the tag suggestions are visible above the table.
+        popup = completer.popup()
+        popup.setWindowFlag(Qt.WindowType.Popup, True)
+        popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        popup.setMinimumWidth(180)
+        popup.setStyleSheet(
+            "QAbstractItemView { background:#ffffff; color:#17191C; "
+            "border:1px solid #8D9299; padding:2px; }"
+            "QAbstractItemView::item { padding:3px 6px; }"
+        )
+        try:
+            completer.activated.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        completer.activated.connect(self._insert_tag_completion)
+        self.textChanged.connect(self._schedule_tag_completion)
+
+    def _schedule_tag_completion(self):
+        self._tag_completion_serial += 1
+        serial = self._tag_completion_serial
+        editor_ref = weakref.ref(self)
+        QTimer.singleShot(220, lambda s=serial, ref=editor_ref:
+                          _show_tag_completion_if_alive(ref, s))
+
+    def _show_tag_completion(self, serial):
+        try:
+            if serial != self._tag_completion_serial or self._tag_completer is None:
+                return
+            cursor = self.textCursor()
+            pos = cursor.position()
+            text = self.toPlainText()
+            start = pos
+            while start > 0 and re.match(r'[A-Za-z0-9_.-]', text[start - 1]):
+                start -= 1
+            token = text[start:pos]
+            min_length = int(getattr(self, '_tag_completion_min_length', 2))
+            if len(token) < min_length:
+                self._tag_completer.popup().hide()
+                return
+            self._tag_completion_range = (start, pos)
+            self._tag_completer.setCompletionPrefix(token)
+            if self._tag_completer.completionCount() <= 0:
+                self._tag_completer.popup().hide()
+                return
+            if self._completer is not None:
+                self._completer.popup().hide()
+            self._tag_completer.complete(self.cursorRect())
+            # complete() schedules the view show internally.  Raise it after
+            # that call as the editor is embedded in a table viewport.
+            popup = self._tag_completer.popup()
+            popup.raise_()
+        except RuntimeError:
+            # A deferred completion can outlive the delegate editor when a
+            # rebuild, focus change, or popup closes the cell editor.
+            return
+
+    def _insert_tag_completion(self, completion):
+        if not self._tag_completion_range:
+            return
+        start, end = self._tag_completion_range
+        cursor = self.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(end, cursor.MoveMode.KeepAnchor)
+        cursor.insertText(str(completion))
+        caret_pos = cursor.position()
+        self.setTextCursor(cursor)
+        self._tag_completion_range = None
+        if self._tag_completer is not None:
+            self._tag_completer.popup().hide()
+        # QCompleter may still own keyboard focus while its activated signal
+        # is being delivered. Return focus after that event so the user can
+        # continue typing immediately after the inserted P&ID tag.
+        QTimer.singleShot(0, lambda ed=weakref.ref(self), pos=caret_pos:
+                          _resume_tag_editing(ed, pos))
+        self._refresh_pid_tag_bolding()
+
+    def _accept_visible_tag_completion(self):
+        """Accept the selected tag when Enter is delivered to the editor.
+
+        The popup is deliberately non-activating so focus remains in the
+        inline editor.  On some Windows styles that means Enter reaches the
+        editor's event filter instead of emitting QCompleter.activated from
+        the popup.  Consume the selected completion here before the normal
+        Enter handling commits/closes the table editor.
+        """
+        completer = self._tag_completer
+        if completer is None:
+            return False
+        popup = completer.popup()
+        if not popup.isVisible():
+            return False
+        index = popup.currentIndex()
+        completion = index.data(Qt.ItemDataRole.DisplayRole) if index.isValid() else None
+        if not completion:
+            completion = completer.currentCompletion()
+        if not completion:
+            return False
+        self._insert_tag_completion(completion)
+        return True
+
+    def _insert_completion(self, completion):
+        cursor = self.textCursor()
+        if self._completion_range is not None:
+            start, end = self._completion_range
+            cursor.setPosition(start)
+            cursor.setPosition(end, cursor.MoveMode.KeepAnchor)
+        cursor.insertText(str(completion))
+        self.setTextCursor(cursor)
+        self._completion_range = None
+
+    def _schedule_completion(self):
+        """Show the ordinary text-history completer after user typing.
+
+        QCompleter natively knows how to follow QLineEdit, but this project
+        uses QTextEdit for wrapped scenario cells. Drive the popup explicitly
+        so consequence history (and standard-cause suggestions) is visible
+        in the same editor instead of only being attached in memory.
+        """
+        if self._completer is None:
+            return
+        self._completion_serial += 1
+        serial = self._completion_serial
+        editor_ref = weakref.ref(self)
+        QTimer.singleShot(120, lambda s=serial, ref=editor_ref:
+                          _show_completion_if_alive(ref, s))
+
+    def _show_completion(self, serial):
+        try:
+            if serial != self._completion_serial or self._completer is None:
+                return
+            if self._tag_completer is not None and self._tag_completer.popup().isVisible():
+                return
+            cursor = self.textCursor()
+            end = cursor.position()
+            prefix = self.toPlainText()[:end]
+            if not prefix.strip():
+                self._completer.popup().hide()
+                return
+            self._completion_range = (0, end)
+            self._completer.setCompletionPrefix(prefix)
+            if self._completer.completionCount() <= 0:
+                self._completer.popup().hide()
+                return
+            self._completer.complete(self.cursorRect())
+            self._completer.popup().raise_()
+        except RuntimeError:
+            return
+
+    def set_bold_tags(self, tags):
+        self._bold_tags = [str(tag).strip() for tag in (tags or [])
+                           if str(tag).strip()]
+        self._apply_bold_formats()
+
+    def keyPressEvent(self, event):
+        super().keyPressEvent(event)
+        self._schedule_completion()
+        # Apply after QTextEdit has completed the document mutation. Doing
+        # this from textChanged can re-enter Qt's layout engine while it is
+        # still processing the key event.
+        self._apply_bold_formats()
+        self._refresh_pid_tag_bolding()
+
+    def _refresh_pid_tag_bolding(self):
+        """Bold complete P&ID tag tokens as text is entered."""
+        matcher = getattr(self, '_tag_matcher', None)
+        if not callable(matcher):
+            return
+        try:
+            matches = matcher(self.toPlainText())
+        except Exception:
+            matches = []
+        tags = list(dict.fromkeys(self._bold_tags + list(matches or [])))
+        if tags != self._bold_tags:
+            self.set_bold_tags(tags)
+
+    def _apply_bold_formats(self):
+        if not self._bold_tags:
+            return
+        text = self.toPlainText()
+        if not text:
+            return
+        # Reapplying character formats rebuilds parts of QTextEdit's layout.
+        # Preserve the complete cursor state and the current scroll offsets,
+        # not only the caret position, so the text cannot visibly jump while
+        # the user types or a P&ID tag is recognised.
+        current_cursor = self.textCursor()
+        cursor_pos = current_cursor.position()
+        cursor_anchor = current_cursor.anchor()
+        v_scroll = self.verticalScrollBar().value()
+        h_scroll = self.horizontalScrollBar().value()
+        cursor = QTextCursor(self.document())
+        normal = QTextCharFormat()
+        normal.setFontWeight(QFont.Weight.Normal)
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.setCharFormat(normal)
+        bold = QTextCharFormat()
+        bold.setFontWeight(QFont.Weight.Bold)
+        folded = text.casefold()
+        for tag in self._bold_tags:
+            start = 0
+            needle = tag.casefold()
+            while True:
+                pos = folded.find(needle, start)
+                if pos < 0:
+                    break
+                cursor.setPosition(pos)
+                cursor.setPosition(pos + len(tag), QTextCursor.MoveMode.KeepAnchor)
+                cursor.setCharFormat(bold)
+                start = pos + len(tag)
+        restored_cursor = QTextCursor(self.document())
+        restored_cursor.setPosition(cursor_anchor)
+        restored_cursor.setPosition(cursor_pos, QTextCursor.MoveMode.KeepAnchor)
+        self.setTextCursor(restored_cursor)
+        self.verticalScrollBar().setValue(v_scroll)
+        self.horizontalScrollBar().setValue(h_scroll)
+
+
+def _show_tag_completion_if_alive(editor_ref, serial):
+    """Run a delayed completion only while its Qt editor still exists."""
+    editor = editor_ref()
+    if editor is None or sip.isdeleted(editor):
+        return
+    editor._show_tag_completion(serial)
+
+
+def _show_completion_if_alive(editor_ref, serial):
+    """Run a delayed history completion only while its editor still exists."""
+    editor = editor_ref()
+    if editor is None or sip.isdeleted(editor):
+        return
+    editor._show_completion(serial)
+
+
+def _resume_tag_editing(editor_ref, position):
+    """Restore the text editor after accepting a tag-completer item."""
+    editor = editor_ref()
+    if editor is None or sip.isdeleted(editor):
+        return
+    try:
+        editor.setFocus(Qt.FocusReason.OtherFocusReason)
+        cursor = editor.textCursor()
+        cursor.clearSelection()
+        cursor.setPosition(max(0, min(position, len(editor.toPlainText()))))
+        editor.setTextCursor(cursor)
+    except RuntimeError:
+        return
+
 
 def effective_f_level(f_level, rrf):
     """Reduce F-level by floor(log10(rrf)) steps; minimum F=-1."""

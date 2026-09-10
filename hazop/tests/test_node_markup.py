@@ -181,6 +181,354 @@ class NodeMarkupPanelNavigateTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class NodeInfoMergedButtonTests(unittest.TestCase):
+    """(2026-09-06) Anton: "ute till höger finns idag 6 knappar på nod...
+    jag vill slå ihop de tre övre (dvs dom som innehåller namn,
+    beskrivning och media) till en." The old 🏷/📄/⚗ trio
+    (_edit_node_name/_edit_node_desc/_edit_node_params) is merged into a
+    single _edit_node_info popup covering all six fields (name, P&ID-ref,
+    description, media, pressure, temperature) at once."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_node_info_merge_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_node_ribbon_has_one_info_button_instead_of_three(self):
+        from hazop import PropertiesRibbon
+        node_id = self.db.add_node()
+        panel = PropertiesRibbon(self.db)
+        panel.set_item(NODE_T, node_id)
+        try:
+            tooltips = [b.toolTip() for b in panel._btns if isinstance(b, QPushButton)]
+            self.assertEqual(
+                sum(1 for t in tooltips if t.startswith('Redigera nod')), 1, tooltips)
+            self.assertNotIn('Redigera beskrivning', tooltips)
+            self.assertFalse(
+                any(t.startswith('Redigera processparametrar') for t in tooltips),
+                tooltips)
+        finally:
+            panel.deleteLater()
+
+    def test_merged_dialog_saves_all_six_fields_in_one_go(self):
+        from hazop import PropertiesRibbon
+        from PyQt6.QtWidgets import QDialog, QTextEdit
+        node_id = self.db.add_node()
+        panel = PropertiesRibbon(self.db)
+        panel.set_item(NODE_T, node_id)
+        try:
+            info_btn = next(b for b in panel._btns
+                            if isinstance(b, QPushButton)
+                            and b.toolTip().startswith('Redigera nod'))
+
+            def _fake_show_popup(btn, dlg):
+                dlg.findChild(QLineEdit, 'node_name_edit').setText('Reaktor 1')
+                dlg.findChild(QLineEdit, 'node_pid_ref_edit').setText('PID-100')
+                dlg.findChild(QTextEdit, 'node_desc_edit').setPlainText('Ny beskrivning')
+                dlg.findChild(QLineEdit, 'node_media_edit').setText('Vätgas')
+                dlg.findChild(QLineEdit, 'node_pressure_edit').setText('12 bar')
+                dlg.findChild(QLineEdit, 'node_temperature_edit').setText('80 C')
+                return QDialog.DialogCode.Accepted
+
+            changed = []
+            panel.item_changed.connect(lambda: changed.append(True))
+            with unittest.mock.patch.object(
+                    panel, '_show_popup', side_effect=_fake_show_popup):
+                info_btn.click()
+
+            self.assertEqual(changed, [True])
+            n = dict(self.db.get_node(node_id))
+            self.assertEqual(n['name'], 'Reaktor 1')
+            self.assertEqual(n['pid_ref'], 'PID-100')
+            self.assertEqual(n['description'], 'Ny beskrivning')
+            self.assertEqual(n['media'], 'Vätgas')
+            self.assertEqual(n['pressure'], '12 bar')
+            self.assertEqual(n['temperature'], '80 C')
+        finally:
+            panel.deleteLater()
+
+
+class MarkupTableClickToEditStyleTests(unittest.TestCase):
+    """(2026-09-06) Anton: in "Nodmarkeringar" (the bottom table shown
+    while editing node markup) he wants to click directly on the
+    Färg/Opacitet/Tjocklek/Font cells to change that markup's style,
+    with the P&ID updating automatically — previously this needed a
+    right-click "Ändra stil..." context-menu action. Both paths now go
+    through the shared MarkupTablePanel._edit_style(), which the
+    already-existing item_style_changed → pid_panel.refresh_markup_overlays()
+    wiring (hazop.py) picks up for the live P&ID update."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_markup_table_style_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.node_id = self.db.add_node()
+        self.mu_id = self.db.add_node_markup(
+            self.node_id, 'polygon', [[0, 0], [10, 0], [10, 10]], 'Zon 1',
+            '#E53935', 0.7, 2, 0)
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_panel(self):
+        from hazop import MarkupTablePanel
+        panel = MarkupTablePanel(self.db)
+        panel.load(self.node_id)
+        return panel
+
+    def _patch_style_dialog(self, color='#1565C0', opacity=0.3, width=5, font_size=20,
+                            accepted=True):
+        from node_markup import _MarkupStyleDialog
+        from PyQt6.QtWidgets import QDialog
+        exec_patch = unittest.mock.patch.object(
+            _MarkupStyleDialog, 'exec',
+            return_value=(QDialog.DialogCode.Accepted if accepted
+                         else QDialog.DialogCode.Rejected))
+        style_patch = unittest.mock.patch.object(
+            _MarkupStyleDialog, 'get_style',
+            return_value=(color, opacity, width, font_size))
+        return exec_patch, style_patch
+
+    def test_clicking_color_cell_opens_style_dialog_and_saves(self):
+        panel = self._make_panel()
+        try:
+            changed = []
+            panel.item_style_changed.connect(changed.append)
+            exec_patch, style_patch = self._patch_style_dialog(color='#43A047')
+            with exec_patch, style_patch:
+                panel._on_cell_clicked(0, 2)   # Färg column
+
+            self.assertEqual(changed, [self.mu_id])
+            mu = dict(self.db.get_node_markup(self.mu_id))
+            self.assertEqual(mu['color'], '#43A047')
+        finally:
+            panel.deleteLater()
+
+    def test_clicking_opacity_cell_opens_style_dialog_and_saves(self):
+        panel = self._make_panel()
+        try:
+            exec_patch, style_patch = self._patch_style_dialog(opacity=0.9)
+            with exec_patch, style_patch:
+                panel._on_cell_clicked(0, 3)   # Opacitet column
+            mu = dict(self.db.get_node_markup(self.mu_id))
+            self.assertAlmostEqual(mu['opacity'], 0.9)
+        finally:
+            panel.deleteLater()
+
+    def test_clicking_width_cell_opens_style_dialog_and_saves(self):
+        panel = self._make_panel()
+        try:
+            exec_patch, style_patch = self._patch_style_dialog(width=9)
+            with exec_patch, style_patch:
+                panel._on_cell_clicked(0, 4)   # Tjocklek column
+            mu = dict(self.db.get_node_markup(self.mu_id))
+            self.assertEqual(mu['line_width'], 9)
+        finally:
+            panel.deleteLater()
+
+    def test_clicking_font_cell_opens_style_dialog_and_saves(self):
+        panel = self._make_panel()
+        try:
+            exec_patch, style_patch = self._patch_style_dialog(font_size=30)
+            with exec_patch, style_patch:
+                panel._on_cell_clicked(0, 5)   # Font column
+            mu = dict(self.db.get_node_markup(self.mu_id))
+            self.assertEqual(mu['font_size'], 30)
+        finally:
+            panel.deleteLater()
+
+    def test_cancelling_style_dialog_leaves_markup_unchanged(self):
+        panel = self._make_panel()
+        try:
+            changed = []
+            panel.item_style_changed.connect(changed.append)
+            exec_patch, style_patch = self._patch_style_dialog(
+                color='#000000', accepted=False)
+            with exec_patch, style_patch:
+                panel._on_cell_clicked(0, 2)
+
+            self.assertEqual(changed, [])
+            mu = dict(self.db.get_node_markup(self.mu_id))
+            self.assertEqual(mu['color'], '#E53935')
+        finally:
+            panel.deleteLater()
+
+    def test_style_edit_refreshes_table_row_with_new_values(self):
+        panel = self._make_panel()
+        try:
+            exec_patch, style_patch = self._patch_style_dialog(
+                color='#1565C0', opacity=0.5, width=7, font_size=18)
+            with exec_patch, style_patch:
+                panel._on_cell_clicked(0, 3)
+            self.assertEqual(panel._table.item(0, 2).text(), '#1565C0')
+            self.assertEqual(panel._table.item(0, 3).text(), '50%')
+            self.assertEqual(panel._table.item(0, 4).text(), '7')
+            self.assertEqual(panel._table.item(0, 5).text(), '18')
+        finally:
+            panel.deleteLater()
+
+    def test_clicking_visibility_column_still_toggles_instead_of_opening_style(self):
+        """Column 6 (👁) must keep its own dedicated behaviour — the new
+        style-editing columns are only 2-5."""
+        panel = self._make_panel()
+        try:
+            changed = []
+            panel.item_style_changed.connect(changed.append)
+            vis_toggled = []
+            panel.item_vis_toggled.connect(lambda mu_id, vis: vis_toggled.append((mu_id, vis)))
+            panel._on_cell_clicked(0, 6)
+            self.assertEqual(changed, [])
+            self.assertEqual(vis_toggled, [(self.mu_id, False)])
+        finally:
+            panel.deleteLater()
+
+    def test_clicking_label_column_still_only_selects(self):
+        """Column 1 (Etikett) is unaffected by this change — no style
+        dialog, just the pre-existing item_selected signal."""
+        panel = self._make_panel()
+        try:
+            changed = []
+            panel.item_style_changed.connect(changed.append)
+            selected = []
+            panel.item_selected.connect(selected.append)
+            panel._on_cell_clicked(0, 1)
+            self.assertEqual(changed, [])
+            self.assertEqual(selected, [self.mu_id])
+        finally:
+            panel.deleteLater()
+
+    def test_context_menu_style_action_still_works_via_shared_helper(self):
+        """The refactor moved the ctx-menu dialog code into _edit_style();
+        calling that helper directly (what the "Ändra stil..." action now
+        does) must behave identically to the column-click path."""
+        panel = self._make_panel()
+        try:
+            changed = []
+            panel.item_style_changed.connect(changed.append)
+            exec_patch, style_patch = self._patch_style_dialog(color='#F9A825')
+            with exec_patch, style_patch:
+                panel._edit_style(self.mu_id)
+            self.assertEqual(changed, [self.mu_id])
+            mu = dict(self.db.get_node_markup(self.mu_id))
+            self.assertEqual(mu['color'], '#F9A825')
+        finally:
+            panel.deleteLater()
+
+
+class MarkupModeHidesPlainNodeButtonsTests(unittest.TestCase):
+    """(2026-09-06) Anton: "När man klickar på pennan i nodmarkeringar kan
+    du släcka dom tre övre knapparna ute till höger då dessa inte har
+    någon funktion längre och flytta upp knapparna som har med
+    nodmarkeringen att göra." While the ✏️ markup toggle is checked, the
+    plain node buttons (namn/status/zoom — merged into one 🏷 button plus
+    ✅/📍, see the earlier "slå ihop de tre övre" change) do nothing for
+    the markup being edited, so they're skipped entirely and the markup
+    toggle becomes the first widget in the ribbon instead of sitting
+    below an inert button group."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_markup_mode_hides_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+
+    def tearDown(self):
+        try:
+            del self.db
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _plain_button_tooltips(self, panel):
+        return [b.toolTip() for b in panel._btns if isinstance(b, QPushButton)
+                and b is not getattr(panel, '_markup_toggle_btn', None)
+                and b not in panel._tool_btns.values()
+                and b is not getattr(panel, '_place_symbol_btn', None)
+                and b is not getattr(panel, '_all_vis_btn', None)
+                and b is not getattr(panel, '_prev_btn', None)
+                and b is not getattr(panel, '_next_btn', None)
+                and b is not getattr(panel, '_bottom_toggle_btn', None)]
+
+    def test_plain_node_buttons_present_before_entering_markup_mode(self):
+        from hazop import PropertiesRibbon
+        node_id = self.db.add_node()
+        panel = PropertiesRibbon(self.db)
+        panel.set_item(NODE_T, node_id)
+        try:
+            tooltips = self._plain_button_tooltips(panel)
+            self.assertTrue(any(t.startswith('Redigera nod') for t in tooltips), tooltips)
+            self.assertTrue(any('status' in t.lower() for t in tooltips), tooltips)
+            self.assertTrue(any('Visa nod på P&ID' == t for t in tooltips), tooltips)
+        finally:
+            panel.deleteLater()
+
+    def test_entering_markup_mode_hides_the_plain_node_buttons(self):
+        from hazop import PropertiesRibbon
+        node_id = self.db.add_node()
+        panel = PropertiesRibbon(self.db)
+        panel.set_item(NODE_T, node_id)
+        panel.enter_markup_mode(node_id)
+        try:
+            tooltips = self._plain_button_tooltips(panel)
+            self.assertEqual(tooltips, [],
+                "plain node buttons must be gone entirely while markup "
+                "editing is active, not just hidden or disabled")
+            # The markup toggle and its tools must still be there.
+            self.assertIsNotNone(panel._markup_toggle_btn)
+            self.assertTrue(panel._markup_toggle_btn.isChecked())
+            self.assertIn('select', panel._tool_btns)
+        finally:
+            panel.deleteLater()
+
+    def test_markup_toggle_is_the_first_widget_when_active(self):
+        from hazop import PropertiesRibbon
+        node_id = self.db.add_node()
+        panel = PropertiesRibbon(self.db)
+        panel.set_item(NODE_T, node_id)
+        panel.enter_markup_mode(node_id)
+        try:
+            first_item = panel._outer.itemAt(0)
+            self.assertIs(first_item.widget(), panel._markup_toggle_btn,
+                "the markup toggle should be the very first widget — no "
+                "leading separator or leftover plain-button group above it")
+        finally:
+            panel.deleteLater()
+
+    def test_exiting_markup_mode_restores_the_plain_node_buttons(self):
+        from hazop import PropertiesRibbon
+        node_id = self.db.add_node()
+        panel = PropertiesRibbon(self.db)
+        panel.set_item(NODE_T, node_id)
+        panel.enter_markup_mode(node_id)
+        panel.exit_markup_mode()
+        try:
+            tooltips = self._plain_button_tooltips(panel)
+            self.assertTrue(any(t.startswith('Redigera nod') for t in tooltips), tooltips)
+            self.assertEqual(panel._tool_btns, {},
+                "markup tool buttons must be torn down once editing exits")
+        finally:
+            panel.deleteLater()
+
+
 class RedMarkupConsolidationTests(unittest.TestCase):
     """Fas F del 2 (2026-08-17, see NOTES.md "Red markup konsolideras") —
     "Skrota allt utom 'Välj P&ID-symbol', flytta in i nodmarkup-panelen."

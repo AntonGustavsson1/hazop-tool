@@ -27,8 +27,12 @@ from PyQt6.QtGui import (
     QPen, QPixmap, QTextCharFormat, QTextCursor,
 )
 
-from constants import CAUSE_T, CONS_T, SG_T, SG_TYPES, CONFIG
-from database import Database, DEFAULT_MATRIX, get_matrix, risk_info, parse_tag_refs
+from constants import CAUSE_T, CONS_T, SG_T, SG_TYPES, CONFIG, MAX_GROUP_OBJECTS
+from database import (
+    Database, DEFAULT_MATRIX, get_matrix, risk_info, parse_tag_refs,
+    freq_to_f_level,
+)
+import spellcheck
 from design import (
     RISK_BAR_HEIGHT, RISK_BAR_MARGIN_X, RISK_BAR_MARGIN_Y,
     RISK_BAR_RADIUS, RISK_COLUMN_DEFAULT_WIDTH,
@@ -54,9 +58,14 @@ from ui_helpers import (
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
     find_bold_tag_at_position, _equipment_type_options,
     add_mini_popup_close_button,
+    # Re-exported so every existing `from scenario_panel import
+    # _BoldTagTextEdit` / `patch('scenario_panel._BoldTagTextEdit', ...)`
+    # call site keeps working unchanged after the 2026-09-04 move to
+    # ui_helpers.py (needed so lopa_panel.py can reuse it without a
+    # circular import -- scenario_panel.py already imports from
+    # lopa_panel.py for LopaLinkDialog).
+    _BoldTagTextEdit,
 )
-
-MAX_GROUP_OBJECTS = 20
 
 # Scenario mixes ordinary QTableWidget items with custom-painted cells. Keep
 # the selected-cell treatment explicit so every one of those paths uses the
@@ -184,7 +193,7 @@ class _ObjectTagActionPopup(QDialog):
         self._choose_btn.clicked.connect(self._show_object_picker)
         self._rename_btn.clicked.connect(self._show_rename_editor)
         self._type_btn.clicked.connect(self._show_type_picker)
-        self._object_combo.activated.connect(self._select_object)
+        self._object_combo.currentIndexChanged.connect(self._select_object)
         self._rename_save.clicked.connect(self._request_rename)
         self._rename_edit.returnPressed.connect(self._request_rename)
         self._type_save.clicked.connect(self._request_type_change)
@@ -294,335 +303,6 @@ class _BoldTagLineEdit(QLineEdit):
         painter.end()
 
 
-class _BoldTagTextEdit(QTextEdit):
-    """Shared multiline scenario editor.
-
-    The table paints wrapped cell text itself, so using a one-line
-    ``QLineEdit`` as the delegate editor made the text jump or clip as soon
-    as a row became taller.  This editor keeps the same plain-text API used
-    by the existing delegate/popup code while letting Qt wrap the live text
-    in the same cell rectangle.
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._bold_tags = []
-        self._completer = None
-        self._tag_completer = None
-        self._tag_completion_serial = 0
-        self._tag_completion_range = None
-        self._completion_serial = 0
-        self._completion_range = None
-        self.setAcceptRichText(False)
-        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setTabChangesFocus(True)
-        self.setFrameStyle(QFrame.Shape.NoFrame)
-        self.setContentsMargins(0, 0, 0, 0)
-        self.document().setDocumentMargin(0)
-
-    def text(self):
-        return self.toPlainText()
-
-    def setText(self, text):
-        self.setPlainText('' if text is None else str(text))
-        self._apply_bold_formats()
-
-    def deselect(self):
-        cursor = self.textCursor()
-        cursor.clearSelection()
-        self.setTextCursor(cursor)
-
-    def selectedText(self):
-        return self.textCursor().selectedText()
-
-    def cursorPosition(self):
-        return self.textCursor().position()
-
-    def setCursorPosition(self, position):
-        cursor = self.textCursor()
-        cursor.setPosition(max(0, min(int(position), len(self.toPlainText()))))
-        self.setTextCursor(cursor)
-
-    def cursorPositionAt(self, point):
-        return self.cursorForPosition(point).position()
-
-    def setCompleter(self, completer):
-        self._completer = completer
-        completer.setWidget(self)
-        popup = completer.popup()
-        popup.setWindowFlag(Qt.WindowType.Popup, True)
-        popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        popup.setMinimumWidth(260)
-        popup.setStyleSheet(
-            "QAbstractItemView { background:#ffffff; color:#17191C; "
-            "border:1px solid #8D9299; padding:2px; }"
-            "QAbstractItemView::item { padding:3px 6px; }"
-        )
-        try:
-            completer.activated.disconnect()
-        except (TypeError, RuntimeError):
-            pass
-        completer.activated.connect(self._insert_completion)
-
-    def completer(self):
-        return self._completer
-
-    def setTagCompleter(self, completer):
-        """Attach the shared delayed P&ID-tag popup to this text editor."""
-        self._tag_completer = completer
-        completer.setWidget(self)
-        # A delegate editor lives inside QTableWidget's viewport.  The
-        # default completer view can consequently be clipped/painted behind
-        # the table on some Windows styles.  Make it an explicit non-modal
-        # popup window so the tag suggestions are visible above the table.
-        popup = completer.popup()
-        popup.setWindowFlag(Qt.WindowType.Popup, True)
-        popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        popup.setMinimumWidth(180)
-        popup.setStyleSheet(
-            "QAbstractItemView { background:#ffffff; color:#17191C; "
-            "border:1px solid #8D9299; padding:2px; }"
-            "QAbstractItemView::item { padding:3px 6px; }"
-        )
-        try:
-            completer.activated.disconnect()
-        except (TypeError, RuntimeError):
-            pass
-        completer.activated.connect(self._insert_tag_completion)
-        self.textChanged.connect(self._schedule_tag_completion)
-
-    def _schedule_tag_completion(self):
-        self._tag_completion_serial += 1
-        serial = self._tag_completion_serial
-        editor_ref = weakref.ref(self)
-        QTimer.singleShot(220, lambda s=serial, ref=editor_ref:
-                          _show_tag_completion_if_alive(ref, s))
-
-    def _show_tag_completion(self, serial):
-        try:
-            if serial != self._tag_completion_serial or self._tag_completer is None:
-                return
-            cursor = self.textCursor()
-            pos = cursor.position()
-            text = self.toPlainText()
-            start = pos
-            while start > 0 and re.match(r'[A-Za-z0-9_.-]', text[start - 1]):
-                start -= 1
-            token = text[start:pos]
-            min_length = int(getattr(self, '_tag_completion_min_length', 2))
-            if len(token) < min_length:
-                self._tag_completer.popup().hide()
-                return
-            self._tag_completion_range = (start, pos)
-            self._tag_completer.setCompletionPrefix(token)
-            if self._tag_completer.completionCount() <= 0:
-                self._tag_completer.popup().hide()
-                return
-            if self._completer is not None:
-                self._completer.popup().hide()
-            self._tag_completer.complete(self.cursorRect())
-            # complete() schedules the view show internally.  Raise it after
-            # that call as the editor is embedded in a table viewport.
-            popup = self._tag_completer.popup()
-            popup.raise_()
-        except RuntimeError:
-            # A deferred completion can outlive the delegate editor when a
-            # rebuild, focus change, or popup closes the cell editor.
-            return
-
-    def _insert_tag_completion(self, completion):
-        if not self._tag_completion_range:
-            return
-        start, end = self._tag_completion_range
-        cursor = self.textCursor()
-        cursor.setPosition(start)
-        cursor.setPosition(end, cursor.MoveMode.KeepAnchor)
-        cursor.insertText(str(completion))
-        caret_pos = cursor.position()
-        self.setTextCursor(cursor)
-        self._tag_completion_range = None
-        if self._tag_completer is not None:
-            self._tag_completer.popup().hide()
-        # QCompleter may still own keyboard focus while its activated signal
-        # is being delivered. Return focus after that event so the user can
-        # continue typing immediately after the inserted P&ID tag.
-        QTimer.singleShot(0, lambda ed=weakref.ref(self), pos=caret_pos:
-                          _resume_tag_editing(ed, pos))
-        self._refresh_pid_tag_bolding()
-
-    def _accept_visible_tag_completion(self):
-        """Accept the selected tag when Enter is delivered to the editor.
-
-        The popup is deliberately non-activating so focus remains in the
-        inline editor.  On some Windows styles that means Enter reaches the
-        editor's event filter instead of emitting QCompleter.activated from
-        the popup.  Consume the selected completion here before the normal
-        Enter handling commits/closes the table editor.
-        """
-        completer = self._tag_completer
-        if completer is None:
-            return False
-        popup = completer.popup()
-        if not popup.isVisible():
-            return False
-        index = popup.currentIndex()
-        completion = index.data(Qt.ItemDataRole.DisplayRole) if index.isValid() else None
-        if not completion:
-            completion = completer.currentCompletion()
-        if not completion:
-            return False
-        self._insert_tag_completion(completion)
-        return True
-
-    def _insert_completion(self, completion):
-        cursor = self.textCursor()
-        if self._completion_range is not None:
-            start, end = self._completion_range
-            cursor.setPosition(start)
-            cursor.setPosition(end, cursor.MoveMode.KeepAnchor)
-        cursor.insertText(str(completion))
-        self.setTextCursor(cursor)
-        self._completion_range = None
-
-    def _schedule_completion(self):
-        """Show the ordinary text-history completer after user typing.
-
-        QCompleter natively knows how to follow QLineEdit, but this project
-        uses QTextEdit for wrapped scenario cells. Drive the popup explicitly
-        so consequence history (and standard-cause suggestions) is visible
-        in the same editor instead of only being attached in memory.
-        """
-        if self._completer is None:
-            return
-        self._completion_serial += 1
-        serial = self._completion_serial
-        editor_ref = weakref.ref(self)
-        QTimer.singleShot(120, lambda s=serial, ref=editor_ref:
-                          _show_completion_if_alive(ref, s))
-
-    def _show_completion(self, serial):
-        try:
-            if serial != self._completion_serial or self._completer is None:
-                return
-            if self._tag_completer is not None and self._tag_completer.popup().isVisible():
-                return
-            cursor = self.textCursor()
-            end = cursor.position()
-            prefix = self.toPlainText()[:end]
-            if not prefix.strip():
-                self._completer.popup().hide()
-                return
-            self._completion_range = (0, end)
-            self._completer.setCompletionPrefix(prefix)
-            if self._completer.completionCount() <= 0:
-                self._completer.popup().hide()
-                return
-            self._completer.complete(self.cursorRect())
-            self._completer.popup().raise_()
-        except RuntimeError:
-            return
-
-    def set_bold_tags(self, tags):
-        self._bold_tags = [str(tag).strip() for tag in (tags or [])
-                           if str(tag).strip()]
-        self._apply_bold_formats()
-
-    def keyPressEvent(self, event):
-        super().keyPressEvent(event)
-        self._schedule_completion()
-        # Apply after QTextEdit has completed the document mutation. Doing
-        # this from textChanged can re-enter Qt's layout engine while it is
-        # still processing the key event.
-        self._apply_bold_formats()
-        self._refresh_pid_tag_bolding()
-
-    def _refresh_pid_tag_bolding(self):
-        """Bold complete P&ID tag tokens as text is entered."""
-        matcher = getattr(self, '_tag_matcher', None)
-        if not callable(matcher):
-            return
-        try:
-            matches = matcher(self.toPlainText())
-        except Exception:
-            matches = []
-        tags = list(dict.fromkeys(self._bold_tags + list(matches or [])))
-        if tags != self._bold_tags:
-            self.set_bold_tags(tags)
-
-    def _apply_bold_formats(self):
-        if not self._bold_tags:
-            return
-        text = self.toPlainText()
-        if not text:
-            return
-        # Reapplying character formats rebuilds parts of QTextEdit's layout.
-        # Preserve the complete cursor state and the current scroll offsets,
-        # not only the caret position, so the text cannot visibly jump while
-        # the user types or a P&ID tag is recognised.
-        current_cursor = self.textCursor()
-        cursor_pos = current_cursor.position()
-        cursor_anchor = current_cursor.anchor()
-        v_scroll = self.verticalScrollBar().value()
-        h_scroll = self.horizontalScrollBar().value()
-        cursor = QTextCursor(self.document())
-        normal = QTextCharFormat()
-        normal.setFontWeight(QFont.Weight.Normal)
-        cursor.select(QTextCursor.SelectionType.Document)
-        cursor.setCharFormat(normal)
-        bold = QTextCharFormat()
-        bold.setFontWeight(QFont.Weight.Bold)
-        folded = text.casefold()
-        for tag in self._bold_tags:
-            start = 0
-            needle = tag.casefold()
-            while True:
-                pos = folded.find(needle, start)
-                if pos < 0:
-                    break
-                cursor.setPosition(pos)
-                cursor.setPosition(pos + len(tag), QTextCursor.MoveMode.KeepAnchor)
-                cursor.setCharFormat(bold)
-                start = pos + len(tag)
-        restored_cursor = QTextCursor(self.document())
-        restored_cursor.setPosition(cursor_anchor)
-        restored_cursor.setPosition(cursor_pos, QTextCursor.MoveMode.KeepAnchor)
-        self.setTextCursor(restored_cursor)
-        self.verticalScrollBar().setValue(v_scroll)
-        self.horizontalScrollBar().setValue(h_scroll)
-
-def _show_tag_completion_if_alive(editor_ref, serial):
-    """Run a delayed completion only while its Qt editor still exists."""
-    editor = editor_ref()
-    if editor is None or sip.isdeleted(editor):
-        return
-    editor._show_tag_completion(serial)
-
-
-def _show_completion_if_alive(editor_ref, serial):
-    """Run a delayed history completion only while its editor still exists."""
-    editor = editor_ref()
-    if editor is None or sip.isdeleted(editor):
-        return
-    editor._show_completion(serial)
-
-
-def _resume_tag_editing(editor_ref, position):
-    """Restore the text editor after accepting a tag-completer item."""
-    editor = editor_ref()
-    if editor is None or sip.isdeleted(editor):
-        return
-    try:
-        editor.setFocus(Qt.FocusReason.OtherFocusReason)
-        cursor = editor.textCursor()
-        cursor.clearSelection()
-        cursor.setPosition(max(0, min(position, len(editor.toPlainText()))))
-        editor.setTextCursor(cursor)
-    except RuntimeError:
-        return
-
-
 class RiskMatrixPopup(QDialog):
     """Popup risk matrix matching the configured format in Settings.
 
@@ -637,6 +317,7 @@ class RiskMatrixPopup(QDialog):
     only the row differs), so their positions are visible together."""
 
     selection_made = pyqtSignal(int, int)   # freq_value, cons_value
+    frequency_selected = pyqtSignal(int)   # frequency only in category mode
     category_changed = pyqtSignal()         # a per-category severity was set/cleared
 
     def __init__(self, current_freq: int, current_cons: int, parent=None,
@@ -1085,9 +766,11 @@ class RiskMatrixPopup(QDialog):
 
     def _pick(self, freq, cons):
         if self._category_mode:
-            # Frequency comes from the cause and severity must be chosen on
-            # an explicit category row below. The grid is only a visual map
-            # in this mode; clicking it may not create a fallback assessment.
+            # Category severity is chosen on the explicit category row below,
+            # but the shared frequency still belongs to the cause. Let the
+            # grid change that cause frequency without creating an
+            # uncategorized severity assessment.
+            self.frequency_selected.emit(freq)
             return
         self.selection_made.emit(freq, cons)
         self.accept()
@@ -2226,6 +1909,20 @@ class ReductionFactorsDialog(QDialog):
             return
         factor = checked.data(Qt.ItemDataRole.UserRole) or {}
         description = desc_item.text().strip() or str(factor.get('description') or '')
+        if col == 1:
+            factor_id = desc_item.data(Qt.ItemDataRole.UserRole)
+            if factor_id is None or not description:
+                return
+            current = next(
+                (rf for rf in self.db.reduction_factors(self.consequence_id)
+                 if int(rf['id']) == int(factor_id)),
+                None)
+            if current is None:
+                return
+            self.db.update_reduction_factor(
+                int(factor_id), description, current['rrf'], current['active'])
+            self._refresh()
+            return
         existing = [rf for rf in self.db.reduction_factors(self.consequence_id)
                     if str(rf['description']).strip().casefold() == description.casefold()]
         if col == 0:
@@ -2338,11 +2035,32 @@ class _ScenarioDelegate(QStyledItemDelegate):
             if index.column() == self._panel._C_REK:
                 self._prepare_recommendation_editor(editor, index, option)
                 self._attach_tag_completer(editor)
+            if index.column() in (self._panel._C_REK, self._panel._C_ORS,
+                                  self._panel._C_KON, self._panel._C_SG):
+                # Grow the row live to keep the whole text visible while
+                # editing (2026-09-06, Anton: "vill se helheten") -- REK
+                # already had this; ORS/KON/SG now match it instead of
+                # staying clamped to the row height the STATIC (painted,
+                # non-editing) text last computed.
                 row = index.row()
                 editor.textChanged.connect(
                     lambda r=row, ed=editor:
-                    self._panel._resize_recommendation_editor(ed, r))
+                    self._panel._resize_cell_editor(ed, r))
         return editor
+
+    def _static_misspelled_ranges(self, text):
+        """Misspelled-word (start, end, word) ranges for the STATIC
+        (painted, non-editing) ORS/KON/SG/REK cell text -- the same red
+        squiggly underline the live cell editor already draws, now also
+        visible without opening the editor (2026-09-07, Anton: "visa
+        taggigt under felstavade ord även utanför inlineredigeraren").
+        Empty whenever there's no context, it's disabled, or the text is
+        blank -- callers can pass the result straight through to
+        _draw_text_with_bold_tags without an extra guard."""
+        context = getattr(self._panel, 'spellcheck_context', None)
+        if context is None or not text:
+            return []
+        return context.misspelled_ranges_cached(text)
 
     def _attach_tag_completer(self, editor):
         """Offer P&ID tag completion in the recommendation editor too."""
@@ -2483,7 +2201,19 @@ class _ScenarioDelegate(QStyledItemDelegate):
             # immediately now that the narrower editor geometry is known;
             # waiting for a textChanged signal made a long existing
             # recommendation appear clipped/smaller until the user typed.
-            panel._resize_recommendation_editor(editor, index.row())
+            panel._resize_cell_editor(editor, index.row())
+            return
+        if index.column() == panel._C_LOPA:
+            # Keep the Enablers cell widget flush with the row's top,
+            # matching the painted RRF/Frequency badges' own top+1
+            # alignment (2026-09-06, Anton: "olika höjd och olika
+            # känsla") -- the generic adjusted(2,2,-2,-2) fallback below
+            # pushes this persistent cell widget down 2px on any row
+            # taller than its fixed height, which visibly no longer
+            # lined up once the badges got their own height fix. The
+            # widget's own fixed height (SUMMARY_BUTTON_HEIGHT) still
+            # clamps the size Qt assigns here; only the position matters.
+            editor.setGeometry(option.rect)
             return
         editor.setGeometry(QRect(option.rect).adjusted(2, 2, -2, -2))
 
@@ -2494,8 +2224,19 @@ class _ScenarioDelegate(QStyledItemDelegate):
         docstring for why this must be a plain non-toplevel child widget
         of the panel's top-level window, not a QDialog/separate top-level
         Popup) -- only the popup class and its cons_id differ."""
-        if editor is None or sip.isdeleted(editor) or not editor.isVisible():
+        if editor is None or sip.isdeleted(editor):
             return
+        if not editor.isVisible():
+            retries = int(editor.property('_standard_popup_show_retries') or 0)
+            if retries < 3:
+                editor.setProperty('_standard_popup_show_retries', retries + 1)
+                QTimer.singleShot(
+                    0, lambda ed=editor, r=row, cid=cons_id,
+                    rect=QRect(cell_rect), token=popup_token:
+                    self._show_recommendation_assist_popup(
+                        ed, r, cid, rect, token))
+            return
+        editor.setProperty('_standard_popup_show_retries', 0)
         panel = self._panel
         try:
             if (popup_token is not None and
@@ -2665,7 +2406,8 @@ class _ScenarioDelegate(QStyledItemDelegate):
                 tags = panel._matching_pid_tags(text)
                 _draw_text_with_bold_tags(
                     painter, r.adjusted(5, 2, -3, -2), text, tags,
-                    font, tc, word_wrap=True)
+                    font, tc, word_wrap=True,
+                    misspelled_ranges=self._static_misspelled_ranges(text))
             painter.restore()
             return
         if col not in (panel._C_RFORE, panel._C_SLUT):
@@ -2772,10 +2514,35 @@ def _paint_summary_badge(painter, rect, text, option, font=None):
     hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
     selected = bool(option.state & QStyle.StateFlag.State_Selected)
     bg, fg = summary_badge_colors(selected, hovered)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    # Antialiasing off for this axis-aligned rect: with AA on, a 1px pen is
+    # drawn straddling the mathematical edge (half a pixel outside rect,
+    # half inside), making the badge render ~2px taller than its logical
+    # height -- the exact source of a still-visible height mismatch
+    # against the real Enablers QPushButton (whose native border stays
+    # strictly inside its own geometry) even after their heights were
+    # unified to SUMMARY_BADGE_HEIGHT (2026-09-06, confirmed by rendering
+    # both offscreen and measuring pixels: badge 24px vs button 22px).
+    # There's no diagonal/curved edge here, so AA buys nothing.
+    # Antialiasing off for this axis-aligned rect: with AA on, a 1px pen is
+    # drawn straddling the mathematical edge (half a pixel outside rect,
+    # half inside), making the badge render ~2px taller than its logical
+    # height -- the exact source of a still-visible height mismatch
+    # against the real Enablers QPushButton (whose native border stays
+    # strictly inside its own geometry) even after their heights were
+    # unified to SUMMARY_BADGE_HEIGHT (2026-09-06, confirmed by rendering
+    # both offscreen and measuring pixels: badge 24px vs button 22px).
+    # There's no diagonal/curved edge here, so AA buys nothing.
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
     painter.setPen(QPen(QColor(summary_badge_border_color(selected, hovered)), 1))
     painter.setBrush(QBrush(QColor(bg)))
-    painter.drawRect(rect)
+    # QPainter.drawRect() paints a border-to-border span one pixel taller
+    # (and wider) than the QRect's own height/width -- a longstanding,
+    # documented Qt quirk -- so the badge otherwise rendered 1px taller
+    # than a real QPushButton's border (whose native rendering has no
+    # such inflation) even at an identical logical height. Shave it off
+    # here, on the border only; drawText below still uses the original
+    # `rect` so the text stays exactly centered.
+    painter.drawRect(rect.adjusted(0, 0, -1, -1))
 
     badge_font = QFont(font if font is not None else option.font)
     badge_font.setBold(True)
@@ -2884,6 +2651,18 @@ class _PidDelegate(_ScenarioDelegate):
                     refs = item.data(Qt.ItemDataRole.UserRole + 7) if item else []
                     tags = ([obj_data[1]] if obj_data and obj_data[1] else []) + (refs or [])
                 editor.set_bold_tags(tags)
+                # (2026-09-06, see NOTES.md "Stavningskontroll") -- the
+                # underline highlighter coexists with set_bold_tags()'s
+                # own manual QTextCursor formatting above (verified in
+                # tests.test_spellcheck.HighlighterIntegrationTests
+                # .test_coexists_with_bold_tag_text_edits_own_manual_formatting).
+                # None on self._panel.spellcheck_context (every test/host
+                # that builds this panel without one) is a silent no-op.
+                context = self._panel.spellcheck_context
+                if context is not None and not getattr(
+                        editor, '_spellcheck_attached', False):
+                    spellcheck.attach_spellcheck(editor, context)
+                    editor._spellcheck_attached = True
             self._attach_tag_completer(editor)
             if index.column() == self._panel._C_ORS:
                 self._attach_cause_completer(editor, index)
@@ -2933,6 +2712,11 @@ class _PidDelegate(_ScenarioDelegate):
         # formats, so restore the identity formatting after Qt has populated
         # the editor rather than relying only on createEditor().
         super().setEditorData(editor, index)
+        if isinstance(editor, _BoldTagTextEdit) and editor.toPlainText() == '—':
+            # super().setEditorData() just repopulated the editor straight
+            # from EditRole, undoing createEditor()'s own "—" placeholder
+            # strip above -- same blank-not-on-top-of-the-sentinel rule.
+            editor.setText('')
         if isinstance(editor, _BoldTagTextEdit):
             # Consequence keeps the deliberate two-character trigger, while
             # Barrier/Safeguard must offer a P&ID match after one character.
@@ -3350,12 +3134,21 @@ class _PidDelegate(_ScenarioDelegate):
                                          max(10, r.right() - r.left() - prefix_w - 4),
                                          max(10, line_h - 2)))
                 return
+            # row_right passed unindented (just r.right(), matching
+            # _sg_rrf_zone_geometry's own convention) so the frequency
+            # badge's horizontal position agrees exactly with the RRF
+            # badge's -- see paint()'s matching call below (2026-09-06,
+            # Anton: "frekvens och rrf börjar fortfarande inte med samma
+            # avstånd ... i sidled" -- an extra -2 inset here used to
+            # leave the freq badge starting 2px further from its cell's
+            # right edge than the RRF badge did from its own).
             freq_x, freq_w, _freq = self._panel._ors_freq_zone_geometry(
-                item, r.left() + 2, r.right() - 2)
+                item, r.left() + 2, r.right())
             editor.setGeometry(QRect(r.left() + 2 + prefix_w, r.top() + 2,
-                                     max(10, (freq_x if freq_w else r.right() - 2)
+                                     max(10, (freq_x if freq_w else r.right())
                                          - (r.left() + 2 + prefix_w)),
                                      max(10, r.height() - 4)))
+            self._panel._resize_cell_editor(editor, index.row())
             return
         elif col == self._panel._C_SG:
             # 2026-08-10 fix: this used to span the full remaining width,
@@ -3386,6 +3179,7 @@ class _PidDelegate(_ScenarioDelegate):
             editor.setGeometry(QRect(left, r.top() + 1,
                                      max(10, r.right() - left - _RRF_W - 2),
                                      max(10, r.height() - 2)))
+            self._panel._resize_cell_editor(editor, index.row())
             return
         left = r.left() + 2
         item = self._panel._table.item(index.row(), col)
@@ -3396,6 +3190,7 @@ class _PidDelegate(_ScenarioDelegate):
         editor.setGeometry(QRect(left, r.top() + 2,
                                  max(10, r.right() - left - 1),
                                  max(10, r.height() - 4)))
+        self._panel._resize_cell_editor(editor, index.row())
 
     def paint(self, painter, option, index):
         row, col = index.row(), index.column()
@@ -3454,7 +3249,8 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     _draw_text_with_bold_tags(
                         painter, desc_rect.adjusted(2, 1, -2, -1), desc,
-                        tagged_refs, option.font, tc, word_wrap=True)
+                        tagged_refs, option.font, tc, word_wrap=True,
+                        misspelled_ranges=self._static_misspelled_ranges(desc))
 
                 # RRF summary button (right column). Keep the painted badge
                 # geometry aligned with the real Enablers button: compact,
@@ -3627,9 +3423,27 @@ class _PidDelegate(_ScenarioDelegate):
                                 context, [tag_label] if show_tag else [],
                                 option.font, tc, word_wrap=False)
                     else:
+                        # Spellcheck only the raw description, not the whole
+                        # painted `combined` string -- that also carries the
+                        # bold object tag (e.g. "V-101") as plain prefix text,
+                        # and a tag like "V-101" tokenizes to the bare letter
+                        # "V" (digits/hyphen aren't word characters), which
+                        # isn't itself registered as a known tag and would
+                        # otherwise be flagged as a false-positive misspelling.
+                        # `combined` always ends with `desc` verbatim when
+                        # there's a description to show at all (see
+                        # _ors_combined_text), so offsetting by the prefix
+                        # length realigns the ranges to `combined`'s own
+                        # coordinates.
+                        desc_ranges = []
+                        if desc and combined.endswith(desc):
+                            offset = len(combined) - len(desc)
+                            desc_ranges = [(s + offset, e + offset, w) for s, e, w in
+                                          self._static_misspelled_ranges(desc)]
                         _draw_text_with_bold_tags(
                             painter, desc_rect.adjusted(0, 1, 0, -1),
-                            combined, tags, option.font, tc, word_wrap=True)
+                            combined, tags, option.font, tc, word_wrap=True,
+                            misspelled_ranges=desc_ranges)
 
                 # ── Frequency — floats over the first line, right-aligned,
                 # drawn AFTER the text so it stays on top ("längst ut till
@@ -3637,15 +3451,31 @@ class _PidDelegate(_ScenarioDelegate):
                 # causes.likelihood/base_frequency, 2026-08-18, see
                 # NOTES.md). Unchanged in substance by this rewrite — only
                 # desc_rect's own top moved (no more strip above it).
+                # row_right unindented (just r.right()), matching
+                # _sg_rrf_zone_geometry's own convention, so the badge's
+                # right margin from its cell edge is identical to the
+                # RRF badge's (2026-09-06, Anton: "frekvens och rrf ...
+                # inte med samma avstånd ... i sidled" -- an extra -2
+                # here used to leave this badge starting 2px further
+                # from the cell edge than RRF did).
                 freq_zone_x, freq_zone_w, freq_str = \
-                    self._panel._ors_freq_zone_geometry(index, r.left() + 2, r.right() - 2)
+                    self._panel._ors_freq_zone_geometry(index, r.left() + 2, r.right())
                 if freq_str is not None:
                     ff = QFont(option.font)
                     # The badge belongs to the first line, not the full
                     # wrapped cause cell; otherwise AlignVCenter makes it
                     # visibly drift downward when the description wraps.
+                    # Height matches the RRF badge / Enablers button
+                    # (SUMMARY_BADGE_HEIGHT), not the text-line metric
+                    # _ORS_FIRST_LINE_H, which is 2px shorter and made the
+                    # frequency badge visibly smaller than its RRF/Enablers
+                    # siblings (2026-09-06, Anton: "så de får motsvarande
+                    # samma höjd som enablers") — same clamp-to-row-height
+                    # fallback as the RRF badge below, so the two degrade
+                    # identically on an unusually short row.
+                    badge_height = min(SUMMARY_BADGE_HEIGHT, max(1, r.height() - 2))
                     chip_rect = QRect(freq_zone_x, r.top(), freq_zone_w,
-                                      min(_ORS_FIRST_LINE_H, r.height()))
+                                      badge_height + 2)
                     badge_rect = chip_rect.adjusted(1, 1, -1, -1)
                     _paint_summary_badge(painter, badge_rect, freq_str,
                                          option, ff)
@@ -3712,7 +3542,8 @@ class _PidDelegate(_ScenarioDelegate):
                 else:
                     _draw_text_with_bold_tags(
                         painter, txt_rect.adjusted(2, 2, -2, -2), display,
-                        tagged_refs, option.font, tc, word_wrap=True)
+                        tagged_refs, option.font, tc, word_wrap=True,
+                        misspelled_ranges=self._static_misspelled_ranges(display))
 
                 painter.restore()
                 return
@@ -3808,7 +3639,7 @@ class StandardCauseSuggestPopup(QWidget):
                 btn = QPushButton(r['description'])
                 btn.setStyleSheet(self._BTN_STYLE)
                 btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-                btn.clicked.connect(partial(self._pick, r['description']))
+                btn.clicked.connect(partial(self._pick, dict(r)))
                 vbox.addWidget(btn)
             vbox.addStretch()
             scroll.setWidget(inner)
@@ -3866,21 +3697,35 @@ class StandardCauseSuggestPopup(QWidget):
         label = self._panel._ors_freq_label(f_level, numeric)
         self._freq_btn.setText(label or "Ange frekvens…")
 
-    def _pick(self, description):
-        """Apply the selected standard cause and its frequency, then close."""
-        description = str(description or '')
-        selected = next(
-            (row for row in self._standard_cause_rows
-             if row.get('description') == description), None)
-        if selected:
+    def _pick(self, standard_cause):
+        """A chosen standard cause commits the description and closes
+        editing immediately (confirmed with Anton via AskUserQuestion —
+        the fast "pick and you're done" path, not "just fill the field
+        and keep editing"), same commitData/closeEditor emit pattern
+        the Enter key already uses (eventFilter(), scenario_panel.py)."""
+        if isinstance(standard_cause, dict):
+            description = standard_cause.get('description') or ''
+            standard_cause_id = standard_cause.get('id')
+            frequency = standard_cause.get('frequency')
+        else:
+            description = str(standard_cause or '')
+            selected = next(
+                (row for row in self._standard_cause_rows
+                 if row.get('description') == description), {})
+            standard_cause_id = selected.get('id')
             frequency = selected.get('frequency')
+
+        if standard_cause_id is not None:
+            likelihood = (freq_to_f_level(frequency)
+                          if frequency is not None else None)
             self._panel.db.update_cause(
                 self._cause_id,
-                standard_cause_id=selected.get('id'),
-                likelihood=(freq_to_f_level(frequency)
-                            if frequency is not None else None),
+                standard_cause_id=standard_cause_id,
+                likelihood=likelihood,
                 base_frequency=frequency,
+                frequency_override=None,
                 frequency_cleared=False)
+
         equipment_bound = False
         if self._equipment_id is not None:
             equipment_bound = self._panel._bind_recognized_cause_equipment(
@@ -3891,6 +3736,7 @@ class StandardCauseSuggestPopup(QWidget):
         delegate.closeEditor.emit(
             self._editor, QStyledItemDelegate.EndEditHint.NoHint)
         self.close()
+        QTimer.singleShot(0, self._panel._schedule_rebuild)
         # Binding a tag changes the cell's identity metadata (the bold
         # ``TAG-123, `` prefix), not only its description.  The regular
         # description fast path deliberately leaves that metadata alone, so
@@ -3915,10 +3761,11 @@ class StandardCauseSuggestPopup(QWidget):
         item = self._current_ors_item()
         f_level = item.data(Qt.ItemDataRole.UserRole + 3) if item else None
         numeric = item.data(Qt.ItemDataRole.UserRole + 5) if item else None
+        database_numeric = item.data(Qt.ItemDataRole.UserRole + 11) if item else None
         gp = self._freq_btn.mapToGlobal(self._freq_btn.rect().bottomLeft())
         popup = FrequencyPickerPopup.create_positioned(
             gp, current_f_level=f_level, current_numeric_freq=numeric,
-            parent=self._panel)
+            parent=self._panel, database_numeric_freq=database_numeric)
         popup.frequency_selected.connect(
             lambda f, n, cid=self._cause_id:
                 self._panel._on_ors_frequency_picked(cid, f, n))
@@ -4482,6 +4329,12 @@ class ScenarioTablePanel(QWidget):
         # fully filled matrix-colour cells without changing their values.
         self._risk_bars_enabled = (
             self.db.get_config('scenario_risk_bars_enabled', '1') == '1')
+        self._frequency_display_mode = self._frequency_display_setting()
+        # Set by MainWindow after construction (2026-09-06, see NOTES.md
+        # "Stavningskontroll") -- stays None for every test/host that
+        # constructs this panel directly without a spellcheck context,
+        # which the ORS/KON/SG cell editor below must tolerate.
+        self.spellcheck_context = None
         self.cause_id = None
         self._node_id = None
         self._deviation_id = None
@@ -4609,6 +4462,14 @@ class ScenarioTablePanel(QWidget):
         self._table.verticalHeader().setMinimumSectionSize(_compact)
         self._table.setAlternatingRowColors(True)
         self._table.setWordWrap(True)
+        # Needed for the RRF/frequency badges' hover highlight
+        # (_paint_summary_badge reads option.state & State_MouseOver) —
+        # without this, Qt only updates per-item hover state while a
+        # mouse button is held, so those delegate-painted badges never
+        # got the same hover feedback the real Enablers QPushButton gets
+        # for free as a native widget (2026-09-06, Anton: "samma effekt
+        # när man hovrar över dem").
+        self._table.setMouseTracking(True)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setStyleSheet(scenario_table_stylesheet())
         # All headers, including columns revealed in Worksheet mode, use the
@@ -5066,8 +4927,19 @@ class ScenarioTablePanel(QWidget):
             finally:
                 self._table.blockSignals(False)
         except Exception as e:
-            logging.exception('_rebuild: Python exception')
-            QMessageBox.critical(self, "Fel i scenariopanel", str(e))
+            # A queued rebuild (QTimer.singleShot/_schedule_rebuild) can fire
+            # after the project's database has already closed (project
+            # switch, or window teardown) -- same "closed database" teardown
+            # race documented throughout database.py/hazop.py. Surfacing a
+            # modal QMessageBox for it, rather than treating it as the
+            # harmless no-op every other closed-database call site does
+            # (see _show_standard_cause_popup above), showed a real crash
+            # risk: a modal dialog raised on a panel mid-teardown/deleteLater.
+            if 'closed database' in str(e).casefold():
+                logging.info('_rebuild: skipped -- database already closed')
+            else:
+                logging.exception('_rebuild: Python exception')
+                QMessageBox.critical(self, "Fel i scenariopanel", str(e))
         finally:
             self._rebuild_pending = False
             self._rebuilding = False
@@ -5445,6 +5317,14 @@ class ScenarioTablePanel(QWidget):
                                and not cause_d.get('standard_cause_id')
                                and cause_d.get('likelihood') == 0))
             freq = self.db.cause_frequency_level(cause_d)
+            database_frequency = None
+            if cause_d.get('frequency_override') is not None:
+                database_frequency = cause_d.get('base_frequency')
+                if database_frequency is None and cause_d.get('standard_cause_id'):
+                    standard = self.db.get_standard_cause(
+                        cause_d['standard_cause_id'])
+                    database_frequency = (standard or {}).get('frequency')
+            cause_d['_frequency_database_value'] = database_frequency
             if frequency_unset:
                 cause_d['_frequency_unset'] = True
             _fi = freq_to_idx(freq)
@@ -6253,6 +6133,8 @@ class ScenarioTablePanel(QWidget):
         ors.setData(Qt.ItemDataRole.UserRole + 3,
                     None if cause_d.get('_frequency_unset') else freq)
         ors.setData(Qt.ItemDataRole.UserRole + 5, cause_d.get('base_frequency'))
+        ors.setData(Qt.ItemDataRole.UserRole + 11,
+                    cause_d.get('_frequency_database_value'))
         ors.setData(Qt.ItemDataRole.UserRole + 8, repeats_previous_tag)
         ors.setData(Qt.ItemDataRole.UserRole + 10,
                     self._child_number('cause', dev_d.get('id'), cause_d.get('id')))
@@ -6289,7 +6171,7 @@ class ScenarioTablePanel(QWidget):
         # (verified: setData() on one overwrites what the other reads
         # back), so _PidDelegate.createEditor() strips the "—" sentinel
         # itself when opening the editor instead.
-        kon_item = QTableWidgetItem(cons_d['description'] or '')
+        kon_item = QTableWidgetItem(cons_d['description'] or '—')
         kon_item.setData(Qt.ItemDataRole.UserRole, ('consequence', cid))
         kon_item.setData(Qt.ItemDataRole.UserRole + 3, None)   # no per-row cat badge
         kon_item.setData(Qt.ItemDataRole.UserRole + 7, (cons_d.get('comp_type') or '',
@@ -6349,7 +6231,7 @@ class ScenarioTablePanel(QWidget):
 
         # ── Col 5: Barriär ───────────────────────────────────────────────────
         if sg is None:
-            sg_item = QTableWidgetItem('')
+            sg_item = QTableWidgetItem('—')
             sg_item.setFlags(sg_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             sg_item.setToolTip("Enter för att lägga till barriär")
         else:
@@ -6357,7 +6239,7 @@ class ScenarioTablePanel(QWidget):
             # "—" placeholder when empty (2026-08-12, see NOTES.md) — no
             # separate EditRole set here, see the KON cell's comment above
             # on why that would silently overwrite this back to empty.
-            sg_item = QTableWidgetItem(sg['description'] or '')
+            sg_item = QTableWidgetItem(sg['description'] or '—')
             sg_item.setData(Qt.ItemDataRole.UserRole,     ('safeguard', sg['id']))
             sg_item.setData(Qt.ItemDataRole.UserRole + 1, rrf)
             # Yellow indicator: list of category names this sg is excluded from
@@ -6412,8 +6294,14 @@ class ScenarioTablePanel(QWidget):
         if cat_info and not frequency_unset:
             cat_short = (cat_name or '')[:3]
             slut_text = f"{cat_short}  {freq_axis_label(final_f)}  {cons_axis_label(final_sev)}"
-        else:
+        elif frequency_unset:
+            # No frequency has been chosen yet -- same blank convention as
+            # the RFORE cell just above, not the "—" placeholder (that one
+            # is for a cause with no category assessment at all).
             slut_text = ""
+            bg_s, fg_s = '#FFFFFF', '#8D9299'
+        else:
+            slut_text = "—"
             bg_s, fg_s = '#FFFFFF', '#8D9299'
         rs = QTableWidgetItem(slut_text)
         rs.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -6463,7 +6351,7 @@ class ScenarioTablePanel(QWidget):
         rek_text = (f"{recommendation['display_number']:03d}. "
                     f"{rec_description or 'Ny rekommendation'}"
                     if recommendation else '')
-        rek_item = QTableWidgetItem(rek_text or '')
+        rek_item = QTableWidgetItem(rek_text or '—')
         rek_item.setData(Qt.ItemDataRole.UserRole,
                          ('recommendation', cid,
                           recommendation['id'] if recommendation else None))
@@ -6787,7 +6675,7 @@ class ScenarioTablePanel(QWidget):
                     cat_short = (cat_name or '')[:3]
                     slut_text = f"{cat_short}  {freq_axis_label(final_f)}  {cons_axis_label(final_sev)}"
                 else:
-                    slut_text = ""
+                    slut_text = "—"
                     bg_s, fg_s = '#FFFFFF', '#8D9299'
                 rs = self._table.item(row, self._C_SLUT)
                 if rs:
@@ -6891,8 +6779,11 @@ class ScenarioTablePanel(QWidget):
             rect = fm.boundingRect(0, 0, cell_w, 10000, Qt.TextFlag.TextWordWrap, text)
             return max(one_line_h, rect.height() + 4)
 
-    def _resize_recommendation_editor(self, editor, row):
-        """Let a live REK editor grow the row as its text wraps.
+    def _resize_cell_editor(self, editor, row):
+        """Let a live ORS/KON/SG/REK editor grow the row as its text wraps
+        (2026-09-06: originally REK-only, generalised to ORS/KON/SG too
+        so a long existing value is fully visible the moment editing
+        starts, not just the cell's static painted height).
 
         The saved table item is intentionally not updated until commit, so
         the normal row-height calculation cannot see text being typed. Use
@@ -6939,12 +6830,17 @@ class ScenarioTablePanel(QWidget):
         """
         self._risk_bars_enabled = (
             self.db.get_config('scenario_risk_bars_enabled', '1') == '1')
+        self._frequency_display_mode = self._frequency_display_setting()
         self._table.viewport().update()
 
     def set_risk_bars_enabled(self, enabled):
         """Set the risk-cell presentation without rebuilding table data."""
         self._risk_bars_enabled = bool(enabled)
         self._table.viewport().update()
+
+    def _frequency_display_setting(self):
+        mode = self.db.get_config('scenario_frequency_display_mode', 'category')
+        return mode if mode in ('category', 'category_numeric', 'numeric') else 'category'
 
     def select_cause(self, cause_id: int):
         """Scroll to and select the first row for *cause_id* in the scenario
@@ -7191,6 +7087,9 @@ class ScenarioTablePanel(QWidget):
             popup = RiskMatrixPopup(
                 cur_freq, cur_cons, self, db=self.db, cons_id=cons_id,
                 final_consequence=(col == self._C_SLUT))
+            popup.frequency_selected.connect(
+                lambda f, caid=cause_id:
+                    self._apply_frequency_from_matrix(caid, f))
             popup.selection_made.connect(
                 lambda f, c, caid=cause_id, coid=cons_id, catid=cat_id:
                     self._apply_risk_from_matrix_cat(caid, coid, catid, f, c))
@@ -7225,17 +7124,29 @@ class ScenarioTablePanel(QWidget):
 
     def _apply_risk_from_matrix(self, cause_id, cons_id, new_freq, new_cons):
         with self.db.history_group():
-            self.db.update_cause(cause_id, likelihood=new_freq)
+            self.db.update_cause(cause_id, likelihood=new_freq,
+                                 frequency_override=new_freq,
+                                 frequency_cleared=False)
             cons = self.db.get_consequence(cons_id)
             if cons:
                 self.db.update_consequence(
                     cons_id, cons['description'], new_cons, cons['category'] or '')
         self._schedule_rebuild()
 
+    def _apply_frequency_from_matrix(self, cause_id, new_freq):
+        with self.db.history_group():
+            self.db.update_cause(cause_id, likelihood=new_freq,
+                                 base_frequency=None,
+                                 frequency_override=new_freq,
+                                 frequency_cleared=False)
+        self._schedule_rebuild()
+
     def _apply_risk_from_matrix_cat(self, cause_id, cons_id, cat_id, new_freq, new_cons):
         """Bidirectional: update frequency on cause and category severity on consequence."""
         with self.db.history_group():
-            self.db.update_cause(cause_id, likelihood=new_freq)
+            self.db.update_cause(cause_id, likelihood=new_freq,
+                                 frequency_override=new_freq,
+                                 frequency_cleared=False)
             self.db.set_consequence_severity(cons_id, cat_id, new_cons)
         self._schedule_rebuild()
 
@@ -7439,6 +7350,18 @@ class ScenarioTablePanel(QWidget):
 
     def _show_rrf_popup_at(self, row, sg_id, global_pos):
         """Show RRF popup near global_pos, keeping it within the screen."""
+        # RRFPopup/SgRRFCategoryPopup are genuine top-level QDialog.exec()
+        # windows, not the non-top-level child widgets StandardCauseSuggest
+        # Popup deliberately uses (see that class's own docstring) -- a real
+        # top-level window appearing while a cell editor is still open makes
+        # QAbstractItemDelegate's own FocusOut handling auto-commit+close
+        # that editor as a side effect (confirmed empirically for the same
+        # class of popup, see NOTES.md). Explicitly commit/close any open
+        # inline editor FIRST so that always happens through our own,
+        # correctly delegate-matched commitData/closeEditor path instead of
+        # racing Qt's own — same "commit first" reasoning as
+        # StandardCauseSuggestPopup._edit_frequency.
+        self._finish_inline_editor_for_external_click(None)
         sg = self.db.get_safeguard(sg_id)
         sg_d        = dict(sg) if sg else {}
         current_rrf     = int(sg_d.get('rrf', 1))
@@ -7907,12 +7830,25 @@ class ScenarioTablePanel(QWidget):
         agree on what string they're sizing/drawing."""
         if freq_val is None:
             return None
+        category = freq_axis_label(freq_val)
+        mode = self._frequency_display_mode
+        if mode == 'category':
+            return category
+
+        numeric = None
         if base_freq_per_year is not None:
             bfv = float(base_freq_per_year)
-            if bfv >= 0.1:     return f"{bfv:.2g}/år"
-            elif bfv >= 0.001: return f"{bfv:.3g}/år"
-            else:              return f"{bfv:.1e}".replace('e-0', 'e-') + "/år"
-        return freq_axis_label(freq_val)
+            if bfv >= 0.1:
+                numeric = f"{bfv:.2g}/år"
+            elif bfv >= 0.001:
+                numeric = f"{bfv:.3g}/år"
+            else:
+                numeric = f"{bfv:.1e}".replace('e-0', 'e-') + "/år"
+        if numeric is None:
+            return category
+        if mode == 'numeric':
+            return numeric
+        return f"{category} ({numeric})"
 
     def _ors_freq_zone_geometry(self, item, row_left, row_right):
         """Return (freq_zone_x, freq_zone_w, freq_str) for the frequency
@@ -8791,14 +8727,17 @@ class ScenarioTablePanel(QWidget):
         from it, see _sync_f_levels_from_base_frequency)."""
         if f_level is not None:
             self.db.update_cause(cause_id, likelihood=f_level, base_frequency=None,
+                                 frequency_override=f_level,
                                  frequency_cleared=False)
         elif numeric is None:
             # Keep the selected standard cause and its text/object link, but
             # explicitly suppress only its frequency for this cause.
             self.db.update_cause(cause_id, likelihood=0, base_frequency=None,
+                                 frequency_override=None,
                                  frequency_cleared=True)
         else:
             self.db.update_cause(cause_id, base_frequency=numeric,
+                                 frequency_override=None,
                                  frequency_cleared=False)
         self._schedule_rebuild()
 
@@ -8817,6 +8756,8 @@ class ScenarioTablePanel(QWidget):
         txt = QTextEdit(current)
         txt.setPlaceholderText("Ange notering, beslut eller referens…")
         txt.setFixedHeight(CONFIG['H_EDIT_LG'])
+        if self.spellcheck_context is not None:
+            spellcheck.attach_spellcheck(txt, self.spellcheck_context)
         lay.addWidget(txt)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                 QDialogButtonBox.StandardButton.Cancel)
@@ -9150,15 +9091,20 @@ class ScenarioTablePanel(QWidget):
                     col_x      = self._table.columnViewportPosition(col)
                     cell_right = col_x + self._table.columnWidth(col) - 1
                     item       = self._table.item(row, col)
+                    # cell_right unindented (matches paint()'s own call,
+                    # see its comment) so this click zone always agrees
+                    # with where the badge is actually drawn.
                     freq_zone_x, freq_zone_w, freq_str = self._ors_freq_zone_geometry(
-                        item, col_x + 2, cell_right - 2)
+                        item, col_x + 2, cell_right)
                     if freq_str and freq_zone_x <= pos.x() < freq_zone_x + freq_zone_w:
                         gp = self._table.viewport().mapToGlobal(pos)
                         cur_f_level = item.data(Qt.ItemDataRole.UserRole + 3) if item else None
                         cur_numeric = item.data(Qt.ItemDataRole.UserRole + 5) if item else None
+                        database_numeric = item.data(Qt.ItemDataRole.UserRole + 11) if item else None
                         popup = FrequencyPickerPopup.create_positioned(
                             gp, current_f_level=cur_f_level,
-                            current_numeric_freq=cur_numeric, parent=self)
+                            current_numeric_freq=cur_numeric, parent=self,
+                            database_numeric_freq=database_numeric)
                         popup.frequency_selected.connect(
                             lambda f_level, numeric, cid=cause_id:
                                 self._on_ors_frequency_picked(cid, f_level, numeric))
@@ -9218,9 +9164,27 @@ class ScenarioTablePanel(QWidget):
                     return True
 
         # Delegate inline editor (regular cell in edit mode)
+        #
+        # Every ScenarioTablePanel installs itself as an APPLICATION-level
+        # filter (see the "Listen at application level..." comment near
+        # installEventFilter(self) above) — Scenario's own panel and
+        # Worksheet's separately-embedded panel both exist at once in the
+        # real app, so this same eventFilter() runs for BOTH panels' events.
+        # Without checking which table's editor this actually is, whichever
+        # panel's filter happens to run first for a KeyPress claims it
+        # (matches purely on the widget TYPE/properties, not ownership) and
+        # emits commitData/closeEditor on an editor its OWN delegate/view
+        # never opened — "QAbstractItemView::commitData/closeEditor called
+        # with an editor that does not belong to this view" (2026-09-07,
+        # Anton: "När jag klickar enter vid safeguard... får jag någon form
+        # av fel"). Worse than the cosmetic warning: `return True` below
+        # then consumes the event, so the OTHER panel — the one that
+        # actually owns this editor — never gets a turn to run its own
+        # Enter handling at all, silently dropping the real commit.
         if (isinstance(obj, (_BoldTagTextEdit, QLineEdit)) and
                 obj.property('editing_row') is not None and
-                obj.property('sg_id') is None):
+                obj.property('sg_id') is None and
+                obj.parentWidget() is self._table.viewport()):
             if event.type() == QEvent.Type.KeyPress:
                 if event.key() == Qt.Key.Key_Escape:
                     self._cancel_inline_editor(obj)
@@ -10984,44 +10948,16 @@ class ScenarioTablePanel(QWidget):
             if not equips:
                 event.ignore(); return
             if tgt_col == self._C_ORS and tgt_cause is not None:
-                equip = equips[0]
-                current = self.db.get_cause(tgt_cause)
-                current_ids = self._group_equipment_ids(current)
-                is_group = len(current_ids) >= 2 or len(equips) > 1
-                if is_group:
-                    ids = list(current_ids) if len(current_ids) >= 2 else []
-                    for selected in equips:
-                        if selected.get('id') not in ids:
-                            ids.append(selected.get('id'))
-                    ids = [value for value in ids if value is not None][:MAX_GROUP_OBJECTS]
-                    operator_match = re.search(
-                        r'\s(&|OR|<>|->|\+)\s',
-                        (current.get('comp_tag') or '') if current else '',
-                        re.IGNORECASE)
-                    operator = ('&' if not operator_match or operator_match.group(1) == '+'
-                                else ('OR' if operator_match.group(1).casefold() in ('<>', 'or')
-                                      else operator_match.group(1)))
-                    tags = []
-                    for equipment_id in ids:
-                        selected = self.db.get_equipment_by_id(equipment_id)
-                        if selected:
-                            tags.append(selected.get('tag', '').strip())
-                    self.db.update_cause(
-                        tgt_cause,
-                        comp_type=(self.db.get_equipment_by_id(ids[0]) or equip).get(
-                            'equipment_type', ''),
-                        comp_tag=f' {operator} '.join(tags),
-                        equipment_id=ids[0],
-                        secondary_equipment_id=ids[1] if len(ids) > 1 else None,
-                        group_equipment_ids=ids)
-                else:
-                    self.db.update_cause(
-                        tgt_cause,
-                        comp_type=equip.get('equipment_type', ''),
-                        comp_tag=equip.get('tag', '').strip(),
-                        equipment_id=equip.get('id'),
-                        secondary_equipment_id=None,
-                        group_equipment_ids='')
+                # Extending an existing cause's object group (single ->
+                # double -> triple, always joined by "OR" unless it
+                # already carries a different operator) is shared with
+                # the tree's own drop-on-an-existing-Orsak-row path
+                # (MainWindow._on_equipment_dropped_on_cause) via this one
+                # Database method, so the grouping rules only exist once
+                # (2026-09-06 — the bug this fixed was found precisely
+                # because this used to be duplicated).
+                self.db.add_equipment_to_cause_group(
+                    tgt_cause, [e.get('id') for e in equips])
                 self._schedule_rebuild()
                 QTimer.singleShot(0, lambda cid=tgt_cause:
                                   self.item_edited.emit(CAUSE_T, cid))

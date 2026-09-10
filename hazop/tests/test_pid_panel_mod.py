@@ -2438,6 +2438,54 @@ class SmartPolylineRemovedTests(unittest.TestCase):
         self.assertEqual(self.panel._active_symbol_id, 'some_symbol')
 
 
+class MarkupHoverCursorSettingWiringTests(unittest.TestCase):
+    """(2026-09-06) 'pid_markup_hover_cursor_enabled' is read from the DB
+    when a PIDPanel/viewer is built, and pushed into the already-built
+    viewer again by refresh_pdf_rendering (the slot SettingsPanel's
+    pid_render_settings_changed connects to) whenever the setting changes —
+    same wiring pattern as pid_min_line_width_enabled."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_markup_cursor_test_")
+        self.db = Database(path=os.path.join(self._tmpdir, "project.db"))
+
+    def tearDown(self):
+        self.db.conn.close()
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_viewer_defaults_to_hover_cursor_enabled(self):
+        from pid_viewer import PIDPanel
+        panel = PIDPanel(self.db)
+        try:
+            self.assertTrue(panel.viewer._markup_hover_cursor_enabled)
+        finally:
+            panel.deleteLater()
+
+    def test_viewer_picks_up_disabled_setting_at_construction(self):
+        from pid_viewer import PIDPanel
+        self.db.set_config('pid_markup_hover_cursor_enabled', '0')
+        panel = PIDPanel(self.db)
+        try:
+            self.assertFalse(panel.viewer._markup_hover_cursor_enabled)
+        finally:
+            panel.deleteLater()
+
+    def test_refresh_pdf_rendering_propagates_a_changed_setting(self):
+        from pid_viewer import PIDPanel
+        panel = PIDPanel(self.db)
+        try:
+            self.assertTrue(panel.viewer._markup_hover_cursor_enabled)
+            self.db.set_config('pid_markup_hover_cursor_enabled', '0')
+            panel.refresh_pdf_rendering()
+            self.assertFalse(panel.viewer._markup_hover_cursor_enabled)
+        finally:
+            panel.deleteLater()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
 

@@ -67,7 +67,7 @@ from hazop import (  # noqa: E402
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication, QGraphicsPixmapItem, QTreeWidgetItemIterator, QTreeWidgetItem,
     QCheckBox, QComboBox, QPushButton, QMessageBox, QInputDialog, QLineEdit,
-    QListWidget,
+    QListWidget, QLabel,
 )
 from PyQt6.QtGui import QPixmap, QFocusEvent, QColor  # noqa: E402
 from PyQt6.QtCore import Qt, QPoint, QDate, QEvent, QThread, pyqtSignal  # noqa: E402
@@ -1625,6 +1625,19 @@ class FrequencyPickerPopupTests(unittest.TestCase):
                 lambda f_level, numeric: selected.append((f_level, numeric)))
             popup._clear_btn.click()
             self.assertEqual(selected, [(None, None)])
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+    def test_database_override_message_is_visible(self):
+        from tree_panel import FrequencyPickerPopup
+
+        popup = FrequencyPickerPopup(
+            current_f_level=2, database_numeric_freq=0.02)
+        try:
+            labels = [label.text() for label in popup.findChildren(QLabel)]
+            self.assertTrue(any('Databasvärde: 0.02/år' in text
+                                for text in labels))
         finally:
             popup.close()
             popup.deleteLater()

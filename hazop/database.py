@@ -16,7 +16,7 @@ from pathlib import Path
 
 from constants import (
     DEVIATION_TYPES, _app_dir,
-    NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, SYSTEM_T,
+    NODE_T, CAUSE_T, CONS_T, SG_T, DEV_T, SYSTEM_T, MAX_GROUP_OBJECTS,
 )
 from lopa_models import (
     DEFAULT_SAFEGUARD_TYPES,
@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS causes (
     node_id     INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     description TEXT NOT NULL DEFAULT 'Ny orsak',
     likelihood  INTEGER NOT NULL DEFAULT 1,
+    frequency_override INTEGER DEFAULT NULL,
     frequency_cleared INTEGER NOT NULL DEFAULT 0,
     sort_order  INTEGER NOT NULL DEFAULT 0
 );
@@ -182,6 +183,22 @@ CREATE TABLE IF NOT EXISTS consequence_recommendations (
 CREATE TABLE IF NOT EXISTS app_config (
     key   TEXT PRIMARY KEY,
     value TEXT
+);
+
+-- Spellcheck's own approved-word list (2026-09-06, see NOTES.md) --
+-- "Lägg till i ordlista" on a misspelled word writes here; the
+-- checker consults this (case-insensitively) before ever asking the
+-- dictionary, alongside the project's own equipment tags.
+CREATE TABLE IF NOT EXISTS spellcheck_user_words (
+    word TEXT PRIMARY KEY COLLATE NOCASE
+);
+
+CREATE TABLE IF NOT EXISTS spellcheck_suggestion_cache (
+    language      TEXT NOT NULL,
+    context_key   TEXT NOT NULL,
+    word          TEXT NOT NULL COLLATE NOCASE,
+    suggestions   TEXT NOT NULL,
+    PRIMARY KEY (language, context_key, word)
 );
 
 -- A risk-matrix template can change the semantic meaning of every stored
@@ -982,16 +999,19 @@ def _migrate_causes_to_object_id(conn):
 
 
 def _sync_f_levels_from_base_frequency(conn):
-    """Set causes.likelihood (F-level) from standard_cause/base_frequency when frequency data exists."""
+    """Set F-level from database frequency unless an explicit override exists."""
     updated = 0
     rows = conn.execute("""
-        SELECT c.id, c.base_frequency, c.likelihood, c.frequency_cleared,
+        SELECT c.id, c.base_frequency, c.likelihood, c.frequency_override,
+               c.frequency_cleared,
                sc.frequency AS sc_freq
         FROM causes c
         LEFT JOIN standard_causes sc ON sc.id = c.standard_cause_id
     """).fetchall()
     for row in rows:
         if row['frequency_cleared']:
+            continue
+        if row['frequency_override'] is not None:
             continue
         base_freq_per_year = row['sc_freq'] if row['sc_freq'] is not None else row['base_frequency']
         if base_freq_per_year is None or base_freq_per_year <= 0:
@@ -1121,6 +1141,7 @@ class Database:
             "ALTER TABLE pid_sheets ADD COLUMN drawing_name TEXT DEFAULT ''",
             "ALTER TABLE pid_sheets ADD COLUMN drawing_revision TEXT DEFAULT ''",
             "ALTER TABLE pid_sheets ADD COLUMN drawing_date TEXT DEFAULT ''",
+            "ALTER TABLE project_revisions ADD COLUMN performed_by TEXT DEFAULT ''",
             # LOPA document fields are stored on the revision so a locked
             # revision is a complete historic record, not merely a snapshot
             # of the calculation inputs.
@@ -1131,6 +1152,20 @@ class Database:
             "ALTER TABLE lopa_revisions ADD COLUMN process_safety_time REAL DEFAULT NULL",
             "ALTER TABLE lopa_source_scenarios ADD COLUMN control_frequency TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE lopa_source_scenarios ADD COLUMN assumption_reason TEXT NOT NULL DEFAULT ''",
+            # Distinct from cause_text, which already stores the "L-001"
+            # local-source reference label (add_lopa_local_source,
+            # _build_scenario_reference) -- a local row's own free-typed
+            # Orsak text needs a column of its own instead of colliding
+            # with that reference label (2026-09-04).
+            "ALTER TABLE lopa_source_scenarios ADD COLUMN local_cause_text TEXT NOT NULL DEFAULT ''",
+            # Links the N per-category lopa_source_consequences rows of one
+            # locally-created LOPA consequence together (a HAZOP-linked
+            # consequence is instead grouped by hazop_consequence_id) so
+            # they render as one HAZOP-SCENARIER row with every category
+            # column checkable, not N separate rows (2026-09-04). Value is
+            # the group's own anchor row id (self-referential), set right
+            # after that row's insert once its id is known.
+            "ALTER TABLE lopa_source_consequences ADD COLUMN local_group_id INTEGER DEFAULT NULL",
             "ALTER TABLE lopa_records ADD COLUMN sif_number TEXT NOT NULL DEFAULT ''"):
             try:
                 self.conn.execute(statement)
@@ -1307,6 +1342,7 @@ class Database:
             "ALTER TABLE causes ADD COLUMN likelihood INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE causes ADD COLUMN source_id INTEGER DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN base_frequency REAL DEFAULT NULL",
+            "ALTER TABLE causes ADD COLUMN frequency_override INTEGER DEFAULT NULL",
             "ALTER TABLE causes ADD COLUMN frequency_cleared INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE causes ADD COLUMN deviation_id INTEGER REFERENCES deviations(id)",
             "ALTER TABLE causes ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
@@ -1908,6 +1944,7 @@ class Database:
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 label       TEXT NOT NULL DEFAULT '',
                 date        TEXT DEFAULT '',
+                performed_by TEXT DEFAULT '',
                 description TEXT DEFAULT '',
                 sort_order  INTEGER DEFAULT 0
             );
@@ -2471,6 +2508,42 @@ class Database:
         except Exception:
             pass
 
+    # ── Spellcheck user dictionary ──────────────────────────────────────────
+    def spellcheck_user_words(self):
+        """Return every word the user has approved, in insertion order."""
+        return [row['word'] for row in self.conn.execute(
+            "SELECT word FROM spellcheck_user_words ORDER BY rowid")]
+
+    def add_spellcheck_user_word(self, word):
+        word = (word or '').strip()
+        if not word:
+            return
+        self.conn.execute(
+            "INSERT OR IGNORE INTO spellcheck_user_words (word) VALUES (?)", (word,))
+        self.commit()
+
+    def get_spellcheck_suggestions(self, language, context_key, word):
+        row = self.conn.execute(
+            "SELECT suggestions FROM spellcheck_suggestion_cache "
+            "WHERE language=? AND context_key=? AND word=?",
+            (language, context_key, word)).fetchone()
+        return row['suggestions'] if row else None
+
+    def save_spellcheck_suggestions(self, language, context_key, word,
+                                    suggestions):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO spellcheck_suggestion_cache "
+            "(language, context_key, word, suggestions) VALUES (?,?,?,?)",
+            (language, context_key, word, suggestions))
+        # This is derived cache data, not a user edit: do not create an
+        # undo entry or a full project backup for every spelling result.
+        self.conn.commit()
+
+    def remove_spellcheck_user_word(self, word):
+        self.conn.execute(
+            "DELETE FROM spellcheck_user_words WHERE word = ? COLLATE NOCASE", (word,))
+        self.commit()
+
     _DEFAULT_PALETTE = [
         {'name': 'Kritisk', 'color': '#e74c3c', 'fg_color': '#ffffff'},
         {'name': 'Hög',     'color': '#e67e22', 'fg_color': '#ffffff'},
@@ -3024,14 +3097,30 @@ class Database:
                 'source_missing': True,
             })
 
-        # A deliberately local LOPA consequence has no HAZOP identifier. It
-        # still occupies one consequence row and carries its own assessments.
+        # A deliberately local LOPA consequence has no HAZOP identifier.
+        # Several category assessments can belong to the SAME local
+        # consequence -- grouped via local_group_id (see
+        # add_lopa_custom_consequence) -- so they render as one row with
+        # every category column checkable, not one row per category. A
+        # legacy row created before that column existed has no group id and
+        # falls back to grouping by its own id (a group of one).
+        local_groups = {}
+        local_order = []
         for assessment in local_assessments:
+            group_key = assessment.get('local_group_id') or assessment['id']
+            if group_key not in local_groups:
+                local_groups[group_key] = []
+                local_order.append(group_key)
+            local_groups[group_key].append(assessment)
+        for group_key in local_order:
+            group_assessments = local_groups[group_key]
+            anchor = next((row for row in group_assessments if row['id'] == group_key),
+                         group_assessments[0])
             groups.append({
-                'key': f"local:{assessment['id']}",
+                'key': f"local:{group_key}",
                 'hazop_consequence_id': None,
-                'description': assessment.get('description') or 'Lokal LOPA-konsekvens',
-                'assessments': [assessment],
+                'description': anchor.get('description') or 'Lokal LOPA-konsekvens',
+                'assessments': group_assessments,
                 'follows_hazop': False,
                 'source_missing': False,
             })
@@ -3184,6 +3273,59 @@ class Database:
                        f'Källscenario {source_id}: LOPA-underlag')
         self.commit()
 
+    def set_lopa_source_cause_text(self, source_id, text):
+        """Set the Orsak free text of a local (non-HAZOP) LOPA scenario.
+
+        Only meaningful for a source with no ``hazop_cause_id`` -- a
+        HAZOP-linked row's Orsak cell is a synthesized "Object - cause text"
+        string with no single real HAZOP field to write back to, so the
+        LOPA panel never makes that cell editable in the first place.
+
+        Stored in ``local_cause_text``, deliberately NOT ``cause_text`` --
+        that column already holds the "L-001" local-source reference label
+        (see ``add_lopa_local_source``/``_build_scenario_reference``), so
+        writing the free-typed Orsak text there would silently corrupt it.
+        """
+        source = self._lopa_source_revision(source_id)
+        self.conn.execute(
+            "UPDATE lopa_source_scenarios SET local_cause_text=? WHERE id=?",
+            (str(text or ''), source_id))
+        self._log_lopa(source['lopa_id'], source['revision_id'], 'source-analysis-updated',
+                       f'Källscenario {source_id}: orsakstext ändrad')
+        self.commit()
+
+    def set_lopa_source_frequency(self, source_id, base_frequency):
+        """Set Grundfrekvens for a local (non-HAZOP) LOPA scenario."""
+        source = self._lopa_source_revision(source_id)
+        self.conn.execute(
+            "UPDATE lopa_source_scenarios SET base_frequency=? WHERE id=?",
+            (base_frequency, source_id))
+        self._log_lopa(source['lopa_id'], source['revision_id'], 'source-analysis-updated',
+                       f'Källscenario {source_id}: grundfrekvens ändrad')
+        self.commit()
+
+    def sync_lopa_cause_frequency_to_hazop(self, source_id, cause_id, base_frequency):
+        """Edit Grundfrekvens on a HAZOP-linked row: update HAZOP, not a copy.
+
+        Unlike ``update_lopa_source_analysis_details``/the "detach" family
+        of methods, this deliberately writes through to the real HAZOP
+        ``causes.base_frequency`` -- per the user's explicit instruction
+        that editing a HAZOP-sourced row in the LOPA table should also
+        update HAZOP, not silently diverge from it (see NOTES.md). The
+        LOPA-local mirror is updated to match in the same history group so
+        a single Ctrl+Z undoes both sides together.
+        """
+        source = self._lopa_source_revision(source_id)
+        with self.history_group():
+            self.update_cause(cause_id, base_frequency=base_frequency,
+                              frequency_cleared=(base_frequency is None))
+            self.conn.execute(
+                "UPDATE lopa_source_scenarios SET base_frequency=? WHERE id=?",
+                (base_frequency, source_id))
+            self._log_lopa(source['lopa_id'], source['revision_id'], 'source-synced-to-hazop',
+                           f'Källscenario {source_id}: grundfrekvens synkad till HAZOP')
+            self.commit()
+
     def _lopa_consequence_source(self, consequence_id):
         row = self.conn.execute(
             "SELECT lc.*,ls.revision_id,lr.lopa_id FROM lopa_source_consequences lc "
@@ -3226,6 +3368,14 @@ class Database:
                     "detached_reason=? WHERE source_id=? AND hazop_consequence_id=?",
                     (description, reason, consequence['source_id'],
                      consequence['hazop_consequence_id']))
+            elif consequence.get('local_group_id') is not None:
+                # A local consequence's description is shared by every
+                # category assessment in its local_group_id group (see
+                # lopa_source_consequence_groups) -- keep them in sync the
+                # same way the HAZOP-linked branch above does.
+                self.conn.execute(
+                    "UPDATE lopa_source_consequences SET description=? WHERE local_group_id=?",
+                    (description, consequence['local_group_id']))
             else:
                 assignments.append('description=?')
                 values.append(description)
@@ -3250,9 +3400,48 @@ class Database:
                        f'Konsekvens {consequence_id}: lokalt ändrad')
         self.commit()
 
+    def sync_lopa_consequence_description_to_hazop(self, consequence_id, hazop_consequence_id,
+                                                    description):
+        """Edit Konsekvens on a HAZOP-linked row: update HAZOP, not a copy.
+
+        Mirrors ``update_lopa_consequence``'s fan-out (a HAZOP consequence
+        can have one ``lopa_source_consequences`` row per active category,
+        each carrying its own copy of the description, so every row under
+        this (source, hazop_consequence_id) pair is kept in sync) but,
+        unlike that method, writes the real HAZOP ``consequences.description``
+        through too and leaves ``follows_hazop`` untouched -- this is a sync,
+        not a deliberate local detach. Severity/category are read back from
+        the real consequence and passed through unchanged since only the
+        description is edited from this table.
+        """
+        consequence = self._lopa_consequence_source(consequence_id)
+        current = self.get_consequence(hazop_consequence_id) or {}
+        description = str(description or '')
+        with self.history_group():
+            self.update_consequence(
+                hazop_consequence_id, description,
+                current.get('severity', 0), current.get('category', ''))
+            self.conn.execute(
+                "UPDATE lopa_source_consequences SET description=? "
+                "WHERE source_id=? AND hazop_consequence_id=?",
+                (description, consequence['source_id'], hazop_consequence_id))
+            self._log_lopa(consequence['lopa_id'], consequence['revision_id'],
+                           'consequence-synced-to-hazop',
+                           f'Konsekvens {hazop_consequence_id}: beskrivning synkad till HAZOP')
+            self.commit()
+
     def add_lopa_custom_consequence(self, source_id, category_key, category_name,
-                                    severity=0, description=''):
-        """Add a clearly local consequence without creating anything in HAZOP."""
+                                    severity=0, description='', local_group_id=None):
+        """Add a clearly local consequence category assessment, without
+        creating anything in HAZOP.
+
+        ``local_group_id`` links several category assessments together as
+        one conceptual local consequence (see ``local_group_id``'s own
+        migration comment) -- pass the first call's returned id as
+        ``local_group_id`` for every following category of the same new
+        consequence. Leave it ``None`` for the group's own first/anchor
+        row: it is then set to that row's own id once known.
+        """
         source = self._lopa_source_revision(source_id)
         try:
             numeric_severity = int(severity)
@@ -3262,9 +3451,14 @@ class Database:
             raise ValueError('Konsekvensnivå får inte vara negativ.')
         consequence_id = self.conn.execute(
             "INSERT INTO lopa_source_consequences(source_id,category_key,category_name,severity,description,"
-            "follows_hazop,detached_reason) VALUES (?,?,?,?,?,0,?)",
+            "follows_hazop,detached_reason,local_group_id) VALUES (?,?,?,?,?,0,?,?)",
             (source_id, str(category_key or ''), str(category_name or category_key or ''),
-             numeric_severity, str(description or ''), 'Skapad lokalt i LOPA.')).lastrowid
+             numeric_severity, str(description or ''), 'Skapad lokalt i LOPA.',
+             local_group_id)).lastrowid
+        if local_group_id is None:
+            self.conn.execute(
+                "UPDATE lopa_source_consequences SET local_group_id=? WHERE id=?",
+                (consequence_id, consequence_id))
         self._log_lopa(source['lopa_id'], source['revision_id'], 'custom-consequence-added',
                        f'Källscenario {source_id}')
         self.commit()
@@ -3754,6 +3948,9 @@ class Database:
         Local sources are numbered L-001, L-002, etc. and not linked to HAZOP.
         Returns the source_id of the created local scenario.
         """
+        revision = self._lopa_revision_row(revision_id)
+        if not revision:
+            raise ValueError('LOPA-revisionen finns inte längre.')
         self._assert_lopa_revision_editable(revision_id)
 
         # Get next local source number
@@ -3768,7 +3965,7 @@ class Database:
             try:
                 self.conn.execute('BEGIN')
                 source_id = self.conn.execute(
-                    "INSERT INTO lopa_source_scenarios(revision_id,cause_text,scenario_text,frequency_source) "
+                    "INSERT INTO lopa_source_scenarios(revision_id,cause_text,scenario_text,frequency_origin) "
                     "VALUES (?,?,?,?)",
                     (revision_id, scenario_num, cause_text or '', 'manual')).lastrowid
 
@@ -3777,7 +3974,7 @@ class Database:
                         "UPDATE lopa_source_scenarios SET base_frequency=? WHERE id=?",
                         (frequency, source_id))
 
-                self._log_lopa(None, revision_id, 'local-source-added',
+                self._log_lopa(revision['lopa_id'], revision_id, 'local-source-added',
                               f'Lokal scenario {scenario_num} skapad')
                 self.commit()
             except Exception:
@@ -5636,16 +5833,16 @@ class Database:
         return [dict(r) for r in self.conn.execute(
             "SELECT * FROM project_revisions ORDER BY sort_order, id")]
 
-    def add_project_revision(self, label, date='', description=''):
+    def add_project_revision(self, label, date='', description='', performed_by=''):
         max_ord = (self.conn.execute(
             "SELECT COALESCE(MAX(sort_order),-1) FROM project_revisions").fetchone()[0])
         cur = self.conn.execute(
-            "INSERT INTO project_revisions (label, date, description, sort_order) "
-            "VALUES (?,?,?,?)", (label, date, description, max_ord + 1))
+            "INSERT INTO project_revisions (label, date, description, performed_by, sort_order) "
+            "VALUES (?,?,?,?,?)", (label, date, description, performed_by, max_ord + 1))
         self.commit()
         return cur.lastrowid
 
-    def update_project_revision(self, id_, label=None, date=None, description=None):
+    def update_project_revision(self, id_, label=None, date=None, description=None, performed_by=None):
         row = self.conn.execute(
             "SELECT * FROM project_revisions WHERE id=?", (id_,)).fetchone()
         if not row:
@@ -5653,9 +5850,10 @@ class Database:
         label = row['label'] if label is None else label
         date = row['date'] if date is None else date
         description = row['description'] if description is None else description
+        performed_by = row['performed_by'] if performed_by is None else performed_by
         self.conn.execute(
-            "UPDATE project_revisions SET label=?, date=?, description=? WHERE id=?",
-            (label, date, description, id_))
+            "UPDATE project_revisions SET label=?, date=?, description=?, performed_by=? WHERE id=?",
+            (label, date, description, performed_by, id_))
         self.commit()
 
     def delete_project_revision(self, id_):
@@ -5957,10 +6155,11 @@ class Database:
 
         self.commit()
 
-    def add_node_with_markup(self, name, points, style, page):
+    def add_node_with_markup(self, name, points, style, page, system_id=None):
         cur = self.conn.execute(
-            "INSERT INTO nodes (name, markup_points, markup_style, pid_page) VALUES (?,?,?,?)",
-            (name, json.dumps(points), json.dumps(style), page))
+            "INSERT INTO nodes (name, system_id, markup_points, markup_style, pid_page) "
+            "VALUES (?,?,?,?,?)",
+            (name, system_id, json.dumps(points), json.dumps(style), page))
         self.commit()
         return cur.lastrowid
 
@@ -6386,6 +6585,8 @@ class Database:
         d = dict(cause)
         if d.get('frequency_cleared'):
             return None
+        if d.get('frequency_override') is not None:
+            return None
         std_id = d.get('standard_cause_id')
         if std_id:
             sc = self.get_standard_cause(std_id)
@@ -6395,7 +6596,11 @@ class Database:
         return bf if bf is not None else None
 
     def cause_f_level(self, cause, default=3):
-        """Return F-level (-1..5): standard_cause/base_frequency first, else manual likelihood."""
+        """Return F-level, honoring an explicit override before database frequency."""
+        if cause is not None:
+            override = dict(cause).get('frequency_override')
+            if override is not None:
+                return int(override)
         base_freq_per_year = self.cause_base_frequency_per_year(cause)
         if base_freq_per_year is not None:
             return freq_to_f_level(base_freq_per_year)
@@ -6416,6 +6621,12 @@ class Database:
             "INSERT INTO systems (name, sort_order) VALUES (?,?)", (name, max_ord + 1))
         self.commit()
         return cur.lastrowid
+
+    def default_system_id(self):
+        """Return the first system, creating one when a project has none."""
+        row = self.conn.execute(
+            "SELECT id FROM systems ORDER BY sort_order, id LIMIT 1").fetchone()
+        return row['id'] if row else self.add_system()
 
     def rename_system(self, id_, name):
         self.conn.execute("UPDATE systems SET name=? WHERE id=?", (name, id_))
@@ -6648,6 +6859,81 @@ class Database:
             if value not in result:
                 result.append(value)
         return result[:20]
+
+    def add_equipment_to_cause_group(self, cause_id, equipment_ids):
+        """Add one or more equipment ids to a cause, extending it into
+        (or further into) a multi-object "OR"-group instead of replacing
+        whatever object(s) it already has. A cause with no object yet
+        gets a plain single-object set instead — same as a fresh drop on
+        a blank cause (2026-09-06, Anton: drop on an existing single
+        cause converts it to a double cause joined by "OR" with the new
+        object landing below; drop on an existing double cause extends
+        it to a triple the same way).
+
+        Shared by ScenarioTablePanel._handle_drop (ORS column drop) and
+        MainWindow._on_equipment_dropped_on_cause (tree drop on an
+        existing Orsak row) so this grouping logic only exists once —
+        the bug this fixes was found precisely because it used to be
+        duplicated. Returns the resulting equipment-id list in visual
+        order, or [] if none of equipment_ids resolved to a real row.
+        """
+        equips = [e for e in (self.get_equipment_by_id(eid) for eid in equipment_ids) if e]
+        if not equips:
+            return []
+        current = self.get_cause(cause_id)
+        current_ids = self.group_equipment_ids_for_cause(current)
+        is_group = len(current_ids) >= 1 or len(equips) > 1
+        if not is_group:
+            equip = equips[0]
+            self.update_cause(
+                cause_id,
+                comp_type=equip.get('equipment_type', ''),
+                comp_tag=(equip.get('tag') or '').strip(),
+                equipment_id=equip.get('id'),
+                secondary_equipment_id=None,
+                group_equipment_ids='')
+            return [equip.get('id')]
+
+        ids = list(current_ids)
+        for equip in equips:
+            eid = equip.get('id')
+            if eid not in ids:
+                ids.append(eid)
+        ids = [v for v in ids if v is not None][:MAX_GROUP_OBJECTS]
+
+        operator_match = re.search(
+            r'\s(&|OR|<>|->|\+)\s',
+            (current.get('comp_tag') or '') if current else '',
+            re.IGNORECASE)
+        # No operator found means this is the first time the cause is
+        # being turned into a group (single -> double) -- always "OR",
+        # per spec. An operator already present in the text (an existing
+        # group, however it was created) is preserved rather than
+        # second-guessed.
+        if operator_match is None:
+            operator = 'OR'
+        elif operator_match.group(1) == '+':
+            operator = '&'
+        elif operator_match.group(1).casefold() in ('<>', 'or'):
+            operator = 'OR'
+        else:
+            operator = operator_match.group(1)
+
+        tags = []
+        for eid in ids:
+            e = self.get_equipment_by_id(eid)
+            if e:
+                tags.append((e.get('tag') or '').strip())
+
+        first = self.get_equipment_by_id(ids[0]) or equips[0]
+        self.update_cause(
+            cause_id,
+            comp_type=first.get('equipment_type', ''),
+            comp_tag=f' {operator} '.join(tags),
+            equipment_id=ids[0],
+            secondary_equipment_id=ids[1] if len(ids) > 1 else None,
+            group_equipment_ids=ids)
+        return ids
 
     def group_cause_description_lines(self, cause, equipment_ids=None):
         """Return exactly one display/edit line per grouped-cause member.
@@ -7819,19 +8105,19 @@ class Database:
     def analysis_objects_for_node(self, node_id):
         """Return {physical_page: [object tags]} for objects relevant to node."""
         rows = self.conn.execute(
-            """SELECT em.pid_page, COALESCE(em.tag, ec.tag, '') AS tag
+            """SELECT em.pid_page, COALESCE(NULLIF(em.tag, ''), ec.tag, '') AS tag
                FROM equipment_markers em
                JOIN equipment_catalog ec ON ec.id = em.equipment_id
                WHERE ec.node_id=?
                UNION
-               SELECT em.pid_page, COALESCE(em.tag, ec.tag, '')
+               SELECT em.pid_page, COALESCE(NULLIF(em.tag, ''), ec.tag, '')
                FROM equipment_markers em
                JOIN equipment_catalog ec ON ec.id = em.equipment_id
                JOIN causes c ON c.equipment_id = em.equipment_id
                JOIN deviations d ON d.id = c.deviation_id
                WHERE d.node_id=?
                UNION
-               SELECT em.pid_page, COALESCE(em.tag, ec.tag, '')
+               SELECT em.pid_page, COALESCE(NULLIF(em.tag, ''), ec.tag, '')
                FROM equipment_markers em
                JOIN equipment_catalog ec ON ec.id = em.equipment_id
                JOIN deviations d ON d.equipment_id = em.equipment_id
@@ -7851,8 +8137,8 @@ class Database:
         """Return {page: [{tag, type, deviations, count}]} for a node."""
         rows = self.conn.execute(
             """SELECT DISTINCT em.pid_page AS page, em.equipment_id,
-                      COALESCE(em.tag, ec.tag, '') AS tag,
-                      COALESCE(ec.equipment_type, em.comp_type, '') AS type,
+                      COALESCE(NULLIF(em.tag, ''), ec.tag, '') AS tag,
+                      COALESCE(NULLIF(ec.equipment_type, ''), em.comp_type, '') AS type,
                       d.description AS deviation
                FROM equipment_markers em
                JOIN equipment_catalog ec ON ec.id = em.equipment_id
@@ -7860,8 +8146,8 @@ class Database:
                WHERE ec.node_id=? OR d.node_id=?
                UNION
                SELECT DISTINCT em.pid_page, em.equipment_id,
-                      COALESCE(em.tag, ec.tag, ''),
-                      COALESCE(ec.equipment_type, em.comp_type, ''),
+                      COALESCE(NULLIF(em.tag, ''), ec.tag, ''),
+                      COALESCE(NULLIF(ec.equipment_type, ''), em.comp_type, ''),
                       d.description
                FROM equipment_markers em
                JOIN equipment_catalog ec ON ec.id = em.equipment_id
@@ -8020,7 +8306,7 @@ class Database:
                      secondary_equipment_id=_SENTINEL,
                      group_choices_set=_SENTINEL,
                      group_equipment_ids=_SENTINEL,
-                     frequency_cleared=_SENTINEL):
+                     frequency_cleared=_SENTINEL, frequency_override=_SENTINEL):
         # Support old parameter name for backward compatibility
         if base_freq is not Database._SENTINEL and base_frequency is Database._SENTINEL:
             base_frequency = base_freq
@@ -8032,6 +8318,8 @@ class Database:
             sets.append("likelihood=?"); vals.append(likelihood)
         if base_frequency is not Database._SENTINEL:
             sets.append("base_frequency=?"); vals.append(base_frequency)
+        if frequency_override is not Database._SENTINEL:
+            sets.append("frequency_override=?"); vals.append(frequency_override)
         if standard_cause_id is not Database._SENTINEL:
             sets.append("standard_cause_id=?"); vals.append(standard_cause_id)
         if comp_type is not Database._SENTINEL:

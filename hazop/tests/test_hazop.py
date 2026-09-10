@@ -253,6 +253,54 @@ class MainWindowUndoRedoTests(unittest.TestCase):
             self.assertTrue(win._act_redo.isEnabled())
             self.assertIsNone(win.db.get_cause(cause_id))
 
+class SpellCheckMenuWiringTests(unittest.TestCase):
+    """Fas 3 (2026-09-06, see NOTES.md "Stavningskontroll") -- the
+    Redigera-menyns "Slå på/av stavningskontroll"/"Kör stavningskontroll…"
+    actions, wired to the shared SpellCheckContext every MainWindow now
+    owns."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_toggle_action_reflects_and_drives_context_enabled_state(self):
+        with _TempDbMainWindow() as win:
+            self.assertTrue(win._act_spellcheck_toggle.isCheckable())
+            self.assertEqual(win._act_spellcheck_toggle.isChecked(),
+                              win.spellcheck_context.enabled)
+            win._act_spellcheck_toggle.setChecked(False)
+            win._act_spellcheck_toggle.triggered.emit(False)
+            self.assertFalse(win.spellcheck_context.enabled)
+            self.assertIsNone(win.spellcheck_context.checker)
+
+            win._act_spellcheck_toggle.setChecked(True)
+            win._act_spellcheck_toggle.triggered.emit(True)
+            self.assertTrue(win.spellcheck_context.enabled)
+            self.assertIsNotNone(win.spellcheck_context.checker)
+
+    def test_run_spellcheck_action_opens_the_review_dialog(self):
+        import spellcheck
+        with _TempDbMainWindow() as win:
+            captured = {}
+            def _fake_dialog(db, context, parent=None):
+                dlg = unittest.mock.Mock()
+                captured['db'] = db
+                captured['context'] = context
+                return dlg
+            with unittest.mock.patch.object(
+                    spellcheck, 'SpellCheckReviewDialog', side_effect=_fake_dialog):
+                win._on_run_spellcheck()
+            self.assertIs(captured['db'], win.db)
+            self.assertIs(captured['context'], win.spellcheck_context)
+
+    def test_language_setting_change_refreshes_the_spellcheck_context(self):
+        with _TempDbMainWindow() as win:
+            win.settings_panel._spellcheck_language_combo.setCurrentIndex(
+                win.settings_panel._spellcheck_language_combo.findData('en'))
+            self.assertEqual(win.db.get_config('spellcheck_language'), 'en')
+            self.assertTrue(win.spellcheck_context.checker.check('hello'))
+
+
 class GlobalExceptHookTests(unittest.TestCase):
     """In PyQt5.5+/PyQt6, an exception raised inside a signal/slot callback
     (button click, tree selection, etc.) propagates to sys.excepthook. With
