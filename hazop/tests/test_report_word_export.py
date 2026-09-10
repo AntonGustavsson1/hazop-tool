@@ -90,6 +90,11 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertTrue(doc.sections[0].different_first_page_header_footer)
         self.assertTrue(all(not section.header.is_linked_to_previous
                             for section in doc.sections[2:]))
+        for section in doc.sections[2:]:
+            self.assertIsNotNone(next(
+                section.header._element.iter(qn('a:blip')), None))
+            self.assertIsNotNone(next(
+                section.first_page_header._element.iter(qn('a:blip')), None))
         body_text = '\n'.join(paragraph.text for paragraph in doc.paragraphs)
         for text in (
             'P&ID-ritningarna och övriga registrerade projektdokument redovisas i tabell 2-1',

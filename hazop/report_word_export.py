@@ -1417,14 +1417,21 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         source_rel = source_header.rels.get(source_rid)
         if source_rel is not None:
             for section in document.sections[1:]:
-                target_header = section.header.part
-                if next(target_header._element.iter(qn('a:blip')), None) is not None:
-                    continue
-                new_rid = target_header.relate_to(source_rel._target, RELATIONSHIP_TYPE.IMAGE)
-                paragraph = deepcopy(next(source_header._element.iter(qn('w:p')), source_header._element))
-                for blip in paragraph.iter(qn('a:blip')):
-                    blip.set(qn('r:embed'), new_rid)
-                target_header._element.insert(0, paragraph)
+                # Generated sections explicitly define both a normal and a
+                # first-page header. Word can select either variant after a
+                # section break, so both must carry their own logo relation.
+                for header in (section.header, section.first_page_header):
+                    target_header = header.part
+                    if next(target_header._element.iter(qn('a:blip')), None) is not None:
+                        continue
+                    new_rid = target_header.relate_to(
+                        source_rel._target, RELATIONSHIP_TYPE.IMAGE)
+                    paragraph = deepcopy(next(
+                        source_header._element.iter(qn('w:p')),
+                        source_header._element))
+                    for blip in paragraph.iter(qn('a:blip')):
+                        blip.set(qn('r:embed'), new_rid)
+                    target_header._element.insert(0, paragraph)
     _replace_table_references(document)
     apply_report_fonts(document)
     _highlight_document(document)
