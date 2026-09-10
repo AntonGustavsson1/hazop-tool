@@ -1284,11 +1284,11 @@ def build_report(db, *, paper_size='A3', standard_template=False):
         'enligt följande ordning. Röda risker ska åtgärdas med högst prioritet, '
         'därefter gula och sist gröna:')
     _numbered_list(document, [
-        'Risk reduction through inherently safer design',
-        'Risk reduction using mechanical barriers',
-        'Risk reduction through electrical systems',
-        'Risk reduction through instrumented systems',
-        'Risk reduction through procedures',
+        'Begränsning genom egensäker design',
+        'Begränsning med hjälp av mekanisk barriär',
+        'Begränsning genom elektriska system',
+        'Begränsning genom instrumenterade system',
+        'Riskreducering genom procedurer',
     ])
     document.add_paragraph(
         'En genomförd åtgärd ska verifieras innan rekommendationen stängs. '

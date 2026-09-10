@@ -125,8 +125,8 @@ class ReportWordExportTests(unittest.TestCase):
             'Bilaga 1 Avvikelser',
             '5.1 Resultat',
             '5.2 Fortsatt hantering',
-            'Risk reduction through inherently safer design',
-            'Risk reduction through procedures',
+            'Begränsning genom egensäker design',
+            'Riskreducering genom procedurer',
             'Bilaga 5 Nodmarkeringar',
         ):
             self.assertIn(text, body_text)
