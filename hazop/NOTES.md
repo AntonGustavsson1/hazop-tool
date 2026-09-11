@@ -1,5 +1,55 @@
 # NOTES.md — Beslut och kontext
 
+## Prestanda: findChildren()-svep togs bort från klick- och målningsvägen (2026-09-11)
+
+Anton: "leta efter eventuella funktioner som gör att programmet upplevs
+lite långsamt när jag klickar på flera i rad ... eller slöar exempelvis
+språkkontrollen ner programmet." Undersökt (inte gissat): spellcheckens
+egen cache (`SpellCheckContext.misspelled_ranges_cached`, nyckel = exakt
+text) återanvänds korrekt över omålningar och `refresh()` (den enda
+platsen som rensar cachen) anropas bara vid på/av/ordbytesinställningar
+— inte vid klick eller ombyggnad — så språkkontrollen är sannolikt INTE
+boven. `_compute_row_height`/`sizeHint()` körs bara under
+`_rebuild()`/`resizeRowsToContents()`, inte vid ren cellmarkering.
+
+Två verkliga, verifierade fynd hittades istället, båda ett resultat av
+`findChildren()` — en rekursiv genomsökning av HELA widget-trädet under
+en angiven rot, kostnaden växer med trädets storlek — anropad på fel
+ställe:
+
+1. **`_PidDelegate._active_inline_editor(index)`** anropades från
+   `paint()` för VARJE synlig ORS/KON/SG/REK-cell, och gjorde varje gång
+   ett eget `findChildren(_BoldTagTextEdit)`-svep av hela tabellens
+   viewport — dvs en fullständig trädgenomsökning multiplicerad med
+   antalet synliga celler, vid VARJE omålning (inklusive den Qt gör när
+   man klickar en ny cell, eftersom både den gamla och nya markerade
+   cellen målas om). Fixat genom att cacha den enda levande redigeraren
+   som en referens på panelen (`self._panel._live_bold_editor`), satt av
+   `_ScenarioDelegate.createEditor()` vid skapande — `_active_inline_editor`
+   läser nu bara den cachade referensen (samma `sip.isdeleted()`/
+   `isVisible()`-mönster som redan används på andra ställen i filen)
+   istället för att söka.
+2. **Applikationsnivåns `eventFilter()`** anropar
+   `_finish_inline_editor_for_external_click(target)` på VARJE musklick
+   var som helst i HELA appen (dokumenterat skäl: klick utanför tabellen
+   måste ändå kunna stänga en öppen cellredigerare). Den anropade i sin
+   tur `_is_inline_helper_target(target)`, som redan gjorde 1+3 separata
+   `findChildren()`-svep — och om den returnerade False gjordes EXAKT
+   SAMMA fyra svep en gång till för uppstädningslogiken. 8 fullständiga
+   trädgenomsökningar per klick, per levande `ScenarioTablePanel`-instans
+   (appen har alltid minst två samtidigt: huvud-Scenario + Worksheets
+   inbäddade). Fixat genom att beräkna redigerar- och popup-listorna EN
+   gång och återanvända dem för både klick-innanför-kontrollen och
+   uppstädningen — och genom att slå ihop de tre separata
+   `findChildren(popup_type)`-anropen (ett per popup-klass) till ETT
+   anrop med en typ-tuppel (samma mönster `_inline_editor_widgets()`
+   redan använde). Ner till 2 trädgenomsökningar per klick. Den nu helt
+   ininlinade `_is_inline_helper_target` (bara en anropare) togs bort.
+
+Verifiering: full `tests.test_smoke` + `tests.test_scenario_panel`
+(253 tester) — exakt samma 8 redan kända, redan dokumenterade fel som
+innan ändringen, inga nya.
+
 ## Klistra in i flera markerade celler samtidigt (2026-09-11)
 
 Anton: "har jag kopierat värde från en rad vill jag kunna klippa in

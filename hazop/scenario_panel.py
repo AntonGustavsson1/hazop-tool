@@ -2017,6 +2017,14 @@ class _ScenarioDelegate(QStyledItemDelegate):
             editor.setFrameStyle(QFrame.Shape.NoFrame)
             editor.setProperty('editing_row', index.row())
             editor.setProperty('editing_col', index.column())
+            # Cache this as the panel's one live inline editor so
+            # _active_inline_editor() (called from paint() for every visible
+            # ORS/KON/SG/REK cell) can check a single reference instead of
+            # scanning the whole viewport with findChildren() on every
+            # repaint (2026-09-11, perf: repeated clicking felt sluggish --
+            # each repaint's paint() calls multiplied a full widget-tree
+            # walk by the number of visible cells).
+            self._panel._live_bold_editor = editor
             # Set the grouped row before Qt asks the delegate for the
             # editor geometry.  If this is delayed until setEditorData(),
             # the first geometry pass can place a secondary-row editor at
@@ -3029,12 +3037,26 @@ class _PidDelegate(_ScenarioDelegate):
         must be deliberately suppressed here rather than relying on the
         editor's white background to cover it.  That coverage is incomplete
         for the compact group-row editors, which occupy only one visual line.
+
+        Reads the single cached reference createEditor() stores on the panel
+        rather than scanning the viewport with findChildren() -- this is
+        called from paint() for every visible ORS/KON/SG/REK cell, so a
+        full widget-tree walk per cell (2026-09-11, perf finding: repeated
+        clicking felt sluggish) multiplied badly with row count. Only one
+        _BoldTagTextEdit is ever live per panel at a time (a table only
+        edits one cell at once), so a single reference is exactly as
+        correct as the scan it replaces.
         """
-        for editor in self._panel._table.viewport().findChildren(_BoldTagTextEdit):
-            if (editor.isVisible() and
+        editor = getattr(self._panel, '_live_bold_editor', None)
+        if editor is None:
+            return None
+        try:
+            if (not sip.isdeleted(editor) and editor.isVisible() and
                     editor.property('editing_row') == index.row() and
                     editor.property('editing_col') == index.column()):
                 return editor
+        except RuntimeError:
+            pass
         return None
 
     def updateEditorGeometry(self, editor, option, index):
@@ -6869,21 +6891,6 @@ class ScenarioTablePanel(QWidget):
                 return False
         return False
 
-    def _is_inline_helper_target(self, target):
-        """Keep clicks inside an editor/helper popup from ending the edit."""
-        if target is None:
-            return False
-        for editor in self._inline_editor_widgets():
-            if self._is_descendant_of(target, editor):
-                return True
-        top_level = self.window()
-        for popup_type in (StandardCauseSuggestPopup,
-                           RecommendationAssistPopup, CauseTagPopup):
-            for popup in top_level.findChildren(popup_type):
-                if self._is_descendant_of(target, popup):
-                    return True
-        return False
-
     def _finish_inline_editor_for_external_click(self, target):
         """Commit/close an editor when a click lands outside its edit UI.
 
@@ -6892,24 +6899,42 @@ class ScenarioTablePanel(QWidget):
         normal Qt table cell), not a cancel, so text typed immediately before
         clicking away is retained.  The helper popup closes synchronously via
         the editor's Hide event and its explicit close backstop.
+
+        This runs on every application-wide mouse press (see eventFilter),
+        so the editor/popup lookups below are each done exactly ONCE and
+        reused for both the "click landed inside a helper" check and the
+        orphan-popup cleanup -- they used to be computed twice (once inside
+        the now-inlined _is_inline_helper_target, once again here), and the
+        three popup types were each a separate findChildren() walk instead
+        of one combined call (findChildren accepts a type tuple, same as
+        _inline_editor_widgets() already does) (2026-09-11, perf finding:
+        repeated clicking felt sluggish -- this was 8 full widget-tree
+        walks per click per live ScenarioTablePanel instance, now 2).
         """
-        if self._is_inline_helper_target(target):
-            return
         editors = self._inline_editor_widgets()
         top_level = self.window()
         popup_types = (StandardCauseSuggestPopup,
                        RecommendationAssistPopup, CauseTagPopup)
+        popups = top_level.findChildren(popup_types)
+
+        if target is not None:
+            for editor in editors:
+                if self._is_descendant_of(target, editor):
+                    return
+            for popup in popups:
+                if self._is_descendant_of(target, popup):
+                    return
+
         # Clean up helpers whose editor has already been hidden/deleted.  This
         # is deliberately done even when there is no live editor: otherwise a
         # missed Hide/destroyed notification leaves a popup that appears
         # impossible to dismiss with an ordinary click.
         live_ids = {id(editor) for editor in editors}
-        for popup_type in popup_types:
-            for popup in top_level.findChildren(popup_type):
-                linked = (getattr(popup, '_editor', None) or
-                          getattr(popup, '_inline_editor', None))
-                if linked is None or id(linked) not in live_ids:
-                    popup.close()
+        for popup in popups:
+            linked = (getattr(popup, '_editor', None) or
+                      getattr(popup, '_inline_editor', None))
+            if linked is None or id(linked) not in live_ids:
+                popup.close()
         if not editors:
             return
         # A pending empty-deviation click belongs to the old click sequence;
