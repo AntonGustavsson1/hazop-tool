@@ -2201,6 +2201,71 @@ class ParticipantMatrixTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def _mouse_event(self, event_type, x, y, button, buttons):
+        from PyQt6.QtGui import QMouseEvent
+        return QMouseEvent(event_type, QPoint(x, y).toPointF(), button, buttons,
+                           Qt.KeyboardModifier.NoModifier)
+
+    def test_resize_drag_near_a_column_edge_is_never_hijacked_into_a_location_drag(self):
+        """Anton: "Det är svårt att dra i bredden längst till höger på
+        deltagarmatris ... Det går bra dra lite i taget" -- a location-
+        bearing session column's mouseMoveEvent used to start a QDrag as
+        soon as the mouse moved past Qt's small drag-start threshold,
+        which starves Qt's own column-resize handling of the move events
+        it needs -- only presses that never moved far enough to cross that
+        threshold (many tiny drags) actually resized anything. A press
+        that starts near a section edge (the resize grip) must never be
+        hijacked, however far the mouse then moves."""
+        from hazop import ParticipantMatrixPanel
+        session_id = self.db.add_analysis_session(location='Sal A')
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            header = panel._table.horizontalHeader()
+            col = len(panel._FIXED_COLS) + len(panel._column_ids)
+            self.assertGreaterEqual(header.sectionSize(col), 20,
+                                    "test needs a wide-enough column to have room near its edge")
+            edge_x = header.sectionViewportPosition(col) + header.sectionSize(col) - 1
+
+            with unittest.mock.patch('participant_matrix_panel.QDrag') as mock_drag_cls:
+                header.mousePressEvent(self._mouse_event(
+                    QEvent.Type.MouseButtonPress, edge_x, 5,
+                    Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton))
+                self.assertTrue(header._press_near_resize_handle)
+                # Move far past the drag-start threshold -- this must still
+                # not start a location drag, because the press was on the edge.
+                header.mouseMoveEvent(self._mouse_event(
+                    QEvent.Type.MouseMove, edge_x + 40, 5,
+                    Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton))
+                mock_drag_cls.assert_not_called()
+        finally:
+            panel.deleteLater()
+
+    def test_drag_from_the_middle_of_a_located_session_column_still_starts_a_location_drag(self):
+        """The original feature (drag a filled-in session location onto
+        another analystillfälle column) must still work when the press
+        starts away from any column edge."""
+        from hazop import ParticipantMatrixPanel
+        session_id = self.db.add_analysis_session(location='Sal A')
+        panel = ParticipantMatrixPanel(self.db)
+        try:
+            header = panel._table.horizontalHeader()
+            col = len(panel._FIXED_COLS) + len(panel._column_ids)
+            self.assertGreaterEqual(header.sectionSize(col), 20,
+                                    "test needs a wide-enough column to have room in its middle")
+            mid_x = header.sectionViewportPosition(col) + header.sectionSize(col) // 2
+
+            with unittest.mock.patch('participant_matrix_panel.QDrag') as mock_drag_cls:
+                header.mousePressEvent(self._mouse_event(
+                    QEvent.Type.MouseButtonPress, mid_x, 5,
+                    Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton))
+                self.assertFalse(header._press_near_resize_handle)
+                header.mouseMoveEvent(self._mouse_event(
+                    QEvent.Type.MouseMove, mid_x + 40, 5,
+                    Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton))
+                mock_drag_cls.assert_called_once()
+        finally:
+            panel.deleteLater()
+
 
 class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
     """"Fliken PID borde kunna ändras till något mer generiskt för

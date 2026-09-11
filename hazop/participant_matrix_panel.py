@@ -465,20 +465,44 @@ class _SessionHeaderView(QHeaderView):
     analystillfälle column."""
     location_dropped = pyqtSignal(int, int)
 
+    _RESIZE_GRIP_MARGIN = 6   # px -- generous estimate of Qt's own column-edge grab zone
+
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
         self.setAcceptDrops(True)
         self._press_pos = None
         self._source_section = -1
+        self._press_near_resize_handle = False
+
+    def _is_near_section_edge(self, x):
+        """Whether x sits within the column-resize grab zone of the section
+        under it -- a drag starting there must always be left to Qt's own
+        header resize handling, never hijacked into the session-location
+        drag below (2026-09-11, Anton: "svårt att dra i bredden längst till
+        höger" -- once the press point had a location-bearing session
+        column under it, ANY mouse movement past Qt's small drag-start
+        threshold made mouseMoveEvent below start a QDrag instead of ever
+        calling super().mouseMoveEvent() again, so Qt's own resize
+        never got the moves it needed -- only presses that never moved
+        far enough to cross that threshold (very small, repeated drags)
+        actually resized anything)."""
+        section = self.logicalIndexAt(x)
+        if section < 0:
+            return False
+        left = self.sectionViewportPosition(section)
+        right = left + self.sectionSize(section)
+        return (x - left) <= self._RESIZE_GRIP_MARGIN or (right - x) <= self._RESIZE_GRIP_MARGIN
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._press_pos = event.position().toPoint()
             self._source_section = self.logicalIndexAt(self._press_pos.x())
+            self._press_near_resize_handle = self._is_near_section_edge(self._press_pos.x())
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if not (event.buttons() & Qt.MouseButton.LeftButton) or self._press_pos is None:
+        if (not (event.buttons() & Qt.MouseButton.LeftButton) or self._press_pos is None
+                or self._press_near_resize_handle):
             return super().mouseMoveEvent(event)
         if (event.position().toPoint() - self._press_pos).manhattanLength() < QApplication.startDragDistance():
             return super().mouseMoveEvent(event)

@@ -1,5 +1,48 @@
 # NOTES.md — Beslut och kontext
 
+## Fix: kolumnbredd svår att dra i deltagarmatrisen (2026-09-11)
+
+Anton: "Det är svårt att dra i bredden längst till höger på
+deltagarmatris. kolla om detta gäller fler tabeller också. Det går bra
+dra lite i taget."
+
+**Grundorsak hittad, inte gissad:** `_SessionHeaderView` (den anpassade
+header-klassen i `participant_matrix_panel.py`, den ENDA anpassade
+`QHeaderView`-underklassen i hela kodbasen — bekräftat via sökning i
+alla filer, så ingen annan tabell delar detta specifika fel) har en
+egen `mouseMoveEvent` som stödjer att dra en analystillfällesplats till
+en annan kolumn. Så fort musen rörde sig förbi Qt:s egen (mycket lilla)
+tröskel för att starta en drag-operation, startade den koden en riktig
+`QDrag` — och anropade ALDRIG `super().mouseMoveEvent()` i den grenen.
+Qt:s egen inbyggda kolumnbredd-ändring (som redan påbörjats internt vid
+`mousePressEvent`, eftersom `super().mousePressEvent()` anropas där)
+fick därför aldrig de efterföljande musrörelserna den behöver för att
+faktiskt ändra bredden — bara riktigt små, upprepade drag (som aldrig
+passerade tröskeln) kom fram till Qt:s egen resize-hantering
+överhuvudtaget. Gällde bara kolumner för ett analystillfälle som redan
+har en plats/lokal ifylld (annars är andra raden i kolumnrubriken tom
+och koden lämnar direkt till `super()`).
+
+Fixat genom att komma ihåg om själva nedtryckningen skedde nära en
+kolumngräns (`_is_near_section_edge`, samma marginal Qt:s egen
+grip-zon ungefär använder) — om så, lämnas ALLA efterföljande
+musrörelser till Qt:s normala hantering, oavsett hur långt musen sedan
+rör sig, så drag-och-släpp-funktionen för platser aldrig kan kapa ett
+bredd-ändringsförsök.
+
+**Andra tabeller påverkas INTE av detta specifika fel** (bekräftat: inga
+andra anpassade `QHeaderView`-klasser existerar). Inga ändringar
+gjordes i andra tabeller.
+
+Regressionstester: en som trycker precis vid en kolumngräns och sedan
+rör musen långt — får INTE starta en drag (mockad `QDrag`); en som
+trycker mitt i en kolumn med plats ifylld och rör musen — MÅSTE
+fortfarande starta draget (den ursprungliga funktionen ska fungera
+oförändrat).
+
+Verifiering: `tests.test_settings_panels` (107 tester inklusive de två
+nya, samma 12 redan kända/dokumenterade fel som innan ändringen).
+
 ## Enablers-cellen visar varje enabler för sig, "Xxx(RRF)" (2026-09-11)
 
 Anton: "Justera i programmet så det istället för antal och total RRF i
