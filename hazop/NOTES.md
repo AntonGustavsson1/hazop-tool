@@ -1,5 +1,115 @@
 # NOTES.md — Beslut och kontext
 
+## Dödkodsstädning via multiagent-genomgång (2026-09-11)
+
+Anton bad om att fortsätta med refaktorering: dödkod, prestanda, struktur —
+uttryckligen med Haiku-agenter för skanning och en granskande "master"-agent
+innan något togs bort. Genomförd som ett workflow: 16 Haiku-agenter läste
+varje fil/filgrupp i hela `hazop/`-katalogen (~66 000 rader, 32 filer) och
+grep-verifierade kandidater (uteslöt uttryckligen Qt-override-metoder som
+`paintEvent`/`eventFilter`/`sizeHint` osv, eftersom de aldrig syns i en
+textsökning men ändå anropas av Qt:s egen dispatch) → 59 kandidater. Varje
+kandidat fick sedan en EGEN, oberoende Sonnet-agent som gjorde sin egen
+grep/läsning innan den fick säga "säker att ta bort". En sista master-agent
+gick igenom alla 59 + hittade själv ett mönster verifierarna missat: fem
+metoder på `equipment_panel.py`s `ComponentEditorPanel` hade markerats
+"behåll" eftersom de är kopplade via `.connect(...)` i klassens `__init__`
+— korrekt resonemang i allmänhet, men fel just här eftersom KLASSEN SJÄLV
+aldrig instansieras någonstans, så en signal som aldrig kopplas till en
+levande instans spelar ingen roll. Master rekommenderade att ta bort hela
+klassen som en enhet.
+
+**46 symboler borttagna** (samtliga verifierade av mig personligen med
+egen grep innan borttagning, plus kompilering + full testkörning av varje
+berörd fil efteråt):
+- `scenario_panel.py` (13): `_make_pin_icon`/`_draw_pid_pin` (döda sedan
+  2026-08-13 enligt egen NOTES-referens), `_fill_width_once_unless_user_set`,
+  `ors_cell_global_pos`, `_get_cons_context`, `_recommendation_summary`
+  (hittad separat under tidigare sessions kraschtriage samma dag),
+  `_show_group_cause_popup`, `_edit_group_cause_choice`,
+  `_swap_group_objects`, `_on_enter_after_edit`, `_show_quick_add`,
+  `_add_safeguard_via_plus_row`, `undo_last_text_edit`.
+- `database.py` (10): två no-op-migrationsstubbar (`_fix_instrument_causes_v2/v3`),
+  `save_equipment_type`/`all_equipment_types`, `_risk_level_label`,
+  hela den övergivna "off-page connector"-klustret
+  (`clear_connector_analysis`/`save_connectors`/`save_pid_connections`)
+  och "board annotation move/delete"-paret
+  (`update_board_annotation`/`delete_board_annotation` — ofärdig
+  sticky-note-funktion, ingen anropare någonstans men flaggad för Anton
+  innan borttagning eftersom den kan vara planerad).
+- `pid_panel_mod.py` (6): `_CAT_TO_COMP`/`_comp_from_db_entry`,
+  `_learn_tag_type`, `_compute_zone_phash`, `_db_comp_for_tag` (samma
+  "kanske planerad funktion"-flagga som board-annotations ovan),
+  `_load_mode_freqs`.
+- `hazop.py` (6): `_legacy_windows11_stylesheet`, `_contrast_fg`,
+  `get_sev_labels`, `_get_node_color`, `_undo_last_markup`,
+  `_export_excel_legacy` (den riktiga vägen är `_export_excel`).
+- `pid_graphics_view.py` (3): `_finish_drawing` (dokumenterad "legacy"-
+  passthrough), `_line_segments_intersect`/`_get_boundary_crossings`.
+- `tree_panel.py` (3, ett helt kluster ~600 rader): klassen
+  `CauseObjectPopup` (den gamla kombinerade tagg+typ+objekt-popupen,
+  pensionerad till förmån för den inline-redigeraren men aldrig
+  raderad — testfilen har till och med en klass döpt
+  `RetiredCauseObjectPopupTests` som bara bekräftar att den ALDRIG visas)
+  plus dess enda anropare `_draw_equip_icon` och DESS enda anropare
+  `_icon_category` (de två sistnämnda hittade jag själv utöver
+  master-listan, samma dödkodskluster).
+- `lopa_panel.py` (2): `_configure_compact_tree`/`_fit_tree_height`.
+- `equipment_detection.py` (2): `_clean_tag_for_popup`, `_tags_from_full_text`.
+- `equipment_panel.py` (1 hel klass): `ComponentEditorPanel` inklusive
+  alla 9 metoder — se master-fyndet ovan.
+- `ui_helpers.py` (2): `effective_frequency`/`effective_likelihood`
+  (gamla aliasnamn för `effective_f_level`, uppdaterat i CLAUDE.md).
+- `standard_causes_panel.py` (1): `_on_cause_changed` — **obs, riktig
+  bugg hittad samtidigt (INTE fixad, bara flaggad):** `_cause_list.
+  itemChanged` är aldrig kopplad till denna metod (till skillnad från
+  `_obj_list.itemChanged` några rader ovan), så manuella namnbyten på
+  en standardorsak i den listan sparas aldrig till databasen. Att ta
+  bort den döda handlern varken fixar eller förvärrar detta — den
+  saknade `.connect()`-kopplingen är ett separat, kvarstående fynd.
+- `hazop_preparation_panel.py` (1): `set_swatch` på `DraggableColorSwatch`.
+
+**En felaktig borttagning gjordes och återställdes:** trodde först att
+`Database.causes_for_equipment()` saknade matchning mot
+`deviations.equipment_id` (P&ID-klick-filtret i Scenario) och lade till
+en SQL-join för det. Det bröt 8 redan existerande, avsiktliga tester i
+`test_database.py` som uttryckligen kräver att en orsak under en
+utrustningsägd avvikelse UTAN annan förekomst (tagg/text) ska
+EXKLUDERAS. Återställde SQL:en till originalet och rättade istället
+det enda test i `test_scenario_panel.py` som hade fel förväntan
+(gav testets orsak en riktig `comp_tag` istället för att förlita sig
+på avvikelse-ägarskap ensamt).
+
+**Ytterligare fynd, INTE åtgärdat, kvar att besluta om:**
+- `GroupCausePopup` (scenario_panel.py:837–1111, ~275 rader) är nu
+  också dödkod sedan dess enda anropare togs bort — samma mönster som
+  `CauseObjectPopup` (testfilen har bara negativa `assertFalse
+  (findChildren(GroupCausePopup))`-kontroller). Låg utanför vad
+  master-agenten granskade denna omgång, så lämnad orörd — flaggas för
+  en framtida borttagningsomgång.
+- `tests.test_integration.py` (8237 rader): minst en, möjligen fler,
+  redan existerande (committat 2026-08-20, opåverkat av dagens arbete)
+  test hänger/kraschar hårt eftersom det saknar den `QMessageBox`-mock
+  andra tester i samma fil konsekvent använder
+  (`CauseTagLiveLinkTests.test_editing_tag_calls_the_equipment_renamed_callback`
+  anropar en kodväg som visar en riktig modal dialog). Inte utrett
+  vidare — filen är uppenbarligen sällan körd i sin helhet.
+- 37 prestandaanmärkningar + 32 strukturanmärkningar (N+1-frågor,
+  dubblerad kod, `findChildren()`-sökningar i målningskod m.m.)
+  samlades in under skanningen men är INTE åtgärdade — en separat,
+  framtida insats, inte del av denna dödkodsomgång.
+
+Verifiering: `python -m py_compile` på alla 23 moduler, samt hela
+testsviten kördes fil för fil (varje modul vars kod ändrades fick sin
+egen dedikerade testfil köras separat) — `test_scenario_panel` (237
+tester), `test_database`+`test_equipment_detection`+`test_equipment_panel`
+(216), `test_lopa_panel`+`test_hazop`+`test_pid_panel_mod` (142),
+`test_pid_graphics_view` (60/60 OK), `test_node_markup` (33/33 OK),
+`test_settings_panels` (105). Alla kvarstående fel spårades till redan
+kända, redan dokumenterade, orelaterade problem (bekräftat genom att
+temporärt återställa specifika borttagningar och köra om — felen
+kvarstod identiskt).
+
 ## Kraschgenomgång + verkliga buggar hittade via testtriage (2026-09-10)
 
 Anton bad om en fullständig genomgång av samtliga kraschrapporter

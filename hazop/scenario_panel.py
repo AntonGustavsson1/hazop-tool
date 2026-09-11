@@ -2560,55 +2560,6 @@ def _paint_summary_badge(painter, rect, text, option, font=None):
         visible_text)
 
 
-def _draw_pid_pin(painter, rect, placed):
-    """Draw a needle pin (circle + stick) inside rect. Green=placed, red=not placed."""
-    color = QColor('#27ae60') if placed else QColor('#e74c3c')
-    dark  = color.darker(150)
-
-    r      = 4.5          # circle radius
-    stick  = 5.0          # stick length below circle
-    total  = r * 2 + stick
-
-    cx  = float(rect.center().x())
-    top = float(rect.center().y()) - total / 2.0
-
-    circle_cy = top + r
-    stick_top = top + r * 2
-    stick_bot = top + total
-
-    painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-    # Stick
-    pen = QPen(dark, 1.5)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.drawLine(QPointF(cx, stick_top), QPointF(cx, stick_bot))
-
-    # Circle head
-    painter.setBrush(QBrush(color))
-    painter.setPen(QPen(dark, 1.0))
-    painter.drawEllipse(QPointF(cx, circle_cy), r, r)
-
-    # White highlight dot
-    dot_r = r * 0.3
-    painter.setBrush(QBrush(QColor(255, 255, 255, 170)))
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawEllipse(QPointF(cx - r * 0.35, circle_cy - r * 0.35), dot_r, dot_r)
-    painter.restore()
-
-
-def _make_pin_icon(placed, size=16):
-    """Return a QIcon with the needle pin rendered at the given size."""
-    px = QPixmap(size, size)
-    px.fill(Qt.GlobalColor.transparent)
-    p = QPainter(px)
-    _draw_pid_pin(p, QRect(0, 0, size, size), placed)
-    p.end()
-    return QIcon(px)
-
-
 class _PidDelegate(_ScenarioDelegate):
     """Draws a P&ID placement icon on the left of Orsak/Konsekvens/Barriär cells.
     The editor always shows only the clean description (emoji stripped)."""
@@ -4762,16 +4713,6 @@ class ScenarioTablePanel(QWidget):
     # Columns that stretch to fill remaining space in fill mode
     _STRETCH_COLS = None  # set after class constants are known
 
-    def _fill_width_once_unless_user_set(self):
-        """Guard for the deferred auto-fill-at-startup call scheduled in
-        __init__ (2026-08-26) — only runs _fill_width_once() if nothing
-        has resized a column (a real drag, or any other programmatic
-        setColumnWidth call) in the gap between __init__ scheduling this
-        and the event loop actually running it. _on_column_resized flips
-        _col_widths_user_set the instant anything does."""
-        if not self._col_widths_user_set:
-            self._fill_width_once()
-
     def _fill_width_once(self):
         """Redistribute ORS/KON/SG to fill the table's current width right
         now. Previously "Fyll skärm" was a persistent checkbox that locked
@@ -6363,43 +6304,6 @@ class ScenarioTablePanel(QWidget):
 
         pass  # row height set by resizeRowsToContents at end of _rebuild
 
-    def _recommendation_summary(self, acts):
-        """REK-cell text for a consequence's linked recommendations
-        (2026-08-13, see NOTES.md: "samtliga tillagda rekomendationer
-        ... nummereras efter tilläggsordning") — "—" placeholder when
-        empty (same convention as KON/SG), otherwise EVERY recommendation
-        listed on its own line. Numbered by the recommendation's own compact
-        catalog display number (2026-08-25 rework) —
-        NOT by position in this list — so the SAME displayed number is
-        shown everywhere a reused recommendation appears, letting Anton
-        recognize "this is the same one" across different consequences.
-        The column joins wrap_cols so multi-line content gets the row
-        height it needs, same as ORS/KON."""
-        if not acts:
-            return ''
-        return '\n'.join(
-            f"{a['display_number']:03d}. {(a['description'] or '').strip() or 'Ny rekommendation'}"
-            for a in acts)
-
-    def _get_cons_context(self, cons_id: int):
-        """Return (deviation, comp_type, cause_text) for the consequence."""
-        cons = self.db.get_consequence(cons_id)
-        if not cons:
-            return '', '', ''
-        cause = self.db.get_cause(cons['cause_id'])
-        if not cause:
-            return '', '', ''
-        cause_d  = dict(cause)
-        comp     = cause_d.get('comp_type', '') or ''
-        cause_tx = cause_d.get('description', '') or ''
-        dev_id   = cause_d.get('deviation_id')
-        dev_desc = ''
-        if dev_id:
-            dev = self.db.get_deviation(dev_id)
-            if dev:
-                dev_desc = dev['description'] or ''
-        return dev_desc, comp, cause_tx
-
     def _pos_near_cons_row(self, cons_id: int, popup_size):
         """Global top-left position to show a popup near cons_id's KON cell in
         the scenario table, clamped to the screen — so it opens right where
@@ -7028,15 +6932,6 @@ class ScenarioTablePanel(QWidget):
                 # in the same click sequence was being delivered.
                 continue
         self._double_click_edit = None
-
-    def ors_cell_global_pos(self, dev_id):
-        """Return global top-right corner of the first placeholder ORS cell for dev_id."""
-        for row, meta in enumerate(self._row_meta):
-            if meta[0] == dev_id:
-                rect = self._table.visualRect(
-                    self._table.model().index(row, self._C_ORS))
-                return self._table.viewport().mapToGlobal(rect.topRight())
-        return None
 
     def _on_cell_clicked(self, row, col):
         if col != self._C_REK:
@@ -8392,61 +8287,6 @@ class ScenarioTablePanel(QWidget):
             self.structure_changed.emit()
         self._group_cause_changed(cause_id)
 
-    def _show_group_cause_popup(self, row, cause_id, global_pos,
-                                only_column=None):
-        """Open the two-column editor used for a grouped cause."""
-        cause = self.db.get_cause(cause_id)
-        if not cause:
-            return
-        cause = dict(cause)
-        primary = self.db.get_equipment_by_id(cause.get('equipment_id'))
-        secondary = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
-        if not primary or not secondary:
-            return
-        primary, secondary = dict(primary), dict(secondary)
-        desc = (cause.get('description') or '').lower()
-        choices_set = int(cause.get('group_choices_set') or 0)
-        direction = ('Felar lågt' if 'felar lågt' in desc else 'Felar högt') \
-            if choices_set & 1 else 'Ej vald'
-        effect = next((value for value in (
-            'Öppnar felaktigt', 'Stänger felaktigt', 'Öppnar fullt',
-            'Stänger helt') if value.lower() in desc), 'Öppnar fullt') \
-            if choices_set & 2 else 'Ej vald'
-        popup = GroupCausePopup(primary, secondary, direction, effect,
-                                parent=self, only_column=only_column)
-        def apply_choice(which, choice):
-            self._apply_group_cause_choice(cause_id, which, choice)
-            popup.set_current(which, choice)
-        popup.choice_requested.connect(apply_choice)
-        popup.adjustSize()
-        screen = (QApplication.screenAt(global_pos) or QApplication.primaryScreen()).availableGeometry()
-        x = min(global_pos.x(), screen.right() - popup.width() - 4)
-        y = global_pos.y() - popup.height() - 6
-        if y < screen.top():
-            y = global_pos.y() + 6
-        popup.move(max(screen.left() + 4, x),
-                   max(screen.top() + 4, min(y, screen.bottom() - popup.height())))
-        popup.show()
-
-    def _edit_group_cause_choice(self, cause_id, which):
-        """Show choices for the first/second ellipsis in a group cause."""
-        cause = self.db.get_cause(cause_id)
-        if not cause or not cause.get('secondary_equipment_id'):
-            return
-        primary = self.db.get_equipment_by_id(cause.get('equipment_id'))
-        secondary = self.db.get_equipment_by_id(cause.get('secondary_equipment_id'))
-        if not primary or not secondary:
-            return
-        menu = QMenu(self)
-        choices = (['Felar högt', 'Felar lågt'] if which == 0 else
-                   ['Öppnar felaktigt', 'Stänger felaktigt', 'Öppnar fullt',
-                    'Stänger helt', 'Skriv eget…'])
-        for choice in choices:
-            act = menu.addAction(choice)
-            act.triggered.connect(lambda _=False, c=choice:
-                                   self._apply_group_cause_choice(cause_id, which, c))
-        menu.exec(QCursor.pos())
-
     def _apply_group_cause_choice(self, cause_id, which, choice):
         cause = self.db.get_cause(cause_id)
         if not cause:
@@ -8571,13 +8411,6 @@ class ScenarioTablePanel(QWidget):
         self.db.update_cause(cause_id, description=desc,
                              group_choices_set=choices_set)
         self._group_cause_changed(cause_id)
-
-    def _swap_group_objects(self, cause_id):
-        """Compatibility entry point for the old two-object swap control."""
-        cause = self.db.get_cause(cause_id)
-        if not cause or len(self._group_equipment_ids(cause)) < 2:
-            return
-        self._move_group_row(cause_id, 0, 1)
 
     def _apply_cause_obj(self, row, cause_id, comp_type, comp_tag, description, frequency):
         """Apply a cause identity/text edit as one undoable action."""
@@ -9318,18 +9151,6 @@ class ScenarioTablePanel(QWidget):
             if cons_id is not None:
                 self._quick_add_safeguard(cons_id)
 
-    def _on_enter_after_edit(self):
-        row = self._enter_row
-        if row < 0 or row >= len(self._row_meta):
-            return
-        item = self._table.item(row, self._enter_col)
-        is_editable = item is not None and bool(item.flags() & Qt.ItemFlag.ItemIsEditable)
-        if is_editable and not self._last_enter_committed:
-            return
-        self._last_enter_committed = False
-        # Directly add next item based on column (no menu, feature 3)
-        self._ctrl_enter(row, self._enter_col)
-
     def _continue_recommendation_entry(self, row, cons_id):
         """Show and open the next blank recommendation row after Enter."""
         # Build the physical row before starting the editor so the new line
@@ -9355,28 +9176,6 @@ class ScenarioTablePanel(QWidget):
         if item is not None:
             self._table.scrollToItem(item)
         self._try_start_edit(row, self._C_REK)
-
-    def _show_quick_add(self, row, dev_id, cause_id, cons_id):
-        cause = self.db.get_cause(cause_id)
-        if not cause:
-            return
-        dev = self.db.get_deviation(dev_id) if dev_id else None
-        dev_name = dev['description'] if dev else '?'
-
-        menu = QMenu(self)
-        menu.addSection("Lägg till i hierarkin")
-        menu.addAction(_icon('settings'), f'Ny orsak under avvikelse  [{dev_name}]',
-                       lambda: self._quick_add_cause(dev_id))
-        menu.addAction(_icon('warning'), "Ny konsekvens på denna orsak",
-                       lambda: self._quick_add_consequence(cause_id))
-        sg_action = menu.addAction(_icon('shield'), "Ny safeguard på denna konsekvens",
-                       lambda: self._quick_add_safeguard(cons_id))
-        sg_action.setEnabled(cons_id is not None)
-
-        idx   = self._table.model().index(row, self._C_ORS)
-        rect  = self._table.visualRect(idx)
-        pos   = self._table.viewport().mapToGlobal(rect.bottomLeft())
-        menu.exec(pos)
 
     def _quick_add_cause(self, deviation_id, after_cause_id=None):
         """Create a blank cause and enter the shared inline editor.
@@ -9417,9 +9216,6 @@ class ScenarioTablePanel(QWidget):
     def _add_consequence_via_plus_row(self, cause_id):
         self._quick_add_consequence(cause_id)
 
-    def _add_safeguard_via_plus_row(self, cons_id):
-        self._quick_add_safeguard(cons_id)
-
     def _keep_item_visible(self, item):
         """Scroll only when the target is genuinely outside the viewport."""
         if item is None:
@@ -9451,16 +9247,6 @@ class ScenarioTablePanel(QWidget):
                 self._keep_item_visible(item)
                 self._try_start_edit(row, col)  # KON supported too since 2026-08-07 — see NOTES.md
                 return
-
-    def undo_last_text_edit(self):
-        """Compatibility entry point for the central database history.
-
-        Older callers still use this method name, but the old per-field stack
-        could only restore a description and created a second history entry
-        while doing so. Delegate to the same atomic session history as the
-        main-window Ctrl+Z action.
-        """
-        return bool(getattr(self.db, 'undo', lambda: False)())
 
     def _on_cell_changed(self, row, col):
         # A single cell save may update the visible row, tag identity,

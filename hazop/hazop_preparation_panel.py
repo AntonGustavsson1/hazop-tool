@@ -250,10 +250,6 @@ class DraggableColorSwatch(QLabel):
             f"border:1px solid #555; border-radius:4px;")
         self.setText(self._name)
 
-    def set_swatch(self, name: str, color: str, fg_color: str = None):
-        self._name = name; self._color = color; self._fg_color = fg_color
-        self._refresh()
-
     def name(self):     return self._name
     def color(self):    return self._color
     def fg_color(self): return self._fg_color

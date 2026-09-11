@@ -556,12 +556,6 @@ class StandardCausesSettingsPanel(QWidget):
                for i in range(self._cause_list.count())]
         self.db.reorder_standard_causes(ids)
 
-    def _on_cause_changed(self, item):
-        if self._loading: return
-        id_ = item.data(Qt.ItemDataRole.UserRole)
-        if id_:
-            self.db.update_standard_cause(id_, description=item.text().strip())
-
     # ── Sync ──────────────────────────────────────────────────────────────────
     def _sync_freqs(self):
         ret = QMessageBox.question(self, 'Synka frekvenser',

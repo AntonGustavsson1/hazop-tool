@@ -923,16 +923,6 @@ _COMP_KEY_TO_OBJ: dict = {
 }
 
 
-def _fix_instrument_causes_v2(conn):
-    """No-op: instrument causes now seeded correctly via _COMP_STD_CAUSES."""
-    pass
-
-
-def _fix_instrument_causes_v3(conn):
-    """No-op: instrument causes now seeded correctly via _COMP_STD_CAUSES."""
-    pass
-
-
 def _seed_standard_objects(conn):
     for i, name in enumerate(_STD_OBJECTS):
         conn.execute(
@@ -4150,24 +4140,6 @@ class Database:
         return _normalise_matrix(json.loads(json.dumps(cfg or DEFAULT_MATRIX)))
 
     @staticmethod
-    def _risk_level_label(cfg, kind, value):
-        """Human-readable label for the application's stored ordinal value."""
-        if kind == 'frequency':
-            index = int(value) + 1       # stored F=-1 maps to matrix index 0
-            labels = cfg.get('x_labels', [])
-            codes = cfg.get('x_codes', [])
-            prefix = f"F={value}"
-        else:
-            index = int(value) - 1       # stored C=1 maps to matrix index 0
-            labels = cfg.get('y_labels', [])
-            codes = cfg.get('y_codes', [])
-            prefix = f"C={value}"
-        text = labels[index] if 0 <= index < len(labels) else ''
-        code = codes[index] if 0 <= index < len(codes) else prefix
-        visible = f"{code} — {text}" if text else str(code)
-        return f"{prefix} — {visible}"
-
-    @staticmethod
     def _rank_level_map(source_count, target_count, source_offset, target_offset):
         """Give every source ordinal a visible, reviewable first suggestion.
 
@@ -5051,16 +5023,6 @@ class Database:
             "SELECT equipment_type FROM equipment_types WHERE prefix=?", (prefix,)).fetchone()
         return row['equipment_type'] if row else None
 
-    def save_equipment_type(self, prefix: str, equipment_type: str, display_name: str = ''):
-        self.conn.execute(
-            "INSERT OR REPLACE INTO equipment_types (prefix, equipment_type, display_name) "
-            "VALUES (?,?,?)", (prefix, equipment_type, display_name))
-        self.commit()
-
-    def all_equipment_types(self):
-        return self.conn.execute(
-            "SELECT * FROM equipment_types ORDER BY prefix").fetchall()
-
     def get_equipment_by_tag(self, tag: str):
         """Return equipment_catalog row for a full tag string (case-insensitive)."""
         row = self.conn.execute(
@@ -5728,42 +5690,11 @@ class Database:
             "INSERT OR REPLACE INTO pid_config (key,value) VALUES (?,?)", (key, str(value)))
         self.commit()
 
-    def clear_connector_analysis(self):
-        self.conn.execute("DELETE FROM off_page_connector")
-        self.conn.execute("DELETE FROM pid_connection")
-        self.commit()
-
-    def save_connectors(self, rows):
-        if not rows:
-            return
-        for r in rows:
-            r.setdefault('ref_page', None)
-        self.conn.executemany(
-            "INSERT INTO off_page_connector "
-            "(pid_page,x_pdf,y_pdf,direction,edge,ref_text,ref_sheet,"
-            "ref_line_id,media_type,weight,confidence,raw_text,ocr_used,analyzed_at,ref_page) "
-            "VALUES(:pid_page,:x_pdf,:y_pdf,:direction,:edge,:ref_text,:ref_sheet,"
-            ":ref_line_id,:media_type,:weight,:confidence,:raw_text,:ocr_used,:analyzed_at,:ref_page)",
-            rows)
-        self.commit()
-
     def update_connector_dot_position(self, connector_id, x, y):
         """Persist a manually dragged dot position for one off-page connector."""
         self.conn.execute(
             "UPDATE off_page_connector SET dot_scene_x=?, dot_scene_y=? WHERE id=?",
             (x, y, connector_id))
-        self.commit()
-
-    def save_pid_connections(self, rows):
-        if not rows:
-            return
-        self.conn.executemany(
-            "INSERT INTO pid_connection "
-            "(from_page,to_page,from_connector,to_connector,media_type,weight,"
-            "confidence,is_bidirectional,is_ghost,ghost_ref,warning) "
-            "VALUES(:from_page,:to_page,:from_connector,:to_connector,:media_type,"
-            ":weight,:confidence,:is_bidirectional,:is_ghost,:ghost_ref,:warning)",
-            rows)
         self.commit()
 
     # ── Board annotations (sticky notes, feature 8) ──────────────────────────
@@ -5777,22 +5708,6 @@ class Database:
             (x, y, w, h, text, color))
         self.commit()
         return cur.lastrowid
-
-    def update_board_annotation(self, id_, x=None, y=None, w=None, h=None,
-                                 text=None, color=None):
-        sets, vals = [], []
-        for col, val in (('x',x),('y',y),('w',w),('h',h),('text',text),('color',color)):
-            if val is not None:
-                sets.append(f"{col}=?"); vals.append(val)
-        if sets:
-            self.conn.execute(
-                f"UPDATE board_annotations SET {', '.join(sets)} WHERE id=?",
-                vals + [id_])
-            self.commit()
-
-    def delete_board_annotation(self, id_):
-        self.conn.execute("DELETE FROM board_annotations WHERE id=?", (id_,))
-        self.commit()
 
     def get_pid_connections(self):
         return self.conn.execute("SELECT * FROM pid_connection").fetchall()

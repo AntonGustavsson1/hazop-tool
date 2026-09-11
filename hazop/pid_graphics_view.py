@@ -961,10 +961,6 @@ class PIDGraphicsView(QGraphicsView):
             self.rubber_line.setPen(pen)
             self.rubber_line.setLine(last.x(), last.y(), sp.x(), sp.y())
 
-    def _finish_drawing(self):
-        """Legacy finish for MODE_NODE — creates node boundary polygon."""
-        self._finish_markup_drawing()
-
     def _finish_markup_drawing(self):
         """Finish drawing for MODE_NODE, MARKUP_POLYGON and MARKUP_POLYLINE."""
         if len(self.draw_points) < 2:
@@ -1165,48 +1161,6 @@ class PIDGraphicsView(QGraphicsView):
         self._scene.addItem(txt)
         items.append(txt)
         return items
-
-    def _line_segments_intersect(self, p1, p2, p3, p4):
-        """Check if line segment p1-p2 intersects p3-p4. Return (True, intersection_point) or (False, None)."""
-        x1, y1 = p1[0], p1[1]
-        x2, y2 = p2[0], p2[1]
-        x3, y3 = p3[0], p3[1]
-        x4, y4 = p4[0], p4[1]
-
-        denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-        if abs(denom) < 1e-10:
-            return False, None
-
-        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
-        u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
-
-        if 0 <= t <= 1 and 0 <= u <= 1:
-            ix = x1 + t * (x2 - x1)
-            iy = y1 + t * (y2 - y1)
-            return True, (ix, iy)
-        return False, None
-
-    def _get_boundary_crossings(self, boundary_polygon, pdf_lines):
-        """Find all points where PDF lines cross the boundary polygon.
-        Returns list of (crossing_point, line_seg) tuples."""
-        crossings = []
-
-        # Create boundary segments
-        boundary_segs = []
-        for i in range(len(boundary_polygon)):
-            p1 = boundary_polygon[i]
-            p2 = boundary_polygon[(i + 1) % len(boundary_polygon)]
-            boundary_segs.append((p1, p2))
-
-        # Find intersections
-        for line_seg in pdf_lines:
-            x0, y0, x1, y1 = line_seg
-            for b_p1, b_p2 in boundary_segs:
-                intersects, pt = self._line_segments_intersect((x0, y0), (x1, y1), b_p1, b_p2)
-                if intersects and pt:
-                    crossings.append((pt, line_seg))
-
-        return crossings
 
     def _closest_point_on_line_segment(self, p, line_seg):
         """Find closest point on a line segment to point p. Returns (closest_point, distance)."""

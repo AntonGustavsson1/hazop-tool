@@ -415,50 +415,14 @@ def _configure_utf8_console_output():
 # WINDOWS 11 THEME — LJUST TEMA
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _legacy_windows11_stylesheet():
-    """Near-monochrome theme with one signal accent, matching the design mockup.
-
-    Deliberately no `font-size` here (2026-08-11, bug report: "möjligheten
-    att förstora och förminska texten" disappeared) — a universal `* {
-    font-size: ... }` rule wins over ANY later QWidget.setFont() call on a
-    matching widget (the same "QSS always wins over Qt::*Role" quirk
-    already documented elsewhere in this file for background/foreground
-    colors), which silently broke ScenarioTablePanel's "Textstorlek"
-    spinbox. The app-wide default size is set via QApplication.setFont()
-    in main() instead — that one DOES yield to a widget's own setFont().
-    """
-    return app_stylesheet()
-
-
 def _get_windows11_stylesheet():
     """Compatibility entry point for the central application stylesheet."""
     return app_stylesheet()
 
 
-def _contrast_fg(bg_hex):
-    """Return black or white text color for best contrast against bg_hex."""
-    c = QColor(bg_hex)
-    luminance = (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) / 255
-    return '#000000' if luminance > 0.55 else '#ffffff'
-
 
 # Keep old alias so existing code that references LIKE_LABELS doesn't crash
 LIKE_LABELS = FREQ_LABELS
-
-
-def get_sev_labels():
-    """Return severity labels from current matrix config (y_labels), falling back to SEV_LABELS."""
-    cfg = get_matrix()
-    y = cfg.get('y_labels', [])
-    n = cfg.get('rows', 5)
-    if y and len(y) >= n:
-        return [f"C{i+1} – {y[i]}" if not y[i].startswith('C') else y[i] for i in range(n)]
-    return SEV_LABELS[:n] if n <= len(SEV_LABELS) else SEV_LABELS + [f"C{i+1}" for i in range(len(SEV_LABELS), n)]
-
-
-def _get_node_color(node_id):
-    """Get a unique color for a node based on its ID."""
-    return MARKUP_COLORS[node_id % len(MARKUP_COLORS)]
 
 
 def _create_tagged_cause(db, deviation_id, comp_type, comp_tag, equipment_id=None):
@@ -2994,12 +2958,6 @@ class MainWindow(QMainWindow):
         self._refresh_after_history_change("Gjorde om")
         return True
 
-    # Kept as a compatibility entry point for older markup code/tests.  The
-    # database snapshot now includes markups, so the old per-markup inverse
-    # stack must not compete with the central history.
-    def _undo_last_markup(self):
-        return self._undo_last_change()
-
     def _on_matrix_changed(self):
         self.tree_panel.refresh()
         if self._cur_type == CAUSE_T and self._cur_id:
@@ -3154,87 +3112,6 @@ class MainWindow(QMainWindow):
             QApplication.instance().setPalette(p)
         else:
             QApplication.instance().setPalette(QApplication.style().standardPalette())
-
-    # ── Excel export (IEC 61511 layout) ──────────────────────────────────────
-    def _export_excel_legacy(self):
-        try:
-            import openpyxl
-            from openpyxl.styles import (PatternFill, Font, Alignment, Border, Side)
-            from openpyxl.utils import get_column_letter
-        except ImportError:
-            QMessageBox.critical(self, "Saknar beroende",
-                "openpyxl krävs: pip install openpyxl")
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Exportera Excel", "hazop_rapport.xlsx", "Excel (*.xlsx)")
-        if not path: return
-
-        wb = openpyxl.Workbook()
-        wb.remove(wb.active)
-
-        thin = Side(style='thin')
-        border = Border(left=thin, right=thin, top=thin, bottom=thin)
-        hdr_fill = PatternFill("solid", fgColor="1F4E79")
-        hdr_font = Font(color="FFFFFF", bold=True, size=10)
-        hdr_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
-
-        risk_colors = {'Låg': 'C6EFCE', 'Mellan': 'FFEB9C',
-                       'Hög': 'FFC7CE', 'Kritisk': 'FF0000'}
-
-        def make_sheet(wb, node):
-            title = node['name'][:25].replace('/', '-').replace('\\', '-')
-            ws = wb.create_sheet(title=title)
-            ws.sheet_view.showGridLines = True
-            cols = ['Nod', 'Avvikelse', 'Orsak', 'Konsekvens',
-                    'Risk före', 'Barriär', 'RRF', 'Risk efter', 'Åtgärd']
-            for ci, col in enumerate(cols, 1):
-                c = ws.cell(row=1, column=ci, value=col)
-                c.fill = hdr_fill; c.font = hdr_font
-                c.alignment = hdr_align; c.border = border
-            ws.row_dimensions[1].height = 28
-            ws.column_dimensions['A'].width = 14
-            ws.column_dimensions['B'].width = 18
-            ws.column_dimensions['C'].width = 30
-            ws.column_dimensions['D'].width = 35
-            ws.column_dimensions['E'].width = 12
-            ws.column_dimensions['F'].width = 28
-            ws.column_dimensions['G'].width = 8
-            ws.column_dimensions['H'].width = 12
-            ws.column_dimensions['I'].width = 30
-            return ws
-
-        for node in self.db.nodes():
-            nd = dict(node)
-            ws = make_sheet(wb, nd)
-            r = 2
-            for dev in self.db.deviations(nd['id']):
-                for cause in self.db.causes_for_deviation(dev['id']):
-                    cd = dict(cause)
-                    cons_list = list(self.db.consequences(cd['id']))
-                    if not cons_list:
-                        ws.cell(r, 1, nd['name']); ws.cell(r, 2, dev['description'])
-                        ws.cell(r, 3, cd['description']); r += 1
-                        continue
-                    for cons in cons_list:
-                        kd = dict(cons)
-                        sgs = list(self.db.safeguards(kd['id']))
-                        if not sgs:
-                            ws.cell(r, 1, nd['name']); ws.cell(r, 2, dev['description'])
-                            ws.cell(r, 3, cd['description']); ws.cell(r, 4, kd['description'])
-                            r += 1; continue
-                        for sg in sgs:
-                            sd = dict(sg)
-                            ws.cell(r, 1, nd['name']); ws.cell(r, 2, dev['description'])
-                            ws.cell(r, 3, cd['description']); ws.cell(r, 4, kd['description'])
-                            ws.cell(r, 6, sd['description']); ws.cell(r, 7, sd.get('rrf', 1))
-                            for c in range(1, 10):
-                                ws.cell(r, c).border = border
-                                ws.cell(r, c).alignment = Alignment(wrap_text=True, vertical='top')
-                            r += 1
-            ws.freeze_panes = 'A2'
-        wb.save(path)
-        self.status_bar.showMessage(f"Excel sparad: {path}", 6000)
-        QMessageBox.information(self, "Klar", f"Exporterad till:\n{path}")
 
     # ── Action report PDF ─────────────────────────────────────────────────────
     def _export_actions_pdf(self):

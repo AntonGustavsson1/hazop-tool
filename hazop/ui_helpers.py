@@ -973,11 +973,6 @@ def effective_f_level(f_level, rrf):
     return max(-1, f_level - reduction)
 
 
-# Keep old names as aliases for backward compatibility
-effective_frequency = effective_f_level
-effective_likelihood = effective_f_level
-
-
 def prob_to_reduction(prob_pct) -> int:
     """Convert probability % to frequency step reduction.
 

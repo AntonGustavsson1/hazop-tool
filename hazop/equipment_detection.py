@@ -1137,60 +1137,11 @@ def _extract_prefix(tag: str) -> str:
     return m.group(1) if m else tag
 
 
-def _clean_tag_for_popup(tag: str) -> str:
-    """Strip leading area/module codes so the Tag-ID field shows only the
-    instrument-code part that actually identifies the equipment type.
-
-    Numbers and single-letter+digit area codes are purely location metadata
-    and should not appear in the HAZOP tag field.
-
-        '=E1.M1.GPA4'    -> 'GPA4'   LKAB module hierarchy stripped
-        '=M1.WPA001'     -> 'WPA001'
-        '2818-LX79'      -> 'LX79'   Sunpine drawing-number stripped
-        '100-MAS10A'     -> 'MAS10A' Sunpine area code stripped
-        'G45-100-EAS10A' -> 'EAS10A' two area segments stripped
-        '60-RV-009'      -> 'RV-009' numeric area stripped
-        'PU0050'         -> 'PU0050' already clean
-        'HV-101'         -> 'HV-101' already clean
-        'XFB_31304'      -> 'XFB_31304' already clean
-    """
-    t = tag.lstrip('=').strip()
-    if not t:
-        return tag
-
-    sep_re = re.compile(r'[-./_ ]')
-    parts = sep_re.split(t)
-
-    def _leading(s):
-        m = re.match(r'^([A-Z]+)', s.upper())
-        return m.group(1) if m else ''
-
-    # Peel off leading segments whose letter portion is < 2 chars
-    # (pure digits, single-letter area codes like E1/M1/K2, short area codes)
-    while len(parts) > 1 and len(_leading(parts[0])) < 2:
-        parts = parts[1:]
-
-    return '-'.join(parts) if len(parts) > 1 else parts[0]
-
-
 def _words_from_native(fitz_page):
     """Extract (text, cx, cy) from a PDF page using PyMuPDF word list."""
     words = _rotate_words(fitz_page.get_text("words"), fitz_page)
     return [(w[4].strip().upper(), (w[0] + w[2]) / 2, (w[1] + w[3]) / 2)
             for w in words if w[4].strip()]
-
-
-def _tags_from_full_text(fitz_page, page_num: int) -> list:
-    """Search the full text of a page with regex; returns [(tag, prefix, cx, cy)]."""
-    # Use 'rawdict' to get character-level positions for precise x,y
-    full_text = fitz_page.get_text("text")
-    results = []
-    for m in _FULL_TAG_RE.finditer(full_text):
-        raw = m.group(0)
-        tag, prefix = _parse_tag(raw)
-        if tag and prefix:
-            results.append((tag, prefix, 0.0, 0.0))  # positions approximated below
-    return results
 
 
 def _parse_tag(text: str):

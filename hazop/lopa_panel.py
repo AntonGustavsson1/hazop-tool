@@ -299,32 +299,6 @@ class LopaPanel(QWidget):
                                                      header_height + row_height + frame)))
 
     @staticmethod
-    def _configure_compact_tree(tree, minimum_height: int, maximum_height: int):
-        """Give the HAZOP source hierarchy the same bounded document rhythm."""
-        tree.setMinimumHeight(minimum_height)
-        tree.setMaximumHeight(maximum_height)
-        tree.header().setFixedHeight(22)
-        tree.setUniformRowHeights(False)
-
-    @staticmethod
-    def _fit_tree_height(tree, minimum_height: int, maximum_height: int):
-        """Fit a small hierarchy while retaining local scrolling for long LOPAs."""
-        header_height = max(22, tree.header().height())
-        row_height = 0
-
-        def add_item_height(item):
-            nonlocal row_height
-            row_height += max(22, tree.sizeHintForIndex(tree.indexFromItem(item)).height())
-            for index in range(item.childCount()):
-                add_item_height(item.child(index))
-
-        for index in range(tree.topLevelItemCount()):
-            add_item_height(tree.topLevelItem(index))
-        frame = tree.frameWidth() * 2 + 2
-        tree.setFixedHeight(max(minimum_height, min(maximum_height,
-                                                    header_height + row_height + frame)))
-
-    @staticmethod
     def _allow_card_to_shrink(card):
         """Let side-by-side document cards share the available work area.
 
