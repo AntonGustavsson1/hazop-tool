@@ -98,19 +98,20 @@ def _format_rrf(rrf):
 
 
 def _format_enablers(factors):
-    """Return the active enablers with their own RRF values.
-
-    The former compact summary (for example ``2 (100)``) concealed which
-    enablers were credited.  A line per enabler remains legible in the narrow
-    Worksheet/Word column and makes the scenario assessment traceable.
+    """Return the active enablers as one "Xxx(RRF)" token per enabler
+    (2026-09-11, Anton: "de tre första bokstäverna för varje enabler följt
+    av en parantes med RRF värdet") -- matches the live Scenario/Worksheet
+    table's Enablers cell exactly, so the export shows the same compact
+    form instead of the old aggregate "2 (100)" or a full-description-per-
+    line list.
     """
-    lines = []
+    tokens = []
     for factor in factors:
         if not factor.get('active'):
             continue
-        description = str(factor.get('description') or 'Enabler').strip()
-        lines.append(f'{description or "Enabler"}: {_format_rrf(factor.get("rrf", 1))}')
-    return '\n'.join(lines)
+        description = str(factor.get('description') or 'Enabler').strip() or 'Enabler'
+        tokens.append(f'{description[:3]}({_format_rrf(factor.get("rrf", 1))})')
+    return ' '.join(tokens)
 
 
 def total_freq_reduction(base_frequency, safeguard_rrf, fa_active,
@@ -442,7 +443,7 @@ def export_worksheet_excel(db, filepath, merge_identical=False):
         widths = [17, 23, 36, 10, 54, 19, 46, 9, 14, 19, 53]
         headers = [
             'Nod', 'Avvikelse', 'Orsak', 'Frekvens', 'Konsekvens',
-            'Riskklass före barriärer', 'Barriär', 'RRF', 'Enablers',
+            'Riskklass före barriärer', 'Barriär', 'RRF', 'Enablers (RRF)',
             'Riskklass efter barriärer', 'Recommendation',
         ]
         for column, width in enumerate(widths, 1):

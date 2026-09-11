@@ -1,5 +1,52 @@
 # NOTES.md — Beslut och kontext
 
+## Enablers-cellen visar varje enabler för sig, "Xxx(RRF)" (2026-09-11)
+
+Anton: "Justera i programmet så det istället för antal och total RRF i
+enablers står de tre första bokstäverna för varje enabler följt av en
+parantes med RRF värdet. Skriv även RRF i kolumnrubriken för både hazop
+scenario och worksheet. Dvs 'Enablers (RRF)'."
+
+`_LopaWidget` (Enablers-cellens knapp, delad mellan HAZOP Scenario och
+Worksheet eftersom Worksheet bäddar in samma `ScenarioTablePanel`) visade
+tidigare en sammanslagen sammanfattning: `"{antal aktiva} ({total RRF})"`,
+t.ex. `"2 (100)"` — vilket doldes VILKA enablers som bidrog. Ändrat till
+en token per aktiv enabler: `"{tre första bokstäverna}({dess egna RRF})"`,
+t.ex. `"Ant(10) Esk(100)"`. Konstruktorn (`_LopaWidget.__init__`)
+tar nu listan av aktiva reduction_factor-rader direkt istället för ett
+redan uträknat antal+aggregat, och knappens tooltip visar nu varje
+enablers fulla beskrivning + RRF (istället för en generisk instruktion)
+så en förkortning aldrig blir tvetydig.
+
+Samma ändring i `worksheet_export.py`s `_format_enablers()` (delad av
+Excel-export, Word-export via `_worksheet_rows()`, och Ctrl+C-till-
+Office-kopiering) — bytte från en rad per enabler med full beskrivning
+(`"Antändning: 10\nEskalering: 100"`, själv en tidigare uppstädning av
+den ÄNNU äldre `"2 (100)"`-formen) till samma kompakta
+`"Ant(10) Esk(100)"`-form, nu på en rad.
+
+Kolumnrubriken bytte namn från `'Enablers'` till `'Enablers (RRF)'` på
+alla fyra ställen den förekommer: den levande tabellen (`scenario_panel.py`,
+delad av Scenario+Worksheet), Excel-export (`worksheet_export.py`),
+Word-export (`worksheet_word_export.py`) och Ctrl+C-till-Office-kopiering
+(`scenario_panel.py`s egen headerlista) — matchar mönstret
+`'Barriärer (RRF)'` redan använder för Barriär-kolumnen.
+
+**Två orelaterade, redan existerande testluckor hittades och rättades**
+när `tests/test_worksheet.py` kördes för första gången denna session:
+ett test som fortfarande förväntade sig ett TOMT `'—'`-fritt
+barriärvärde för en nyskapad, tom barriär (föråldrat sedan
+dash-platshållaren återställdes 2026-09-10) och ett test vars orsak
+aldrig fick en riktig frekvens satt (`frequency_cleared=False` saknades
+— samma luckklass som åtgärdades omfattande tidigare denna session).
+
+Verifiering: `tests.test_smoke` + `tests.test_worksheet` +
+`tests.test_worksheet_word_export` (45+14 tester, alla OK), de två
+direkt berörda testerna i `tests.test_integration.py`
+(uppdaterade till nya formatet/rubriken), samt hela
+`tests.test_scenario_panel` (239 tester) — exakt samma 8 redan kända,
+redan dokumenterade fel som innan ändringen, inga nya.
+
 ## Prestanda: findChildren()-svep togs bort från klick- och målningsvägen (2026-09-11)
 
 Anton: "leta efter eventuella funktioner som gör att programmet upplevs

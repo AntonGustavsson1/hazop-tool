@@ -94,8 +94,8 @@ class WorksheetWordExportTests(unittest.TestCase):
 
     def test_word_export_lists_each_enabler_with_its_rrf(self):
         consequence_id = self._make_populated_node('Nod A', 1)
-        self.db.add_reduction_factor(consequence_id, 'Ant', 10)
-        self.db.add_reduction_factor(consequence_id, 'Esk', 10)
+        self.db.add_reduction_factor(consequence_id, 'Antändning', 10)
+        self.db.add_reduction_factor(consequence_id, 'Eskalering', 10)
         fd, path = tempfile.mkstemp(suffix='.docx')
         os.close(fd)
         try:
@@ -103,7 +103,7 @@ class WorksheetWordExportTests(unittest.TestCase):
             self.assertTrue(ok, error)
             from docx import Document
             text = Document(path).tables[0].cell(1, 8).text.strip()
-            self.assertEqual(text, 'Ant: 10\nEsk: 10')
+            self.assertEqual(text, 'Ant(10) Esk(10)')
             self.assertNotIn('2 (100)', text)
         finally:
             os.unlink(path)

@@ -497,9 +497,12 @@ class MarkerNavigateCrashTests(unittest.TestCase):
 
         with _TempDbMainWindow() as win:
             ids = self._make_full_chain(win.db)
-            lopa = _LopaWidget(ids['cons_id'], 2, 100)
+            lopa = _LopaWidget(ids['cons_id'], [
+                {'description': 'Antändning', 'rrf': 10},
+                {'description': 'Eskalering', 'rrf': 100},
+            ])
             try:
-                self.assertEqual(lopa._extra_btn.text(), '2 (100)')
+                self.assertEqual(lopa._extra_btn.text(), 'Ant(10) Esk(100)')
                 self.assertEqual(len(lopa.findChildren(QPushButton)), 1)
                 self.assertEqual(lopa.findChildren(QCheckBox), [])
                 self.assertEqual(lopa.findChildren(QLineEdit), [])
@@ -825,9 +828,10 @@ class KonInlineEditTests(unittest.TestCase):
 
     def test_lopa_column_header_renamed_to_enablers(self):
         """"Döp om kolumnen FA / ANt. Övriga till Enablers i hazop
-        scenario" (2026-08-17, see NOTES.md)."""
+        scenario" (2026-08-17, see NOTES.md). "(RRF)" suffix added
+        2026-09-11 for consistency with the "Barriärer (RRF)" column."""
         from hazop import ScenarioTablePanel
-        self.assertEqual(ScenarioTablePanel._COLS[ScenarioTablePanel._C_LOPA], 'Enablers')
+        self.assertEqual(ScenarioTablePanel._COLS[ScenarioTablePanel._C_LOPA], 'Enablers (RRF)')
 
 
 class SafeguardCreatedDoubleRebuildTests(unittest.TestCase):

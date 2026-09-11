@@ -305,7 +305,7 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertEqual(
                 plain_text.splitlines()[0].split('\t'),
                 ['Nod', 'Avvikelse', 'Orsak', 'Frekvens', 'Konsekvens',
-                 'Riskklass före barriärer', 'Barriär', 'RRF', 'Enablers',
+                 'Riskklass före barriärer', 'Barriär', 'RRF', 'Enablers (RRF)',
                  'Riskklass efter barriärer', 'Rekommendation'])
             self.assertTrue(all(1 <= len(row) <= len(visible_columns) + 2
                                 for row in data_rows))
@@ -367,7 +367,10 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertIn('rowspan="2"', html)
             self.assertTrue(plain_text.startswith('Orsak (frekvens)\tKonsekvens'))
             self.assertEqual(len(plain_text.splitlines()), 3)
-            self.assertEqual(plain_text.splitlines()[-1].split('\t')[-1], '')
+            # A freshly-added blank safeguard shows the numbered "—"
+            # placeholder (restored 2026-09-10, see NOTES.md) rather than
+            # being blank.
+            self.assertEqual(plain_text.splitlines()[-1].split('\t')[-1], '2. — (RRF: 1)')
             self.assertNotIn('Vald del', html)
 
             self.assertTrue(panel.copy_visible_table_to_office_clipboard('Vald del'))
@@ -479,7 +482,11 @@ class HAZOPWorksheetTests(unittest.TestCase):
         ids = self._make_full_chain(node_name='Nod A')
         second_cons_id = self.db.add_consequence(ids['cause_id'])
         second_sg_id = self.db.add_safeguard(second_cons_id)
-        self.db.update_cause(ids['cause_id'], description='Orsak A')
+        # A cause's frequency badge only shows once a frequency has been
+        # explicitly chosen (frequency_cleared=False) -- see NOTES.md
+        # "Lämna frekvens tom utan standardorsak".
+        self.db.update_cause(ids['cause_id'], description='Orsak A',
+                             likelihood=3, frequency_cleared=False)
         self.db.update_consequence(ids['cons_id'], 'Konsekvens 1', 3)
         self.db.update_consequence(second_cons_id, 'Konsekvens 2', 4)
         self.db.update_safeguard(ids['sg_id'], description='Barriär 1', rrf=10)
@@ -579,7 +586,7 @@ class HAZOPWorksheetTests(unittest.TestCase):
             self.assertIn('<strong>SG-TRUE</strong>', html)
             self.assertIn('<strong>REC-TRUE</strong>', html)
             self.assertIn('(RRF: 10)', html)
-            self.assertIn('Enabler: 10', html)
+            self.assertIn('Ena(10)', html)
             self.assertIn('(RRF: 10)', plain_text)
             self.assertNotIn('CAUSE-WRONG', html)
             self.assertNotIn('REC-WRONG', html)

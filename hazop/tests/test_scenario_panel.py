@@ -6369,7 +6369,7 @@ class ReductionFactorsDialogTests(unittest.TestCase):
             row = next(row for row, meta in enumerate(panel._row_meta)
                        if meta[2] == self.cons_id)
             self.assertEqual(panel._table.cellWidget(row, panel._C_LOPA)._extra_btn.text(),
-                             '2 (100)')
+                             'Ant(10) Esk(10)')
             self.assertEqual(panel._table.item(row, panel._C_SLUT)
                              .data(Qt.ItemDataRole.UserRole)[-2], 2)
 

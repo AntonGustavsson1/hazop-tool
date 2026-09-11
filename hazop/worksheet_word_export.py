@@ -16,7 +16,7 @@ PAPER_SIZES_MM = {
 
 _HEADERS = [
     'Nod', 'Avvikelse', 'Orsak', 'Frekvens', 'Konsekvens',
-    'Riskklass före barriärer', 'Barriär', 'RRF', 'Enablers',
+    'Riskklass före barriärer', 'Barriär', 'RRF', 'Enablers (RRF)',
     'Riskklass efter barriärer', 'Rekommendation',
 ]
 _WIDTH_RATIOS = [17, 23, 36, 10, 54, 19, 46, 9, 14, 19, 53]

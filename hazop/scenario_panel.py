@@ -4223,7 +4223,7 @@ class ConsCategoryMatrixPopup(QDialog):
 class _LopaWidget(QWidget):
     """One compact RRF-like button summarising a consequence's enablers."""
 
-    def __init__(self, cons_id: int, n_active: int, total_rrf, parent=None):
+    def __init__(self, cons_id: int, active_factors, parent=None):
         super().__init__(parent)
         self.cons_id  = cons_id
         lay = QVBoxLayout(self)
@@ -4238,11 +4238,10 @@ class _LopaWidget(QWidget):
         # the user only wants to open the enabler popup.
         self._extra_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._selected = False
-        self._extra_btn.setToolTip('Klicka för att välja enablers och deras RRF.')
         lay.addWidget(self._extra_btn)
         self.setFixedHeight(SUMMARY_BUTTON_HEIGHT)
         self._apply_button_style()
-        self.update_summary(n_active, total_rrf)
+        self.update_summary(active_factors)
 
     def _apply_button_style(self):
         self._extra_btn.setStyleSheet(summary_badge_stylesheet(self._selected))
@@ -4261,8 +4260,26 @@ class _LopaWidget(QWidget):
         except (TypeError, ValueError):
             return '1'
 
-    def update_summary(self, n_active: int, total_rrf):
-        self._extra_btn.setText(f'{int(n_active)} ({self._format_rrf(total_rrf)})')
+    @classmethod
+    def _format_one_enabler(cls, factor):
+        description = str(factor.get('description') or 'Enabler').strip() or 'Enabler'
+        return f'{description[:3]}({cls._format_rrf(factor.get("rrf", 1))})'
+
+    def update_summary(self, active_factors):
+        """Show each active enabler as its own "Xxx(RRF)" token (2026-09-11,
+        Anton: "de tre första bokstäverna för varje enabler följt av en
+        parantes med RRF värdet") instead of the former aggregate "count
+        (total RRF)" summary, which concealed which enablers were credited."""
+        active_factors = list(active_factors or [])
+        tokens = [self._format_one_enabler(f) for f in active_factors]
+        self._extra_btn.setText(' '.join(tokens))
+        if active_factors:
+            full = '\n'.join(
+                f'{(f.get("description") or "Enabler").strip() or "Enabler"}: '
+                f'{self._format_rrf(f.get("rrf", 1))}' for f in active_factors)
+            self._extra_btn.setToolTip(full)
+        else:
+            self._extra_btn.setToolTip('Klicka för att välja enablers och deras RRF.')
 
 class ScenarioTablePanel(QWidget):
     """Extended scenario table with unified enablers and final consequence."""
@@ -4289,7 +4306,7 @@ class ScenarioTablePanel(QWidget):
         'Konsekvens',
         'Risk före barriär',
         'Barriärer (RRF)',
-        'Enablers',
+        'Enablers (RRF)',
         'Risker efter barriärer',
         'Rekommendation',
     ]
@@ -6233,15 +6250,9 @@ class ScenarioTablePanel(QWidget):
             sg_item.setToolTip(tip)
         self._table.setItem(r, self._C_SG, sg_item)
 
-        # ── Col Enablers: one compact active-count / aggregate-RRF button ───
+        # ── Col Enablers: one token per active enabler, "Xxx(RRF)" ──────────
         active_rfs = [rf for rf in rfs if rf.get('active')]
-        enabler_rrf = 1.0
-        for factor in active_rfs:
-            try:
-                enabler_rrf *= max(1.0, float(factor.get('rrf') or 1))
-            except (TypeError, ValueError):
-                continue
-        lopa_w = _LopaWidget(cid, len(active_rfs), enabler_rrf)
+        lopa_w = _LopaWidget(cid, active_rfs)
         lopa_w.set_selected(
             self._table.currentRow() == r and
             self._table.currentColumn() == self._C_LOPA)
@@ -9896,7 +9907,7 @@ class ScenarioTablePanel(QWidget):
 
         headers = [
             'Nod', 'Avvikelse', 'Orsak', 'Frekvens', 'Konsekvens',
-            'Riskklass före barriärer', 'Barriär', 'RRF', 'Enablers',
+            'Riskklass före barriärer', 'Barriär', 'RRF', 'Enablers (RRF)',
             'Riskklass efter barriärer', 'Rekommendation',
         ]
         # These proportions mirror worksheet_export.py and the Sheet 3
