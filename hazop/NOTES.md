@@ -1,5 +1,32 @@
 # NOTES.md — Beslut och kontext
 
+## Klistra in i flera markerade celler samtidigt (2026-09-11)
+
+Anton: "har jag kopierat värde från en rad vill jag kunna klippa in
+detta över flera rader. exempelvis som samma orsak på flera avvikelser.
+nu verkar paste bara funka till en cell i taget." Ctrl+V anropade alltid
+`_paste_from_clipboard(currentRow(), currentColumn())` — bara den aktiva
+cellen, oavsett hur många celler som faktiskt var markerade. Kopiering
+(Ctrl+C) stödde redan flera KÄLLceller (`_selected_copy_ids`), men
+klistra in saknade motsvarande stöd för flera MÅLceller.
+
+Ny `_selected_target_rows(row, col)` läser `_table.selectedIndexes()`
+för samma kolumn (samma mönster som `_selected_copy_ids` redan
+använder). Om fler än en rad är markerad vid Ctrl+V går anropet till
+den nya `_copy_entities_to_targets(...)` istället för den befintliga
+en-rad-varianten — samma "fråga scope en gång, ett enda history_group,
+en enda rebuild/emit i slutet"-princip. Målrader som pekar på samma
+underliggande avvikelse/orsak/konsekvens (t.ex. två orsaksrader under
+samma avvikelse) dedupliceras via `_copy_target_parent_key()` så en
+markering som råkar innehålla flera celler under samma förälder inte
+skapar dubbletter. Den gamla en-rads-vägen (drag-and-drop-släpp) är
+oförändrad — bara Ctrl+V-vägen fick multi-mål-stöd.
+
+Regressionstester: `test_paste_with_multiple_target_cells_selected_pastes_into_all_of_them`
+(samma orsak till två olika avvikelser i en enda klistra-in) och
+`test_paste_with_multiple_cells_in_the_same_deviation_pastes_once`
+(två markerade celler under samma avvikelse ger bara en kopia, inte två).
+
 ## Dödkodsstädning via multiagent-genomgång (2026-09-11)
 
 Anton bad om att fortsätta med refaktorering: dödkod, prestanda, struktur —

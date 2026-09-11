@@ -10421,7 +10421,59 @@ class ScenarioTablePanel(QWidget):
         if (target_row < 0 or target_row >= len(self._row_meta) or
                 not item_ids):
             return []
-        tgt_dev, tgt_cause, tgt_cons, _tgt_sg = self._row_meta[target_row]
+        valid_ids = self._dedupe_copy_ids(item_ids)
+        if not valid_ids:
+            return []
+        if not self._row_accepts_copy_kind(kind, target_row):
+            return []
+
+        scope = self._ask_copy_scope(kind, len(valid_ids)) if ask_scope else 'branch'
+        if scope is None:
+            return []
+
+        created = self._apply_copy_to_target_row(kind, valid_ids, target_row, scope)
+        if created:
+            self._schedule_rebuild()
+            QTimer.singleShot(0, self.structure_changed.emit)
+        return created
+
+    def _copy_entities_to_targets(self, kind, item_ids, target_rows, target_col,
+                                  ask_scope=True):
+        """Same as _copy_entities_to_target, but applies to every row in
+        target_rows at once, as a single undo step -- lets a copied cause/
+        consequence/safeguard/recommendation be pasted onto several
+        deviations/causes/consequences in one paste (2026-09-11, Anton:
+        "vill kunna klippa in detta över flera rader ... som samma orsak
+        på flera avvikelser"). Rows that resolve to the same target parent
+        (e.g. two visual rows under the same deviation) are only pasted
+        into once each, so a multi-cell selection can't silently duplicate.
+        """
+        valid_ids = self._dedupe_copy_ids(item_ids)
+        if not valid_ids or not target_rows:
+            return []
+        scope = self._ask_copy_scope(kind, len(valid_ids)) if ask_scope else 'branch'
+        if scope is None:
+            return []
+        created = []
+        seen_parents = set()
+        with self.db.history_group():
+            for row in target_rows:
+                if not (0 <= row < len(self._row_meta)):
+                    continue
+                if not self._row_accepts_copy_kind(kind, row):
+                    continue
+                parent_key = self._copy_target_parent_key(kind, row)
+                if parent_key in seen_parents:
+                    continue
+                seen_parents.add(parent_key)
+                created.extend(
+                    self._apply_copy_to_target_row(kind, valid_ids, row, scope))
+        if created:
+            self._schedule_rebuild()
+            QTimer.singleShot(0, self.structure_changed.emit)
+        return created
+
+    def _dedupe_copy_ids(self, item_ids):
         valid_ids = []
         seen = set()
         for item_id in item_ids:
@@ -10432,20 +10484,33 @@ class ScenarioTablePanel(QWidget):
             if item_id not in seen:
                 seen.add(item_id)
                 valid_ids.append(item_id)
-        if not valid_ids:
-            return []
+        return valid_ids
 
-        if kind == 'cause' and tgt_dev is None:
-            return []
-        if kind == 'cons' and tgt_cause is None:
-            return []
-        if kind in ('sg', 'rec') and tgt_cons is None:
-            return []
+    def _row_accepts_copy_kind(self, kind, row):
+        tgt_dev, tgt_cause, tgt_cons, _tgt_sg = self._row_meta[row]
+        if kind == 'cause':
+            return tgt_dev is not None
+        if kind == 'cons':
+            return tgt_cause is not None
+        if kind in ('sg', 'rec'):
+            return tgt_cons is not None
+        return False
 
-        scope = self._ask_copy_scope(kind, len(valid_ids)) if ask_scope else 'branch'
-        if scope is None:
-            return []
+    def _copy_target_parent_key(self, kind, row):
+        """The (kind, parent id) a paste/drop on this row would attach
+        under -- used to dedupe a multi-row target selection so the same
+        deviation/cause/consequence never receives the same source twice."""
+        tgt_dev, tgt_cause, tgt_cons, _tgt_sg = self._row_meta[row]
+        if kind == 'cause':
+            return ('cause', tgt_dev)
+        if kind == 'cons':
+            return ('cons', tgt_cause)
+        return ('sg_rec', tgt_cons)
 
+    def _apply_copy_to_target_row(self, kind, valid_ids, target_row, scope):
+        """Create the DB copies for one target row. No rebuild/emit here --
+        callers batch that once for the whole (possibly multi-row) paste."""
+        tgt_dev, tgt_cause, tgt_cons, _tgt_sg = self._row_meta[target_row]
         created = []
         try:
             if kind == 'cause':
@@ -10480,10 +10545,6 @@ class ScenarioTablePanel(QWidget):
                                  'Kopieringen kunde inte slutföras. Inga delvisa '
                                  'ändringar ska ha sparats för den berörda posten.')
             return []
-
-        if created:
-            self._schedule_rebuild()
-            QTimer.singleShot(0, self.structure_changed.emit)
         return created
 
     def _paste_from_clipboard(self, target_row, target_col):
@@ -10498,7 +10559,31 @@ class ScenarioTablePanel(QWidget):
             return
         if kind not in ('cause', 'cons', 'sg', 'rec'):
             return
-        self._copy_entities_to_target(kind, item_ids, target_row, target_col)
+        # A multi-cell selection in the target column pastes into every
+        # selected row at once (e.g. the same cause onto several
+        # deviations) instead of only the active cell.
+        target_rows = self._selected_target_rows(target_row, target_col)
+        if len(target_rows) > 1:
+            self._copy_entities_to_targets(kind, item_ids, target_rows, target_col)
+        else:
+            self._copy_entities_to_target(kind, item_ids, target_row, target_col)
+
+    def _selected_target_rows(self, row, col):
+        """Every row currently selected in this column, in visible order,
+        always including row itself."""
+        rows = []
+        seen = set()
+        for index in self._table.selectedIndexes():
+            if index.column() != col:
+                continue
+            r = index.row()
+            if r not in seen:
+                seen.add(r)
+                rows.append(r)
+        if row not in seen:
+            rows.append(row)
+        rows.sort()
+        return rows
 
     # ── Feature: Delete key ───────────────────────────────────────────────────
     def _delete_current_item(self):

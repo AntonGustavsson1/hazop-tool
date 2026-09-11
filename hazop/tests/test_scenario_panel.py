@@ -1672,6 +1672,106 @@ class CompactScenarioDragGhostTests(unittest.TestCase):
             self.assertEqual(copied[0]['severity'], 1,
                              'cell-only scope must not bring risk setup')
 
+    def test_paste_with_multiple_target_cells_selected_pastes_into_all_of_them(self):
+        """Anton: "har jag kopierat värde från en rad vill jag kunna
+        klippa in detta över flera rader. exempelvis som samma orsak på
+        flera avvikelser" -- selecting several target cells before Ctrl+V
+        must paste into every one of them, in one undo step, not just the
+        active cell."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            db = win.db
+            node_id = db.add_node()
+            source_dev = db.deviations(node_id)[0]['id']
+            target_dev_a = db.add_deviation(node_id, 'Mål A')
+            target_dev_b = db.add_deviation(node_id, 'Mål B')
+            source_cause = db.add_cause(source_dev)
+            db.update_cause(source_cause, description='Delas till flera avvikelser')
+            target_cause_a = db.add_cause(target_dev_a)
+            target_cause_b = db.add_cause(target_dev_b)
+
+            panel._table.setRowCount(3)
+            for r in range(3):
+                panel._table.setItem(r, panel._C_ORS, QTableWidgetItem(f'row{r}'))
+            panel._row_meta = [
+                (source_dev, source_cause, None, None),
+                (target_dev_a, target_cause_a, None, None),
+                (target_dev_b, target_cause_b, None, None),
+            ]
+            panel._row_recommendation_ids = [None, None, None]
+            panel._table.setCurrentCell(0, panel._C_ORS)
+            copy_event = QKeyEvent(
+                QEvent.Type.KeyPress, Qt.Key.Key_C,
+                Qt.KeyboardModifier.ControlModifier)
+            self.assertTrue(panel.eventFilter(panel._table, copy_event))
+
+            # Select both target rows' ORS cells before pasting.
+            panel._table.setCurrentCell(1, panel._C_ORS)
+            panel._table.item(1, panel._C_ORS).setSelected(True)
+            panel._table.item(2, panel._C_ORS).setSelected(True)
+
+            with unittest.mock.patch.object(panel, '_ask_copy_scope',
+                                            return_value='cell'), \
+                    unittest.mock.patch.object(panel, '_schedule_rebuild'), \
+                    unittest.mock.patch('scenario_panel.QTimer.singleShot'):
+                panel._paste_from_clipboard(1, panel._C_ORS)
+
+            copied_a = [c for c in db.causes_for_deviation(target_dev_a)
+                       if c['id'] != target_cause_a]
+            copied_b = [c for c in db.causes_for_deviation(target_dev_b)
+                       if c['id'] != target_cause_b]
+            self.assertEqual(len(copied_a), 1,
+                             'the source cause must be pasted onto target A too')
+            self.assertEqual(len(copied_b), 1,
+                             'the source cause must be pasted onto target B too')
+            self.assertEqual(copied_a[0]['description'], 'Delas till flera avvikelser')
+            self.assertEqual(copied_b[0]['description'], 'Delas till flera avvikelser')
+
+    def test_paste_with_multiple_cells_in_the_same_deviation_pastes_once(self):
+        """Two selected target cells that resolve to the SAME deviation
+        (e.g. two causes under it) must not create a duplicate paste."""
+        with _TempDbMainWindow() as win:
+            panel = win.scenario_panel
+            db = win.db
+            node_id = db.add_node()
+            source_dev = db.deviations(node_id)[0]['id']
+            target_dev = db.add_deviation(node_id, 'Mål')
+            source_cause = db.add_cause(source_dev)
+            db.update_cause(source_cause, description='En orsak')
+            target_cause_1 = db.add_cause(target_dev)
+            target_cause_2 = db.add_cause(target_dev)
+
+            panel._table.setRowCount(3)
+            for r in range(3):
+                panel._table.setItem(r, panel._C_ORS, QTableWidgetItem(f'row{r}'))
+            panel._row_meta = [
+                (source_dev, source_cause, None, None),
+                (target_dev, target_cause_1, None, None),
+                (target_dev, target_cause_2, None, None),
+            ]
+            panel._row_recommendation_ids = [None, None, None]
+            panel._table.setCurrentCell(0, panel._C_ORS)
+            copy_event = QKeyEvent(
+                QEvent.Type.KeyPress, Qt.Key.Key_C,
+                Qt.KeyboardModifier.ControlModifier)
+            self.assertTrue(panel.eventFilter(panel._table, copy_event))
+
+            panel._table.setCurrentCell(1, panel._C_ORS)
+            panel._table.item(1, panel._C_ORS).setSelected(True)
+            panel._table.item(2, panel._C_ORS).setSelected(True)
+
+            with unittest.mock.patch.object(panel, '_ask_copy_scope',
+                                            return_value='cell'), \
+                    unittest.mock.patch.object(panel, '_schedule_rebuild'), \
+                    unittest.mock.patch('scenario_panel.QTimer.singleShot'):
+                panel._paste_from_clipboard(1, panel._C_ORS)
+
+            all_causes = list(db.causes_for_deviation(target_dev))
+            new_causes = [c for c in all_causes
+                         if c['id'] not in (target_cause_1, target_cause_2)]
+            self.assertEqual(len(new_causes), 1,
+                             'same target deviation must only receive one paste')
+
 
 class RebuildClosedDatabaseTests(unittest.TestCase):
     """A queued _rebuild() (QTimer.singleShot/_schedule_rebuild) can fire
