@@ -154,6 +154,110 @@ class SmokeTests(unittest.TestCase):
         finally:
             p.deleteLater()
 
+    def test_lopa_barrier_matrix_keeps_all_cells_and_header_aligned(self):
+        """The two-level barrier header must track every matrix cell.
+
+        This specifically guards against ResizeToContents making numeric
+        columns unreadably narrow and against the custom header losing sync
+        when the user scrolls across the safeguard types.
+        """
+        from database import Database
+        from lopa_panel import LopaPanel
+
+        db = Database(':memory:')
+        try:
+            node_id = db.add_node()
+            deviation_id = db.deviations(node_id)[0]['id']
+            cause_id = db.add_cause(deviation_id)
+            db.update_cause(
+                cause_id,
+                description=('Källscenario med lång text för kontroll av '
+                             'radbrytning och cellformatering.'),
+                base_frequency=0.012345)
+            consequence_id = db.add_consequence(cause_id)
+            db.update_consequence(consequence_id, 'Överfyllnad', 3, '')
+            category = db.consequence_categories()[0]
+            db.set_consequence_severity(consequence_id, category['id'], 3)
+            safeguard_id = db.add_safeguard(consequence_id)
+            db.update_safeguard(
+                safeguard_id, description='SIS-skydd', rrf=10, sg_type='SIS')
+            created = db.create_lopa(sif_name='Matrisformat smoke')
+            source_id = db.add_lopa_source_from_safeguard(
+                created['lopa_id'], safeguard_id)['source_id']
+            for description, rrf, barrier_type in [
+                ('BPCS med lång, läsbar beskrivning', 10, 'BPCS'),
+                ('PSV med utblåsning till säkert område', 100, 'Mekanisk'),
+                ('Dokumenterad operatörsrond enligt instruktion', 3,
+                 'Administrativ'),
+                ('Lång beskrivning av skyddsbarriär som kräver flera rader',
+                 30, 'Övrigt'),
+            ]:
+                db.add_lopa_barrier(
+                    created['revision_id'], source_id, description, rrf,
+                    barrier_type)
+
+            p = LopaPanel(db)
+            try:
+                p.resize(1560, 1080)
+                p.activate_lopa(created['lopa_id'], created['revision_id'])
+                p.show()
+                self.app.processEvents()
+                self.app.processEvents()
+
+                matrix = p._barrier_matrix
+                expected_widths = [260, 100]
+                for _barrier_type in db.safeguard_types():
+                    expected_widths.extend([220, 64])
+                expected_widths.append(124)
+                self.assertEqual(
+                    expected_widths,
+                    [matrix.columnWidth(column)
+                     for column in range(matrix.columnCount())])
+                self.assertTrue(all(
+                    matrix.horizontalHeader().sectionResizeMode(column)
+                    == QHeaderView.ResizeMode.Fixed
+                    for column in range(matrix.columnCount())))
+                self.assertEqual(sum(expected_widths),
+                                 p._barrier_matrix_header.width())
+                self.assertEqual(matrix.viewport().width(),
+                                 p._barrier_matrix_header_view.viewport().width())
+
+                for row in range(matrix.rowCount()):
+                    for column in range(matrix.columnCount()):
+                        self.assertIsNotNone(matrix.item(row, column))
+                left = int(Qt.AlignmentFlag.AlignLeft |
+                           Qt.AlignmentFlag.AlignVCenter)
+                right = int(Qt.AlignmentFlag.AlignRight |
+                            Qt.AlignmentFlag.AlignVCenter)
+                center = int(Qt.AlignmentFlag.AlignCenter)
+                self.assertEqual(left, matrix.item(0, 0).textAlignment())
+                # A source without an explicitly selected HAZOP frequency is
+                # intentionally shown as a centred no-data marker.
+                self.assertEqual('—', matrix.item(0, 1).text())
+                self.assertEqual(center, matrix.item(0, 1).textAlignment())
+                self.assertEqual(left, matrix.item(0, 2).textAlignment())
+                self.assertEqual(right, matrix.item(0, 3).textAlignment())
+                # SIS has no local barrier in this data set, so both cells
+                # must use the visible, centred no-data marker.
+                self.assertEqual('—', matrix.item(0, 4).text())
+                self.assertEqual(center, matrix.item(0, 4).textAlignment())
+                self.assertEqual('—', matrix.item(0, 5).text())
+                self.assertEqual(center, matrix.item(0, 5).textAlignment())
+                self.assertEqual('Totalt', matrix.item(1, 0).text())
+                self.assertTrue(matrix.item(1, 0).font().bold())
+                self.assertEqual('', matrix.item(1, 1).text())
+
+                self.assertGreater(matrix.horizontalScrollBar().maximum(), 0)
+                matrix.horizontalScrollBar().setValue(
+                    matrix.horizontalScrollBar().maximum())
+                self.app.processEvents()
+                self.assertEqual(matrix.horizontalHeader().offset(),
+                                 p._barrier_matrix_header_view.horizontalScrollBar().value())
+            finally:
+                p.deleteLater()
+        finally:
+            del db
+
     def test_lopa_panel_renders_imported_detail_sections(self):
         """The detailed LOPA workspace must survive a real HAZOP import path."""
         from lopa_panel import LopaPanel

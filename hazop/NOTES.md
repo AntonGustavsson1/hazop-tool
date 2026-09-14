@@ -7391,3 +7391,26 @@ Verifiering: syntaxkontroll, 22 tester i `tests.test_report_word_export`, 14
 smoke-tester och en Word/PDF-renderad kontroll av en export från aktuell
 projektdatabas. Den grafiska Qt-menyn är testad med mockad filvals-, fel- och
 öppnarväg; den är inte manuellt klickverifierad i Windows-GUI i denna körning.
+
+## 2026-09-14 — Stabil cellformatering i OBEROENDE BARRIÄRER
+
+LOPA-matrisen använder nu förutsägbara, läsbara kolumnbredder i stället för
+`ResizeToContents`, som tidigare kunde krympa numeriska RRF-celler till 30 px
+och låta en lång källscenariotext styra hela tabellen. Varje cell har nu en
+uttalad formatering: text vänsterjusteras, tal högerjusteras, saknade värden
+visas centrerat som `—`, och den feta totalraden innehåller tomma mellanliggande
+celler i stället för visuella utfyllnadsstreck.
+
+Den tvånivåiga rubriken (`barriärtyp → Barriär/RRF`) ligger i en scrollbar-fri
+synkroniserad vy. Den följer tabellens faktiska pixeloffset, även när
+QTableWidget bläddrar kolumnvis, och reserverar samma plats för en vertikal
+scrollbar. Rubriker och cellgränser stämmer därmed både i vänster- och
+högerändläge. Matrisens dolda standardrubrik räknas inte heller längre som
+tom höjd under den egna rubriken.
+
+Verifiering: nytt regressionstest i `tests.test_smoke` kontrollerar samtliga
+cellpositioner, cellinnehåll/alignment, totalraden samt rubriksynkronisering
+vid maximal sidledsbläddring. Visuell Qt-rendering har granskats för båda
+ändlägena. Den samlade LOPA-körningen hade två redan kända, orelaterade fel i
+frekvensförväntningar (`base_frequency` är nu medvetet tom innan uttryckligt
+val); den nya matristesten och den befintliga detaljrenderingstesten passerar.

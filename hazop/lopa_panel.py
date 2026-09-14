@@ -148,6 +148,8 @@ class _BarrierMatrixHeaderWidget(QWidget):
         layout.addWidget(remaining_label, 0)
 
         self.setFixedHeight(50)
+        if self.column_widths:
+            self.setFixedWidth(sum(self.column_widths))
 
 
 class _LopaHierarchyDelegate(QStyledItemDelegate):
@@ -309,9 +311,16 @@ class LopaPanel(QWidget):
         table.verticalHeader().setDefaultSectionSize(22)
 
     @staticmethod
-    def _fit_table_height(table, minimum_height: int, maximum_height: int):
+    def _fit_table_height(table, minimum_height: int, maximum_height: int,
+                          *, include_hidden_header: bool = True):
         """Fit a table to its rows while retaining internal scrolling for long lists."""
         header_height = max(22, table.horizontalHeader().height())
+        if not include_hidden_header and not table.horizontalHeader().isVisible():
+            # A hidden QHeaderView has no painted height. Counting its default
+            # 22 px leaves an unexplained empty strip below matrices that
+            # render their own header (the barrier matrix is the only such
+            # table at present).
+            header_height = 0
         row_height = sum(table.rowHeight(index) for index in range(table.rowCount()))
         frame = table.frameWidth() * 2 + 2
         table.setFixedHeight(max(minimum_height, min(maximum_height,
@@ -845,6 +854,16 @@ class LopaPanel(QWidget):
         self._barrier_container_layout.setContentsMargins(0, 0, 0, 0)
         self._barrier_container_layout.setSpacing(0)
         self._barrier_matrix_header = None
+        self._barrier_matrix_header_view = QScrollArea()
+        self._barrier_matrix_header_view.setFrameShape(QFrame.Shape.NoFrame)
+        self._barrier_matrix_header_view.setWidgetResizable(False)
+        self._barrier_matrix_header_view.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._barrier_matrix_header_view.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._barrier_matrix_header_view.setFixedHeight(50)
+        self._barrier_matrix_header_view.setStyleSheet('QScrollArea { border: none; }')
+        self._barrier_container_layout.addWidget(self._barrier_matrix_header_view)
         barrier_layout.addWidget(self._barrier_matrix_container)
         self._barrier_matrix = QTableWidget(0, 0)
         self._barrier_matrix.verticalHeader().setVisible(False)
@@ -854,6 +873,13 @@ class LopaPanel(QWidget):
         self._barrier_matrix.setWordWrap(True)
         self._barrier_matrix.setStyleSheet(lopa_table_stylesheet())
         self._configure_compact_table(self._barrier_matrix, 48, 104)
+        self._barrier_matrix.verticalHeader().setDefaultSectionSize(34)
+        self._barrier_matrix.verticalHeader().setMinimumSectionSize(34)
+        self._barrier_matrix.horizontalScrollBar().valueChanged.connect(
+            self._sync_barrier_matrix_header_scroll)
+        self._barrier_matrix.verticalScrollBar().rangeChanged.connect(
+            lambda _minimum, _maximum: QTimer.singleShot(
+                0, self._sync_barrier_matrix_header_viewport))
         self._barrier_container_layout.addWidget(self._barrier_matrix)
         self._barrier_detail_area = QWidget()
         barrier_detail_layout = QVBoxLayout(self._barrier_detail_area)
@@ -1287,6 +1313,23 @@ class LopaPanel(QWidget):
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         if entity_id is not None:
             item.setData(LopaPanel._ROLE_ENTITY_ID, entity_id)
+        return item
+
+    @staticmethod
+    def _barrier_matrix_cell(text, *, numeric=False, empty=False):
+        """Create one consistently aligned, read-only barrier-matrix cell."""
+        value = '' if empty else str(text or '—')
+        item = QTableWidgetItem(value)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        if value == '—':
+            alignment = Qt.AlignmentFlag.AlignCenter
+        elif numeric:
+            alignment = (Qt.AlignmentFlag.AlignRight |
+                         Qt.AlignmentFlag.AlignVCenter)
+        else:
+            alignment = (Qt.AlignmentFlag.AlignLeft |
+                         Qt.AlignmentFlag.AlignVCenter)
+        item.setTextAlignment(alignment)
         return item
 
     @staticmethod
@@ -2415,25 +2458,29 @@ class LopaPanel(QWidget):
         old_loading = self._loading
         self._loading = True
         self._barrier_matrix.setColumnCount(len(headers))
-        # Set default column widths before rendering
-        for col in range(len(headers)):
-            self._barrier_matrix.setColumnWidth(col, 100)
-        # Create placeholder header (will be synced after column widths are determined)
-        if self._barrier_matrix_header:
-            self._barrier_container_layout.removeWidget(self._barrier_matrix_header)
-            self._barrier_matrix_header.deleteLater()
-        self._barrier_matrix_header = _BarrierMatrixHeaderWidget(types, parent=self)
-        self._barrier_container_layout.insertWidget(0, self._barrier_matrix_header)
+        # The matrix has many two-column barrier groups.  ResizeToContents
+        # turns short numeric values into 30 px columns and lets one long
+        # source dominate the whole sheet.  Stable widths keep every cell
+        # readable and make the grouped header geometrically deterministic.
+        column_widths = [260, 100]
+        for _barrier_type in types:
+            column_widths.extend([220, 64])
+        column_widths.append(124)
+        self._barrier_matrix.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Fixed)
+        for col, width in enumerate(column_widths):
+            self._barrier_matrix.setColumnWidth(col, width)
 
         self._barrier_matrix.setRowCount(len(sources) + 1 if sources else 0)
         total_remaining = 0.0
         any_remaining = False
         for row_index, source in enumerate(sources):
             cause = source.get('cause_text') or f"Källscenario {source['id']}"
-            self._barrier_matrix.setItem(row_index, 0, self._readonly_cell(cause))
+            self._barrier_matrix.setItem(row_index, 0, self._barrier_matrix_cell(cause))
             frequency = source.get('base_frequency')
             self._barrier_matrix.setItem(
-                row_index, 1, self._readonly_cell('—' if frequency is None else f'{frequency:.6g} /år'))
+                row_index, 1, self._barrier_matrix_cell(
+                    '—' if frequency is None else f'{frequency:.6g} /år', numeric=True))
             by_type = {kind: [] for kind in types}
             for barrier in self.db.lopa_barriers(self._revision_id, source['id']):
                 if not barrier['active']:
@@ -2452,10 +2499,11 @@ class LopaPanel(QWidget):
                 else:
                     desc_text = '—'
                     rrf_text = '—'
-                self._barrier_matrix.setItem(row_index, desc_column, self._readonly_cell(desc_text))
-                rrf_cell = self._readonly_cell(rrf_text)
-                rrf_cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self._barrier_matrix.setItem(row_index, rrf_column, rrf_cell)
+                self._barrier_matrix.setItem(
+                    row_index, desc_column, self._barrier_matrix_cell(desc_text))
+                self._barrier_matrix.setItem(
+                    row_index, rrf_column,
+                    self._barrier_matrix_cell(rrf_text, numeric=True))
             result = self.db.lopa_source_calculation(source['id'])
             remaining = [item['remaining_frequency'] for item in result['categories']
                          if item['active'] and item['remaining_frequency'] is not None]
@@ -2466,23 +2514,26 @@ class LopaPanel(QWidget):
                 text = f'{row_remaining:.6g} /år'
             else:
                 text = '—'
-            self._barrier_matrix.setItem(row_index, len(headers) - 1, self._readonly_cell(text))
+            self._barrier_matrix.setItem(
+                row_index, len(headers) - 1,
+                self._barrier_matrix_cell(text, numeric=True))
         if sources:
             total_row = len(sources)
             bold_font = self._barrier_matrix.font()
             bold_font.setBold(True)
-            total_label = self._readonly_cell('Totalt')
+            total_label = self._barrier_matrix_cell('Totalt')
             total_label.setFont(bold_font)
             self._barrier_matrix.setItem(total_row, 0, total_label)
             for column in range(1, len(headers) - 1):
-                self._barrier_matrix.setItem(total_row, column, self._readonly_cell(''))
+                self._barrier_matrix.setItem(
+                    total_row, column, self._barrier_matrix_cell('', empty=True))
             total_text = f'{total_remaining:.6g} /år' if any_remaining else '—'
-            total_cell = self._readonly_cell(total_text)
+            total_cell = self._barrier_matrix_cell(total_text, numeric=True)
             total_cell.setFont(bold_font)
             self._barrier_matrix.setItem(total_row, len(headers) - 1, total_cell)
         self._barrier_matrix.resizeRowsToContents()
-        self._barrier_matrix.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self._fit_table_height(self._barrier_matrix, 48, 104)
+        self._fit_table_height(self._barrier_matrix, 48, 104,
+                               include_hidden_header=False)
 
         # Sync header width with table columns
         self._sync_barrier_matrix_header_width(types)
@@ -2498,14 +2549,38 @@ class LopaPanel(QWidget):
         column_widths = [self._barrier_matrix.columnWidth(i)
                         for i in range(self._barrier_matrix.columnCount())]
 
-        # Recreate header with correct widths
-        if self._barrier_matrix_header:
-            self._barrier_container_layout.removeWidget(self._barrier_matrix_header)
-            self._barrier_matrix_header.deleteLater()
-
+        # The header lives in a scrollbar-free QScrollArea and follows the
+        # table's horizontal scrollbar.  A plain sibling widget cannot follow
+        # the matrix once all safeguard types exceed the available width.
         self._barrier_matrix_header = _BarrierMatrixHeaderWidget(
-            barrier_types, column_widths=column_widths, parent=self)
-        self._barrier_container_layout.insertWidget(0, self._barrier_matrix_header)
+            barrier_types, column_widths=column_widths,
+            parent=self._barrier_matrix_header_view)
+        self._barrier_matrix_header_view.setWidget(self._barrier_matrix_header)
+        self._sync_barrier_matrix_header_viewport()
+        QTimer.singleShot(0, self._sync_barrier_matrix_header_viewport)
+
+    def _sync_barrier_matrix_header_viewport(self):
+        """Keep the custom header viewport pixel-aligned with table cells."""
+        if not self._barrier_matrix_header:
+            return
+        frame = self._barrier_matrix.frameWidth()
+        vertical_scrollbar = self._barrier_matrix.verticalScrollBar()
+        reserve_right = frame
+        if vertical_scrollbar.isVisible():
+            reserve_right += vertical_scrollbar.width()
+        self._barrier_matrix_header_view.setViewportMargins(
+            frame, 0, reserve_right, 0)
+        self._sync_barrier_matrix_header_scroll()
+
+    def _sync_barrier_matrix_header_scroll(self, _value=None):
+        """Match the header's pixel scroll offset to QTableWidget columns."""
+        if not self._barrier_matrix_header:
+            return
+        # QTableWidget's scrollbar advances by sections in this Fixed-header
+        # configuration, while QScrollArea advances by pixels.  The header
+        # offset is the common pixel coordinate for both widgets.
+        self._barrier_matrix_header_view.horizontalScrollBar().setValue(
+            self._barrier_matrix.horizontalHeader().offset())
 
     def _on_barrier_item_changed(self, item):
         if self._loading or item.column() != 0:
