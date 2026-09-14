@@ -82,6 +82,51 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertNotIn('Överfyllning', body + table_text)
         self.assertTrue(path.exists())
 
+    def test_tor_includes_planned_risk_scales_and_decision_framework(self):
+        """ToR reuses the report's risk definitions without showing results."""
+        matrix = deepcopy(self.db.get_risk_matrix() or database.DEFAULT_MATRIX)
+        matrix['risk_level_definitions'] = [{
+            'color': '#EF4444',
+            'label': 'Oacceptabel risk',
+            'definition': 'Riskreducering ska övervägas före fortsatt hantering.',
+        }]
+        self.db.set_risk_matrix(matrix)
+        person = self.db.consequence_categories()[0]
+        self.db.set_severity_definition(1, person['id'], 'Lindrig personskada')
+        self.db.set_severity_definition(2, person['id'], 'Allvarlig personskada')
+        self.db.add_project_custom_field(
+            'Frekvensunderlag', 'Frekvens bedöms av analysgruppen utifrån driftfall.')
+        self.db.add_project_custom_field(
+            'Barriärunderlag', 'Skyddets oberoende ska bekräftas av gruppen.')
+
+        doc, _path = self.export_tor()
+        headings = [paragraph.text for paragraph in doc.paragraphs
+                    if paragraph.style.name in ('Heading 1', 'Heading 2')]
+        captions = [paragraph.text for paragraph in doc.paragraphs
+                    if paragraph.style.name == 'Caption']
+        table_text = '\n'.join(
+            cell.text for table in doc.tables for row in table.rows for cell in row.cells)
+        body = '\n'.join(paragraph.text for paragraph in doc.paragraphs)
+
+        self.assertIn('5.2 Planerade acceptanskriterier', headings)
+        self.assertIn('5.3 Frekvensskala', headings)
+        self.assertIn('5.4 Konsekvensdefinitioner', headings)
+        self.assertIn('5.5 Barriärer, enablers, riskgraph och LOPA', headings)
+        for caption in (
+            'Tabell 5-2 Planerade acceptanskriterier',
+            'Tabell 5-3 Planerade frekvensnivåer och definitioner',
+            'Tabell 5-4 Planerade konsekvensdefinitioner',
+        ):
+            self.assertIn(caption, captions)
+        self.assertIn('Oacceptabel risk', table_text)
+        self.assertIn('Lindrig personskada', table_text)
+        self.assertIn('Frekvens bedöms av analysgruppen', body)
+        self.assertIn('Skyddets oberoende ska bekräftas', body)
+        self.assertIn('funktion, relevans och oberoende', body)
+        self.assertNotIn('Överfyllning', body + table_text)
+        self.assertTrue(any(section.page_width > section.page_height
+                            for section in doc.sections))
+
     def test_complete_report_uses_project_and_signoff_fields_without_legacy_customer(self):
         self.db.add_project_custom_field('Framtagen av', 'Författare')
         self.db.add_project_custom_field('Rapportnummer', '262054-Report-02')

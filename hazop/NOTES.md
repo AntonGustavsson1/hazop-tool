@@ -7414,3 +7414,24 @@ vid maximal sidledsbläddring. Visuell Qt-rendering har granskats för båda
 ändlägena. Den samlade LOPA-körningen hade två redan kända, orelaterade fel i
 frekvensförväntningar (`base_frequency` är nu medvetet tom innan uttryckligt
 val); den nya matristesten och den befintliga detaljrenderingstesten passerar.
+
+## 2026-09-14 — ToR med planerat riskramverk
+
+ToR-exporten redovisar nu samma planerade riskramverk som HAZOP-rapporten,
+utan att läsa scenarioresultat eller rekommendationer. Efter riskmatrisen
+kommer planerade acceptanskriterier, frekvensnivåer med definitioner och
+konsekvensdefinitioner per aktiv konsekvenskategori. Konsekvensdefinitionerna
+läggs i en egen liggande A4-sektion så att kategorikolumnerna förblir läsbara.
+
+Avsnittet om riskgraph och LOPA har kompletterats med planerade principer för
+barriärer och enablers: funktion, relevans och oberoende måste bekräftas av
+analysgruppen innan ett skydd tillgodoräknas. Projektfälten
+`Riskacceptanskriterier`, `Frekvensunderlag` och `Barriärunderlag` kan läggas
+till som metodspecifika förtydliganden i ToR:n.
+
+Verifiering: 23 tester i `tests.test_report_word_export` och 15 smoke-tester
+passerar. Den nya ToR-testen kontrollerar rubriker, tabeller, riskdefinitioner,
+barriärtext, frånvaro av scenariokonsekvens och att konsekvenstavellen får en
+liggande sektion. Den paketerade dokumentrenderaren kunde inte köras i denna
+arbetsmiljö eftersom den tillhandahållna runtime saknar LibreOffice; därför är
+denna ändring strukturellt och testmässigt verifierad men inte ny-renderad här.

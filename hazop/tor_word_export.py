@@ -24,6 +24,7 @@ TOR_FIELDS = (
     'ToRnummer', 'ToRdatum', 'ToRrevision', 'Distribution', 'Bakgrund',
     'Syfte', 'Omfattning', 'Avgränsningar', 'Driftfall',
     'Analysförutsättningar', 'Övriga referensdokument', 'Metodreferens',
+    'Riskacceptanskriterier', 'Frekvensunderlag', 'Barriärunderlag',
     'Kontaktperson kund', 'Kontaktuppgifter kund', 'Kontorsadress ProSa',
     'Kontaktuppgifter ProSa', 'Kundadress', 'Uppdragsansvarig',
 )
@@ -233,11 +234,126 @@ def _add_risk_framework(document, db, data):
                 for run in paragraph.runs:
                     run.bold = True
                     run.font.size = Pt(8)
-    document.add_heading('5.2 Riskgraph och LOPA', 2)
+
+    levels = data['matrix'].get('risk_level_definitions') or []
+    if not levels:
+        # Older matrix configurations can have coloured cells without an
+        # explicit legend. Keep the ToR useful by deriving each distinct,
+        # named level without turning a planned assessment into a result.
+        by_color = {}
+        for row_colors, row_labels in zip(data['matrix'].get('cell_colors', []),
+                                          data['matrix'].get('cell_labels', [])):
+            for color, label in zip(row_colors, row_labels):
+                color, label = str(color or '').strip(), str(label or '').strip()
+                if color and label and color not in by_color:
+                    by_color[color] = label
+        levels = [
+            {'color': color, 'label': label, 'definition': ''}
+            for color, label in by_color.items()
+        ]
+    document.add_heading('5.2 Planerade acceptanskriterier', 2)
+    document.add_paragraph(
+        'Tabell 5-2 redovisar de acceptanskriterier som är planerade för '
+        'studien. De ska användas som stöd för analysgruppens bedömning och '
+        'för att avgöra när fortsatt utredning eller riskreducering behöver '
+        'övervägas. De redovisar inte några bedömda risknivåer.')
+    _caption(document, '5-2', 'Planerade acceptanskriterier')
+    if levels:
+        level_table = _table(document, ['Risknivå', 'Definition'], [
+            [_value(item.get('label'), 'risknivå'),
+             _value(item.get('definition'), 'acceptanskriterium')]
+            for item in levels
+        ], [56, 104])
+        for row, item in zip(level_table.rows[1:], levels):
+            color = str(item.get('color') or '').lstrip('#')
+            if color:
+                shading = OxmlElement('w:shd')
+                shading.set(qn('w:fill'), color)
+                row.cells[0]._tc.get_or_add_tcPr().append(shading)
+                try:
+                    red, green, blue = (int(color[index:index + 2], 16)
+                                        for index in (0, 2, 4))
+                    foreground = ('000000' if (0.299 * red + 0.587 * green +
+                                               0.114 * blue) > 160 else 'FFFFFF')
+                    for paragraph in row.cells[0].paragraphs:
+                        for run in paragraph.runs:
+                            run.font.color.rgb = RGBColor.from_string(foreground)
+                except (TypeError, ValueError):
+                    pass
+    else:
+        document.add_paragraph(missing('planerade acceptanskriterier'))
+    if data['field']('Riskacceptanskriterier'):
+        document.add_paragraph(data['field']('Riskacceptanskriterier'))
+
+    frequency_codes = data['matrix']['x_codes'] if x_frequency else data['matrix']['y_codes']
+    frequency_labels = data['matrix']['x_labels'] if x_frequency else data['matrix']['y_labels']
+    consequence_codes = data['matrix']['y_codes'] if x_frequency else data['matrix']['x_codes']
+    consequence_labels = data['matrix']['y_labels'] if x_frequency else data['matrix']['x_labels']
+    document.add_heading('5.3 Frekvensskala', 2)
+    document.add_paragraph(
+        'Tabell 5-3 redovisar de frekvensnivåer och definitioner som är '
+        'planerade för HAZOP-bedömningen. Definitionerna ger gruppen en '
+        'gemensam utgångspunkt när sannolikheten för ett scenario diskuteras.')
+    _caption(document, '5-3', 'Planerade frekvensnivåer och definitioner')
+    _table(document, ['Nivå', 'Definition'], [
+        [str(code), _value(label, 'frekvensdefinition')]
+        for code, label in zip(frequency_codes, frequency_labels)
+    ] or [[missing('frekvensnivåer'), '']], [25, 135])
+    if data['field']('Frekvensunderlag'):
+        document.add_paragraph(data['field']('Frekvensunderlag'))
+
+    from docx.enum.section import WD_SECTION_START
+    landscape_section = document.add_section(WD_SECTION_START.NEW_PAGE)
+    _page_setup(landscape_section, landscape=True, paper='A4')
+    document.add_heading('5.4 Konsekvensdefinitioner', 2)
+    document.add_paragraph(
+        'Konsekvenser bedöms för de kategorier som ingår i studiens '
+        'riskmatris. Tabell 5-4 redovisar de definitioner som analysgruppen '
+        'ska använda för att skapa en jämförbar bedömning mellan scenarier.')
+    categories = [dict(category) for category in db.consequence_categories()]
+    definitions = db.get_severity_definitions()
+    active_categories = []
+    for category in categories:
+        values = [definitions.get(index + 1, {}).get(category['id'], '')
+                  for index in range(len(consequence_codes))]
+        if any((value or '').strip() for value in values):
+            active_categories.append(category)
+    consequence_rows = []
+    for index, code in enumerate(consequence_codes):
+        values = [definitions.get(index + 1, {}).get(category['id'], '')
+                  for category in active_categories]
+        if any((value or '').strip() for value in values):
+            consequence_rows.append([
+                str(code), _value(consequence_labels[index], 'benämning'),
+                *[_value(value, f"definition {category['name']} {code}")
+                  for category, value in zip(active_categories, values)],
+            ])
+    if consequence_rows:
+        _caption(document, '5-4', 'Planerade konsekvensdefinitioner')
+        headers = ['Nivå', 'Benämning'] + [category['name'] for category in active_categories]
+        widths = ([16, 30] +
+                  [max(35, int(204 / max(1, len(active_categories))))]
+                  * len(active_categories))
+        _table(document, headers, consequence_rows, widths)
+    else:
+        document.add_paragraph(missing('konsekvenskategorier och definitioner'))
+
+    portrait_section = document.add_section(WD_SECTION_START.NEW_PAGE)
+    _page_setup(portrait_section, landscape=False, paper='A4')
+    document.add_heading('5.5 Barriärer, enablers, riskgraph och LOPA', 2)
     document.add_paragraph(
         'Om HAZOP-gruppen identifierar behov av en säkerhetsinstrumenterad funktion '
         'kan erforderlig riskreduktion bedömas med riskgraph eller LOPA. Val av '
         'metod och fördjupningsnivå görs i analysen utifrån det aktuella scenariot.')
+    document.add_paragraph(
+        'Befintliga och planerade barriärer ska diskuteras för det specifika '
+        'scenariot. Gruppen bekräftar deras funktion, relevans och oberoende '
+        'innan de kan tillgodoräknas i riskbedömningen. Enablers dokumenteras '
+        'när de påverkar händelseförloppets utveckling. Dessa principer är '
+        'planerade arbetssätt och innebär inte att någon barriär redan har '
+        'bedömts som tillräcklig.')
+    if data['field']('Barriärunderlag'):
+        document.add_paragraph(data['field']('Barriärunderlag'))
 
 
 def build_tor(db):
