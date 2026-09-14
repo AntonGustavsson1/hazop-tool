@@ -228,6 +228,38 @@ class LopaHierarchyTableTests(unittest.TestCase):
                 .text() == 'Min egen orsakstext')
         self.assertIsNotNone(refreshed_row)
 
+    def test_double_click_edit_commits_plain_text_not_qtextedit_html(self):
+        """Regression test: the HAZOP-SCENARIER delegate's editor is a
+        QTextEdit subclass (_BoldTagTextEdit). QStyledItemDelegate's
+        default setModelData commits an editor's meta-object USER
+        property, which for a bare QTextEdit is "html" (not "plainText") --
+        so without an explicit override, double-clicking a cell to edit it
+        committed the *entire* HTML document (a "<!DOCTYPE HTML...>"
+        header included) as the cell's text, and that garbage text then
+        got written into the real HAZOP consequence description via
+        _save_hazop_hierarchy_text_edit's HAZOP-sync branch (2026-09-14,
+        Anton: "Blev något fel i LOPA-tabellen när jag dubbelklickade på
+        en konsekvens")."""
+        cons_id = self.db.consequences(self.cause_id)[0]['id']
+        hazop_row = next(
+            row for row in range(self.panel._hazop_hierarchy.rowCount())
+            if self.panel._hazop_hierarchy.item(row, self.panel._HAZOP_CAUSE_COL)
+                .data(self.panel._ROLE_HAZOP_CAUSE_ID) == self.cause_id)
+        table = self.panel._hazop_hierarchy
+        index = table.model().index(hazop_row, self.panel._HAZOP_CONSEQUENCE_COL)
+        delegate = self.panel._hazop_hierarchy_delegate
+        editor = delegate.createEditor(table.viewport(), None, index)
+        editor.setText('Ny konsekvenstext')
+        delegate.setModelData(editor, table.model(), index)
+        self.app.processEvents()
+        editor.deleteLater()
+
+        item = table.item(hazop_row, self.panel._HAZOP_CONSEQUENCE_COL)
+        self.assertEqual('Ny konsekvenstext', item.text())
+        self.assertNotIn('<!DOCTYPE', item.text())
+        self.assertEqual('Ny konsekvenstext',
+                          self.db.get_consequence(cons_id)['description'])
+
     def test_egen_lopa_konsekvens_creates_one_assessment_per_category(self):
         options = self.panel._category_options()
         self.assertGreaterEqual(len(options), 2, 'fixture needs 2+ categories to be a real test')

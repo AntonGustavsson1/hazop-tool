@@ -234,6 +234,25 @@ class _LopaHierarchyDelegate(QStyledItemDelegate):
         editor._tag_matcher = self._panel._matching_pid_tags
         editor.set_bold_tags(self._panel._matching_pid_tags(editor.toPlainText()))
 
+    def setModelData(self, editor, model, index):
+        """Commit the editor's plain text, never QTextEdit's HTML document.
+
+        _BoldTagTextEdit exposes text()/setText() as ordinary Python
+        methods rather than a registered Qt property, so QStyledItemDelegate's
+        default setModelData falls back to the meta-object's USER property --
+        which for QTextEdit is "html", not "plainText". Left unoverridden,
+        double-clicking a HAZOP-SCENARIER cell to edit it commits the
+        *entire* HTML document (complete with a "<!DOCTYPE HTML...>" header)
+        as the cell's text, which then gets written straight into the real
+        HAZOP consequence/cause description via
+        _save_hazop_hierarchy_text_edit (2026-09-14, Anton: "Blev något fel
+        i LOPA-tabellen när jag dubbelklickade på en konsekvens"). See
+        scenario_panel.py's _ScenarioDelegate.setModelData for the identical
+        fix applied there first.
+        """
+        model.setData(index, editor.toPlainText().strip(),
+                       Qt.ItemDataRole.EditRole)
+
 
 class LopaPanel(QWidget):
     """LOPA list + revision detail page, independent of ``hazop.py``."""

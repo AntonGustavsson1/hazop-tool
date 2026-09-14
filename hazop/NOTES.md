@@ -1,5 +1,50 @@
 # NOTES.md — Beslut och kontext
 
+## Fix: dubbelklick på Konsekvens i LOPA sparade rå HTML istället för text (2026-09-14)
+
+Anton: "Blev något fel i LOPA-tabellen när jag dubbelklickade på en
+konsekvens" (med skärmbild — cellen visade `<!DOCTYPE HTML PUBLIC...>`
+och hela HTML-dokumentet som text).
+
+**Grundorsak:** `_LopaHierarchyDelegate` (lopa_panel.py, används för
+Orsak/Konsekvens i HAZOP-SCENARIER-tabellen) skapar en `_BoldTagTextEdit`
+(en `QTextEdit`-underklass) som redigerare men saknade en egen
+`setModelData`-override. `_BoldTagTextEdit` exponerar sina egna
+`text()`/`setText()` som vanliga Python-metoder, inte en registrerad
+Qt-property — så `QStyledItemDelegate`s standard-`setModelData` föll
+tillbaka på meta-objektets USER-property, som för `QTextEdit` är
+`"html"`, inte `"plainText"`. Resultatet: så fort en cell redigerades
+(dubbelklick + någon ändring/blur) skrevs hela HTML-dokumentet in i
+cellen — och eftersom `_save_hazop_hierarchy_text_edit` synkar
+Konsekvens-celler mot den riktiga HAZOP-konsekvensen när raden har en
+HAZOP-källa, skrevs samma HTML-skräp även in i `consequences.description`
+i databasen. `scenario_panel.py`s motsvarande `_ScenarioDelegate` hade
+redan denna override sedan tidigare (samma bugg, samma fix) — den nya
+`_LopaHierarchyDelegate` (tillagd 2026-09-04) fick den aldrig.
+
+**Fix:** `_LopaHierarchyDelegate.setModelData()` läser nu uttryckligen
+`editor.toPlainText().strip()` och skriver in det via
+`model.setData(index, text, Qt.ItemDataRole.EditRole)`, precis som
+`scenario_panel.py`s fix. Regressionstest tillagt i
+`tests/test_lopa_panel.py`
+(`test_double_click_edit_commits_plain_text_not_qtextedit_html`) som
+kör riktiga `createEditor`/`setModelData` genom delegatet och verifierar
+att varken cellen eller den riktiga HAZOP-konsekvensen någonsin
+innehåller `<!DOCTYPE`.
+
+**Verifiering:** `tests.test_lopa_panel` (13 tester) + `tests.test_smoke`
+körda. Ett förbefintligt, obesläktat fel
+(`test_sync_frequency_updates_hazop_and_mirror_as_one_undo_step`)
+bekräftat oförändrat/oberoende av denna fix (samma fel även med
+`lopa_panel.py` återställt via `git stash`) — inte undersökt vidare här.
+
+**Befintlig databas:** en riktig konsekvens (id 28, "...ventil stängs
+efter att ledning fyllt...") hade redan fått sin beskrivning
+överskriven med HTML-skräp av just denna bugg innan fixen — den
+ursprungliga texten återfanns bevarad inuti HTML-body:t och kan
+återställas separat (se konversationen; inte gjort automatiskt eftersom
+appen var igång när detta upptäcktes).
+
 ## Fix: kolumnbredd svår att dra i deltagarmatrisen (2026-09-11)
 
 Anton: "Det är svårt att dra i bredden längst till höger på
