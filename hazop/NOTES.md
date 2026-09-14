@@ -7329,3 +7329,20 @@ Nya orsaker markeras nu som att frekvens ännu inte har valts. Utan standardorsa
 eller manuellt frekvensval visas därför varken frekvens eller risknivå. Val av
 standardorsak eller manuell frekvens aktiverar frekvensen igen. Befintliga
 orsaker ändras inte automatiskt.
+
+## 2026-09-14 — ToR-export från förberedelseunderlag
+
+Exportmenyn har fått `Exportera ToR…`. Exporten i `tor_word_export.py` använder
+samma ProSa-dokumentgrund och läs-säkra exportmönster som rapportexporten men
+hämtar endast förberedelseuppgifter: dokumentunderlag, deltagare, planerade
+analystillfällen, aktiva guideord, noder/P&ID-markeringar och riskramverk.
+Den läser eller visar inte worksheet-rader, scenarier, riskutfall eller
+rekommendationer. ToR:n anger uttryckligen att noder och guideord kan justeras
+och att antal deltagare och närvaro uppdateras vid analysen. ToR-nummer kan
+ställas in under `Projekt → ToR and Report` och föreslås som
+`[projektnummer]-ToR-01`.
+
+Verifiering: syntaxkontroll, 22 tester i `tests.test_report_word_export`, 14
+smoke-tester och en Word/PDF-renderad kontroll av en export från aktuell
+projektdatabas. Den grafiska Qt-menyn är testad med mockad filvals-, fel- och
+öppnarväg; den är inte manuellt klickverifierad i Windows-GUI i denna körning.

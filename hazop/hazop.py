@@ -1134,6 +1134,8 @@ class MainWindow(QMainWindow):
         edit_menu.addAction("Kör stavningskontroll…", self._on_run_spellcheck)
 
         export_menu = mb.addMenu("Export")
+        export_menu.addAction(_icon('document'), "Exportera ToR…",
+                              self._export_tor)
         export_menu.addAction(_icon('document'), "Exportera Word-rapport…",
                               self._export_word_report)
         export_menu.addAction(_icon('chart'), "Excel",           self._export_excel)
@@ -3008,6 +3010,32 @@ class MainWindow(QMainWindow):
             f"Rapporten är sparad:\n{path}\n\n"
             "Saknade uppgifter är gulmarkerade med [KOMPLETTERA].\n"
             "Rapporttexter kan fyllas i under Projekt → Egna fält.\n"
+            "Uppdatera innehållsförteckningen i Word med Ctrl+A, F9.")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
+
+    def _export_tor(self):
+        from tor_word_export import export_tor_word
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportera Terms of Reference", "hazop_tor.docx",
+            "Word-dokument (*.docx)")
+        if not path:
+            return
+        if not path.lower().endswith('.docx'):
+            path += '.docx'
+        focus = QApplication.focusWidget()
+        if focus is not None:
+            focus.clearFocus()
+        exported, error = export_tor_word(self.db, path)
+        if not exported:
+            QMessageBox.critical(self, "Fel vid ToR-export", error)
+            return
+        self.status_bar.showMessage(f"ToR sparad: {path}", 8000)
+        QMessageBox.information(
+            self, "ToR klar",
+            f"Terms of Reference är sparad:\n{path}\n\n"
+            "Dokumentet redovisar förberedelseunderlag, inte HAZOP-resultat.\n"
+            "Saknade uppgifter är gulmarkerade med [KOMPLETTERA].\n"
             "Uppdatera innehållsförteckningen i Word med Ctrl+A, F9.")
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
 

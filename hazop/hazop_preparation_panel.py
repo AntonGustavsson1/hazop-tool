@@ -2401,6 +2401,17 @@ class HAZOPPreparationPanel(QWidget):
                 edit.editingFinished.connect(lambda text=None, k=f'{section}_{key}', e=edit: self.db.set_config(k, e.text().strip()))
                 self._tor_report_fields[(section, key)] = edit
                 form.addRow(label, edit)
+        else:
+            for key, label, default in (("number", "ToR-nummer:", ''),):
+                edit = QLineEdit()
+                value = self.db.get_config(f'{section}_{key}', default) or default
+                if key == 'number' and not value:
+                    project_number = self.db.get_config('project_number', '') or ''
+                    value = f'{project_number}-ToR-01' if project_number else ''
+                edit.setText(value)
+                edit.editingFinished.connect(lambda text=None, k=f'{section}_{key}', e=edit: self.db.set_config(k, e.text().strip()))
+                self._tor_report_fields[(section, key)] = edit
+                form.addRow(label, edit)
         for key, label in rows:
             combo = QComboBox()
             combo.setEditable(True)

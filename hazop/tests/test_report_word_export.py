@@ -19,6 +19,7 @@ from report_word_export import (
     export_report_word, _matrix_display_values, _report_snapshot,
     collect_report_data, _worksheet_references, _annotated_worksheet_rows,
 )
+from tor_word_export import collect_tor_data, export_tor_word
 from worksheet_export import _worksheet_rows
 from worksheet_word_export import export_worksheet_word
 from recommendations_word_export import (
@@ -51,6 +52,35 @@ class ReportWordExportTests(unittest.TestCase):
         ok, error = export_report_word(self.db, self.path, **kwargs)
         self.assertTrue(ok, error)
         return Document(self.path)
+
+    def export_tor(self):
+        path = Path(self.folder.name) / 'tor.docx'
+        ok, error = export_tor_word(self.db, path)
+        self.assertTrue(ok, error)
+        return Document(path), path
+
+    def test_tor_contains_only_planning_inputs_and_keeps_them_adjustable(self):
+        participant = self.db.add_participant('Anna', 'Andersson', 'Drift', 'Testkund')
+        self.db.add_analysis_session('Planerad dag', '2026-10-01', 'Kontoret')
+        self.db.add_standard_deviation('Egen ToR-avvikelse')
+        self.db.add_project_custom_field('ToRnummer', '262054-ToR-01')
+        self.db.add_project_custom_field('ToRdatum', '2026-09-14')
+        self.db.add_project_revision('A', '2026-09-14', 'Första utgåva', 'Anna Andersson')
+        data = collect_tor_data(self.db)
+        self.assertNotIn('rows', data)
+        self.assertNotIn('recommendations', data)
+        doc, path = self.export_tor()
+        body = '\n'.join(paragraph.text for paragraph in doc.paragraphs)
+        table_text = '\n'.join(cell.text for table in doc.tables for row in table.rows for cell in row.cells)
+        self.assertIn('Antal deltagare och närvaro uppdateras vid analysen.', body)
+        self.assertIn('Guideorden kan justeras', body)
+        self.assertIn('Nodindelningen och markeringarna är planeringsunderlag och kan justeras', body)
+        self.assertIn('Riskgraph eller LOPA', body)
+        self.assertIn('Anna', table_text)
+        self.assertIn('Egen ToR-avvikelse', table_text)
+        self.assertNotIn('Kontrollera ventilen', body + table_text)
+        self.assertNotIn('Överfyllning', body + table_text)
+        self.assertTrue(path.exists())
 
     def test_complete_report_uses_project_and_signoff_fields_without_legacy_customer(self):
         self.db.add_project_custom_field('Framtagen av', 'Författare')
@@ -412,6 +442,30 @@ class ReportWordExportTests(unittest.TestCase):
 
 
 class ReportMenuTests(unittest.TestCase):
+    def test_tor_menu_cancel_success_and_error(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import hazop
+        fake = SimpleNamespace(db=object(), status_bar=Mock())
+        with patch('hazop.QFileDialog.getSaveFileName', return_value=('', '')), \
+                patch('tor_word_export.export_tor_word') as export:
+            hazop.MainWindow._export_tor(fake)
+            export.assert_not_called()
+        with patch('hazop.QFileDialog.getSaveFileName', return_value=('tor', '')), \
+                patch('hazop.QApplication.focusWidget', return_value=None), \
+                patch('hazop.QMessageBox.information'), \
+                patch('hazop.QMessageBox.critical') as critical, \
+                patch('hazop.QDesktopServices.openUrl') as open_url, \
+                patch('tor_word_export.export_tor_word', return_value=(True, '')) as export:
+            hazop.MainWindow._export_tor(fake)
+            export.assert_called_once_with(fake.db, 'tor.docx')
+            open_url.assert_called_once()
+            export.return_value = (False, 'locked')
+            open_url.reset_mock()
+            hazop.MainWindow._export_tor(fake)
+            critical.assert_called_once_with(fake, 'Fel vid ToR-export', 'locked')
+            open_url.assert_not_called()
+
     def test_report_menu_cancel_success_and_error(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
