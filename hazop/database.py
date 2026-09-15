@@ -758,6 +758,11 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Exoterm reaktion'),
     ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Inflöde > utflöde'),
     ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Låg nivå i kärl'),
+    ('Instrument', 'På samtliga avvikelser', 'Instrument felar lågt'),
+    ('Instrument', 'På samtliga avvikelser', 'Instrument felar högt'),
+    ('Instrument', 'På samtliga avvikelser', 'Instrument fryser'),
+    ('Instrument', 'På samtliga avvikelser', 'Börvärde felaktigt högt'),
+    ('Instrument', 'På samtliga avvikelser', 'Börvärde felaktigt lågt'),
     ('Instrument', 'Lågt flöde', 'Givare felar, styrventil stänger'),
     ('Instrument', 'Lågt flöde', 'Börvärde felaktigt inställt'),
     ('Instrument', 'Högt flöde', 'Givare felar, styrventil öppnar'),
@@ -816,6 +821,11 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Exoterm reaktion'): 0.001,
     ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Inflöde > utflöde'): 0.05,
     ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Låg nivå i kärl'): 0.05,
+    ('Instrument', 'På samtliga avvikelser', 'Instrument felar lågt'): 0.09,
+    ('Instrument', 'På samtliga avvikelser', 'Instrument felar högt'): 0.09,
+    ('Instrument', 'På samtliga avvikelser', 'Instrument fryser'): 0.09,
+    ('Instrument', 'På samtliga avvikelser', 'Börvärde felaktigt högt'): 0.09,
+    ('Instrument', 'På samtliga avvikelser', 'Börvärde felaktigt lågt'): 0.09,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'): 0.09,
 }
@@ -1951,6 +1961,15 @@ class Database:
             "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
         self.conn.commit()
 
+    def _migrate_instrument_compact_catalog_v1(self):
+        """Apply the five approved instrument causes (0.09/year each)."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='Instrument',
+            desired=('Instrument felar lågt', 'Instrument felar högt', 'Instrument fryser',
+                     'Börvärde felaktigt högt', 'Börvärde felaktigt lågt'),
+            frequencies=(0.09, 0.09, 0.09, 0.09, 0.09),
+            key='instrument_compact_catalog_v1')
+
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pid_config (
@@ -2665,6 +2684,7 @@ class Database:
         self._migrate_tank_compact_catalog_v1()
         self._migrate_pipe_catalog_clear_v1()
         self._migrate_flange_catalog_clear_v1()
+        self._migrate_instrument_compact_catalog_v1()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template

@@ -7515,3 +7515,8 @@ poster bevaras men avaktiveras så att de inte längre visas i orsaksväljaren.
 
 Fläns / koppling / packning har därefter rensats på aktiva standardorsaker.
 Historiska poster bevaras men avaktiveras.
+
+Instrument har därefter förenklats till `Instrument felar lågt`, `Instrument
+felar högt`, `Instrument fryser`, `Börvärde felaktigt högt` och `Börvärde
+felaktigt lågt`, samtliga med 0,09/år. Äldre orsaker avaktiveras men raderas
+inte.

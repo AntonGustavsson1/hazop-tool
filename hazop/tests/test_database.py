@@ -343,6 +343,24 @@ class DatabaseLayerTests(unittest.TestCase):
             "WHERE name='Fläns / koppling / packning'").fetchone()['id']
         self.assertEqual([], self.db.standard_causes_for_object(deviation_id, object_id))
 
+    def test_instrument_catalog_uses_five_approved_causes(self):
+        deviation_id = self.db.conn.execute(
+            "SELECT id FROM standard_deviations "
+            "WHERE description='Hög temperatur' AND active=1").fetchone()['id']
+        object_id = self.db.conn.execute(
+            "SELECT id FROM standard_objects WHERE name='Instrument'").fetchone()['id']
+        visible = {
+            row['description']: row['frequency']
+            for row in self.db.standard_causes_for_object(deviation_id, object_id)
+        }
+        self.assertEqual({
+            'Instrument felar lågt': 0.09,
+            'Instrument felar högt': 0.09,
+            'Instrument fryser': 0.09,
+            'Börvärde felaktigt högt': 0.09,
+            'Börvärde felaktigt lågt': 0.09,
+        }, visible)
+
     def test_create_full_chain(self):
         ids = self._make_full_chain()
         self.assertIsNotNone(self.db.get_node(ids['node_id']))
