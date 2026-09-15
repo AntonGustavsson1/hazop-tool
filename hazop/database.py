@@ -572,9 +572,6 @@ def freq_to_f_level(freq_per_year, boundaries=None) -> int:
 _COMP_STD_CAUSES = {
     # ── Lågt flöde ────────────────────────────────────────────────────────────
     "Lågt flöde": {
-        "On-off ventil":      [("Ventil felar stängd (fail-closed)",    1e-2),
-                               ("Ventil fastnar i stängt läge",         5e-3),
-                               ("Manöversignal uteblir",                1e-2)],
         "Reglerventil":       [("Reglerventil felar stängd",            2e-2),
                                ("Ventil fastnar / stiction",            1e-2),
                                ("Felaktig styrsignal — lågt utflöde",   5e-3)],
@@ -604,8 +601,6 @@ _COMP_STD_CAUSES = {
 
     # ── Högt flöde ────────────────────────────────────────────────────────────
     "Högt flöde": {
-        "On-off ventil":      [("Ventil felar öppen (fail-open)",       1e-2),
-                               ("Ventil fastnar i öppet läge",          5e-3)],
         "Reglerventil":       [("Reglerventil felar öppen",             2e-2),
                                ("Felaktig styrsignal — högt utflöde",   5e-3)],
         "Pump":               [("Pumpkapacitet för hög",                5e-3),
@@ -619,8 +614,6 @@ _COMP_STD_CAUSES = {
 
     # ── Högt tryck ────────────────────────────────────────────────────────────
     "Högt tryck": {
-        "On-off ventil":      [("Utloppsventil felar stängd",           1e-2),
-                               ("Ventil fastnar stängd på utlopp",      5e-3)],
         "Reglerventil":       [("Reglerventil på utlopp felar stängd",  2e-2),
                                ("Felaktig tryckreglering",              5e-3)],
         "Pump":               [("Pump deadhead — utlopp blockerat",     5e-3)],
@@ -642,8 +635,6 @@ _COMP_STD_CAUSES = {
 
     # ── Lågt tryck ────────────────────────────────────────────────────────────
     "Lågt tryck": {
-        "On-off ventil":      [("Utloppsventil felar öppen",            1e-2),
-                               ("Avblåsningsventil fastnar öppen",      5e-3)],
         "Reglerventil":       [("Reglerventil felar öppen",             2e-2)],
         "Pump":               [("Pump stopp — tryckfall",               2e-2)],
         "Rörledning / slang": [("Rörläckage / slangbrott",              5e-4),
@@ -660,8 +651,6 @@ _COMP_STD_CAUSES = {
 
     # ── Hög nivå ──────────────────────────────────────────────────────────────
     "Hög nivå": {
-        "On-off ventil":      [("Utloppsventil felar stängd",           1e-2),
-                               ("Inloppsventil felar öppen",            1e-2)],
         "Reglerventil":       [("Utloppsreglering felar stängd",        2e-2),
                                ("Inloppsreglering felar öppen",         1e-2)],
         "Pump":               [("Utloppspump stopp",                    2e-2)],
@@ -674,8 +663,6 @@ _COMP_STD_CAUSES = {
 
     # ── Låg nivå ──────────────────────────────────────────────────────────────
     "Låg nivå": {
-        "On-off ventil":      [("Inloppsventil felar stängd",           1e-2),
-                               ("Utloppsventil felar öppen",            1e-2)],
         "Reglerventil":       [("Inloppsreglering felar stängd",        2e-2),
                                ("Utloppsreglering felar öppen",         1e-2)],
         "Pump":               [("Inloppspump stopp",                    2e-2),
@@ -725,7 +712,6 @@ _COMP_STD_CAUSES = {
 
     # ── Missriktat flöde ──────────────────────────────────────────────────────
     "Missriktat flöde": {
-        "On-off ventil":      [("Automatstyrd ventil öppnar fel väg",   1e-2)],
         "Reglerventil":       [("Styrventil öppnar alternativ väg",     5e-3)],
         "Rörledning / slang": [("Felkopplad ledning",                   1e-4)],
         "Styrsystem / PLC / DCS": [("Felaktig ventilstyrning",          5e-3)],
@@ -874,6 +860,8 @@ _SUPPLEMENTARY_STD_CAUSES = [
 _SUPPLEMENTARY_FREQUENCIES = {
     ('Manuell ventil', 'På samtliga avvikelser', 'Ventil felaktigt stängd'): 0.01,
     ('Manuell ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'): 0.01,
+    ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt stängd'): 0.02,
+    ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'): 0.09,
 }
 
 
@@ -1770,7 +1758,11 @@ class Database:
         self.conn.commit()
         logging.info("Installed merged standard catalogue (%d active entries)", len(entries))
 
-    def _migrate_manual_valve_compact_catalog_v2(self):
+    def _migrate_manual_valve_compact_catalog_v2(
+            self, object_name='Manuell ventil',
+            desired=('Ventil felaktigt stängd', 'Ventil felaktigt öppnad'),
+            frequencies=(0.01, 0.01),
+            key='manual_valve_compact_catalog_v2'):
         """Apply the approved two-cause manual-valve catalogue without loss.
 
         Earlier project files contain detailed manual-valve rows per deviation.
@@ -1778,14 +1770,13 @@ class Database:
         place, but are removed from active pickers. Every standard deviation
         instead exposes exactly the two approved rows at 0.01/year.
         """
-        key = 'manual_valve_compact_catalog_v2'
         if self.conn.execute("SELECT 1 FROM app_config WHERE key=?", (key,)).fetchone():
             return
 
         object_row = self.conn.execute(
-            "SELECT id FROM standard_objects WHERE name='Manuell ventil'").fetchone()
+            "SELECT id FROM standard_objects WHERE name=?", (object_name,)).fetchone()
         if not object_row:
-            logging.warning("Manual-valve catalogue migration skipped: object is missing")
+            logging.warning("Valve catalogue migration skipped: object %r is missing", object_name)
             return
 
         object_id = object_row['id']
@@ -1829,7 +1820,7 @@ class Database:
                     self.conn.execute(
                         "UPDATE standard_causes SET active=1, comp_type=?, frequency=?, "
                         "use_in_cause_form=1 WHERE id=?",
-                        ('Manuell ventil', 0.01, keep_id))
+                        (object_name, frequencies[desired.index(description)], keep_id))
                     for duplicate_id in ids:
                         if duplicate_id != keep_id:
                             self.conn.execute(
@@ -1844,12 +1835,19 @@ class Database:
                     "(deviation_id,description,sort_order,object_id,comp_type,frequency,"
                     "use_in_cause_form,active) VALUES (?,?,?,?,?,?,?,1)",
                     (deviation_id, description, next_sort, object_id,
-                     'Manuell ventil', 0.01, 1))
+                     object_name, frequencies[desired.index(description)], 1))
 
         self.conn.execute(
             "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
         self.conn.commit()
-        logging.info("Installed compact manual-valve catalogue (2 causes at 0.01/year)")
+        logging.info("Installed compact valve catalogue for %s", object_name)
+
+    def _migrate_onoff_valve_compact_catalog_v1(self):
+        """Apply the two approved On-off valve causes (0.02 and 0.09/year)."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='On-off ventil',
+            frequencies=(0.02, 0.09),
+            key='onoff_valve_compact_catalog_v1')
 
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
@@ -2550,6 +2548,7 @@ class Database:
 
         self._migrate_merged_standard_catalog()
         self._migrate_manual_valve_compact_catalog_v2()
+        self._migrate_onoff_valve_compact_catalog_v1()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template
