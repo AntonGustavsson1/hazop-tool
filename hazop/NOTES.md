@@ -7533,6 +7533,13 @@ poster bevaras men avaktiveras.
 Kylsystem / värmesystem har därefter lämnats utan aktiva standardorsaker.
 Historiska poster bevaras men avaktiveras.
 
+Tryckluft / instrumentluft har därefter lämnats utan aktiva standardorsaker.
+`Lufttrycksfall` och `Luftkompressor stopp` avaktiveras i både den logiska
+orsakskatalogen och de materialiserade väljarraderna, men historiska
+`standard_cause_id`-referenser bevaras.
+Verifiering: riktat databastest kontrollerar den tomma katalogen och en
+bevarad historisk referens.
+
 Blandare / omrörare har därefter fått `Omrörare stopp` (0,1/år) och
 `Omrörare fel varvtal` (0,01/år) som aktiva standardorsaker.
 

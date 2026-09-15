@@ -458,6 +458,47 @@ class DatabaseLayerTests(unittest.TestCase):
             "SELECT id FROM standard_objects WHERE name='Styrsystem / PLC / DCS'").fetchone()['id']
         self.assertEqual([], self.db.standard_causes_for_object(deviation_id, object_id))
 
+    def test_instrument_air_catalog_has_no_active_causes_after_clear(self):
+        deviation_id = self.db.conn.execute(
+            "SELECT id FROM standard_deviations "
+            "WHERE description='Bortfall av hjälpsystem' AND active=1").fetchone()['id']
+        object_id = self.db.conn.execute(
+            "SELECT id FROM standard_objects "
+            "WHERE name='Tryckluft / instrumentluft'").fetchone()['id']
+        self.assertEqual([], self.db.standard_causes_for_object(deviation_id, object_id))
+
+        # Simulate an older project that still references an active air-loss
+        # standard cause.  The migration retires it from both catalogue layers
+        # without removing the project's historical reference.
+        old_group_id = self.db.add_standard_cause_group(
+            self.db.node_types()[0]['id'], object_id, 'Lufttrycksfall', 0.05)
+        self.db.set_standard_cause_group_deviation(old_group_id, deviation_id, True)
+        retired = self.db.conn.execute(
+            """SELECT sc.id,gm.cause_group_id FROM standard_causes sc
+                 JOIN standard_cause_group_members gm ON gm.standard_cause_id=sc.id
+                 WHERE gm.cause_group_id=? AND sc.deviation_id=?""",
+            (old_group_id, deviation_id)).fetchone()
+        node_id = self.db.add_node()
+        project_deviation_id = self.db.conn.execute(
+            "SELECT id FROM deviations WHERE node_id=? AND description='Bortfall av hjälpsystem'",
+            (node_id,)).fetchone()['id']
+        project_cause_id = self.db.add_cause(project_deviation_id)
+        self.db.conn.execute("UPDATE causes SET standard_cause_id=? WHERE id=?",
+                             (retired['id'], project_cause_id))
+        self.db.conn.execute("DELETE FROM app_config WHERE key='instrument_air_catalog_clear_v2'")
+        self.db.conn.commit()
+        self.db._migrate_instrument_air_catalog_clear_v2()
+
+        historical = self.db.conn.execute(
+            "SELECT c.standard_cause_id,sc.active FROM causes c "
+            "JOIN standard_causes sc ON sc.id=c.standard_cause_id WHERE c.id=?",
+            (project_cause_id,)).fetchone()
+        self.assertEqual(retired['id'], historical['standard_cause_id'])
+        self.assertEqual(0, historical['active'])
+        self.assertEqual(0, self.db.conn.execute(
+            "SELECT active FROM standard_cause_groups WHERE id=?",
+            (retired['cause_group_id'],)).fetchone()['active'])
+
     def test_power_catalog_has_no_active_causes_after_clear(self):
         deviation_id = self.db.conn.execute(
             "SELECT id FROM standard_deviations "

@@ -666,9 +666,6 @@ _COMP_STD_CAUSES = {
     "Bortfall av hjälpsystem": {
         "Elförsörjning":      [("Strömavbrott",                         0.1),
                                ("Säkring / skydd löser ut",             0.5)],
-        "Tryckluft / instrumentluft": [
-                               ("Lufttrycksfall",                       5e-2),
-                               ("Luftkompressor stopp",                 0.1)],
         "Kylsystem / värmesystem": [
                                ("Kylvattenpump stopp",                  2e-2),
                                ("Kylvattentryck faller",                5e-2)],
@@ -786,7 +783,6 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('Pump', 'På samtliga avvikelser', 'Pump stopp'),
     ('Pump', 'På samtliga avvikelser', 'Frekvensomformare — fel varvtal'),
     ('Elförsörjning', 'Bortfall av hjälpsystem', 'Strömavbrott'),
-    ('Tryckluft / instrumentluft', 'Bortfall av hjälpsystem', 'Lufttrycksfall'),
     ('Kylsystem / värmesystem', 'Bortfall av hjälpsystem', 'Bortfall av kylvatten'),
 ]
 
@@ -2121,6 +2117,42 @@ class Database:
             "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
         self.conn.commit()
 
+    def _migrate_instrument_air_catalog_clear_v2(self):
+        """Clear active instrument-air causes in both catalogue layers."""
+        key = 'instrument_air_catalog_clear_v2'
+        if self.conn.execute("SELECT 1 FROM app_config WHERE key=?", (key,)).fetchone():
+            return
+
+        object_row = self.conn.execute(
+            "SELECT id FROM standard_objects WHERE name='Tryckluft / instrumentluft'").fetchone()
+        if not object_row:
+            logging.warning("Instrument-air catalogue migration skipped: object is missing")
+            return
+
+        object_id = object_row['id']
+        self.conn.execute(
+            "UPDATE standard_causes SET active=0 WHERE object_id=? AND active=1", (object_id,))
+        group_ids = [row['id'] for row in self.conn.execute(
+            "SELECT id FROM standard_cause_groups WHERE object_id=? AND active=1",
+            (object_id,)).fetchall()]
+        if group_ids:
+            placeholders = ','.join('?' for _ in group_ids)
+            self.conn.execute(
+                f"UPDATE standard_cause_groups SET active=0 WHERE id IN ({placeholders})",
+                group_ids)
+            self.conn.execute(
+                f"UPDATE standard_cause_group_deviations SET active=0 "
+                f"WHERE cause_group_id IN ({placeholders})",
+                group_ids)
+            self.conn.execute(
+                f"UPDATE standard_causes SET active=0 WHERE id IN ("
+                f"SELECT standard_cause_id FROM standard_cause_group_members "
+                f"WHERE cause_group_id IN ({placeholders}))",
+                group_ids)
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
+        self.conn.commit()
+
     def _migrate_standard_object_order_instrument_v1(self):
         """Place Instrument fourth in the standard object list."""
         key = 'standard_object_order_instrument_v1'
@@ -3177,6 +3209,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         self._migrate_mixer_compact_catalog_v1()
         self._migrate_operator_compact_catalog_v1()
         self._migrate_standard_cause_groups_v1()
+        self._migrate_instrument_air_catalog_clear_v2()
         self._migrate_pump_compact_catalog_v3()
         self._migrate_tank_compact_catalog_v3()
 
