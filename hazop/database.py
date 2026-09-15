@@ -710,10 +710,10 @@ _COMP_STD_CAUSES = {
 }
 
 _STD_OBJECTS = [
-    "Manuell ventil", "On-off ventil", "Reglerventil", "Backventil",
+    "Manuell ventil", "On-off ventil", "Reglerventil", "Instrument", "Backventil",
     "Säkerhetsventil / sprängbleck", "Pump", "Kompressor / fläkt",
     "Filter / sil", "Värmeväxlare / kylare / värmare", "Tank / kärl / kolonn",
-    "Rörledning / slang", "Fläns / koppling / packning", "Instrument",
+    "Rörledning / slang", "Fläns / koppling / packning",
     "Styrsystem / PLC / DCS", "Elförsörjning", "Tryckluft / instrumentluft",
     "Kylsystem / värmesystem", "Blandare / omrörare",
     "Operatör / procedur / underhåll", "Övrigt",
@@ -2015,6 +2015,18 @@ class Database:
             "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
         self.conn.commit()
 
+    def _migrate_standard_object_order_instrument_v1(self):
+        """Place Instrument fourth in the standard object list."""
+        key = 'standard_object_order_instrument_v1'
+        if self.conn.execute("SELECT 1 FROM app_config WHERE key=?", (key,)).fetchone():
+            return
+        for index, name in enumerate(_STD_OBJECTS):
+            self.conn.execute(
+                "UPDATE standard_objects SET sort_order=? WHERE name=?", (index, name))
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
+        self.conn.commit()
+
     def _migrate_mixer_compact_catalog_v1(self):
         """Apply the two approved mixer causes."""
         self._migrate_manual_valve_compact_catalog_v2(
@@ -2749,6 +2761,7 @@ class Database:
         self._migrate_control_system_catalog_clear_v1()
         self._migrate_power_catalog_clear_v1()
         self._migrate_cooling_catalog_clear_v1()
+        self._migrate_standard_object_order_instrument_v1()
         self._migrate_mixer_compact_catalog_v1()
         self._migrate_operator_compact_catalog_v1()
 

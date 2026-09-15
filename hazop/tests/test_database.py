@@ -410,6 +410,12 @@ class DatabaseLayerTests(unittest.TestCase):
         }
         self.assertEqual({'Felaktig procedur / fel sekvens': 0.05}, visible)
 
+    def test_standard_object_order_places_instrument_fourth(self):
+        rows = self.db.conn.execute(
+            "SELECT name FROM standard_objects ORDER BY sort_order, id").fetchall()
+        self.assertEqual('Instrument', rows[3]['name'])
+        self.assertEqual('Reglerventil', rows[2]['name'])
+
     def test_create_full_chain(self):
         ids = self._make_full_chain()
         self.assertIsNotNone(self.db.get_node(ids['node_id']))
