@@ -307,6 +307,24 @@ class DatabaseLayerTests(unittest.TestCase):
             'Tubbrott': 0.001,
         }, visible)
 
+    def test_tank_catalog_uses_four_approved_causes(self):
+        deviation_id = self.db.conn.execute(
+            "SELECT id FROM standard_deviations "
+            "WHERE description='Hög temperatur' AND active=1").fetchone()['id']
+        object_id = self.db.conn.execute(
+            "SELECT id FROM standard_objects "
+            "WHERE name='Tank / kärl / kolonn'").fetchone()['id']
+        visible = {
+            row['description']: row['frequency']
+            for row in self.db.standard_causes_for_object(deviation_id, object_id)
+        }
+        self.assertEqual({
+            'Endoterm reaktion / avdunstning': 0.001,
+            'Exoterm reaktion': 0.001,
+            'Inflöde > utflöde': 0.05,
+            'Låg nivå i kärl': 0.05,
+        }, visible)
+
     def test_create_full_chain(self):
         ids = self._make_full_chain()
         self.assertIsNotNone(self.db.get_node(ids['node_id']))

@@ -7504,3 +7504,8 @@ standardorsaker: `För hög värmning`, `För låg kylning`, `För hög kylning`
 `För låg värmning` (0,09/år vardera), `Igensatt värmeväxlare` (0,1/år),
 `Tubläckage` (0,01/år) samt `Tubbrott` (0,001/år). Äldre orsaker avaktiveras
 men raderas inte.
+
+Tank / kärl / kolonn har därefter förenklats till `Endoterm reaktion /
+avdunstning` och `Exoterm reaktion` (0,001/år vardera), samt `Inflöde >
+utflöde` och `Låg nivå i kärl` (0,05/år vardera). Äldre orsaker avaktiveras
+men raderas inte.

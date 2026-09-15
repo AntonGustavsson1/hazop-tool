@@ -754,6 +754,10 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Igensatt värmeväxlare'),
     ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Tubläckage'),
     ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Tubbrott'),
+    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Endoterm reaktion / avdunstning'),
+    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Exoterm reaktion'),
+    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Inflöde > utflöde'),
+    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Låg nivå i kärl'),
     ('Instrument', 'Lågt flöde', 'Givare felar, styrventil stänger'),
     ('Instrument', 'Lågt flöde', 'Börvärde felaktigt inställt'),
     ('Instrument', 'Högt flöde', 'Givare felar, styrventil öppnar'),
@@ -808,6 +812,10 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Igensatt värmeväxlare'): 0.1,
     ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Tubläckage'): 0.01,
     ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Tubbrott'): 0.001,
+    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Endoterm reaktion / avdunstning'): 0.001,
+    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Exoterm reaktion'): 0.001,
+    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Inflöde > utflöde'): 0.05,
+    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Låg nivå i kärl'): 0.05,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'): 0.09,
 }
@@ -1908,6 +1916,15 @@ class Database:
             frequencies=(0.09, 0.09, 0.09, 0.09, 0.1, 0.01, 0.001),
             key='heat_exchanger_compact_catalog_v1')
 
+    def _migrate_tank_compact_catalog_v1(self):
+        """Apply the four approved tank/vessel/column causes."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='Tank / kärl / kolonn',
+            desired=('Endoterm reaktion / avdunstning', 'Exoterm reaktion',
+                     'Inflöde > utflöde', 'Låg nivå i kärl'),
+            frequencies=(0.001, 0.001, 0.05, 0.05),
+            key='tank_compact_catalog_v1')
+
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pid_config (
@@ -2619,6 +2636,7 @@ class Database:
         self._migrate_compressor_compact_catalog_v1()
         self._migrate_filter_compact_catalog_v1()
         self._migrate_heat_exchanger_compact_catalog_v1()
+        self._migrate_tank_compact_catalog_v1()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template
