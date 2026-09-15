@@ -7529,3 +7529,6 @@ poster bevaras men avaktiveras.
 
 Kylsystem / värmesystem har därefter lämnats utan aktiva standardorsaker.
 Historiska poster bevaras men avaktiveras.
+
+Blandare / omrörare har därefter fått `Omrörare stopp` (0,1/år) och
+`Omrörare fel varvtal` (0,01/år) som aktiva standardorsaker.
