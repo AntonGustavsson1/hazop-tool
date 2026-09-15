@@ -572,9 +572,6 @@ def freq_to_f_level(freq_per_year, boundaries=None) -> int:
 _COMP_STD_CAUSES = {
     # ── Lågt flöde ────────────────────────────────────────────────────────────
     "Lågt flöde": {
-        "Kompressor / fläkt": [("Kompressor / fläkt stopp",            2e-2),
-                               ("Reducerad kapacitet",                  1e-2),
-                               ("Inloppsfilter igensatt",               5e-2)],
         "Filter / sil":       [("Filter / sil igensatt",               0.1),
                                ("Filterelement felaktigt monterat",     1e-3)],
         "Värmeväxlare / kylare / värmare": [
@@ -592,7 +589,6 @@ _COMP_STD_CAUSES = {
 
     # ── Högt flöde ────────────────────────────────────────────────────────────
     "Högt flöde": {
-        "Kompressor / fläkt": [("Kompressor — för hög kapacitet",       5e-3)],
         "Tank / kärl / kolonn":[("Övertryck driver högre flöde",        1e-2)],
         "Instrument":         [("Flödesgivare felar — styrventil öppnar", 0.1),
                                ("Börvärde felaktigt högt",              1e-2)],
@@ -609,7 +605,6 @@ _COMP_STD_CAUSES = {
                                ("Börvärde tryckreglering felaktigt",    1e-2)],
         "Styrsystem / PLC / DCS": [("Tryckreglering felar",             5e-3)],
         "Rörledning / slang": [("Blockerad utloppsledning",             5e-4)],
-        "Kompressor / fläkt": [("Kompressorsurge",                      1e-2)],
         "Filter / sil":       [("Filter igensatt — tryckstegring uppströms", 0.1)],
     },
 
@@ -649,7 +644,6 @@ _COMP_STD_CAUSES = {
                                ("Extern värmetillförsel",               1e-4)],
         "Rörledning / slang": [("Isolationsfel / brandpåverkan",        5e-4)],
         "Styrsystem / PLC / DCS": [("Temperaturreglering felar",        5e-3)],
-        "Kompressor / fläkt": [("Kompressionsöverhettning",             1e-2)],
     },
 
     # ── Låg temperatur ────────────────────────────────────────────────────────
@@ -766,8 +760,8 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('Backventil', 'På samtliga avvikelser', 'Backventil läcker'),
     ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Sprängbleck öppnar för tidigt'),
     ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Säkerhetsventil öppnar för tidigt'),
-    ('Kompressor / fläkt', 'Lågt flöde', 'Kompressor / fläkt stopp'),
-    ('Kompressor / fläkt', 'Högt flöde', 'Kompressor, för hög kapacitet'),
+    ('Kompressor / fläkt', 'På samtliga avvikelser', 'Kompressor / fläkt stopp'),
+    ('Kompressor / fläkt', 'På samtliga avvikelser', 'Frekvensomformare, fel varvtal'),
     ('Filter / sil', 'Lågt flöde', 'Filter / sil igensatt'),
     ('Filter / sil', 'Högt tryck', 'Filter / sil igensatt'),
     ('Filter / sil', 'Högt flöde', 'Filter skadat'),
@@ -821,6 +815,8 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('Pump', 'På samtliga avvikelser', 'Frekvensomformare — fel varvtal'): 0.01,
     ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Sprängbleck öppnar för tidigt'): 0.01,
     ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Säkerhetsventil öppnar för tidigt'): 0.01,
+    ('Kompressor / fläkt', 'På samtliga avvikelser', 'Kompressor / fläkt stopp'): 0.1,
+    ('Kompressor / fläkt', 'På samtliga avvikelser', 'Frekvensomformare, fel varvtal'): 0.01,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'): 0.09,
 }
@@ -1896,6 +1892,14 @@ class Database:
             "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
         self.conn.commit()
 
+    def _migrate_compressor_compact_catalog_v1(self):
+        """Apply the two approved compressor/fan causes."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='Kompressor / fläkt',
+            desired=('Kompressor / fläkt stopp', 'Frekvensomformare, fel varvtal'),
+            frequencies=(0.1, 0.01),
+            key='compressor_compact_catalog_v1')
+
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pid_config (
@@ -2604,6 +2608,7 @@ class Database:
         self._migrate_relief_valve_cleanup_v2()
         self._migrate_pump_compact_catalog_v1()
         self._migrate_pump_catalog_cleanup_v2()
+        self._migrate_compressor_compact_catalog_v1()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template
