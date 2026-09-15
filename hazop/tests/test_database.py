@@ -239,7 +239,7 @@ class DatabaseLayerTests(unittest.TestCase):
             'Säkerhetsventil öppnar för tidigt': 0.01,
         }, visible)
 
-    def test_pump_catalog_uses_four_approved_causes(self):
+    def test_pump_catalog_removes_backflow_cause_without_breaking_history(self):
         deviation_id = self.db.conn.execute(
             "SELECT id FROM standard_deviations "
             "WHERE description='Lågt flöde' AND active=1").fetchone()['id']
@@ -252,9 +252,45 @@ class DatabaseLayerTests(unittest.TestCase):
         self.assertEqual({
             'Felaktigt pumpmedium': 0.01,
             'Pump stopp': 0.1,
-            'Pump stopp, backflöde via pump': 0.01,
             'Frekvensomformare — fel varvtal': 0.01,
         }, visible)
+
+        # Simulate a project that was created before the v3 migration.
+        old_group_id = self.db.add_standard_cause_group(
+            self.db.node_types()[0]['id'], pump_id,
+            'Pump stopp, backflöde via pump', 0.01)
+        self.db.set_standard_cause_group_deviation(old_group_id, deviation_id, True)
+        retired = self.db.conn.execute(
+            """SELECT sc.id,gm.cause_group_id FROM standard_causes sc
+                 JOIN standard_cause_group_members gm ON gm.standard_cause_id=sc.id
+                 WHERE sc.object_id=? AND sc.description=? LIMIT 1""",
+            (pump_id, 'Pump stopp, backflöde via pump')).fetchone()
+        node_id = self.db.add_node()
+        project_deviation_id = self.db.conn.execute(
+            "SELECT id FROM deviations WHERE node_id=? AND description='Lågt flöde'",
+            (node_id,)).fetchone()['id']
+        project_cause_id = self.db.add_cause(project_deviation_id)
+        self.db.conn.execute("UPDATE causes SET standard_cause_id=? WHERE id=?",
+                             (retired['id'], project_cause_id))
+        self.db.conn.execute("UPDATE standard_causes SET active=1 WHERE id=?", (retired['id'],))
+        self.db.conn.execute("UPDATE standard_cause_groups SET active=1 WHERE id=?",
+                             (retired['cause_group_id'],))
+        self.db.conn.execute(
+            "UPDATE standard_cause_group_deviations SET active=1 WHERE cause_group_id=?",
+            (retired['cause_group_id'],))
+        self.db.conn.execute("DELETE FROM app_config WHERE key='pump_compact_catalog_v3'")
+        self.db.conn.commit()
+        self.db._migrate_pump_compact_catalog_v3()
+
+        historical = self.db.conn.execute(
+            "SELECT c.standard_cause_id,sc.active FROM causes c "
+            "JOIN standard_causes sc ON sc.id=c.standard_cause_id WHERE c.id=?",
+            (project_cause_id,)).fetchone()
+        self.assertEqual(retired['id'], historical['standard_cause_id'])
+        self.assertEqual(0, historical['active'])
+        self.assertEqual(0, self.db.conn.execute(
+            "SELECT active FROM standard_cause_groups WHERE id=?",
+            (retired['cause_group_id'],)).fetchone()['active'])
 
     def test_compressor_catalog_uses_two_approved_causes(self):
         deviation_id = self.db.conn.execute(

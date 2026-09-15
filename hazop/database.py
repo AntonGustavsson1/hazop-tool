@@ -784,7 +784,6 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('Instrument', 'Underhåll', 'Instrument ej återdriftsatt'),
     ('Pump', 'På samtliga avvikelser', 'Felaktigt pumpmedium'),
     ('Pump', 'På samtliga avvikelser', 'Pump stopp'),
-    ('Pump', 'På samtliga avvikelser', 'Pump stopp, backflöde via pump'),
     ('Pump', 'På samtliga avvikelser', 'Frekvensomformare — fel varvtal'),
     ('Elförsörjning', 'Bortfall av hjälpsystem', 'Strömavbrott'),
     ('Tryckluft / instrumentluft', 'Bortfall av hjälpsystem', 'Lufttrycksfall'),
@@ -804,7 +803,6 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('Backventil', 'På samtliga avvikelser', 'Backventil läcker'): 0.1,
     ('Pump', 'På samtliga avvikelser', 'Felaktigt pumpmedium'): 0.01,
     ('Pump', 'På samtliga avvikelser', 'Pump stopp'): 0.1,
-    ('Pump', 'På samtliga avvikelser', 'Pump stopp, backflöde via pump'): 0.01,
     ('Pump', 'På samtliga avvikelser', 'Frekvensomformare — fel varvtal'): 0.01,
     ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Sprängbleck öppnar för tidigt'): 0.01,
     ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Säkerhetsventil öppnar för tidigt'): 0.01,
@@ -1883,12 +1881,11 @@ class Database:
         self.conn.commit()
 
     def _migrate_pump_compact_catalog_v1(self):
-        """Apply the four approved pump causes and frequencies."""
+        """Apply the three approved pump causes and frequencies."""
         self._migrate_manual_valve_compact_catalog_v2(
             object_name='Pump',
-            desired=('Felaktigt pumpmedium', 'Pump stopp',
-                     'Pump stopp, backflöde via pump', 'Frekvensomformare — fel varvtal'),
-            frequencies=(0.01, 0.1, 0.01, 0.01),
+            desired=('Felaktigt pumpmedium', 'Pump stopp', 'Frekvensomformare — fel varvtal'),
+            frequencies=(0.01, 0.1, 0.01),
             key='pump_compact_catalog_v1')
 
     def _migrate_pump_catalog_cleanup_v2(self):
@@ -1905,9 +1902,49 @@ class Database:
              'Pump stopp — backflöde via pump'))
         self.conn.execute(
             "UPDATE standard_causes SET active=0 WHERE object_id=? AND active=1 "
-            "AND description NOT IN (?,?,?,?)",
+            "AND description NOT IN (?,?,?)",
             (object_id, 'Felaktigt pumpmedium', 'Pump stopp',
-             'Pump stopp, backflöde via pump', 'Frekvensomformare — fel varvtal'))
+             'Frekvensomformare — fel varvtal'))
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
+        self.conn.commit()
+
+    def _migrate_pump_compact_catalog_v3(self):
+        """Retire the backflow-via-pump cause without deleting its history."""
+        key = 'pump_compact_catalog_v3'
+        if self.conn.execute("SELECT 1 FROM app_config WHERE key=?", (key,)).fetchone():
+            return
+
+        object_row = self.conn.execute(
+            "SELECT id FROM standard_objects WHERE name='Pump'").fetchone()
+        if not object_row:
+            logging.warning("Pump catalogue migration skipped: object is missing")
+            return
+
+        object_id = object_row['id']
+        removed = 'Pump stopp, backflöde via pump'
+        self.conn.execute(
+            "UPDATE standard_causes SET active=0 WHERE object_id=? AND active=1 AND description=?",
+            (object_id, removed))
+
+        removed_groups = [row['id'] for row in self.conn.execute(
+            "SELECT id FROM standard_cause_groups WHERE object_id=? AND active=1 AND description=?",
+            (object_id, removed)).fetchall()]
+        if removed_groups:
+            placeholders = ','.join('?' for _ in removed_groups)
+            self.conn.execute(
+                f"UPDATE standard_cause_groups SET active=0 WHERE id IN ({placeholders})",
+                removed_groups)
+            self.conn.execute(
+                f"UPDATE standard_cause_group_deviations SET active=0 "
+                f"WHERE cause_group_id IN ({placeholders})",
+                removed_groups)
+            self.conn.execute(
+                f"UPDATE standard_causes SET active=0 WHERE id IN ("
+                f"SELECT standard_cause_id FROM standard_cause_group_members "
+                f"WHERE cause_group_id IN ({placeholders}))",
+                removed_groups)
+
         self.conn.execute(
             "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
         self.conn.commit()
@@ -3140,6 +3177,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         self._migrate_mixer_compact_catalog_v1()
         self._migrate_operator_compact_catalog_v1()
         self._migrate_standard_cause_groups_v1()
+        self._migrate_pump_compact_catalog_v3()
         self._migrate_tank_compact_catalog_v3()
 
         # Ensure every node has all standard deviations from template library.

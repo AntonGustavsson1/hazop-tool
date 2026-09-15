@@ -7481,9 +7481,12 @@ Backventil har därefter förenklats till `Backventil fastnar stängd` med
 0,01/år och `Backventil läcker` med 0,1/år. Tidigare detaljerade orsaker
 avaktiveras men raderas inte.
 
-Pump har därefter förenklats till fyra aktiva standardorsaker: `Felaktigt
-pumpmedium` (0,01/år), `Pump stopp` (0,1/år), `Pump stopp, backflöde via pump`
-(0,01/år) och `Frekvensomformare — fel varvtal` (0,01/år).
+Pump har därefter förenklats till tre aktiva standardorsaker: `Felaktigt
+pumpmedium` (0,01/år), `Pump stopp` (0,1/år) och `Frekvensomformare — fel
+varvtal` (0,01/år). `Pump stopp, backflöde via pump` har avaktiverats men
+behålls som historik för tidigare `standard_cause_id`-referenser.
+Verifiering: riktat databastest täcker avaktivering i båda kataloglagren och
+bevarad historisk referens.
 
 Kompressor / fläkt har därefter förenklats till `Kompressor / fläkt stopp`
 (0,1/år) och `Frekvensomformare, fel varvtal` (0,01/år).
