@@ -7456,3 +7456,18 @@ projektfil migrerades med automatiska säkerhetskopior före och efter; den hade
 inga projektorsaker, 0 brutna standardorsaksreferenser och 0 exakta aktiva
 dubblettgrupper efter migreringen. Visningen har verifierats via databasfrågor,
 inte genom manuell klickning i Qt-gränssnittet.
+
+## 2026-09-15 — Manuell ventil: två universella standardorsaker
+
+På Antons uttryckliga beslut har Manuell ventil förenklats till exakt två
+aktiva standardorsaker för varje standardavvikelse: `Ventil felaktigt stängd`
+och `Ventil felaktigt öppnad`. Båda har frekvensen 0,01/år. De tidigare
+avvikelsespecifika ventilorsakerna tas bort ur väljaren men raderas inte; en
+ny, idempotent migration håller dem som inaktiva historikposter så redan
+valda orsaker och deras `standard_cause_id` behålls.
+
+Den kompakta frekvensen är uttryckligen definierad i den gemensamma
+supplementära katalogen, vilket gör att både nya och befintliga projekt får
+samma värde. Regressionstestet kontrollerar den aktiva tvåpostskatalogen,
+frekvensen och att en historisk detaljerad post kan avaktiveras utan att en
+befintlig projektorsak tappar sin referens.

@@ -132,14 +132,12 @@ class DatabaseLayerTests(unittest.TestCase):
 
     # ── chain creation ───────────────────────────────────────────────────
 
-    def test_merged_standard_catalog_prefers_detailed_manual_valve_causes(self):
-        """Detailed valve failure modes must replace generic compact rows.
+    def test_manual_valve_catalog_uses_two_universal_causes_at_001_per_year(self):
+        """Manual valves intentionally expose only the approved two causes.
 
-        The previous reduced catalogue exposed only the two universal valve
-        rows for every deviation.  In particular, it hid the documented
-        ``Bypassventil öppnad`` cause for high flow.  Historical generic rows
-        may remain in the database for project references, but must not be
-        returned by the active picker query.
+        Historical detailed rows remain in the database for existing project
+        references, but the active picker must show the two universal causes
+        at 0.01/year for every standard deviation.
         """
         deviation_id = self.db.conn.execute(
             "SELECT id FROM standard_deviations "
@@ -150,34 +148,29 @@ class DatabaseLayerTests(unittest.TestCase):
         causes = self.db.standard_causes_for_object(deviation_id, valve_id)
         visible = {row['description']: row['frequency'] for row in causes}
         self.assertEqual(
-            {'Ventil öppnad felaktigt': 1e-3, 'Bypassventil öppnad': 5e-4},
+            {'Ventil felaktigt stängd': 1e-2, 'Ventil felaktigt öppnad': 1e-2},
             visible)
-        self.assertEqual(1, sum(row['description'] == 'Bypassventil öppnad' for row in causes))
-        self.assertNotIn('Ventil felaktigt öppnad', visible)
-        self.assertNotIn('Ventil felaktigt stängd', visible)
+        self.assertEqual(2, len(causes))
+        self.assertNotIn('Ventil öppnad felaktigt', visible)
+        self.assertNotIn('Bypassventil öppnad', visible)
 
-        inactive_generic_rows = self.db.conn.execute(
-            "SELECT COUNT(*) FROM standard_causes "
-            "WHERE deviation_id=? AND object_id=? AND active=0 "
-            "AND description IN ('Ventil felaktigt öppnad', 'Ventil felaktigt stängd')",
-            (deviation_id, valve_id)).fetchone()[0]
-        self.assertEqual(2, inactive_generic_rows)
-
-        # An old project can already reference a generic row.  Re-running
+        # An old project can already reference a detailed row. Re-running
         # the migration must hide that row from pickers without deleting it
         # or rewriting the project's selected standard_cause_id.
         legacy_id = self.db.conn.execute(
-            "SELECT id FROM standard_causes WHERE deviation_id=? AND object_id=? "
-            "AND description='Ventil felaktigt öppnad'",
-            (deviation_id, valve_id)).fetchone()['id']
+            "INSERT INTO standard_causes "
+            "(deviation_id,description,sort_order,object_id,comp_type,frequency,active) "
+            "VALUES (?,?,?,?,?,?,1)",
+            (deviation_id, 'Ventil öppnad felaktigt', 999, valve_id,
+             'Manuell ventil', 1e-3)).lastrowid
         project_deviation_id = self.db.conn.execute(
             "SELECT id FROM deviations WHERE description='Högt flöde' LIMIT 1").fetchone()['id']
         project_cause_id = self.db.add_cause(project_deviation_id)
         self.db.conn.execute("UPDATE causes SET standard_cause_id=? WHERE id=?",
                              (legacy_id, project_cause_id))
         self.db.conn.execute("UPDATE standard_causes SET active=1 WHERE id=?", (legacy_id,))
-        self.db.conn.execute("DELETE FROM app_config WHERE key='merged_standard_catalog_v1'")
-        self.db._migrate_merged_standard_catalog()
+        self.db.conn.execute("DELETE FROM app_config WHERE key='manual_valve_compact_catalog_v2'")
+        self.db._migrate_manual_valve_compact_catalog_v2()
 
         referenced = self.db.conn.execute(
             "SELECT c.standard_cause_id, sc.active FROM causes c "
