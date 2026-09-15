@@ -7477,6 +7477,10 @@ stängd` och `Ventil felaktigt öppnad`, båda med 0,09/år. Äldre
 On-off-orsaker avaktiveras men raderas inte. Ett separat migrationssteg och
 regressionstest säkerställer de två frekvenserna.
 
+Backventil har därefter förenklats till `Backventil fastnar stängd` med
+0,01/år och `Backventil läcker` med 0,1/år. Tidigare detaljerade orsaker
+avaktiveras men raderas inte.
+
 Reglerventil har därefter förenklats till `Reglerventil felar stängd` och
 `Reglerventil felar öppen`, båda med 0,09/år. Äldre avvikelsespecifika
 Reglerventil-orsaker avaktiveras men raderas inte.

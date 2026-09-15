@@ -572,8 +572,6 @@ def freq_to_f_level(freq_per_year, boundaries=None) -> int:
 _COMP_STD_CAUSES = {
     # ── Lågt flöde ────────────────────────────────────────────────────────────
     "Lågt flöde": {
-        "Backventil":         [("Backventil fastnar stängd",            1e-2),
-                               ("Backventil monterad baklänges",        1e-4)],
         "Pump":               [("Pump stopp",                           2e-2),
                                ("Reducerad pumpkapacitet",              1e-2),
                                ("Kavitation",                           5e-3),
@@ -622,7 +620,6 @@ _COMP_STD_CAUSES = {
         "Styrsystem / PLC / DCS": [("Tryckreglering felar",             5e-3)],
         "Rörledning / slang": [("Blockerad utloppsledning",             5e-4)],
         "Kompressor / fläkt": [("Kompressorsurge",                      1e-2)],
-        "Backventil":         [("Backventil blockerar utflöde",         5e-3)],
         "Filter / sil":       [("Filter igensatt — tryckstegring uppströms", 0.1)],
     },
 
@@ -648,7 +645,6 @@ _COMP_STD_CAUSES = {
                                ("Börvärde nivå felaktigt",              1e-2)],
         "Tank / kärl / kolonn":[("Inflöde > utflöde",                  5e-3)],
         "Styrsystem / PLC / DCS": [("Nivåreglering felar",              5e-3)],
-        "Backventil":         [("Backventil läcker — backflöde till kärl", 5e-3)],
     },
 
     # ── Låg nivå ──────────────────────────────────────────────────────────────
@@ -686,8 +682,6 @@ _COMP_STD_CAUSES = {
 
     # ── Omvänt flöde ─────────────────────────────────────────────────────────
     "Omvänt flöde": {
-        "Backventil":         [("Backventil defekt — läcker",           1e-2),
-                               ("Backventil saknas",                    1e-4)],
         "Pump":               [("Pump stopp — backflöde via pump",      2e-2),
                                ("Pump roterar baklänges",               1e-3)],
         "Rörledning / slang": [("Felkopplad ledning",                   1e-4)],
@@ -791,9 +785,9 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'),
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'),
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'),
+    ('Backventil', 'På samtliga avvikelser', 'Backventil fastnar stängd'),
+    ('Backventil', 'På samtliga avvikelser', 'Backventil läcker'),
     ('Säkerhetsventil / sprängbleck', 'Missriktat', 'Säkerhetsventil öppnar för tidigt/läcker'),
-    ('Backventil', 'Lågt flöde', 'Fastnar stängd'),
-    ('Backventil', 'Omvänt flöde', 'Felar öppen'),
     ('Kompressor / fläkt', 'Lågt flöde', 'Kompressor / fläkt stopp'),
     ('Kompressor / fläkt', 'Högt flöde', 'Kompressor, för hög kapacitet'),
     ('Filter / sil', 'Lågt flöde', 'Filter / sil igensatt'),
@@ -843,8 +837,8 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('Manuell ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'): 0.01,
     ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt stängd'): 0.09,
     ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'): 0.09,
-    ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
-    ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'): 0.09,
+    ('Backventil', 'På samtliga avvikelser', 'Backventil fastnar stängd'): 0.01,
+    ('Backventil', 'På samtliga avvikelser', 'Backventil läcker'): 0.1,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'): 0.09,
 }
@@ -1860,6 +1854,14 @@ class Database:
             frequencies=(0.09, 0.09),
             key='control_valve_compact_catalog_v2')
 
+    def _migrate_check_valve_compact_catalog_v1(self):
+        """Apply the two approved check-valve causes (0.01 and 0.1/year)."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='Backventil',
+            desired=('Backventil fastnar stängd', 'Backventil läcker'),
+            frequencies=(0.01, 0.1),
+            key='check_valve_compact_catalog_v1')
+
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pid_config (
@@ -2563,6 +2565,7 @@ class Database:
         self._migrate_onoff_valve_frequency_v2()
         self._migrate_control_valve_compact_catalog_v1()
         self._migrate_control_valve_compact_catalog_v2()
+        self._migrate_check_valve_compact_catalog_v1()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template

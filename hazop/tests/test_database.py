@@ -209,6 +209,21 @@ class DatabaseLayerTests(unittest.TestCase):
             'Reglerventil felar öppen': 0.09,
         }, visible)
 
+    def test_check_valve_catalog_uses_two_universal_causes_at_001_and_01(self):
+        deviation_id = self.db.conn.execute(
+            "SELECT id FROM standard_deviations "
+            "WHERE description='Lågt flöde' AND active=1").fetchone()['id']
+        valve_id = self.db.conn.execute(
+            "SELECT id FROM standard_objects WHERE name='Backventil'").fetchone()['id']
+        visible = {
+            row['description']: row['frequency']
+            for row in self.db.standard_causes_for_object(deviation_id, valve_id)
+        }
+        self.assertEqual({
+            'Backventil fastnar stängd': 0.01,
+            'Backventil läcker': 0.1,
+        }, visible)
+
     def test_create_full_chain(self):
         ids = self._make_full_chain()
         self.assertIsNotNone(self.db.get_node(ids['node_id']))
