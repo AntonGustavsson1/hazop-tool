@@ -7488,6 +7488,9 @@ pumpmedium` (0,01/år), `Pump stopp` (0,1/år), `Pump stopp, backflöde via pump
 Kompressor / fläkt har därefter förenklats till `Kompressor / fläkt stopp`
 (0,1/år) och `Frekvensomformare, fel varvtal` (0,01/år).
 
+Filter / sil har därefter förenklats till `Filter / sil igensatt` och
+`Filter / sil skadat`, båda med 0,01/år.
+
 Säkerhetsventil / sprängbleck har därefter förenklats till `Sprängbleck
 öppnar för tidigt` och `Säkerhetsventil öppnar för tidigt`, båda med
 0,01/år. Äldre orsaker avaktiveras men raderas inte.

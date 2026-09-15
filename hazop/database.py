@@ -572,8 +572,6 @@ def freq_to_f_level(freq_per_year, boundaries=None) -> int:
 _COMP_STD_CAUSES = {
     # ── Lågt flöde ────────────────────────────────────────────────────────────
     "Lågt flöde": {
-        "Filter / sil":       [("Filter / sil igensatt",               0.1),
-                               ("Filterelement felaktigt monterat",     1e-3)],
         "Värmeväxlare / kylare / värmare": [
                                ("Rör igensatta — fouling",              5e-2),
                                ("Vakuumbrott / tömning",                1e-3)],
@@ -605,7 +603,6 @@ _COMP_STD_CAUSES = {
                                ("Börvärde tryckreglering felaktigt",    1e-2)],
         "Styrsystem / PLC / DCS": [("Tryckreglering felar",             5e-3)],
         "Rörledning / slang": [("Blockerad utloppsledning",             5e-4)],
-        "Filter / sil":       [("Filter igensatt — tryckstegring uppströms", 0.1)],
     },
 
     # ── Lågt tryck ────────────────────────────────────────────────────────────
@@ -762,10 +759,8 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Säkerhetsventil öppnar för tidigt'),
     ('Kompressor / fläkt', 'På samtliga avvikelser', 'Kompressor / fläkt stopp'),
     ('Kompressor / fläkt', 'På samtliga avvikelser', 'Frekvensomformare, fel varvtal'),
-    ('Filter / sil', 'Lågt flöde', 'Filter / sil igensatt'),
-    ('Filter / sil', 'Högt tryck', 'Filter / sil igensatt'),
-    ('Filter / sil', 'Högt flöde', 'Filter skadat'),
-    ('Filter / sil', 'Avvikande sammansättning', 'Filter skadat'),
+    ('Filter / sil', 'På samtliga avvikelser', 'Filter / sil igensatt'),
+    ('Filter / sil', 'På samtliga avvikelser', 'Filter / sil skadat'),
     ('Värmeväxlare / kylare / värmare', 'Lågt flöde', 'Igensatt värmeväxlare'),
     ('Värmeväxlare / kylare / värmare', 'Hög temperatur', 'Kylningsbortfall'),
     ('Värmeväxlare / kylare / värmare', 'Hög temperatur', 'För hög värmning'),
@@ -817,6 +812,8 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Säkerhetsventil öppnar för tidigt'): 0.01,
     ('Kompressor / fläkt', 'På samtliga avvikelser', 'Kompressor / fläkt stopp'): 0.1,
     ('Kompressor / fläkt', 'På samtliga avvikelser', 'Frekvensomformare, fel varvtal'): 0.01,
+    ('Filter / sil', 'På samtliga avvikelser', 'Filter / sil igensatt'): 0.01,
+    ('Filter / sil', 'På samtliga avvikelser', 'Filter / sil skadat'): 0.01,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'): 0.09,
 }
@@ -1900,6 +1897,14 @@ class Database:
             frequencies=(0.1, 0.01),
             key='compressor_compact_catalog_v1')
 
+    def _migrate_filter_compact_catalog_v1(self):
+        """Apply the two approved filter/screen causes (0.01/year each)."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='Filter / sil',
+            desired=('Filter / sil igensatt', 'Filter / sil skadat'),
+            frequencies=(0.01, 0.01),
+            key='filter_compact_catalog_v1')
+
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pid_config (
@@ -2609,6 +2614,7 @@ class Database:
         self._migrate_pump_compact_catalog_v1()
         self._migrate_pump_catalog_cleanup_v2()
         self._migrate_compressor_compact_catalog_v1()
+        self._migrate_filter_compact_catalog_v1()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template
