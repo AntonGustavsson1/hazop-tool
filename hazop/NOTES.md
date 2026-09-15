@@ -7532,3 +7532,7 @@ Historiska poster bevaras men avaktiveras.
 
 Blandare / omrörare har därefter fått `Omrörare stopp` (0,1/år) och
 `Omrörare fel varvtal` (0,01/år) som aktiva standardorsaker.
+
+Operatör / procedur / underhåll har därefter förenklats till en aktiv orsak:
+`Felaktig procedur / fel sekvens` (0,05/år). Äldre orsaker avaktiveras men
+raderas inte.

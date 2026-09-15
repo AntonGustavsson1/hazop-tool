@@ -397,6 +397,19 @@ class DatabaseLayerTests(unittest.TestCase):
         }
         self.assertEqual({'Omrörare stopp': 0.1, 'Omrörare fel varvtal': 0.01}, visible)
 
+    def test_operator_catalog_uses_single_approved_cause(self):
+        deviation_id = self.db.conn.execute(
+            "SELECT id FROM standard_deviations "
+            "WHERE description='Hög temperatur' AND active=1").fetchone()['id']
+        object_id = self.db.conn.execute(
+            "SELECT id FROM standard_objects "
+            "WHERE name='Operatör / procedur / underhåll'").fetchone()['id']
+        visible = {
+            row['description']: row['frequency']
+            for row in self.db.standard_causes_for_object(deviation_id, object_id)
+        }
+        self.assertEqual({'Felaktig procedur / fel sekvens': 0.05}, visible)
+
     def test_create_full_chain(self):
         ids = self._make_full_chain()
         self.assertIsNotNone(self.db.get_node(ids['node_id']))

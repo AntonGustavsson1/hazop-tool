@@ -765,6 +765,7 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('Instrument', 'På samtliga avvikelser', 'Börvärde felaktigt lågt'),
     ('Blandare / omrörare', 'På samtliga avvikelser', 'Omrörare stopp'),
     ('Blandare / omrörare', 'På samtliga avvikelser', 'Omrörare fel varvtal'),
+    ('Operatör / procedur / underhåll', 'På samtliga avvikelser', 'Felaktig procedur / fel sekvens'),
     ('Instrument', 'Lågt flöde', 'Givare felar, styrventil stänger'),
     ('Instrument', 'Lågt flöde', 'Börvärde felaktigt inställt'),
     ('Instrument', 'Högt flöde', 'Givare felar, styrventil öppnar'),
@@ -830,6 +831,7 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('Instrument', 'På samtliga avvikelser', 'Börvärde felaktigt lågt'): 0.09,
     ('Blandare / omrörare', 'På samtliga avvikelser', 'Omrörare stopp'): 0.1,
     ('Blandare / omrörare', 'På samtliga avvikelser', 'Omrörare fel varvtal'): 0.01,
+    ('Operatör / procedur / underhåll', 'På samtliga avvikelser', 'Felaktig procedur / fel sekvens'): 0.05,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'): 0.09,
 }
@@ -2021,6 +2023,14 @@ class Database:
             frequencies=(0.1, 0.01),
             key='mixer_compact_catalog_v1')
 
+    def _migrate_operator_compact_catalog_v1(self):
+        """Apply the single approved operator/procedure cause."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='Operatör / procedur / underhåll',
+            desired=('Felaktig procedur / fel sekvens',),
+            frequencies=(0.05,),
+            key='operator_compact_catalog_v1')
+
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pid_config (
@@ -2740,6 +2750,7 @@ class Database:
         self._migrate_power_catalog_clear_v1()
         self._migrate_cooling_catalog_clear_v1()
         self._migrate_mixer_compact_catalog_v1()
+        self._migrate_operator_compact_catalog_v1()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template
