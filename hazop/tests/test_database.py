@@ -179,7 +179,7 @@ class DatabaseLayerTests(unittest.TestCase):
         self.assertEqual(legacy_id, referenced['standard_cause_id'])
         self.assertEqual(0, referenced['active'])
 
-    def test_onoff_valve_catalog_uses_two_universal_causes_at_002_and_009(self):
+    def test_onoff_valve_catalog_uses_two_universal_causes_at_009_each(self):
         deviation_id = self.db.conn.execute(
             "SELECT id FROM standard_deviations "
             "WHERE description='Högt flöde' AND active=1").fetchone()['id']
@@ -190,7 +190,7 @@ class DatabaseLayerTests(unittest.TestCase):
             for row in self.db.standard_causes_for_object(deviation_id, valve_id)
         }
         self.assertEqual({
-            'Ventil felaktigt stängd': 0.02,
+            'Ventil felaktigt stängd': 0.09,
             'Ventil felaktigt öppnad': 0.09,
         }, visible)
 

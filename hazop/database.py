@@ -860,7 +860,7 @@ _SUPPLEMENTARY_STD_CAUSES = [
 _SUPPLEMENTARY_FREQUENCIES = {
     ('Manuell ventil', 'På samtliga avvikelser', 'Ventil felaktigt stängd'): 0.01,
     ('Manuell ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'): 0.01,
-    ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt stängd'): 0.02,
+    ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt stängd'): 0.09,
     ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'): 0.09,
 }
 
@@ -1843,11 +1843,25 @@ class Database:
         logging.info("Installed compact valve catalogue for %s", object_name)
 
     def _migrate_onoff_valve_compact_catalog_v1(self):
-        """Apply the two approved On-off valve causes (0.02 and 0.09/year)."""
+        """Apply the two approved On-off valve causes (0.09/year each)."""
         self._migrate_manual_valve_compact_catalog_v2(
             object_name='On-off ventil',
-            frequencies=(0.02, 0.09),
+            frequencies=(0.09, 0.09),
             key='onoff_valve_compact_catalog_v1')
+
+    def _migrate_onoff_valve_frequency_v2(self):
+        """Correct existing On-off rows to the confirmed 0.09/year rate."""
+        key = 'onoff_valve_frequency_v2'
+        if self.conn.execute("SELECT 1 FROM app_config WHERE key=?", (key,)).fetchone():
+            return
+        self.conn.execute(
+            "UPDATE standard_causes SET frequency=0.09 "
+            "WHERE object_id=(SELECT id FROM standard_objects WHERE name='On-off ventil') "
+            "AND active=1 AND description IN (?,?)",
+            ('Ventil felaktigt stängd', 'Ventil felaktigt öppnad'))
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
+        self.conn.commit()
 
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
@@ -2549,6 +2563,7 @@ class Database:
         self._migrate_merged_standard_catalog()
         self._migrate_manual_valve_compact_catalog_v2()
         self._migrate_onoff_valve_compact_catalog_v1()
+        self._migrate_onoff_valve_frequency_v2()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template

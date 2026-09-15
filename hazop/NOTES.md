@@ -7473,6 +7473,6 @@ frekvensen och att en historisk detaljerad post kan avaktiveras utan att en
 befintlig projektorsak tappar sin referens.
 
 On-off ventil har därefter förenklats på samma sätt till `Ventil felaktigt
-stängd` med 0,02/år och `Ventil felaktigt öppnad` med 0,09/år. Äldre
+stängd` och `Ventil felaktigt öppnad`, båda med 0,09/år. Äldre
 On-off-orsaker avaktiveras men raderas inte. Ett separat migrationssteg och
 regressionstest säkerställer de två frekvenserna.
