@@ -572,9 +572,6 @@ def freq_to_f_level(freq_per_year, boundaries=None) -> int:
 _COMP_STD_CAUSES = {
     # ── Lågt flöde ────────────────────────────────────────────────────────────
     "Lågt flöde": {
-        "Reglerventil":       [("Reglerventil felar stängd",            2e-2),
-                               ("Ventil fastnar / stiction",            1e-2),
-                               ("Felaktig styrsignal — lågt utflöde",   5e-3)],
         "Backventil":         [("Backventil fastnar stängd",            1e-2),
                                ("Backventil monterad baklänges",        1e-4)],
         "Pump":               [("Pump stopp",                           2e-2),
@@ -601,8 +598,6 @@ _COMP_STD_CAUSES = {
 
     # ── Högt flöde ────────────────────────────────────────────────────────────
     "Högt flöde": {
-        "Reglerventil":       [("Reglerventil felar öppen",             2e-2),
-                               ("Felaktig styrsignal — högt utflöde",   5e-3)],
         "Pump":               [("Pumpkapacitet för hög",                5e-3),
                                ("Frekvensomformare — fel varvtal",      1e-2)],
         "Kompressor / fläkt": [("Kompressor — för hög kapacitet",       5e-3)],
@@ -614,8 +609,6 @@ _COMP_STD_CAUSES = {
 
     # ── Högt tryck ────────────────────────────────────────────────────────────
     "Högt tryck": {
-        "Reglerventil":       [("Reglerventil på utlopp felar stängd",  2e-2),
-                               ("Felaktig tryckreglering",              5e-3)],
         "Pump":               [("Pump deadhead — utlopp blockerat",     5e-3)],
         "Värmeväxlare / kylare / värmare": [
                                ("Kylningsbortfall",                     5e-3),
@@ -635,7 +628,6 @@ _COMP_STD_CAUSES = {
 
     # ── Lågt tryck ────────────────────────────────────────────────────────────
     "Lågt tryck": {
-        "Reglerventil":       [("Reglerventil felar öppen",             2e-2)],
         "Pump":               [("Pump stopp — tryckfall",               2e-2)],
         "Rörledning / slang": [("Rörläckage / slangbrott",              5e-4),
                                ("Packningsläckage",                     1e-3)],
@@ -651,8 +643,6 @@ _COMP_STD_CAUSES = {
 
     # ── Hög nivå ──────────────────────────────────────────────────────────────
     "Hög nivå": {
-        "Reglerventil":       [("Utloppsreglering felar stängd",        2e-2),
-                               ("Inloppsreglering felar öppen",         1e-2)],
         "Pump":               [("Utloppspump stopp",                    2e-2)],
         "Instrument":         [("Nivågivare felar — reglering stänger utlopp", 0.1),
                                ("Börvärde nivå felaktigt",              1e-2)],
@@ -663,8 +653,6 @@ _COMP_STD_CAUSES = {
 
     # ── Låg nivå ──────────────────────────────────────────────────────────────
     "Låg nivå": {
-        "Reglerventil":       [("Inloppsreglering felar stängd",        2e-2),
-                               ("Utloppsreglering felar öppen",         1e-2)],
         "Pump":               [("Inloppspump stopp",                    2e-2),
                                ("Pumpläckage / tätningsfel",            5e-3)],
         "Rörledning / slang": [("Rörläckage",                           5e-4)],
@@ -674,8 +662,6 @@ _COMP_STD_CAUSES = {
 
     # ── Hög temperatur ────────────────────────────────────────────────────────
     "Hög temperatur": {
-        "Reglerventil":       [("Kylventil felar stängd",               2e-2),
-                               ("Värmeventil felar öppen",              1e-2)],
         "Värmeväxlare / kylare / värmare": [
                                ("Kylningsbortfall",                     5e-3),
                                ("Värmetillförsel okontrollerad",        1e-3)],
@@ -690,8 +676,6 @@ _COMP_STD_CAUSES = {
 
     # ── Låg temperatur ────────────────────────────────────────────────────────
     "Låg temperatur": {
-        "Reglerventil":       [("Värmeventil felar stängd",             2e-2),
-                               ("Kylventil felar öppen",                1e-2)],
         "Värmeväxlare / kylare / värmare": [
                                ("Värmebortfall",                        5e-3),
                                ("Överkylning",                          1e-3)],
@@ -712,7 +696,6 @@ _COMP_STD_CAUSES = {
 
     # ── Missriktat flöde ──────────────────────────────────────────────────────
     "Missriktat flöde": {
-        "Reglerventil":       [("Styrventil öppnar alternativ väg",     5e-3)],
         "Rörledning / slang": [("Felkopplad ledning",                   1e-4)],
         "Styrsystem / PLC / DCS": [("Felaktig ventilstyrning",          5e-3)],
         "Instrument":         [("Flödesgivare i fel linje",             0.1)],
@@ -720,7 +703,6 @@ _COMP_STD_CAUSES = {
 
     # ── Avvikande sammansättning ──────────────────────────────────────────────
     "Avvikande sammansättning": {
-        "Reglerventil":       [("Dos- / blandningsventil i fel läge",   5e-3)],
         "Tank / kärl / kolonn":[("Kontamination i kärl",                5e-4),
                                ("Fel råmaterial / kemikalie",           1e-3)],
         "Rörledning / slang": [("Felkopplad ledning",                   1e-4)],
@@ -774,7 +756,6 @@ _COMP_STD_CAUSES = {
                                ("Felaktig start-/stoppsekvens",         1e-2),
                                ("Procedur ej följd",                    5e-2)],
         "Tank / kärl / kolonn":[("Kärl ej förberett vid start",         1e-3)],
-        "Reglerventil":       [("Reglerventil i manuellt läge vid start", 5e-3)],
         "Värmeväxlare / kylare / värmare": [
                                ("Termisk chock vid uppstart",           1e-3)],
     },
@@ -862,6 +843,10 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('Manuell ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'): 0.01,
     ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt stängd'): 0.09,
     ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'): 0.09,
+    ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
+    ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'): 0.09,
+    ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
+    ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'): 0.09,
 }
 
 
@@ -1780,10 +1765,6 @@ class Database:
             return
 
         object_id = object_row['id']
-        desired = (
-            'Ventil felaktigt stängd',
-            'Ventil felaktigt öppnad',
-        )
         desired_keys = {_catalog_text_key(description) for description in desired}
 
         for deviation in (name for name in DEVIATION_TYPES if name != 'Övrigt'):
@@ -1862,6 +1843,22 @@ class Database:
         self.conn.execute(
             "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
         self.conn.commit()
+
+    def _migrate_control_valve_compact_catalog_v1(self):
+        """Apply the two approved control-valve causes (0.09/year each)."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='Reglerventil',
+            desired=('Reglerventil felar stängd', 'Reglerventil felar öppen'),
+            frequencies=(0.09, 0.09),
+            key='control_valve_compact_catalog_v1')
+
+    def _migrate_control_valve_compact_catalog_v2(self):
+        """Repair existing control-valve rows after the naming correction."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='Reglerventil',
+            desired=('Reglerventil felar stängd', 'Reglerventil felar öppen'),
+            frequencies=(0.09, 0.09),
+            key='control_valve_compact_catalog_v2')
 
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
@@ -2564,6 +2561,8 @@ class Database:
         self._migrate_manual_valve_compact_catalog_v2()
         self._migrate_onoff_valve_compact_catalog_v1()
         self._migrate_onoff_valve_frequency_v2()
+        self._migrate_control_valve_compact_catalog_v1()
+        self._migrate_control_valve_compact_catalog_v2()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template
