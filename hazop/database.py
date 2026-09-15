@@ -838,10 +838,11 @@ _COMP_TYPE_TO_OBJ: dict = {
     'Värmeväxlare': 'Värmeväxlare / kylare / värmare',
 }
 
-# The compact, project-facing standard-cause catalogue.  The former large
-# catalogue is deliberately retained in the archive during migration; this
-# list is what new cause pickers should expose.
-_REDUCED_STD_CATALOG = [
+# Supplementary standard causes which were introduced with the compact
+# catalogue.  They are merged with _COMP_STD_CAUSES below; this list is not a
+# separate picker catalogue.  Detailed object/deviation-specific causes take
+# precedence over a universal supplementary row for the same combination.
+_SUPPLEMENTARY_STD_CAUSES = [
     ('Manuell ventil', 'På samtliga avvikelser', 'Ventil felaktigt stängd'),
     ('Manuell ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'),
     ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt stängd'),
@@ -921,6 +922,61 @@ _COMP_KEY_TO_OBJ: dict = {
     'Operatör / procedur / underhåll':'Operatör / procedur / underhåll',
     'Övrigt':                       'Övrigt',
 }
+
+
+def _catalog_text_key(value):
+    """Return a punctuation- and case-insensitive catalogue comparison key."""
+    return ''.join(ch for ch in str(value).casefold() if ch.isalnum())
+
+
+def _merged_standard_catalog_entries():
+    """Return the one active standard-cause catalogue.
+
+    The established detailed catalogue is canonical.  The later compact
+    catalogue contributes its specific additions, but its universal rows are
+    deliberately not copied into an object/deviation combination which
+    already has detailed causes.  That prevents an unhelpful pair such as
+    ``Ventil felaktigt öppnad/stängd`` from masking or duplicating the
+    relevant valve failure modes (for example ``Bypassventil öppnad``).
+    """
+    entries = []
+    seen = set()
+    detailed_pairs = set()
+
+    def add(dev_name, obj_name, description, frequency):
+        key = (dev_name, obj_name, _catalog_text_key(description))
+        if key not in seen:
+            entries.append((dev_name, obj_name, description, frequency))
+            seen.add(key)
+
+    for dev_name, by_type in _COMP_STD_CAUSES.items():
+        for comp_key, causes in by_type.items():
+            obj_name = _COMP_KEY_TO_OBJ.get(comp_key, comp_key)
+            detailed_pairs.add((dev_name, obj_name))
+            for item in causes:
+                description = item[0] if isinstance(item, tuple) else item
+                frequency = item[1] if isinstance(item, tuple) and len(item) > 1 else None
+                add(dev_name, obj_name, description, frequency)
+
+    usable_deviations = [name for name in DEVIATION_TYPES if name != 'Övrigt']
+    for obj_name, deviation, description in _SUPPLEMENTARY_STD_CAUSES:
+        is_universal = deviation == 'På samtliga avvikelser'
+        targets = usable_deviations if is_universal else [deviation]
+        for dev_name in targets:
+            if is_universal and (dev_name, obj_name) in detailed_pairs:
+                continue
+            add(dev_name, obj_name, description, 0.02)
+
+    return entries
+
+
+def _universal_supplementary_descriptions():
+    """Map object names to universal compact rows superseded by details."""
+    rows = {}
+    for obj_name, deviation, description in _SUPPLEMENTARY_STD_CAUSES:
+        if deviation == 'På samtliga avvikelser':
+            rows.setdefault(obj_name, set()).add(_catalog_text_key(description))
+    return rows
 
 
 def _seed_standard_objects(conn):
@@ -1579,7 +1635,7 @@ class Database:
         # Universal rows are copied into every usable deviation template;
         # this keeps the existing picker model (deviation -> causes) intact.
         specific = {}
-        for obj, dev, desc in _REDUCED_STD_CATALOG:
+        for obj, dev, desc in _SUPPLEMENTARY_STD_CAUSES:
             specific.setdefault((obj, dev), []).append(desc)
         usable_devs = [d for d in DEVIATION_TYPES if d != 'Övrigt']
         for dev_name in usable_devs:
@@ -1593,7 +1649,7 @@ class Database:
                 dev_id = self.conn.execute(
                     "INSERT INTO standard_deviations(description,sort_order,active) VALUES (?,?,1)",
                     (dev_name, sort_order)).lastrowid
-            entries = [(o, d, c) for o, d, c in _REDUCED_STD_CATALOG
+            entries = [(o, d, c) for o, d, c in _SUPPLEMENTARY_STD_CAUSES
                        if d == 'På samtliga avvikelser' or d == dev_name]
             for obj, _d, desc in entries:
                 obj_row = self.conn.execute(
@@ -1608,7 +1664,120 @@ class Database:
             "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
         self.conn.commit()
         logging.info("Archived old standard catalogue and installed reduced catalogue (%d entries)",
-                     len(_REDUCED_STD_CATALOG))
+                     len(_SUPPLEMENTARY_STD_CAUSES))
+
+    def _migrate_merged_standard_catalog(self):
+        """Activate one deduplicated catalogue without deleting project data.
+
+        The previous compact migration remains as a compatibility step for
+        older project files.  This follow-up restores the detailed entries
+        and only deactivates its generic universal rows where a detailed
+        object/deviation catalogue now exists.  Inactive rows are retained so
+        existing ``causes.standard_cause_id`` references continue to resolve.
+        """
+        key = 'merged_standard_catalog_v1'
+        if self.conn.execute("SELECT 1 FROM app_config WHERE key=?", (key,)).fetchone():
+            return
+
+        entries = _merged_standard_catalog_entries()
+        detailed_pairs = {
+            (dev_name, _COMP_KEY_TO_OBJ.get(comp_key, comp_key))
+            for dev_name, by_type in _COMP_STD_CAUSES.items()
+            for comp_key in by_type
+        }
+        universal_rows = _universal_supplementary_descriptions()
+
+        # One active standard-deviation template is needed for each merged
+        # entry.  Prefer the current active template; reactivate an older one
+        # only when a legacy project has none.
+        deviation_ids = {}
+        for dev_name, _obj_name, _description, _frequency in entries:
+            if dev_name in deviation_ids:
+                continue
+            row = self.conn.execute(
+                "SELECT id FROM standard_deviations WHERE description=? AND active=1 "
+                "ORDER BY id LIMIT 1", (dev_name,)).fetchone()
+            if not row:
+                row = self.conn.execute(
+                    "SELECT id FROM standard_deviations WHERE description=? ORDER BY id LIMIT 1",
+                    (dev_name,)).fetchone()
+                if row:
+                    self.conn.execute("UPDATE standard_deviations SET active=1 WHERE id=?", (row[0],))
+                else:
+                    sort_order = DEVIATION_TYPES.index(dev_name) if dev_name in DEVIATION_TYPES else 999
+                    dev_id = self.conn.execute(
+                        "INSERT INTO standard_deviations(description,sort_order,active) VALUES (?,?,1)",
+                        (dev_name, sort_order)).lastrowid
+                    deviation_ids[dev_name] = dev_id
+                    continue
+            deviation_ids[dev_name] = row[0]
+
+        # The generic universal valve/control rows are less specific than the
+        # detailed causes for these combinations.  Keep their records (and
+        # any project references) but take them out of active pickers.
+        for dev_name, obj_name in detailed_pairs:
+            obj_row = self.conn.execute(
+                "SELECT id FROM standard_objects WHERE name=?", (obj_name,)).fetchone()
+            dev_id = deviation_ids.get(dev_name)
+            for description_key in universal_rows.get(obj_name, ()):
+                if not obj_row or dev_id is None:
+                    continue
+                rows = self.conn.execute(
+                    "SELECT id, description FROM standard_causes "
+                    "WHERE deviation_id=? AND object_id=? AND active=1",
+                    (dev_id, obj_row[0])).fetchall()
+                for row in rows:
+                    if _catalog_text_key(row['description']) == description_key:
+                        self.conn.execute("UPDATE standard_causes SET active=0 WHERE id=?", (row['id'],))
+
+        object_ids = {
+            row['name']: row['id'] for row in self.conn.execute(
+                "SELECT id, name FROM standard_objects").fetchall()
+        }
+        next_sort_by_deviation = {}
+        for dev_name, obj_name, description, frequency in entries:
+            dev_id = deviation_ids[dev_name]
+            obj_id = object_ids.get(obj_name)
+            if obj_id is None:
+                logging.warning("Merged standard catalogue skipped unknown object %r", obj_name)
+                continue
+            if dev_id not in next_sort_by_deviation:
+                next_sort_by_deviation[dev_id] = self.conn.execute(
+                    "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM standard_causes WHERE deviation_id=?",
+                    (dev_id,)).fetchone()[0]
+
+            matching = [row for row in self.conn.execute(
+                "SELECT id, description FROM standard_causes "
+                "WHERE deviation_id=? AND object_id=? AND active=1 ORDER BY id",
+                (dev_id, obj_id)).fetchall()
+                if _catalog_text_key(row['description']) == _catalog_text_key(description)]
+            if not matching:
+                self.conn.execute(
+                    "INSERT INTO standard_causes "
+                    "(deviation_id,description,sort_order,object_id,comp_type,frequency,active) "
+                    "VALUES (?,?,?,?,?,?,1)",
+                    (dev_id, description, next_sort_by_deviation[dev_id], obj_id, obj_name, frequency))
+                next_sort_by_deviation[dev_id] += 1
+                continue
+
+            # A duplicate can exist in hand-edited legacy templates.  Retain
+            # the one already referenced by a project cause if possible and
+            # deactivate only the additional catalogue records.
+            ids = [row['id'] for row in matching]
+            referenced = {
+                row['standard_cause_id'] for row in self.conn.execute(
+                    "SELECT DISTINCT standard_cause_id FROM causes "
+                    "WHERE standard_cause_id IN ({})".format(','.join('?' for _ in ids)), ids).fetchall()
+            }
+            keep_id = next((id_ for id_ in ids if id_ in referenced), ids[0])
+            for duplicate_id in ids:
+                if duplicate_id != keep_id:
+                    self.conn.execute("UPDATE standard_causes SET active=0 WHERE id=?", (duplicate_id,))
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
+        self.conn.commit()
+        logging.info("Installed merged standard catalogue (%d active entries)", len(entries))
 
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
@@ -2306,6 +2475,8 @@ class Database:
                 "ON standard_deviations(description)")
         except Exception:
             logging.warning("Could not create deviation uniqueness indexes", exc_info=True)
+
+        self._migrate_merged_standard_catalog()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template
@@ -7394,7 +7565,7 @@ class Database:
                FROM standard_objects so
                LEFT JOIN (
                    SELECT object_id, COUNT(*) AS n
-                   FROM standard_causes WHERE deviation_id=?
+                   FROM standard_causes WHERE deviation_id=? AND active=1
                    GROUP BY object_id
                ) cnt ON cnt.object_id = so.id
                ORDER BY so.sort_order, so.name""",
@@ -7407,7 +7578,7 @@ class Database:
             """SELECT sc.id, sc.description, sc.sort_order, sc.comp_type,
                       sc.frequency, sc.use_in_cause_form, sc.object_id
                FROM standard_causes sc
-               WHERE sc.deviation_id=? AND sc.object_id=?
+               WHERE sc.deviation_id=? AND sc.object_id=? AND sc.active=1
                ORDER BY sc.sort_order, sc.id""",
             (deviation_id, object_id))]
 

@@ -7433,5 +7433,26 @@ Verifiering: 23 tester i `tests.test_report_word_export` och 15 smoke-tester
 passerar. Den nya ToR-testen kontrollerar rubriker, tabeller, riskdefinitioner,
 barriärtext, frånvaro av scenariokonsekvens och att konsekvenstavellen får en
 liggande sektion. Den paketerade dokumentrenderaren kunde inte köras i denna
-arbetsmiljö eftersom den tillhandahållna runtime saknar LibreOffice; därför är
-denna ändring strukturellt och testmässigt verifierad men inte ny-renderad här.
+ arbetsmiljö eftersom den tillhandahållna runtime saknar LibreOffice; därför är
+ denna ändring strukturellt och testmässigt verifierad men inte ny-renderad här.
+
+## 2026-09-15 — Enhetlig standardorsakskatalog
+
+Den aktiva standardorsakskatalogen är nu en sammanslagning av den detaljerade
+objekt-/avvikelsekatalogen och de unika tilläggen från den senare kompakta
+katalogen. För kombinationer som redan har detaljerade orsaker visas inte
+längre de universella, generiska raderna. Exempelvis innehåller Manuell ventil
+vid Högt flöde nu `Ventil öppnad felaktigt` och `Bypassventil öppnad`, medan
+den generiska raden `Ventil felaktigt öppnad` hålls som historik i stället för
+att dubblera väljaren.
+
+Migreringen raderar inga standardorsaker. Äldre rader avaktiveras när de
+ersätts, så en befintlig `causes.standard_cause_id` fortsätter att vara giltig.
+Orsaksväljarens frågor räknar och returnerar endast aktiva katalograder.
+
+Verifiering: syntaxkontroll, riktat regressionstest för detaljerad Manuell
+ventil inklusive bibehållen äldre referens, och smoke-test har körts. Aktuell
+projektfil migrerades med automatiska säkerhetskopior före och efter; den hade
+inga projektorsaker, 0 brutna standardorsaksreferenser och 0 exakta aktiva
+dubblettgrupper efter migreringen. Visningen har verifierats via databasfrågor,
+inte genom manuell klickning i Qt-gränssnittet.
