@@ -7509,3 +7509,6 @@ Tank / kärl / kolonn har därefter förenklats till `Endoterm reaktion /
 avdunstning` och `Exoterm reaktion` (0,001/år vardera), samt `Inflöde >
 utflöde` och `Låg nivå i kärl` (0,05/år vardera). Äldre orsaker avaktiveras
 men raderas inte.
+
+Rörledning / slang har därefter rensats på aktiva standardorsaker. Historiska
+poster bevaras men avaktiveras så att de inte längre visas i orsaksväljaren.
