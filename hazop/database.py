@@ -612,9 +612,6 @@ _COMP_STD_CAUSES = {
                                ("Kylningsbortfall",                     5e-3),
                                ("Termisk expansion utan ventilering",   1e-3)],
         "Tank / kärl / kolonn":[("Blockerat avluftningssystem",         5e-4)],
-        "Säkerhetsventil / sprängbleck": [
-                               ("Säkerhetsventil felar stängd",         1e-3),
-                               ("Sprängbleck defekt",                   5e-4)],
         "Instrument":         [("Trycktransmitter felar — styrventil stänger", 0.1),
                                ("Börvärde tryckreglering felaktigt",    1e-2)],
         "Styrsystem / PLC / DCS": [("Tryckreglering felar",             5e-3)],
@@ -631,9 +628,6 @@ _COMP_STD_CAUSES = {
         "Fläns / koppling / packning": [
                                ("Packningsläckage",                     2e-3),
                                ("Flänsläckage",                         5e-4)],
-        "Säkerhetsventil / sprängbleck": [
-                               ("Säkerhetsventil öppnar för tidigt",    1e-3),
-                               ("Sprängbleck utlöst",                   1e-4)],
         "Instrument":         [("Tryckmätare felar — styrventil öppnar", 0.1)],
         "Tank / kärl / kolonn":[("Kärl dränerat",                       5e-3)],
     },
@@ -787,7 +781,8 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'),
     ('Backventil', 'På samtliga avvikelser', 'Backventil fastnar stängd'),
     ('Backventil', 'På samtliga avvikelser', 'Backventil läcker'),
-    ('Säkerhetsventil / sprängbleck', 'Missriktat', 'Säkerhetsventil öppnar för tidigt/läcker'),
+    ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Sprängbleck öppnar för tidigt'),
+    ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Säkerhetsventil öppnar för tidigt'),
     ('Kompressor / fläkt', 'Lågt flöde', 'Kompressor / fläkt stopp'),
     ('Kompressor / fläkt', 'Högt flöde', 'Kompressor, för hög kapacitet'),
     ('Filter / sil', 'Lågt flöde', 'Filter / sil igensatt'),
@@ -839,6 +834,8 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'): 0.09,
     ('Backventil', 'På samtliga avvikelser', 'Backventil fastnar stängd'): 0.01,
     ('Backventil', 'På samtliga avvikelser', 'Backventil läcker'): 0.1,
+    ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Sprängbleck öppnar för tidigt'): 0.01,
+    ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Säkerhetsventil öppnar för tidigt'): 0.01,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'): 0.09,
 }
@@ -1862,6 +1859,28 @@ class Database:
             frequencies=(0.01, 0.1),
             key='check_valve_compact_catalog_v1')
 
+    def _migrate_relief_valve_compact_catalog_v1(self):
+        """Apply the two approved relief-valve causes (0.01/year each)."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='Säkerhetsventil / sprängbleck',
+            desired=('Sprängbleck öppnar för tidigt', 'Säkerhetsventil öppnar för tidigt'),
+            frequencies=(0.01, 0.01),
+            key='relief_valve_compact_catalog_v1')
+
+    def _migrate_relief_valve_cleanup_v2(self):
+        """Retire legacy relief-valve rows under archived deviations too."""
+        key = 'relief_valve_cleanup_v2'
+        if self.conn.execute("SELECT 1 FROM app_config WHERE key=?", (key,)).fetchone():
+            return
+        self.conn.execute(
+            "UPDATE standard_causes SET active=0 WHERE object_id=("
+            "SELECT id FROM standard_objects WHERE name='Säkerhetsventil / sprängbleck') "
+            "AND active=1 AND description NOT IN (?,?)",
+            ('Sprängbleck öppnar för tidigt', 'Säkerhetsventil öppnar för tidigt'))
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
+        self.conn.commit()
+
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pid_config (
@@ -2566,6 +2585,8 @@ class Database:
         self._migrate_control_valve_compact_catalog_v1()
         self._migrate_control_valve_compact_catalog_v2()
         self._migrate_check_valve_compact_catalog_v1()
+        self._migrate_relief_valve_compact_catalog_v1()
+        self._migrate_relief_valve_cleanup_v2()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template
