@@ -1983,6 +1983,19 @@ class Database:
             "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
         self.conn.commit()
 
+    def _migrate_power_catalog_clear_v1(self):
+        """Clear active power-supply standard causes while preserving history."""
+        key = 'power_catalog_clear_v1'
+        if self.conn.execute("SELECT 1 FROM app_config WHERE key=?", (key,)).fetchone():
+            return
+        self.conn.execute(
+            "UPDATE standard_causes SET active=0 WHERE object_id=("
+            "SELECT id FROM standard_objects WHERE name='Elförsörjning') "
+            "AND active=1")
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
+        self.conn.commit()
+
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pid_config (
@@ -2699,6 +2712,7 @@ class Database:
         self._migrate_flange_catalog_clear_v1()
         self._migrate_instrument_compact_catalog_v1()
         self._migrate_control_system_catalog_clear_v1()
+        self._migrate_power_catalog_clear_v1()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template

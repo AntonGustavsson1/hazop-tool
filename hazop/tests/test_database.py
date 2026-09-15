@@ -369,6 +369,14 @@ class DatabaseLayerTests(unittest.TestCase):
             "SELECT id FROM standard_objects WHERE name='Styrsystem / PLC / DCS'").fetchone()['id']
         self.assertEqual([], self.db.standard_causes_for_object(deviation_id, object_id))
 
+    def test_power_catalog_has_no_active_causes_after_clear(self):
+        deviation_id = self.db.conn.execute(
+            "SELECT id FROM standard_deviations "
+            "WHERE description='Hög temperatur' AND active=1").fetchone()['id']
+        object_id = self.db.conn.execute(
+            "SELECT id FROM standard_objects WHERE name='Elförsörjning'").fetchone()['id']
+        self.assertEqual([], self.db.standard_causes_for_object(deviation_id, object_id))
+
     def test_create_full_chain(self):
         ids = self._make_full_chain()
         self.assertIsNotNone(self.db.get_node(ids['node_id']))
