@@ -7539,3 +7539,25 @@ raderas inte.
 
 Standardordningen har därefter ändrats så att `Instrument` ligger som nummer
 4, direkt efter `Reglerventil`.
+
+## 2026-09-15 — Redigera standardorsaker som objekt → orsak → avvikelse
+
+Avvikelser & Orsaker har byggts om till ordningen `Nodtyp → Objekt → Orsak →
+Avvikelser`. En standardorsak är nu en återanvändbar definition inom sin
+nodtyp och sitt objekt. När orsaken väljs visas nodtypens avvikelser till
+höger som kryssrutor; en markering gör orsaken aktiv för den avvikelsen och
+en avmarkering tar bort den ur väljaren där.
+
+Bakåtkompatibilitet: de befintliga `standard_causes`-raderna behålls som
+materialiserade poster för orsaksväljare och befintliga
+`causes.standard_cause_id`-referenser. Det nya gruppskiktet avaktiverar, men
+raderar aldrig, en katalogpost när kryssrutan tas bort. Återmarkering använder
+samma standardorsaks-id igen när en historisk referens finns.
+
+Nodtypskopior kan nu också innehålla samma avvikelsetext utan att fastna i den
+tidigare globala unika databasspärren; unikhet hålls i stället per nodtyp.
+Verifiering: riktade databas- och Qt-tester täcker den nya kolumnordningen,
+kryssa i/ur, frekvens och bevarad projektreferens. En offscreen-rendering har
+granskats strukturellt; textfonten saknas i den headless Qt-runtime som körs
+här, så den ersätts där med fyrkanter och är inte en visuell Windows-GUI-
+acceptanskontroll.

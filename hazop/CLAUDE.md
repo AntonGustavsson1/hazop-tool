@@ -278,6 +278,8 @@ or application modules, so every Qt-facing UI layer can safely consume it.
 | `nodes` | `id`, `name`, `system_id` (nullable — NULL renders as an ungrouped top-level tree item), `markup_points` (JSON), `markup_style` (JSON), `pid_page` |
 | `deviations` | `id`, `node_id`, `description` — one per HAZOP deviation under a node |
 | `causes` | `id`, `node_id`, `deviation_id`, `description`, `likelihood` |
+| `standard_cause_groups` | `node_type_id`, `object_id`, `description`, `frequency` — reusable definition edited as Nodtyp → Objekt → Orsak |
+| `standard_cause_group_deviations` | `cause_group_id`, `deviation_id`, `active` — selected applicability checkboxes; materialises compatible `standard_causes` rows |
 | `consequences` | `id`, `cause_id`, `description`, `severity`, `category` |
 | `safeguards` | `id`, `consequence_id`, `description`, `rrf` |
 | `actions` | `id`, `consequence_id`, `description`, `responsible`, `due_date`, `status` |

@@ -233,6 +233,109 @@ class StandardCausesObjectCrudTests(unittest.TestCase):
             panel.deleteLater()
 
 
+class StandardCauseGroupingEditorTests(unittest.TestCase):
+    """The editor's order is Nodtyp → Objekt → Orsak → Avvikelse.
+
+    A reusable cause is materialised as an active legacy standard-causes row
+    only for the deviations checked by the user.  Removing a check must keep
+    an existing project's standard_cause_id valid.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="hazop_cause_group_editor_")
+        self.db = Database(path=os.path.join(self._tmpdir, "test_project.db"))
+        self.node_type_id = self.db.node_types()[0]['id']
+        self.object_id = self.db.add_standard_object('Testobjekt för orsakskoppling')
+        self.first_deviation_id = self.db.add_standard_deviation(
+            'Första testavvikelsen', self.node_type_id)
+        self.second_deviation_id = self.db.add_standard_deviation(
+            'Andra testavvikelsen', self.node_type_id)
+        self.group_id = self.db.add_standard_cause_group(
+            self.node_type_id, self.object_id, 'Gemensam testorsak', 0.09)
+
+    def tearDown(self):
+        try:
+            self.db.conn.close()
+        except Exception:
+            pass
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_checked_deviations_materialise_cause_and_uncheck_preserves_reference(self):
+        self.db.set_standard_cause_group_deviation(
+            self.group_id, self.first_deviation_id, True)
+        self.db.set_standard_cause_group_deviation(
+            self.group_id, self.second_deviation_id, True)
+
+        first = self.db.standard_causes_for_object(
+            self.first_deviation_id, self.object_id)
+        second = self.db.standard_causes_for_object(
+            self.second_deviation_id, self.object_id)
+        self.assertEqual(['Gemensam testorsak'], [row['description'] for row in first])
+        self.assertEqual(['Gemensam testorsak'], [row['description'] for row in second])
+        self.assertEqual(0.09, first[0]['frequency'])
+        self.db.update_standard_cause_group(self.group_id, frequency=0.05)
+        self.assertEqual(0.05, self.db.standard_causes_for_object(
+            self.second_deviation_id, self.object_id)[0]['frequency'])
+
+        node_id = self.db.add_node()
+        project_deviation_id = self.db.add_deviation(node_id, 'Första testavvikelsen')
+        project_cause_id = self.db.add_cause(project_deviation_id)
+        self.db.conn.execute(
+            "UPDATE causes SET standard_cause_id=? WHERE id=?",
+            (first[0]['id'], project_cause_id))
+        self.db.conn.commit()
+
+        self.db.set_standard_cause_group_deviation(
+            self.group_id, self.first_deviation_id, False)
+        preserved = self.db.conn.execute(
+            "SELECT c.standard_cause_id,sc.active FROM causes c "
+            "JOIN standard_causes sc ON sc.id=c.standard_cause_id WHERE c.id=?",
+            (project_cause_id,)).fetchone()
+        self.assertEqual(first[0]['id'], preserved['standard_cause_id'])
+        self.assertEqual(0, preserved['active'])
+
+        self.db.set_standard_cause_group_deviation(
+            self.group_id, self.first_deviation_id, True)
+        restored = self.db.standard_causes_for_object(
+            self.first_deviation_id, self.object_id)
+        self.assertEqual(first[0]['id'], restored[0]['id'])
+
+    def test_panel_shows_object_cause_then_checkable_deviations(self):
+        self.db.set_standard_cause_group_deviation(
+            self.group_id, self.first_deviation_id, True)
+        from hazop import StandardCausesSettingsPanel
+        panel = StandardCausesSettingsPanel(self.db)
+        try:
+            object_row = next(
+                row for row in range(panel._obj_list.count())
+                if panel._obj_list.item(row).data(Qt.ItemDataRole.UserRole) == self.object_id)
+            panel._obj_list.setCurrentRow(object_row)
+            self.assertIn('Objekt', panel._obj_lbl.text())
+            self.assertEqual(1, panel._cause_list.count())
+            self.assertEqual('Gemensam testorsak',
+                             panel._cause_list.item(0).data(Qt.ItemDataRole.UserRole + 1))
+            self.assertIn('Gemensam testorsak', panel._dev_lbl.text())
+
+            items = {
+                panel._dev_list.item(row).data(Qt.ItemDataRole.UserRole): panel._dev_list.item(row)
+                for row in range(panel._dev_list.count())
+            }
+            self.assertEqual(Qt.CheckState.Checked,
+                             items[self.first_deviation_id].checkState())
+            self.assertEqual(Qt.CheckState.Unchecked,
+                             items[self.second_deviation_id].checkState())
+            items[self.second_deviation_id].setCheckState(Qt.CheckState.Checked)
+            second = self.db.standard_causes_for_object(
+                self.second_deviation_id, self.object_id)
+            self.assertEqual(['Gemensam testorsak'], [row['description'] for row in second])
+        finally:
+            panel.deleteLater()
+
+
 class StandardCausesExcelExportTests(unittest.TestCase):
     """"Exportera standardavvikelser till Excel" (2026-08-26): a plain,
     re-importable-by-design .xlsx export of every standard cause, grouped

@@ -2043,6 +2043,279 @@ class Database:
             frequencies=(0.05,),
             key='operator_compact_catalog_v1')
 
+    # ── Standard-cause editor groups: node type → object → cause → deviation ─
+    def _default_node_type_id(self):
+        """Return the first node type, creating the default lazily if needed."""
+        return self.node_types()[0]['id']
+
+    def _node_type_matches(self, stored_id, selected_id, default_id=None):
+        """Treat legacy NULL node types as belonging to the default type."""
+        if default_id is None:
+            default_id = self._default_node_type_id()
+        return stored_id == selected_id or (stored_id is None and selected_id == default_id)
+
+    def _standard_deviation_node_type_id(self, deviation_id):
+        row = self.conn.execute(
+            "SELECT node_type_id FROM standard_deviations WHERE id=?", (deviation_id,)).fetchone()
+        if not row:
+            return None
+        return row['node_type_id'] if row['node_type_id'] is not None else self._default_node_type_id()
+
+    @staticmethod
+    def _same_standard_cause_frequency(first, second):
+        if first is None or second is None:
+            return first is None and second is None
+        return abs(float(first) - float(second)) < 1e-12
+
+    def _find_standard_cause_group(self, node_type_id, object_id, description, frequency):
+        """Find the active logical cause matching a materialised legacy row."""
+        default_id = self._default_node_type_id()
+        candidates = self.conn.execute(
+            "SELECT * FROM standard_cause_groups WHERE object_id=? AND active=1 "
+            "ORDER BY sort_order,id", (object_id,)).fetchall()
+        wanted_key = _catalog_text_key(description)
+        for candidate in candidates:
+            if (self._node_type_matches(candidate['node_type_id'], node_type_id, default_id)
+                    and _catalog_text_key(candidate['description']) == wanted_key
+                    and self._same_standard_cause_frequency(candidate['frequency'], frequency)):
+                return dict(candidate)
+        return None
+
+    def _create_standard_cause_group(self, node_type_id, object_id, description,
+                                     frequency=None, use_in_cause_form=1):
+        max_order = self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) FROM standard_cause_groups "
+            "WHERE object_id=? AND node_type_id IS ?", (object_id, node_type_id)).fetchone()[0]
+        cur = self.conn.execute(
+            "INSERT INTO standard_cause_groups "
+            "(node_type_id,object_id,description,frequency,use_in_cause_form,sort_order,active) "
+            "VALUES (?,?,?,?,?,?,1)",
+            (node_type_id, object_id, description, frequency, use_in_cause_form, max_order + 1))
+        return cur.lastrowid
+
+    def _link_standard_cause_to_group(self, standard_cause_id):
+        """Attach one active legacy lookup row to its logical editor cause."""
+        row = self.conn.execute(
+            "SELECT sc.*, sd.node_type_id FROM standard_causes sc "
+            "JOIN standard_deviations sd ON sd.id=sc.deviation_id WHERE sc.id=?",
+            (standard_cause_id,)).fetchone()
+        if not row or not row['active'] or row['object_id'] is None:
+            return None
+        existing = self.conn.execute(
+            "SELECT cause_group_id FROM standard_cause_group_members "
+            "WHERE standard_cause_id=?", (standard_cause_id,)).fetchone()
+        if existing:
+            return existing['cause_group_id']
+        node_type_id = (row['node_type_id'] if row['node_type_id'] is not None
+                        else self._default_node_type_id())
+        group = self._find_standard_cause_group(
+            node_type_id, row['object_id'], row['description'], row['frequency'])
+        group_id = group['id'] if group else self._create_standard_cause_group(
+            node_type_id, row['object_id'], row['description'], row['frequency'],
+            row['use_in_cause_form'])
+        self.conn.execute(
+            "INSERT OR IGNORE INTO standard_cause_group_members "
+            "(cause_group_id,standard_cause_id) VALUES (?,?)",
+            (group_id, standard_cause_id))
+        self.conn.execute(
+            "INSERT INTO standard_cause_group_deviations "
+            "(cause_group_id,deviation_id,active) VALUES (?,?,1) "
+            "ON CONFLICT(cause_group_id,deviation_id) DO UPDATE SET active=1",
+            (group_id, row['deviation_id']))
+        return group_id
+
+    def _sync_active_standard_cause_groups(self):
+        """Backfill logical groups for active rows created by older workflows."""
+        rows = self.conn.execute(
+            "SELECT sc.id FROM standard_causes sc "
+            "LEFT JOIN standard_cause_group_members gm ON gm.standard_cause_id=sc.id "
+            "WHERE sc.active=1 AND sc.object_id IS NOT NULL AND gm.standard_cause_id IS NULL "
+            "ORDER BY sc.id").fetchall()
+        for row in rows:
+            self._link_standard_cause_to_group(row['id'])
+        return len(rows)
+
+    def _migrate_standard_cause_groups_v1(self):
+        """Build editable cause/deviation links without replacing project references."""
+        self._sync_active_standard_cause_groups()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_config(key,value) VALUES "
+            "('standard_cause_groups_v1','1')")
+        self.commit()
+
+    def standard_deviations_for_node_type(self, node_type_id):
+        """Active deviations visible under one node type in the editor."""
+        default_id = self._default_node_type_id()
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM standard_deviations WHERE active=1 AND "
+            "(node_type_id=? OR (node_type_id IS NULL AND ?=1)) "
+            "ORDER BY sort_order,id", (node_type_id, int(node_type_id == default_id)))]
+
+    def standard_cause_groups_for_object(self, node_type_id, object_id):
+        """Active logical causes for the selected node type and object."""
+        default_id = self._default_node_type_id()
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM standard_cause_groups WHERE active=1 AND object_id=? AND "
+            "(node_type_id=? OR (node_type_id IS NULL AND ?=1)) "
+            "ORDER BY sort_order,id", (object_id, node_type_id, int(node_type_id == default_id)))]
+
+    def all_objects_with_cause_group_counts(self, node_type_id):
+        """All objects plus the number of editable causes for a node type."""
+        default_id = self._default_node_type_id()
+        rows = self.conn.execute(
+            """SELECT so.id, so.name, so.sort_order, COUNT(scg.id) AS n_causes
+                 FROM standard_objects so
+                 LEFT JOIN standard_cause_groups scg ON scg.object_id=so.id
+                    AND scg.active=1
+                    AND (scg.node_type_id=? OR (scg.node_type_id IS NULL AND ?=1))
+                 GROUP BY so.id
+                 ORDER BY so.sort_order,so.id""",
+            (node_type_id, int(node_type_id == default_id))).fetchall()
+        return [dict(row) for row in rows]
+
+    def standard_cause_group_deviations(self, cause_group_id, node_type_id):
+        """Selected-node-type deviations with an applicability flag for one cause."""
+        default_id = self._default_node_type_id()
+        rows = self.conn.execute(
+            """SELECT sd.id,sd.description,sd.sort_order,
+                      COALESCE(scgd.active,0) AS applicable
+                 FROM standard_deviations sd
+                 LEFT JOIN standard_cause_group_deviations scgd
+                   ON scgd.deviation_id=sd.id AND scgd.cause_group_id=?
+                 WHERE sd.active=1 AND
+                   (sd.node_type_id=? OR (sd.node_type_id IS NULL AND ?=1))
+                 ORDER BY sd.sort_order,sd.id""",
+            (cause_group_id, node_type_id, int(node_type_id == default_id))).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_standard_cause_group(self, node_type_id, object_id, description,
+                                 frequency=None, use_in_cause_form=1):
+        group_id = self._create_standard_cause_group(
+            node_type_id, object_id, description, frequency, use_in_cause_form)
+        self.commit()
+        return group_id
+
+    def update_standard_cause_group(self, group_id, description=None, **kwargs):
+        group = self.conn.execute(
+            "SELECT * FROM standard_cause_groups WHERE id=?", (group_id,)).fetchone()
+        if not group:
+            return
+        new_description = description if description is not None else group['description']
+        new_frequency = kwargs.get('frequency', group['frequency'])
+        new_use = kwargs.get('use_in_cause_form', group['use_in_cause_form'])
+        self.conn.execute(
+            "UPDATE standard_cause_groups SET description=?,frequency=?,use_in_cause_form=? "
+            "WHERE id=?", (new_description, new_frequency, new_use, group_id))
+        # Project causes retain their saved text and standard_cause_id.  Only
+        # active catalogue rows mirror an edit to the reusable definition.
+        self.conn.execute(
+            """UPDATE standard_causes
+                 SET description=?,frequency=?,use_in_cause_form=?
+                 WHERE active=1 AND id IN (
+                   SELECT standard_cause_id FROM standard_cause_group_members
+                   WHERE cause_group_id=?)""",
+            (new_description, new_frequency, new_use, group_id))
+        self.commit()
+
+    def _materialise_standard_cause_group_deviation(self, group, deviation_id):
+        """Ensure one active legacy picker row exists for this checked box."""
+        candidates = self.conn.execute(
+            """SELECT sc.id FROM standard_causes sc
+                 JOIN standard_cause_group_members gm ON gm.standard_cause_id=sc.id
+                 WHERE gm.cause_group_id=? AND sc.deviation_id=? ORDER BY sc.id""",
+            (group['id'], deviation_id)).fetchall()
+        object_name_row = self.conn.execute(
+            "SELECT name FROM standard_objects WHERE id=?", (group['object_id'],)).fetchone()
+        object_name = object_name_row['name'] if object_name_row else ''
+        if candidates:
+            candidate_ids = [row['id'] for row in candidates]
+            referenced = {
+                row['standard_cause_id'] for row in self.conn.execute(
+                    "SELECT DISTINCT standard_cause_id FROM causes WHERE standard_cause_id IN ({})".format(
+                        ','.join('?' for _ in candidate_ids)), candidate_ids).fetchall()
+            }
+            keep_id = next((id_ for id_ in candidate_ids if id_ in referenced), candidate_ids[0])
+            self.conn.execute(
+                "UPDATE standard_causes SET description=?,frequency=?,use_in_cause_form=?,"
+                "object_id=?,comp_type=?,active=1 WHERE id=?",
+                (group['description'], group['frequency'], group['use_in_cause_form'],
+                 group['object_id'], object_name, keep_id))
+            for candidate_id in candidate_ids:
+                if candidate_id != keep_id:
+                    self.conn.execute("UPDATE standard_causes SET active=0 WHERE id=?", (candidate_id,))
+            return keep_id
+
+        sort_order = self.conn.execute(
+            "SELECT COALESCE(MAX(sort_order),-1)+1 FROM standard_causes WHERE deviation_id=?",
+            (deviation_id,)).fetchone()[0]
+        cur = self.conn.execute(
+            "INSERT INTO standard_causes "
+            "(deviation_id,description,sort_order,object_id,comp_type,frequency,use_in_cause_form,active) "
+            "VALUES (?,?,?,?,?,?,?,1)",
+            (deviation_id, group['description'], sort_order, group['object_id'], object_name,
+             group['frequency'], group['use_in_cause_form']))
+        self.conn.execute(
+            "INSERT INTO standard_cause_group_members(cause_group_id,standard_cause_id) "
+            "VALUES (?,?)", (group['id'], cur.lastrowid))
+        return cur.lastrowid
+
+    def set_standard_cause_group_deviation(self, group_id, deviation_id, applicable):
+        """Toggle a cause's applicability for one deviation without deleting history."""
+        group = self.conn.execute(
+            "SELECT * FROM standard_cause_groups WHERE id=? AND active=1", (group_id,)).fetchone()
+        if not group:
+            return
+        deviation_node_type = self._standard_deviation_node_type_id(deviation_id)
+        if not self._node_type_matches(group['node_type_id'], deviation_node_type):
+            raise ValueError("Standardorsaken och avvikelsen tillhör olika nodtyper")
+        if applicable:
+            self._materialise_standard_cause_group_deviation(group, deviation_id)
+            self.conn.execute(
+                """UPDATE standard_causes SET sort_order=? WHERE active=1 AND id IN (
+                     SELECT sc.id FROM standard_causes sc
+                     JOIN standard_cause_group_members gm ON gm.standard_cause_id=sc.id
+                     WHERE gm.cause_group_id=? AND sc.deviation_id=?)""",
+                (group['sort_order'], group_id, deviation_id))
+            self.conn.execute(
+                "INSERT INTO standard_cause_group_deviations "
+                "(cause_group_id,deviation_id,active) VALUES (?,?,1) "
+                "ON CONFLICT(cause_group_id,deviation_id) DO UPDATE SET active=1",
+                (group_id, deviation_id))
+        else:
+            self.conn.execute(
+                "INSERT INTO standard_cause_group_deviations "
+                "(cause_group_id,deviation_id,active) VALUES (?,?,0) "
+                "ON CONFLICT(cause_group_id,deviation_id) DO UPDATE SET active=0",
+                (group_id, deviation_id))
+            self.conn.execute(
+                """UPDATE standard_causes SET active=0 WHERE id IN (
+                     SELECT sc.id FROM standard_causes sc
+                     JOIN standard_cause_group_members gm ON gm.standard_cause_id=sc.id
+                     WHERE gm.cause_group_id=? AND sc.deviation_id=?)""",
+                (group_id, deviation_id))
+        self.commit()
+
+    def delete_standard_cause_group(self, group_id):
+        """Retire a logical cause and its active picker rows, retaining history."""
+        self.conn.execute("UPDATE standard_cause_groups SET active=0 WHERE id=?", (group_id,))
+        self.conn.execute(
+            "UPDATE standard_cause_group_deviations SET active=0 WHERE cause_group_id=?", (group_id,))
+        self.conn.execute(
+            """UPDATE standard_causes SET active=0 WHERE id IN (
+                 SELECT standard_cause_id FROM standard_cause_group_members
+                 WHERE cause_group_id=?)""", (group_id,))
+        self.commit()
+
+    def reorder_standard_cause_groups(self, ordered_ids):
+        for index, group_id in enumerate(ordered_ids):
+            self.conn.execute(
+                "UPDATE standard_cause_groups SET sort_order=? WHERE id=?", (index, group_id))
+            self.conn.execute(
+                """UPDATE standard_causes SET sort_order=? WHERE active=1 AND id IN (
+                     SELECT standard_cause_id FROM standard_cause_group_members
+                     WHERE cause_group_id=?)""", (index, group_id))
+        self.commit()
+
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pid_config (
@@ -2156,18 +2429,43 @@ class Database:
                 description TEXT NOT NULL,
                 sort_order  INTEGER DEFAULT 0
             );
-            CREATE TABLE IF NOT EXISTS standard_causes (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                deviation_id INTEGER NOT NULL REFERENCES standard_deviations(id) ON DELETE CASCADE,
-                description  TEXT NOT NULL,
-                sort_order   INTEGER DEFAULT 0,
-                object_id    INTEGER REFERENCES standard_objects(id) ON DELETE SET NULL
-            );
-            CREATE TABLE IF NOT EXISTS standard_objects (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                name       TEXT NOT NULL UNIQUE,
-                sort_order INTEGER DEFAULT 0
-            );
+CREATE TABLE IF NOT EXISTS standard_causes (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    deviation_id INTEGER NOT NULL REFERENCES standard_deviations(id) ON DELETE CASCADE,
+    description  TEXT NOT NULL,
+    sort_order   INTEGER DEFAULT 0,
+    object_id    INTEGER REFERENCES standard_objects(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS standard_objects (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    sort_order INTEGER DEFAULT 0
+);
+-- The active editor treats a standard cause as one reusable object-specific
+-- definition, then lets the user select its applicable deviations.  The
+-- existing standard_causes rows remain the materialised, backwards-compatible
+-- lookup for project causes and older picker code.
+CREATE TABLE IF NOT EXISTS standard_cause_groups (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_type_id        INTEGER REFERENCES node_types(id) ON DELETE SET NULL,
+    object_id           INTEGER NOT NULL REFERENCES standard_objects(id) ON DELETE CASCADE,
+    description         TEXT NOT NULL,
+    frequency           REAL DEFAULT NULL,
+    use_in_cause_form   INTEGER NOT NULL DEFAULT 1,
+    sort_order          INTEGER NOT NULL DEFAULT 0,
+    active              INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS standard_cause_group_deviations (
+    cause_group_id      INTEGER NOT NULL REFERENCES standard_cause_groups(id) ON DELETE CASCADE,
+    deviation_id        INTEGER NOT NULL REFERENCES standard_deviations(id) ON DELETE CASCADE,
+    active              INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (cause_group_id, deviation_id)
+);
+CREATE TABLE IF NOT EXISTS standard_cause_group_members (
+    cause_group_id      INTEGER NOT NULL REFERENCES standard_cause_groups(id) ON DELETE CASCADE,
+    standard_cause_id   INTEGER NOT NULL REFERENCES standard_causes(id) ON DELETE CASCADE,
+    PRIMARY KEY (cause_group_id, standard_cause_id)
+);
             CREATE TABLE IF NOT EXISTS symbol_templates (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 name          TEXT NOT NULL UNIQUE,
@@ -2734,9 +3032,17 @@ class Database:
             self.conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_deviations_node_description_generic "
                 "ON deviations(node_id, description) WHERE equipment_id IS NULL")
+            # A deviation may intentionally be copied to another node type.
+            # The previous global unique index contradicted that UI workflow
+            # and blocked the copy with an IntegrityError.
+            self.conn.execute("DROP INDEX IF EXISTS idx_standard_deviations_description")
             self.conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_standard_deviations_description "
-                "ON standard_deviations(description)")
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_standard_deviations_default_description "
+                "ON standard_deviations(description) WHERE node_type_id IS NULL")
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_standard_deviations_node_type_description "
+                "ON standard_deviations(node_type_id,description) "
+                "WHERE node_type_id IS NOT NULL")
         except Exception:
             logging.warning("Could not create deviation uniqueness indexes", exc_info=True)
 
@@ -2764,6 +3070,7 @@ class Database:
         self._migrate_standard_object_order_instrument_v1()
         self._migrate_mixer_compact_catalog_v1()
         self._migrate_operator_compact_catalog_v1()
+        self._migrate_standard_cause_groups_v1()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template
@@ -7689,6 +7996,8 @@ class Database:
         # — never silently hidden.
         self.conn.execute(
             "UPDATE standard_deviations SET node_type_id=NULL WHERE node_type_id=?", (id_,))
+        self.conn.execute(
+            "UPDATE standard_cause_groups SET node_type_id=NULL WHERE node_type_id=?", (id_,))
         self.conn.execute("DELETE FROM node_types WHERE id=?", (id_,))
         self.commit()
 
@@ -7723,6 +8032,9 @@ class Database:
                 "object_id, comp_type, frequency, use_in_cause_form) VALUES (?,?,?,?,?,?,?)",
                 (new_dev_id, c['description'], c['sort_order'], c['object_id'],
                  c['comp_type'], c['frequency'], c['use_in_cause_form']))
+        # The copied deviations own their logical causes under the target node
+        # type; only the materialised picker rows are copied from the source.
+        self._sync_active_standard_cause_groups()
         self.commit()
         return new_dev_id
 
@@ -7755,6 +8067,13 @@ class Database:
         return cur.lastrowid
 
     def update_standard_cause(self, id_, description=None, **kwargs):
+        group = self.conn.execute(
+            "SELECT cause_group_id FROM standard_cause_group_members "
+            "WHERE standard_cause_id=?", (id_,)).fetchone()
+        if group:
+            self.update_standard_cause_group(
+                group['cause_group_id'], description=description, **kwargs)
+            return
         sets, vals = [], []
         if description is not None:
             sets.append("description=?"); vals.append(description)
@@ -7881,6 +8200,7 @@ class Database:
             "INSERT INTO standard_causes (deviation_id, description, sort_order, comp_type, object_id)"
             " VALUES (?,?,?,?,?)",
             (deviation_id, description, max_ord + 1, comp, object_id))
+        self._link_standard_cause_to_group(cur.lastrowid)
         self.commit()
         return cur.lastrowid
 
