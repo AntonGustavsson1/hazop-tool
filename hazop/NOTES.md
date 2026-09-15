@@ -7520,3 +7520,6 @@ Instrument har därefter förenklats till `Instrument felar lågt`, `Instrument
 felar högt`, `Instrument fryser`, `Börvärde felaktigt högt` och `Börvärde
 felaktigt lågt`, samtliga med 0,09/år. Äldre orsaker avaktiveras men raderas
 inte.
+
+Styrsystem / PLC / DCS har därefter lämnats utan aktiva standardorsaker.
+Historiska poster bevaras men avaktiveras.
