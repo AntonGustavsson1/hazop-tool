@@ -7526,3 +7526,6 @@ Historiska poster bevaras men avaktiveras.
 
 Elförsörjning har därefter lämnats utan aktiva standardorsaker. Historiska
 poster bevaras men avaktiveras.
+
+Kylsystem / värmesystem har därefter lämnats utan aktiva standardorsaker.
+Historiska poster bevaras men avaktiveras.
