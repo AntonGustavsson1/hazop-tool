@@ -239,6 +239,23 @@ class DatabaseLayerTests(unittest.TestCase):
             'Säkerhetsventil öppnar för tidigt': 0.01,
         }, visible)
 
+    def test_pump_catalog_uses_four_approved_causes(self):
+        deviation_id = self.db.conn.execute(
+            "SELECT id FROM standard_deviations "
+            "WHERE description='Lågt flöde' AND active=1").fetchone()['id']
+        pump_id = self.db.conn.execute(
+            "SELECT id FROM standard_objects WHERE name='Pump'").fetchone()['id']
+        visible = {
+            row['description']: row['frequency']
+            for row in self.db.standard_causes_for_object(deviation_id, pump_id)
+        }
+        self.assertEqual({
+            'Felaktigt pumpmedium': 0.01,
+            'Pump stopp': 0.1,
+            'Pump stopp, backflöde via pump': 0.01,
+            'Frekvensomformare — fel varvtal': 0.01,
+        }, visible)
+
     def test_create_full_chain(self):
         ids = self._make_full_chain()
         self.assertIsNotNone(self.db.get_node(ids['node_id']))

@@ -572,10 +572,6 @@ def freq_to_f_level(freq_per_year, boundaries=None) -> int:
 _COMP_STD_CAUSES = {
     # ── Lågt flöde ────────────────────────────────────────────────────────────
     "Lågt flöde": {
-        "Pump":               [("Pump stopp",                           2e-2),
-                               ("Reducerad pumpkapacitet",              1e-2),
-                               ("Kavitation",                           5e-3),
-                               ("Inlopp blockerat",                     5e-3)],
         "Kompressor / fläkt": [("Kompressor / fläkt stopp",            2e-2),
                                ("Reducerad kapacitet",                  1e-2),
                                ("Inloppsfilter igensatt",               5e-2)],
@@ -596,8 +592,6 @@ _COMP_STD_CAUSES = {
 
     # ── Högt flöde ────────────────────────────────────────────────────────────
     "Högt flöde": {
-        "Pump":               [("Pumpkapacitet för hög",                5e-3),
-                               ("Frekvensomformare — fel varvtal",      1e-2)],
         "Kompressor / fläkt": [("Kompressor — för hög kapacitet",       5e-3)],
         "Tank / kärl / kolonn":[("Övertryck driver högre flöde",        1e-2)],
         "Instrument":         [("Flödesgivare felar — styrventil öppnar", 0.1),
@@ -607,7 +601,6 @@ _COMP_STD_CAUSES = {
 
     # ── Högt tryck ────────────────────────────────────────────────────────────
     "Högt tryck": {
-        "Pump":               [("Pump deadhead — utlopp blockerat",     5e-3)],
         "Värmeväxlare / kylare / värmare": [
                                ("Kylningsbortfall",                     5e-3),
                                ("Termisk expansion utan ventilering",   1e-3)],
@@ -622,7 +615,6 @@ _COMP_STD_CAUSES = {
 
     # ── Lågt tryck ────────────────────────────────────────────────────────────
     "Lågt tryck": {
-        "Pump":               [("Pump stopp — tryckfall",               2e-2)],
         "Rörledning / slang": [("Rörläckage / slangbrott",              5e-4),
                                ("Packningsläckage",                     1e-3)],
         "Fläns / koppling / packning": [
@@ -634,7 +626,6 @@ _COMP_STD_CAUSES = {
 
     # ── Hög nivå ──────────────────────────────────────────────────────────────
     "Hög nivå": {
-        "Pump":               [("Utloppspump stopp",                    2e-2)],
         "Instrument":         [("Nivågivare felar — reglering stänger utlopp", 0.1),
                                ("Börvärde nivå felaktigt",              1e-2)],
         "Tank / kärl / kolonn":[("Inflöde > utflöde",                  5e-3)],
@@ -643,8 +634,6 @@ _COMP_STD_CAUSES = {
 
     # ── Låg nivå ──────────────────────────────────────────────────────────────
     "Låg nivå": {
-        "Pump":               [("Inloppspump stopp",                    2e-2),
-                               ("Pumpläckage / tätningsfel",            5e-3)],
         "Rörledning / slang": [("Rörläckage",                           5e-4)],
         "Instrument":         [("Nivågivare felar — reglering öppnar utlopp", 0.1)],
         "Tank / kärl / kolonn":[("Läckage via botten / sida",           5e-4)],
@@ -660,7 +649,6 @@ _COMP_STD_CAUSES = {
                                ("Extern värmetillförsel",               1e-4)],
         "Rörledning / slang": [("Isolationsfel / brandpåverkan",        5e-4)],
         "Styrsystem / PLC / DCS": [("Temperaturreglering felar",        5e-3)],
-        "Pump":               [("Pumpfriktionsvärme",                   5e-3)],
         "Kompressor / fläkt": [("Kompressionsöverhettning",             1e-2)],
     },
 
@@ -676,8 +664,6 @@ _COMP_STD_CAUSES = {
 
     # ── Omvänt flöde ─────────────────────────────────────────────────────────
     "Omvänt flöde": {
-        "Pump":               [("Pump stopp — backflöde via pump",      2e-2),
-                               ("Pump roterar baklänges",               1e-3)],
         "Rörledning / slang": [("Felkopplad ledning",                   1e-4)],
         "Styrsystem / PLC / DCS": [("Ventilstyrning felar", 5e-3)],
     },
@@ -695,7 +681,6 @@ _COMP_STD_CAUSES = {
                                ("Fel råmaterial / kemikalie",           1e-3)],
         "Rörledning / slang": [("Felkopplad ledning",                   1e-4)],
         "Instrument":         [("Analysgivare felar — doseringsstyrning", 0.1)],
-        "Pump":               [("Felaktigt pumpmedium",                 5e-4)],
     },
 
     # ── Bortfall av hjälpsystem ───────────────────────────────────────────────
@@ -738,8 +723,6 @@ _COMP_STD_CAUSES = {
     "Start-up / Shut-down": {
         "Rörledning / slang": [("Kondensatbank — vätskeslag",           1e-3),
                                ("Luftlås vid start",                    5e-4)],
-        "Pump":               [("Pump startas mot stängt utlopp",       5e-3),
-                               ("Pump startas utan inloppstryck",       5e-3)],
         "Operatör / procedur / underhåll": [
                                ("Felaktig start-/stoppsekvens",         1e-2),
                                ("Procedur ej följd",                    5e-2)],
@@ -812,12 +795,10 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('Instrument', 'Avvikande sammansättning', 'Analysgivare felar'),
     ('Instrument', 'Drift', 'Felläsning av mätvärde'),
     ('Instrument', 'Underhåll', 'Instrument ej återdriftsatt'),
-    ('Pump', 'Lågt flöde', 'Pump stopp'),
-    ('Pump', 'Högt flöde', 'Pumpkapacitet för hög'),
-    ('Pump', 'Omvänt flöde', 'Pump stopp, backflöde via pump'),
-    ('Pump', 'Högt tryck', 'Utlopp blockerat'),
-    ('Pump', 'Start-up / Shut-down', 'Pump startas mot stängt utlopp'),
-    ('Pump', 'Start-up / Shut-down', 'Pump startas utan inloppstryck'),
+    ('Pump', 'På samtliga avvikelser', 'Felaktigt pumpmedium'),
+    ('Pump', 'På samtliga avvikelser', 'Pump stopp'),
+    ('Pump', 'På samtliga avvikelser', 'Pump stopp, backflöde via pump'),
+    ('Pump', 'På samtliga avvikelser', 'Frekvensomformare — fel varvtal'),
     ('Elförsörjning', 'Bortfall av hjälpsystem', 'Strömavbrott'),
     ('Tryckluft / instrumentluft', 'Bortfall av hjälpsystem', 'Lufttrycksfall'),
     ('Kylsystem / värmesystem', 'Bortfall av hjälpsystem', 'Bortfall av kylvatten'),
@@ -834,6 +815,10 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('On-off ventil', 'På samtliga avvikelser', 'Ventil felaktigt öppnad'): 0.09,
     ('Backventil', 'På samtliga avvikelser', 'Backventil fastnar stängd'): 0.01,
     ('Backventil', 'På samtliga avvikelser', 'Backventil läcker'): 0.1,
+    ('Pump', 'På samtliga avvikelser', 'Felaktigt pumpmedium'): 0.01,
+    ('Pump', 'På samtliga avvikelser', 'Pump stopp'): 0.1,
+    ('Pump', 'På samtliga avvikelser', 'Pump stopp, backflöde via pump'): 0.01,
+    ('Pump', 'På samtliga avvikelser', 'Frekvensomformare — fel varvtal'): 0.01,
     ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Sprängbleck öppnar för tidigt'): 0.01,
     ('Säkerhetsventil / sprängbleck', 'På samtliga avvikelser', 'Säkerhetsventil öppnar för tidigt'): 0.01,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
@@ -1790,9 +1775,9 @@ class Database:
                     }
                     keep_id = next((id_ for id_ in ids if id_ in referenced), ids[0])
                     self.conn.execute(
-                        "UPDATE standard_causes SET active=1, comp_type=?, frequency=?, "
-                        "use_in_cause_form=1 WHERE id=?",
-                        (object_name, frequencies[desired.index(description)], keep_id))
+                        "UPDATE standard_causes SET description=?, active=1, comp_type=?, "
+                        "frequency=?, use_in_cause_form=1 WHERE id=?",
+                        (description, object_name, frequencies[desired.index(description)], keep_id))
                     for duplicate_id in ids:
                         if duplicate_id != keep_id:
                             self.conn.execute(
@@ -1877,6 +1862,36 @@ class Database:
             "SELECT id FROM standard_objects WHERE name='Säkerhetsventil / sprängbleck') "
             "AND active=1 AND description NOT IN (?,?)",
             ('Sprängbleck öppnar för tidigt', 'Säkerhetsventil öppnar för tidigt'))
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
+        self.conn.commit()
+
+    def _migrate_pump_compact_catalog_v1(self):
+        """Apply the four approved pump causes and frequencies."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='Pump',
+            desired=('Felaktigt pumpmedium', 'Pump stopp',
+                     'Pump stopp, backflöde via pump', 'Frekvensomformare — fel varvtal'),
+            frequencies=(0.01, 0.1, 0.01, 0.01),
+            key='pump_compact_catalog_v1')
+
+    def _migrate_pump_catalog_cleanup_v2(self):
+        """Canonicalize legacy dash/comma wording and retire other pump rows."""
+        key = 'pump_catalog_cleanup_v2'
+        if self.conn.execute("SELECT 1 FROM app_config WHERE key=?", (key,)).fetchone():
+            return
+        object_id = self.conn.execute(
+            "SELECT id FROM standard_objects WHERE name='Pump'").fetchone()['id']
+        self.conn.execute(
+            "UPDATE standard_causes SET description=? "
+            "WHERE object_id=? AND active=1 AND description=?",
+            ('Pump stopp, backflöde via pump', object_id,
+             'Pump stopp — backflöde via pump'))
+        self.conn.execute(
+            "UPDATE standard_causes SET active=0 WHERE object_id=? AND active=1 "
+            "AND description NOT IN (?,?,?,?)",
+            (object_id, 'Felaktigt pumpmedium', 'Pump stopp',
+             'Pump stopp, backflöde via pump', 'Frekvensomformare — fel varvtal'))
         self.conn.execute(
             "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
         self.conn.commit()
@@ -2587,6 +2602,8 @@ class Database:
         self._migrate_check_valve_compact_catalog_v1()
         self._migrate_relief_valve_compact_catalog_v1()
         self._migrate_relief_valve_cleanup_v2()
+        self._migrate_pump_compact_catalog_v1()
+        self._migrate_pump_catalog_cleanup_v2()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template
