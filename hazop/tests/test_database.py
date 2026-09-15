@@ -307,7 +307,7 @@ class DatabaseLayerTests(unittest.TestCase):
             'Tubbrott': 0.001,
         }, visible)
 
-    def test_tank_catalog_uses_four_approved_causes(self):
+    def test_tank_catalog_removes_inflow_and_clears_three_frequencies(self):
         deviation_id = self.db.conn.execute(
             "SELECT id FROM standard_deviations "
             "WHERE description='Hög temperatur' AND active=1").fetchone()['id']
@@ -319,11 +319,64 @@ class DatabaseLayerTests(unittest.TestCase):
             for row in self.db.standard_causes_for_object(deviation_id, object_id)
         }
         self.assertEqual({
-            'Endoterm reaktion / avdunstning': 0.001,
-            'Exoterm reaktion': 0.001,
-            'Inflöde > utflöde': 0.05,
-            'Låg nivå i kärl': 0.05,
+            'Endoterm reaktion / avdunstning': None,
+            'Exoterm reaktion': None,
+            'Låg nivå i kärl': None,
         }, visible)
+
+        # Recreate a pre-v3 active inflow row referenced by a project cause.
+        # Re-running the migration must retire it from both catalogue layers,
+        # not delete the historical record or break its reference.
+        retired = self.db.conn.execute(
+            """SELECT sc.id,gm.cause_group_id FROM standard_causes sc
+                 JOIN standard_cause_group_members gm ON gm.standard_cause_id=sc.id
+                 WHERE sc.object_id=? AND sc.description=? LIMIT 1""",
+            (object_id, 'Inflöde > utflöde')).fetchone()
+        node_id = self.db.add_node()
+        project_deviation_id = self.db.conn.execute(
+            "SELECT id FROM deviations WHERE node_id=? AND description='Hög temperatur'",
+            (node_id,)).fetchone()['id']
+        project_cause_id = self.db.add_cause(project_deviation_id)
+        self.db.conn.execute("UPDATE causes SET standard_cause_id=? WHERE id=?",
+                             (retired['id'], project_cause_id))
+        self.db.conn.execute(
+            "UPDATE standard_causes SET active=1,frequency=0.05 WHERE id=?", (retired['id'],))
+        self.db.conn.execute(
+            "UPDATE standard_cause_groups SET active=1,frequency=0.05 WHERE id=?",
+            (retired['cause_group_id'],))
+        self.db.conn.execute(
+            "UPDATE standard_cause_group_deviations SET active=1 WHERE cause_group_id=?",
+            (retired['cause_group_id'],))
+        self.db.conn.execute("DELETE FROM app_config WHERE key='tank_compact_catalog_v3'")
+        self.db.conn.commit()
+        self.db._migrate_tank_compact_catalog_v3()
+
+        historical = self.db.conn.execute(
+            "SELECT c.standard_cause_id,sc.active FROM causes c "
+            "JOIN standard_causes sc ON sc.id=c.standard_cause_id WHERE c.id=?",
+            (project_cause_id,)).fetchone()
+        self.assertEqual(retired['id'], historical['standard_cause_id'])
+        self.assertEqual(0, historical['active'])
+        self.assertEqual(0, self.db.conn.execute(
+            "SELECT active FROM standard_cause_groups WHERE id=?",
+            (retired['cause_group_id'],)).fetchone()['active'])
+
+        # The old reduced-catalog migration supplies 0.02/year to truly
+        # unspecified legacy rows on every startup.  Explicitly blank group
+        # frequencies must survive that restart path.
+        reopened = Database(path=self.db_path)
+        try:
+            reloaded = {
+                row['description']: row['frequency']
+                for row in reopened.standard_causes_for_object(deviation_id, object_id)
+            }
+            self.assertEqual({
+                'Endoterm reaktion / avdunstning': None,
+                'Exoterm reaktion': None,
+                'Låg nivå i kärl': None,
+            }, reloaded)
+        finally:
+            reopened.conn.close()
 
     def test_pipe_catalog_has_no_active_causes_after_clear(self):
         deviation_id = self.db.conn.execute(

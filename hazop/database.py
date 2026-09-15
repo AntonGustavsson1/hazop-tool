@@ -756,7 +756,6 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Tubbrott'),
     ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Endoterm reaktion / avdunstning'),
     ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Exoterm reaktion'),
-    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Inflöde > utflöde'),
     ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Låg nivå i kärl'),
     ('Instrument', 'På samtliga avvikelser', 'Instrument felar lågt'),
     ('Instrument', 'På samtliga avvikelser', 'Instrument felar högt'),
@@ -820,10 +819,11 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Igensatt värmeväxlare'): 0.1,
     ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Tubläckage'): 0.01,
     ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Tubbrott'): 0.001,
-    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Endoterm reaktion / avdunstning'): 0.001,
-    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Exoterm reaktion'): 0.001,
-    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Inflöde > utflöde'): 0.05,
-    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Låg nivå i kärl'): 0.05,
+    # Tank causes below intentionally have no default frequency.  A user must
+    # select or enter a frequency for a specific project cause when required.
+    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Endoterm reaktion / avdunstning'): None,
+    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Exoterm reaktion'): None,
+    ('Tank / kärl / kolonn', 'På samtliga avvikelser', 'Låg nivå i kärl'): None,
     ('Instrument', 'På samtliga avvikelser', 'Instrument felar lågt'): 0.09,
     ('Instrument', 'På samtliga avvikelser', 'Instrument felar högt'): 0.09,
     ('Instrument', 'På samtliga avvikelser', 'Instrument fryser'): 0.09,
@@ -1551,8 +1551,13 @@ class Database:
             # Reduced standard causes use one conservative default frequency
             # when no explicit rate was supplied.
             self.conn.execute(
-                "UPDATE standard_causes SET frequency=0.02 "
-                "WHERE active=1 AND frequency IS NULL")
+                """UPDATE standard_causes SET frequency=0.02
+                     WHERE active=1 AND frequency IS NULL
+                       AND NOT EXISTS (
+                           SELECT 1 FROM standard_cause_group_members gm
+                           JOIN standard_cause_groups g ON g.id=gm.cause_group_id
+                           WHERE gm.standard_cause_id=standard_causes.id
+                             AND g.active=1 AND g.frequency IS NULL)""")
             self.conn.commit()
             return
         self.conn.executescript("""
@@ -1940,6 +1945,70 @@ class Database:
                      'Inflöde > utflöde', 'Låg nivå i kärl'),
             frequencies=(0.001, 0.001, 0.05, 0.05),
             key='tank_compact_catalog_v1')
+
+    def _migrate_tank_compact_catalog_v3(self):
+        """Retire the inflow cause and clear the remaining approved rates.
+
+        The logical cause groups introduced after the original compact
+        migration mirror the legacy picker rows.  Update both layers here so
+        the object → cause editor and the picker agree, while preserving every
+        historic ``standard_cause_id`` row for existing project causes.
+        """
+        key = 'tank_compact_catalog_v3'
+        if self.conn.execute("SELECT 1 FROM app_config WHERE key=?", (key,)).fetchone():
+            return
+
+        object_row = self.conn.execute(
+            "SELECT id FROM standard_objects WHERE name='Tank / kärl / kolonn'").fetchone()
+        if not object_row:
+            logging.warning("Tank catalogue migration skipped: object is missing")
+            return
+
+        object_id = object_row['id']
+        retained = (
+            'Endoterm reaktion / avdunstning',
+            'Exoterm reaktion',
+            'Låg nivå i kärl',
+        )
+        removed = 'Inflöde > utflöde'
+
+        # Materialised picker rows are historical records, so retire rather
+        # than delete the removed cause.  The retained rows deliberately have
+        # no default frequency.
+        self.conn.execute(
+            "UPDATE standard_causes SET active=0 WHERE object_id=? AND active=1 AND description=?",
+            (object_id, removed))
+        self.conn.execute(
+            "UPDATE standard_causes SET frequency=NULL WHERE object_id=? AND active=1 "
+            "AND description IN (?,?,?)",
+            (object_id, *retained))
+
+        # Keep the reusable definition layer in sync with its picker rows.
+        removed_groups = [row['id'] for row in self.conn.execute(
+            "SELECT id FROM standard_cause_groups WHERE object_id=? AND active=1 AND description=?",
+            (object_id, removed)).fetchall()]
+        if removed_groups:
+            placeholders = ','.join('?' for _ in removed_groups)
+            self.conn.execute(
+                f"UPDATE standard_cause_groups SET active=0 WHERE id IN ({placeholders})",
+                removed_groups)
+            self.conn.execute(
+                f"UPDATE standard_cause_group_deviations SET active=0 "
+                f"WHERE cause_group_id IN ({placeholders})",
+                removed_groups)
+            self.conn.execute(
+                f"UPDATE standard_causes SET active=0 WHERE id IN ("
+                f"SELECT standard_cause_id FROM standard_cause_group_members "
+                f"WHERE cause_group_id IN ({placeholders}))",
+                removed_groups)
+        self.conn.execute(
+            "UPDATE standard_cause_groups SET frequency=NULL WHERE object_id=? AND active=1 "
+            "AND description IN (?,?,?)",
+            (object_id, *retained))
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO app_config(key,value) VALUES (?, '1')", (key,))
+        self.conn.commit()
 
     def _migrate_pipe_catalog_clear_v1(self):
         """Clear active pipe/hose standard causes while preserving history."""
@@ -3071,6 +3140,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         self._migrate_mixer_compact_catalog_v1()
         self._migrate_operator_compact_catalog_v1()
         self._migrate_standard_cause_groups_v1()
+        self._migrate_tank_compact_catalog_v3()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template

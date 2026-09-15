@@ -7540,6 +7540,14 @@ raderas inte.
 Standardordningen har därefter ändrats så att `Instrument` ligger som nummer
 4, direkt efter `Reglerventil`.
 
+Tank / kärl / kolonn har därefter justerats: `Inflöde > utflöde` är inte
+längre en aktiv standardorsak. `Endoterm reaktion / avdunstning`, `Exoterm
+reaktion` och `Låg nivå i kärl` är kvar men utan förifylld frekvens. Migreringen
+avaktiverar den borttagna orsakens grupp och dess materialiserade väljarrader,
+utan att radera tidigare rader eller bryta `causes.standard_cause_id`.
+Verifiering: riktat databastest täcker migration, bevarad historisk referens
+och omstart; smoke-test, grupperedigerarens test och syntaxkontroll passerar.
+
 ## 2026-09-15 — Redigera standardorsaker som objekt → orsak → avvikelse
 
 Avvikelser & Orsaker har byggts om till ordningen `Nodtyp → Objekt → Orsak →
