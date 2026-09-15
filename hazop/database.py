@@ -572,9 +572,6 @@ def freq_to_f_level(freq_per_year, boundaries=None) -> int:
 _COMP_STD_CAUSES = {
     # ── Lågt flöde ────────────────────────────────────────────────────────────
     "Lågt flöde": {
-        "Värmeväxlare / kylare / värmare": [
-                               ("Rör igensatta — fouling",              5e-2),
-                               ("Vakuumbrott / tömning",                1e-3)],
         "Tank / kärl / kolonn":[("Låg nivå i matningskärl",            5e-2),
                                ("Utlopp stängt / nivåstyrning",         1e-2)],
         "Rörledning / slang": [("Igensatt rörledning",                  5e-3),
@@ -595,9 +592,6 @@ _COMP_STD_CAUSES = {
 
     # ── Högt tryck ────────────────────────────────────────────────────────────
     "Högt tryck": {
-        "Värmeväxlare / kylare / värmare": [
-                               ("Kylningsbortfall",                     5e-3),
-                               ("Termisk expansion utan ventilering",   1e-3)],
         "Tank / kärl / kolonn":[("Blockerat avluftningssystem",         5e-4)],
         "Instrument":         [("Trycktransmitter felar — styrventil stänger", 0.1),
                                ("Börvärde tryckreglering felaktigt",    1e-2)],
@@ -633,9 +627,6 @@ _COMP_STD_CAUSES = {
 
     # ── Hög temperatur ────────────────────────────────────────────────────────
     "Hög temperatur": {
-        "Värmeväxlare / kylare / värmare": [
-                               ("Kylningsbortfall",                     5e-3),
-                               ("Värmetillförsel okontrollerad",        1e-3)],
         "Instrument":         [("Temperaturgivare felar — kylning stängs", 0.1)],
         "Tank / kärl / kolonn":[("Exoterm reaktion",                    1e-4),
                                ("Extern värmetillförsel",               1e-4)],
@@ -645,9 +636,6 @@ _COMP_STD_CAUSES = {
 
     # ── Låg temperatur ────────────────────────────────────────────────────────
     "Låg temperatur": {
-        "Värmeväxlare / kylare / värmare": [
-                               ("Värmebortfall",                        5e-3),
-                               ("Överkylning",                          1e-3)],
         "Instrument":         [("Temperaturgivare felar — värmning stängs", 0.1)],
         "Rörledning / slang": [("Frysrisk — isolationsbortfall",        1e-3)],
         "Tank / kärl / kolonn":[("Endoterm reaktion / avdunstning",     1e-4)],
@@ -718,8 +706,6 @@ _COMP_STD_CAUSES = {
                                ("Felaktig start-/stoppsekvens",         1e-2),
                                ("Procedur ej följd",                    5e-2)],
         "Tank / kärl / kolonn":[("Kärl ej förberett vid start",         1e-3)],
-        "Värmeväxlare / kylare / värmare": [
-                               ("Termisk chock vid uppstart",           1e-3)],
     },
 }
 
@@ -761,12 +747,13 @@ _SUPPLEMENTARY_STD_CAUSES = [
     ('Kompressor / fläkt', 'På samtliga avvikelser', 'Frekvensomformare, fel varvtal'),
     ('Filter / sil', 'På samtliga avvikelser', 'Filter / sil igensatt'),
     ('Filter / sil', 'På samtliga avvikelser', 'Filter / sil skadat'),
-    ('Värmeväxlare / kylare / värmare', 'Lågt flöde', 'Igensatt värmeväxlare'),
-    ('Värmeväxlare / kylare / värmare', 'Hög temperatur', 'Kylningsbortfall'),
-    ('Värmeväxlare / kylare / värmare', 'Hög temperatur', 'För hög värmning'),
-    ('Värmeväxlare / kylare / värmare', 'Låg temperatur', 'Värmebortfall'),
-    ('Värmeväxlare / kylare / värmare', 'Låg temperatur', 'För låg kylning'),
-    ('Värmeväxlare / kylare / värmare', 'Missriktat flöde', 'Läckage i värmeväxlare'),
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'För hög värmning'),
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'För låg kylning'),
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'För hög kylning'),
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'För låg värmning'),
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Igensatt värmeväxlare'),
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Tubläckage'),
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Tubbrott'),
     ('Instrument', 'Lågt flöde', 'Givare felar, styrventil stänger'),
     ('Instrument', 'Lågt flöde', 'Börvärde felaktigt inställt'),
     ('Instrument', 'Högt flöde', 'Givare felar, styrventil öppnar'),
@@ -814,6 +801,13 @@ _SUPPLEMENTARY_FREQUENCIES = {
     ('Kompressor / fläkt', 'På samtliga avvikelser', 'Frekvensomformare, fel varvtal'): 0.01,
     ('Filter / sil', 'På samtliga avvikelser', 'Filter / sil igensatt'): 0.01,
     ('Filter / sil', 'På samtliga avvikelser', 'Filter / sil skadat'): 0.01,
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'För hög värmning'): 0.09,
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'För låg kylning'): 0.09,
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'För hög kylning'): 0.09,
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'För låg värmning'): 0.09,
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Igensatt värmeväxlare'): 0.1,
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Tubläckage'): 0.01,
+    ('Värmeväxlare / kylare / värmare', 'På samtliga avvikelser', 'Tubbrott'): 0.001,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar stängd'): 0.09,
     ('Reglerventil', 'På samtliga avvikelser', 'Reglerventil felar öppen'): 0.09,
 }
@@ -1905,6 +1899,15 @@ class Database:
             frequencies=(0.01, 0.01),
             key='filter_compact_catalog_v1')
 
+    def _migrate_heat_exchanger_compact_catalog_v1(self):
+        """Apply the seven approved heat-exchanger causes."""
+        self._migrate_manual_valve_compact_catalog_v2(
+            object_name='Värmeväxlare / kylare / värmare',
+            desired=('För hög värmning', 'För låg kylning', 'För hög kylning',
+                     'För låg värmning', 'Igensatt värmeväxlare', 'Tubläckage', 'Tubbrott'),
+            frequencies=(0.09, 0.09, 0.09, 0.09, 0.1, 0.01, 0.001),
+            key='heat_exchanger_compact_catalog_v1')
+
     def _migrate_tables_and_seed(self):
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pid_config (
@@ -2615,6 +2618,7 @@ class Database:
         self._migrate_pump_catalog_cleanup_v2()
         self._migrate_compressor_compact_catalog_v1()
         self._migrate_filter_compact_catalog_v1()
+        self._migrate_heat_exchanger_compact_catalog_v1()
 
         # Ensure every node has all standard deviations from template library.
         # dict.fromkeys also protects fresh databases if a legacy template

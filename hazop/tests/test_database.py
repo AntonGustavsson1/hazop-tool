@@ -286,6 +286,27 @@ class DatabaseLayerTests(unittest.TestCase):
             'Filter / sil skadat': 0.01,
         }, visible)
 
+    def test_heat_exchanger_catalog_uses_seven_approved_causes(self):
+        deviation_id = self.db.conn.execute(
+            "SELECT id FROM standard_deviations "
+            "WHERE description='Hög temperatur' AND active=1").fetchone()['id']
+        object_id = self.db.conn.execute(
+            "SELECT id FROM standard_objects "
+            "WHERE name='Värmeväxlare / kylare / värmare'").fetchone()['id']
+        visible = {
+            row['description']: row['frequency']
+            for row in self.db.standard_causes_for_object(deviation_id, object_id)
+        }
+        self.assertEqual({
+            'För hög värmning': 0.09,
+            'För låg kylning': 0.09,
+            'För hög kylning': 0.09,
+            'För låg värmning': 0.09,
+            'Igensatt värmeväxlare': 0.1,
+            'Tubläckage': 0.01,
+            'Tubbrott': 0.001,
+        }, visible)
+
     def test_create_full_chain(self):
         ids = self._make_full_chain()
         self.assertIsNotNone(self.db.get_node(ids['node_id']))

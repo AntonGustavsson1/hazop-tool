@@ -7498,3 +7498,9 @@ Säkerhetsventil / sprängbleck har därefter förenklats till `Sprängbleck
 Reglerventil har därefter förenklats till `Reglerventil felar stängd` och
 `Reglerventil felar öppen`, båda med 0,09/år. Äldre avvikelsespecifika
 Reglerventil-orsaker avaktiveras men raderas inte.
+
+Värmeväxlare / kylare / värmare har därefter förenklats till sju aktiva
+standardorsaker: `För hög värmning`, `För låg kylning`, `För hög kylning` och
+`För låg värmning` (0,09/år vardera), `Igensatt värmeväxlare` (0,1/år),
+`Tubläckage` (0,01/år) samt `Tubbrott` (0,001/år). Äldre orsaker avaktiveras
+men raderas inte.
