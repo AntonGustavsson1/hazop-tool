@@ -7512,3 +7512,6 @@ men raderas inte.
 
 Rörledning / slang har därefter rensats på aktiva standardorsaker. Historiska
 poster bevaras men avaktiveras så att de inte längre visas i orsaksväljaren.
+
+Fläns / koppling / packning har därefter rensats på aktiva standardorsaker.
+Historiska poster bevaras men avaktiveras.

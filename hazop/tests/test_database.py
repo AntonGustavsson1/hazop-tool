@@ -334,6 +334,15 @@ class DatabaseLayerTests(unittest.TestCase):
         visible = self.db.standard_causes_for_object(deviation_id, object_id)
         self.assertEqual([], visible)
 
+    def test_flange_catalog_has_no_active_causes_after_clear(self):
+        deviation_id = self.db.conn.execute(
+            "SELECT id FROM standard_deviations "
+            "WHERE description='Hög temperatur' AND active=1").fetchone()['id']
+        object_id = self.db.conn.execute(
+            "SELECT id FROM standard_objects "
+            "WHERE name='Fläns / koppling / packning'").fetchone()['id']
+        self.assertEqual([], self.db.standard_causes_for_object(deviation_id, object_id))
+
     def test_create_full_chain(self):
         ids = self._make_full_chain()
         self.assertIsNotNone(self.db.get_node(ids['node_id']))
