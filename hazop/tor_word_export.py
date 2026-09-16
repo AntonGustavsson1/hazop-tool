@@ -291,10 +291,14 @@ def _add_risk_framework(document, db, data):
     if data['field']('Riskacceptanskriterier'):
         document.add_paragraph(data['field']('Riskacceptanskriterier'))
 
-    frequency_codes = data['matrix']['x_codes'] if x_frequency else data['matrix']['y_codes']
-    frequency_labels = data['matrix']['x_labels'] if x_frequency else data['matrix']['y_labels']
-    consequence_codes = data['matrix']['y_codes'] if x_frequency else data['matrix']['x_codes']
-    consequence_labels = data['matrix']['y_labels'] if x_frequency else data['matrix']['x_labels']
+    # Storage axes are fixed: x is frequency and y is consequence.  ``x_axis``
+    # changes only how the risk matrix is drawn, not the meaning of the saved
+    # code/label arrays.  Swapping these arrays when the visual axes were
+    # reversed made the separate frequency and consequence tables incorrect.
+    frequency_codes = data['matrix']['x_codes']
+    frequency_labels = data['matrix']['x_labels']
+    consequence_codes = data['matrix']['y_codes']
+    consequence_labels = data['matrix']['y_labels']
     document.add_heading('5.3 Frekvensskala', 2)
     document.add_paragraph(
         'Tabell 5-3 redovisar de frekvensnivåer och definitioner som är '

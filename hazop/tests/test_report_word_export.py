@@ -127,6 +127,49 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertTrue(any(section.page_width > section.page_height
                             for section in doc.sections))
 
+    def test_tor_keeps_frequency_and_consequence_definitions_on_their_storage_axes(self):
+        """Changing the visual matrix orientation must not swap the two lists."""
+        matrix = deepcopy(self.db.get_risk_matrix() or database.DEFAULT_MATRIX)
+        matrix.update({
+            'rows': 2,
+            'cols': 3,
+            # Display consequences horizontally, like the ProSa IPS template.
+            'x_axis': 'consequence',
+            'x_reversed': False,
+            'y_reversed': False,
+            # x data always remains the frequency scale in storage.
+            'x_codes': ['F0', 'F1', 'F2'],
+            'x_labels': ['Frekvens noll', 'Frekvens ett', 'Frekvens två'],
+            'y_codes': ['C1', 'C2'],
+            'y_labels': ['Konsekvens ett', 'Konsekvens två'],
+            'cell_labels': [['Låg', 'Medium', 'Hög'], ['Medium', 'Hög', 'Hög']],
+            'cell_colors': [['#22AA66', '#FFFF00', '#EE4444'],
+                            ['#FFFF00', '#EE4444', '#EE4444']],
+            'cell_fg_colors': [['#000000'] * 3, ['#000000'] * 3],
+        })
+        self.db.set_risk_matrix(matrix)
+        person = self.db.consequence_categories()[0]
+        self.db.set_severity_definition(1, person['id'], 'Definition C1')
+        self.db.set_severity_definition(2, person['id'], 'Definition C2')
+
+        doc, _path = self.export_tor()
+        frequency_table = next(
+            table for table in doc.tables
+            if table.cell(0, 0).text == 'Nivå' and table.cell(1, 0).text == 'F0')
+        consequence_table = next(
+            table for table in doc.tables
+            if table.cell(0, 0).text == 'Nivå'
+            and table.cell(0, 1).text == 'Benämning')
+        self.assertEqual(
+            [('F0', 'Frekvens noll'), ('F1', 'Frekvens ett'),
+             ('F2', 'Frekvens två')],
+            [(row.cells[0].text, row.cells[1].text)
+             for row in frequency_table.rows[1:]])
+        self.assertEqual(
+            [('C1', 'Konsekvens ett'), ('C2', 'Konsekvens två')],
+            [(row.cells[0].text, row.cells[1].text)
+             for row in consequence_table.rows[1:]])
+
     def test_tor_includes_compact_active_frequency_catalogue_and_formal_basis(self):
         """The ToR must contain the current reusable catalogue, once per cause."""
         data = collect_tor_data(self.db)

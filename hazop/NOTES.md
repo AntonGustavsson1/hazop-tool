@@ -7598,3 +7598,13 @@ PFDavg eller SIL-verifiering. Texten kräver projektspecifik omprövning för
 exempelvis renare/smutsigare medier, manöverfrekvens för manuella ventiler,
 elnätets tillförlitlighet, matningsarkitektur och reservkraft. IEC 61882,
 IEC 61511-1/-2/-3 och IEC 61508-1/-2 redovisas som referensram.
+
+## 2026-09-16 — ToR: frekvens och konsekvens följer alltid datamodellen
+
+I ToR-exporten ändrar `x_axis` endast riskmatrisens visuella orientering.
+Frekvensskalan ska alltid läsas från matrisens `x_codes`/`x_labels` och
+konsekvensdefinitionerna alltid från `y_codes`/`y_labels`. En felaktig
+orienteringsberoende växling gjorde att dessa två separata tabeller blev
+omkastade i projekt vars konsekvenser visas horisontellt, såsom ProSa IPS.
+Korrigerat med regressionstest som exporterar den orienteringen och verifierar
+att båda tabellerna har rätt kod och definition.
