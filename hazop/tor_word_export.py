@@ -47,6 +47,11 @@ def collect_tor_data(db):
             return missing(f'{label} har flera värden: ' + ' / '.join(values))
         return values[0] if values else ''
 
+    node_types = [dict(row) for row in db.node_types()]
+    default_node_type = node_types[0] if node_types else None
+    standard_cause_catalogue = (
+        db.standard_cause_catalogue_with_frequency(default_node_type['id'])
+        if default_node_type else [])
     return {
         'field': field,
         'nodes': [dict(row) for row in db.nodes()],
@@ -56,6 +61,7 @@ def collect_tor_data(db):
         'participant_values': db.get_participant_column_values(),
         'sessions': [dict(row) for row in db.list_analysis_sessions()],
         'guide_words': [dict(row) for row in db.standard_deviations()],
+        'standard_cause_catalogue': standard_cause_catalogue,
         'revisions': db.project_revisions(),
         'matrix': database._normalise_matrix(deepcopy(database.get_matrix())),
     }
@@ -356,6 +362,116 @@ def _add_risk_framework(document, db, data):
         document.add_paragraph(data['field']('Barriärunderlag'))
 
 
+def _format_frequency_per_year(value):
+    """Format a catalogue frequency consistently for Swedish ToR output."""
+    return f"{float(value):.6g}".replace('.', ',') + '/år'
+
+
+def _add_standard_cause_catalogue_annex(document, data):
+    """Add the current, frequency-backed catalogue as a one-page table annex."""
+    from docx.enum.section import WD_SECTION_START
+    from docx.shared import Pt
+
+    # The explanatory text is intentionally separate from the table. The
+    # latter is a compact, landscape page that can be used directly as a
+    # workshop catalogue without being split across two pages.
+    introduction_section = document.add_section(WD_SECTION_START.NEW_PAGE)
+    _page_setup(introduction_section, landscape=False, paper='A4')
+    document.add_heading('Bilaga 2 Standardorsaker och frekvensunderlag', 1)
+    document.add_paragraph(
+        'Tabell B-1 är ett preliminärt katalogunderlag för HAZOP-workshopen. '
+        'Frekvenserna är förslag till inledande bedömning och ska inför användning '
+        'i ett enskilt scenario granskas, dokumenteras och vid behov justeras av '
+        'analysgruppen med hänsyn till den aktuella anläggningen, driftmiljön och '
+        'tillgängligt tillförlitlighetsunderlag. Tabellen utgör inte ett HAZOP-resultat '
+        'och innebär inte att en komponent, en skyddsfunktion eller en SIF uppfyller '
+        'någon angiven säkerhetsintegritetsnivå.')
+    document.add_paragraph(
+        'Frekvensen 0,09/år är en avrundad screeningnivå. Den har härletts från '
+        'den övre gränsen för SIL 1 vid hög efterfrågan eller kontinuerligt läge, '
+        'PFH < 1 × 10⁻⁵ h⁻¹ (mindre än en farlig felfunktion per 100 000 timmar). '
+        'Omräkningen 1 × 10⁻⁵ h⁻¹ × 8 760 h/år ger 8,76 × 10⁻²/år och har avrundats '
+        'till 0,09/år. PFH avser den genomsnittliga frekvensen av farligt fel för '
+        'en specificerad säkerhetsfunktion; omräkningen får därför inte användas som '
+        'en direkt komponentdatauppgift, som ett PFDavg-värde eller som verifiering '
+        'av att en säkerhetsfunktion uppnår SIL 1.')
+    document.add_paragraph(
+        'Värdena ska särskilt omprövas när processegenskaperna avviker från '
+        'antagandena i katalogen. Renare eller smutsigare medier kan exempelvis '
+        'förändra sannolikheten för igensättning, korrosion, erosion, beläggning och '
+        'läckage. För manuella ventiler kan manöverfrekvens, arbetssätt, åtkomlighet '
+        'och mänskliga felmöjligheter vara avgörande. För elberoende utrustning kan '
+        'elnätets dokumenterade tillförlitlighet, matningsarkitektur, reservkraft, '
+        'spänningskvalitet och återställningsförmåga påverka den relevanta frekvensen. '
+        'Projektet ska därför använda dokumenterade anläggningsdata, leverantörsdata, '
+        'drifterfarenhet och tillämpliga analyser när sådant underlag finns.')
+
+    table_section = document.add_section(WD_SECTION_START.NEW_PAGE)
+    _page_setup(table_section, landscape=True, paper='A4')
+    document.add_heading('Bilaga 2A Katalogtabell', 1)
+    intro = document.add_paragraph(
+        'Endast aktiva standardorsaker med angiven frekvens redovisas. '
+        'Orsaker utan frekvens och objekttyper utan sådana orsaker har utelämnats.')
+    intro.paragraph_format.space_after = Pt(2)
+    _caption(document, 'B-1', 'Föreslagna standardorsaker och frekvenser')
+
+    rows_by_object = {}
+    for cause in data['standard_cause_catalogue']:
+        rows_by_object.setdefault(cause['object_name'], []).append(
+            f"{cause['description']} — {_format_frequency_per_year(cause['frequency'])}")
+    rows = [[object_name, '\n'.join(causes)]
+            for object_name, causes in rows_by_object.items()]
+    table = _table(
+        document,
+        ['Objekt', 'Föreslagna standardorsaker och frekvenser'],
+        rows or [[missing('aktiva standardorsaker med frekvens'), '']],
+        [58, 215])
+    # Twelve grouped rows and a small type size keep the complete, current
+    # catalogue on this one landscape A4 page. The next section starts on a
+    # new page, so a future longer catalogue cannot silently continue into the
+    # reference text below.
+    for row_index, row in enumerate(table.rows):
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.space_before = Pt(0)
+                paragraph.paragraph_format.space_after = Pt(0)
+                paragraph.paragraph_format.line_spacing = 0.9
+                for run in paragraph.runs:
+                    run.font.size = Pt(8 if row_index == 0 else 7.5)
+
+    reference_section = document.add_section(WD_SECTION_START.NEW_PAGE)
+    _page_setup(reference_section, landscape=False, paper='A4')
+    document.add_heading('Bilaga 2B Referensram och tillämpning', 1)
+    document.add_paragraph(
+        'Följande standarder utgör referensram för metod, funktionell säkerhet '
+        'och den fortsatta projektanpassningen. Tillämplig utgåva, nationell '
+        'adoption och eventuella kontraktskrav ska fastställas för projektet.')
+    for reference in (
+            'IEC 61882:2016, Hazard and operability studies (HAZOP studies) — '
+            'Application guide.',
+            'IEC 61511-1:2016, Functional safety — Safety instrumented systems '
+            'for the process industry sector — Part 1: Framework, definitions, '
+            'system, hardware and application programming requirements.',
+            'IEC 61511-2:2016, Functional safety — Safety instrumented systems '
+            'for the process industry sector — Part 2: Guidelines in the application '
+            'of IEC 61511-1.',
+            'IEC 61511-3:2017, Functional safety — Safety instrumented systems '
+            'for the process industry sector — Part 3: Guidance for the determination '
+            'of the required safety integrity levels.',
+            'IEC 61508-1:2010, Functional safety of electrical/electronic/programmable '
+            'electronic safety-related systems — Part 1: General requirements.',
+            'IEC 61508-2:2010, Functional safety of electrical/electronic/programmable '
+            'electronic safety-related systems — Part 2: Requirements for '
+            'electrical/electronic/programmable electronic safety-related systems.'):
+        document.add_paragraph(reference, style='List Bullet')
+    document.add_paragraph(
+        'Standarderna anger ramverk, livscykelkrav och mått för funktionell '
+        'säkerhet. De ersätter inte anläggningsspecifika feldata eller en dokumenterad '
+        'bedömning av den enskilda processen. Katalogvärden ska därför alltid '
+        'spåras till sitt beslutade underlag när de används i riskbedömning, LOPA '
+        'eller dimensionering av en säkerhetsinstrumenterad funktion.')
+
+
 def build_tor(db):
     """Build a ToR from planning inputs only. Caller owns snapshot lifetime."""
     from docx.enum.section import WD_SECTION_START
@@ -499,6 +615,7 @@ def build_tor(db):
         'Före analysen ska aktuella P&ID-ritningar, systembeskrivningar, '
         'designavsikter, driftfall, nodgränser och deltagarlista bekräftas. '
         'Förändringar dokumenteras i projektets förberedelseunderlag.')
+    _add_standard_cause_catalogue_annex(document, data)
 
     _copy_running_headers(document, source_elements, source_relationships)
     footer = document.sections[2].footer

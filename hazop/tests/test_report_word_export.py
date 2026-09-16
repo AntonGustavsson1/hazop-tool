@@ -127,6 +127,79 @@ class ReportWordExportTests(unittest.TestCase):
         self.assertTrue(any(section.page_width > section.page_height
                             for section in doc.sections))
 
+    def test_tor_includes_compact_active_frequency_catalogue_and_formal_basis(self):
+        """The ToR must contain the current reusable catalogue, once per cause."""
+        data = collect_tor_data(self.db)
+        catalogue = data['standard_cause_catalogue']
+        self.assertEqual(32, len(catalogue))
+        self.assertEqual(
+            {'Manuell ventil', 'On-off ventil', 'Reglerventil', 'Instrument',
+             'Backventil', 'Säkerhetsventil / sprängbleck', 'Pump',
+             'Kompressor / fläkt', 'Filter / sil',
+             'Värmeväxlare / kylare / värmare', 'Blandare / omrörare',
+             'Operatör / procedur / underhåll'},
+            {cause['object_name'] for cause in catalogue})
+        self.assertNotIn('Tank / kärl / kolonn',
+                         {cause['object_name'] for cause in catalogue})
+
+        doc, _path = self.export_tor()
+        catalogue_table = next(
+            table for table in doc.tables
+            if table.cell(0, 0).text == 'Objekt'
+            and table.cell(0, 1).text == 'Föreslagna standardorsaker och frekvenser')
+        self.assertEqual(13, len(catalogue_table.rows))
+        catalogue_text = '\n'.join(
+            cell.text for row in catalogue_table.rows for cell in row.cells)
+        body = '\n'.join(paragraph.text for paragraph in doc.paragraphs)
+        for value in ('Ventil felaktigt stängd — 0,01/år',
+                      'Reglerventil felar öppen — 0,09/år',
+                      'Tubläckage — 0,01/år',
+                      'Omrörare stopp — 0,1/år'):
+            self.assertIn(value, catalogue_text)
+        self.assertNotIn('Endoterm reaktion / avdunstning', catalogue_text)
+        self.assertIn('mindre än en farlig felfunktion per 100 000 timmar', body)
+        self.assertIn('inte användas som en direkt komponentdatauppgift', body)
+        self.assertIn('Renare eller smutsigare medier', body)
+        self.assertIn('manöverfrekvens', body)
+        self.assertIn('elnätets dokumenterade tillförlitlighet', body)
+        for standard in ('IEC 61882:2016', 'IEC 61511-1:2016',
+                         'IEC 61511-2:2016', 'IEC 61511-3:2017',
+                         'IEC 61508-1:2010', 'IEC 61508-2:2010'):
+            self.assertIn(standard, body)
+        self.assertGreaterEqual(len(doc.sections), 6)
+        self.assertGreater(doc.sections[-2].page_width, doc.sections[-2].page_height)
+        self.assertLess(doc.sections[-1].page_width, doc.sections[-1].page_height)
+
+    def test_tor_catalogue_refreshes_when_a_standard_cause_changes(self):
+        """The ToR reads the current catalogue on every export, not a copy."""
+        node_type = self.db.node_types()[0]
+        manual_valve = next(
+            item for item in self.db.standard_objects() if item['name'] == 'Manuell ventil')
+        deviation = self.db.standard_deviations_for_node_type(node_type['id'])[0]
+        group_id = self.db.add_standard_cause_group(
+            node_type['id'], manual_valve['id'], 'Provbar dynamisk orsak', 0.03)
+        self.db.set_standard_cause_group_deviation(group_id, deviation['id'], True)
+
+        doc, _path = self.export_tor()
+        catalogue_table = next(
+            table for table in doc.tables
+            if table.cell(0, 0).text == 'Objekt'
+            and table.cell(0, 1).text == 'Föreslagna standardorsaker och frekvenser')
+        catalogue_text = '\n'.join(
+            cell.text for row in catalogue_table.rows for cell in row.cells)
+        self.assertIn('Provbar dynamisk orsak — 0,03/år', catalogue_text)
+
+        self.db.update_standard_cause_group(group_id, frequency=0.04)
+        doc, _path = self.export_tor()
+        catalogue_table = next(
+            table for table in doc.tables
+            if table.cell(0, 0).text == 'Objekt'
+            and table.cell(0, 1).text == 'Föreslagna standardorsaker och frekvenser')
+        catalogue_text = '\n'.join(
+            cell.text for row in catalogue_table.rows for cell in row.cells)
+        self.assertIn('Provbar dynamisk orsak — 0,04/år', catalogue_text)
+        self.assertNotIn('Provbar dynamisk orsak — 0,03/år', catalogue_text)
+
     def test_complete_report_uses_project_and_signoff_fields_without_legacy_customer(self):
         self.db.add_project_custom_field('Framtagen av', 'Författare')
         self.db.add_project_custom_field('Rapportnummer', '262054-Report-02')

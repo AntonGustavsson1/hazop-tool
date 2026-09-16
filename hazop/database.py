@@ -2297,6 +2297,39 @@ class Database:
             "(node_type_id=? OR (node_type_id IS NULL AND ?=1)) "
             "ORDER BY sort_order,id", (object_id, node_type_id, int(node_type_id == default_id)))]
 
+    def standard_cause_catalogue_with_frequency(self, node_type_id):
+        """Active, applicable catalogue causes that have a proposed frequency.
+
+        The reusable group, rather than its materialised per-deviation picker
+        rows, is returned so a cause applicable to several deviations appears
+        once in planning documentation. A group without an active applicable
+        deviation is deliberately excluded: it is not currently available in
+        the cause picker for this node type.
+        """
+        default_id = self._default_node_type_id()
+        rows = self.conn.execute(
+            """SELECT so.id AS object_id, so.name AS object_name,
+                      so.sort_order AS object_sort_order,
+                      scg.id AS cause_group_id, scg.description, scg.frequency,
+                      scg.sort_order AS cause_sort_order
+                 FROM standard_cause_groups scg
+                 JOIN standard_objects so ON so.id=scg.object_id
+                WHERE scg.active=1 AND scg.frequency IS NOT NULL
+                  AND (scg.node_type_id=? OR (scg.node_type_id IS NULL AND ?=1))
+                  AND EXISTS (
+                      SELECT 1
+                        FROM standard_cause_group_deviations scgd
+                        JOIN standard_deviations sd ON sd.id=scgd.deviation_id
+                       WHERE scgd.cause_group_id=scg.id
+                         AND scgd.active=1 AND sd.active=1
+                         AND (sd.node_type_id=?
+                              OR (sd.node_type_id IS NULL AND ?=1))
+                  )
+                ORDER BY so.sort_order,so.id,scg.sort_order,scg.id""",
+            (node_type_id, int(node_type_id == default_id), node_type_id,
+             int(node_type_id == default_id))).fetchall()
+        return [dict(row) for row in rows]
+
     def all_objects_with_cause_group_counts(self, node_type_id):
         """All objects plus the number of editable causes for a node type."""
         default_id = self._default_node_type_id()

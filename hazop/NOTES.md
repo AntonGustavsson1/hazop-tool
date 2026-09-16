@@ -7579,3 +7579,22 @@ kryssa i/ur, frekvens och bevarad projektreferens. En offscreen-rendering har
 granskats strukturellt; textfonten saknas i den headless Qt-runtime som körs
 här, så den ersätts där med fyrkanter och är inte en visuell Windows-GUI-
 acceptanskontroll.
+
+## 2026-09-15 — ToR: standardorsaker och frekvensunderlag
+
+ToR-exporten avslutas nu med en sidstyrd Bilaga 2. Bilaga 2 redovisar den
+aktiva, återanvändbara standardorsakskatalogen per objekt, men endast när
+orsaken både är tillämplig för minst en aktiv avvikelse och har en angiven
+frekvens. Den är en kompakt tabell på en egen A4-liggande sida och följs alltid
+av en ny sida med referensramen. Avsiktligt frekvenslösa orsaker och tomma
+objekt utesluts, så tabellen återger samma rensade katalog som visas vid
+redigeringen utan dubletter per avvikelse.
+
+Den formella ToR-texten gör skillnad mellan den avrundade
+screeningfrekvensen 0,09/år och PFH-måttet för en säkerhetsfunktion. Värdet
+visas som omräkning av den övre SIL 1-gränsen 1E-5/h i hög-/kontinuerligt
+efterfrågat läge (8 760 h/år), men får inte användas som komponentdata,
+PFDavg eller SIL-verifiering. Texten kräver projektspecifik omprövning för
+exempelvis renare/smutsigare medier, manöverfrekvens för manuella ventiler,
+elnätets tillförlitlighet, matningsarkitektur och reservkraft. IEC 61882,
+IEC 61511-1/-2/-3 och IEC 61508-1/-2 redovisas som referensram.
