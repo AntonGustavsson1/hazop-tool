@@ -269,7 +269,7 @@ def _add_risk_framework(document, db, data):
             [_value(item.get('label'), 'risknivå'),
              _value(item.get('definition'), 'acceptanskriterium')]
             for item in levels
-        ], [56, 104])
+        ], [28, 132])
         for row, item in zip(level_table.rows[1:], levels):
             color = str(item.get('color') or '').lstrip('#')
             if color:

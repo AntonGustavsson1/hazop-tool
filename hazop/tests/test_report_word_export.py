@@ -13,6 +13,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from docx import Document
 from docx.oxml.ns import qn
+from docx.shared import Mm
 import database
 from database import Database, load_matrix
 from report_word_export import (
@@ -120,6 +121,14 @@ class ReportWordExportTests(unittest.TestCase):
             self.assertIn(caption, captions)
         self.assertIn('Oacceptabel risk', table_text)
         self.assertIn('Lindrig personskada', table_text)
+        acceptance_table = next(
+            table for table in doc.tables
+            if table.cell(0, 0).text == 'Risknivå'
+            and table.cell(0, 1).text == 'Definition')
+        self.assertAlmostEqual(
+            Mm(28), acceptance_table.columns[0].width, delta=Mm(0.1))
+        self.assertAlmostEqual(
+            Mm(132), acceptance_table.columns[1].width, delta=Mm(0.1))
         self.assertIn('Frekvens bedöms av analysgruppen', body)
         self.assertIn('Skyddets oberoende ska bekräftas', body)
         self.assertIn('funktion, relevans och oberoende', body)

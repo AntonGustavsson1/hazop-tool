@@ -7616,3 +7616,10 @@ har en smal objektkolumn och en bredare kolumn för orsak och frekvens, vilket
 utnyttjar sidans höjd och gör den lättare att läsa i samma riktning som övriga
 ToR. Bilaga 2B börjar fortfarande på en egen, efterföljande stående sida.
 Regressionstestet verifierar orienteringen för båda bilagorna.
+
+## 2026-09-16 — ToR: bredare definitioner i acceptanskriterier
+
+I Tabell 5-2 är kolumnen `Risknivå` minskad från 56 mm till 28 mm. Den
+frigjorda bredden används av kolumnen `Definition` (132 mm), så att de längre
+acceptanskriterierna får bättre läsbarhet utan att tabellens totala bredd eller
+innehåll ändras. Regressionstestet låser båda kolumnbredderna.
