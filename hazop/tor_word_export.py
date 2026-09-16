@@ -391,14 +391,17 @@ def _add_standard_cause_catalogue_annex(document, data):
         'och innebär inte att en komponent, en skyddsfunktion eller en SIF uppfyller '
         'någon angiven säkerhetsintegritetsnivå.')
     document.add_paragraph(
-        'Frekvensen 0,09/år är en avrundad screeningnivå. Den har härletts från '
-        'den övre gränsen för SIL 1 vid hög efterfrågan eller kontinuerligt läge, '
-        'PFH < 1 × 10⁻⁵ h⁻¹ (mindre än en farlig felfunktion per 100 000 timmar). '
-        'Omräkningen 1 × 10⁻⁵ h⁻¹ × 8 760 h/år ger 8,76 × 10⁻²/år och har avrundats '
-        'till 0,09/år. PFH avser den genomsnittliga frekvensen av farligt fel för '
-        'en specificerad säkerhetsfunktion; omräkningen får därför inte användas som '
-        'en direkt komponentdatauppgift, som ett PFDavg-värde eller som verifiering '
-        'av att en säkerhetsfunktion uppnår SIL 1.')
+        'Frekvensen 0,09/år är en avrundad screeningnivå för orsakskatalogen och '
+        'motsvarar ungefär ett tillfälle per elva år. För fel i ett grundläggande '
+        'processstyrsystem (BPCS) som inte uppfyller IEC 61511, och som är en '
+        'initierande orsak och ställer krav på ett skyddsskikt, anger IEC '
+        '61511-1:2016, 8.2.2, att den genomsnittliga '
+        'frekvensen av farliga fel inte får antas vara lägre än 10⁻⁵ h⁻¹. '
+        'IEC 61511-2:2016, A.8.2.2, förklarar att begränsningen ska hindra att en hög '
+        'tillförlitlighet tillgodoräknas ett BPCS som inte uppfyller IEC 61511. I '
+        'katalogen uttrycks denna begränsning försiktigt som 0,09/år; den är ett '
+        'screeningvärde för BPCS-relaterade initierande orsaker och inte ett '
+        'generellt feldata för alla komponenter eller orsaker.')
     document.add_paragraph(
         'Värdena ska särskilt omprövas när processegenskaperna avviker från '
         'antagandena i katalogen. Renare eller smutsigare medier kan exempelvis '

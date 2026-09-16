@@ -7623,3 +7623,14 @@ I Tabell 5-2 är kolumnen `Risknivå` minskad från 56 mm till 28 mm. Den
 frigjorda bredden används av kolumnen `Definition` (132 mm), så att de längre
 acceptanskriterierna får bättre läsbarhet utan att tabellens totala bredd eller
 innehåll ändras. Regressionstestet låser båda kolumnbredderna.
+
+## 2026-09-16 — ToR: BPCS-begränsning som grund för 0,09 per år
+
+Stycke 2 i Bilaga 2 anger nu den relevanta avgränsningen: IEC 61511-1:2016,
+8.2.2 anger 10⁻⁵/h som den lägsta frekvens som får antas för BPCS-fel som
+initierande orsak till krav på ett skyddsskikt, motsvarande ungefär ett tillfälle per
+elva år. IEC 61511-2:2016, A.8.2.2, ger tillämpningsförklaringen. Formuleringen
+anger att 0,09/år är ett screeningvärde för BPCS-relaterade initierande orsaker,
+inte generellt komponentfeldata. Det tidigare resonemanget om SIL 1, PFH och
+PFDavg är borttaget. Regressionstest verifierar den nya avgränsningen och att
+de borttagna begreppen inte återkommer i Bilaga 2-texten.
