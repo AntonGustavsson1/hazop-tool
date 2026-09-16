@@ -411,7 +411,7 @@ def _add_standard_cause_catalogue_annex(document, data):
         'drifterfarenhet och tillämpliga analyser när sådant underlag finns.')
 
     table_section = document.add_section(WD_SECTION_START.NEW_PAGE)
-    _page_setup(table_section, landscape=True, paper='A4')
+    _page_setup(table_section, landscape=False, paper='A4')
     document.add_heading('Bilaga 2A Katalogtabell', 1)
     intro = document.add_paragraph(
         'Endast aktiva standardorsaker med angiven frekvens redovisas. '
@@ -429,9 +429,9 @@ def _add_standard_cause_catalogue_annex(document, data):
         document,
         ['Objekt', 'Föreslagna standardorsaker och frekvenser'],
         rows or [[missing('aktiva standardorsaker med frekvens'), '']],
-        [58, 215])
+        [40, 120])
     # Twelve grouped rows and a small type size keep the complete, current
-    # catalogue on this one landscape A4 page. The next section starts on a
+    # catalogue on this one portrait A4 page. The next section starts on a
     # new page, so a future longer catalogue cannot silently continue into the
     # reference text below.
     for row_index, row in enumerate(table.rows):

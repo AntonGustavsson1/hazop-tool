@@ -210,7 +210,7 @@ class ReportWordExportTests(unittest.TestCase):
                          'IEC 61508-1:2010', 'IEC 61508-2:2010'):
             self.assertIn(standard, body)
         self.assertGreaterEqual(len(doc.sections), 6)
-        self.assertGreater(doc.sections[-2].page_width, doc.sections[-2].page_height)
+        self.assertLess(doc.sections[-2].page_width, doc.sections[-2].page_height)
         self.assertLess(doc.sections[-1].page_width, doc.sections[-1].page_height)
 
     def test_tor_catalogue_refreshes_when_a_standard_cause_changes(self):

@@ -7608,3 +7608,11 @@ orienteringsberoende växling gjorde att dessa två separata tabeller blev
 omkastade i projekt vars konsekvenser visas horisontellt, såsom ProSa IPS.
 Korrigerat med regressionstest som exporterar den orienteringen och verifierar
 att båda tabellerna har rätt kod och definition.
+
+## 2026-09-16 — ToR: katalogtabell i stående A4
+
+Bilaga 2A med den grupperade katalogtabellen använder nu stående A4. Tabellen
+har en smal objektkolumn och en bredare kolumn för orsak och frekvens, vilket
+utnyttjar sidans höjd och gör den lättare att läsa i samma riktning som övriga
+ToR. Bilaga 2B börjar fortfarande på en egen, efterföljande stående sida.
+Regressionstestet verifierar orienteringen för båda bilagorna.
