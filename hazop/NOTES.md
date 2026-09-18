@@ -7634,3 +7634,24 @@ anger att 0,09/år är ett screeningvärde för BPCS-relaterade initierande orsa
 inte generellt komponentfeldata. Det tidigare resonemanget om SIL 1, PFH och
 PFDavg är borttaget. Regressionstest verifierar den nya avgränsningen och att
 de borttagna begreppen inte återkommer i Bilaga 2-texten.
+
+## 2026-09-18 — Paketeringsfix: spylls stavningsordbok saknades i frozen build
+
+Nybyggd `HazopSetup.exe` kraschade direkt vid start (skärmbild i
+`ej_programfiler/screenshots/Screenshot 2026-09-18 183329.png`):
+`FileNotFoundError` på `_internal\spylls\hunspell\data\sv\sv_SE.aff` i
+`spellcheck.py`'s `_load_dictionary()` → `spylls.hunspell.Dictionary.
+from_files()`. Orsak: `spylls` läser sina bifogade ordböcker
+(`spylls/hunspell/data/<lang>/<namn>.{aff,dic}`) via en filsökväg vid
+körning, inte via ett statiskt `import` — PyInstallers analys av
+importgrafen ser aldrig den sökvägen och paketerar därför inte in
+datafilerna, samma klass av problem som redan var löst för
+`rapidocr_onnxruntime`/`onnxruntime` i `hazop.spec`. Fixat genom att lägga
+`spylls` i samma `collect_all()`-loop i `hazop.spec`. Byggt om
+(`pyinstaller hazop.spec` → `ISCC.exe packaging\hazop_installer.iss`),
+verifierat att `sv_SE.aff`/`.dic` nu finns i
+`dist/HazopTool/_internal/spylls/hunspell/data/sv/`, och startat den
+byggda `HazopTool.exe` direkt (utan installer) för att bekräfta att den
+förblir igång utan att skriva någon ny kraschrapport. Ny
+`packaging\output\HazopSetup.exe` inte själv installerad/körd genom hela
+installer-flödet den här gången — bara onedir-exen kördes direkt.

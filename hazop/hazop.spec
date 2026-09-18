@@ -32,6 +32,20 @@ for pkg in ('rapidocr_onnxruntime', 'onnxruntime'):
     binaries += pkg_binaries
     hiddenimports += pkg_hiddenimports
 
+# spylls (spellcheck.py's hunspell-compatible spell checker, see its own
+# module docstring) resolves its bundled dictionaries
+# (spylls/hunspell/data/<lang>/<name>.{aff,dic}) via Dictionary.from_files()
+# at runtime, not a static import -- PyInstaller's import-graph analysis
+# never sees that file path, so the .aff/.dic data files were silently
+# left out of the frozen build. Crashed the app on startup with
+# `FileNotFoundError: ...\_internal\spylls\hunspell\data\sv\sv_SE.aff`
+# (2026-09-18 crash report). collect_all() pulls in the package's own
+# non-code data the same way it already does for rapidocr/onnxruntime above.
+pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all('spylls')
+datas += pkg_datas
+binaries += pkg_binaries
+hiddenimports += pkg_hiddenimports
+
 # equipment_detection.py imports easyocr/pytesseract conditionally
 # (try/except ImportError, gated behind HAS_EASYOCR/HAS_TESSERACT) as
 # optional FALLBACK OCR engines behind rapidocr_onnxruntime, the app's
