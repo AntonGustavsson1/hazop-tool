@@ -1139,6 +1139,37 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_saving_a_loaded_preset_opens_migration_for_assessed_project(self):
+        """A working-copy preset must not fall back to the misleading save error."""
+        from hazop import HAZOPPreparationPanel
+        from PyQt6.QtWidgets import QDialog
+
+        panel = HAZOPPreparationPanel(self.db)
+        try:
+            # Loading through this direct working-copy path is supported by
+            # the preset helpers and leaves the candidate pending until Save.
+            panel._apply_st1_preset()
+            self.assertIsNotNone(panel._pending_template_categories)
+
+            class AcceptedMigrationDialog:
+                def __init__(self, db, source, target, name, parent=None):
+                    self.plan = db.risk_matrix_migration_preview(source, target)
+
+                def exec(self):
+                    return QDialog.DialogCode.Accepted
+
+            with unittest.mock.patch(
+                    'hazop_preparation_panel.RiskMatrixMigrationDialog',
+                    AcceptedMigrationDialog), \
+                    unittest.mock.patch.object(QMessageBox, 'information'):
+                self.assertTrue(panel._save_matrix_values())
+
+            self.assertIsNone(panel._pending_template_categories)
+            self.assertEqual(self.db.get_risk_matrix()['rows'], 6)
+            self.assertEqual(self.db.get_risk_matrix()['cols'], 5)
+        finally:
+            panel.deleteLater()
+
     def test_axis_reverse_buttons_are_checkable_toolbuttons(self):
         """"Ersätt kryssrutorna 'Vänd X'/'Vänd Y' med klickbara pilar"
         (2026-08-17 user request) — QToolButton in checkable mode replaces

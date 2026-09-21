@@ -3487,24 +3487,14 @@ class HAZOPPreparationPanel(QWidget):
         if pending_categories is not None:
             cfg['consequence_categories'] = json.loads(json.dumps(pending_categories))
         cfg = _normalise_matrix(cfg)
+        if pending_categories is not None:
+            return self._apply_pending_matrix_template(
+                cfg, show_confirmation=show_confirmation,
+                error_title="Axlar sparades inte")
         try:
-            if pending_categories is not None:
-                self.db.apply_risk_matrix_template_without_assessments(cfg)
-                self._pending_template_categories = None
-                self._load_categories()
-            else:
-                self.db.set_risk_matrix(cfg)
+            self.db.set_risk_matrix(cfg)
         except Exception as exc:
             QMessageBox.critical(self, "Axlar sparades inte", str(exc))
-            return
-
-        if pending_categories is not None:
-            self._last_built_cfg = cfg
-            self._load_matrix_ui()
-            self._reload_axes_tables(cfg)
-            if show_confirmation:
-                QMessageBox.information(self, "Sparat", "Mallens axlar och konsekvenskategorier sparade.")
-            self.matrix_changed.emit()
             return
 
         table = self._category_definition_table
@@ -4329,21 +4319,69 @@ class HAZOPPreparationPanel(QWidget):
             cfg['consequence_categories'] = json.loads(json.dumps(pending_categories))
 
         cfg = _normalise_matrix(cfg)   # ensure consistent before saving
+        if pending_categories is not None:
+            return self._apply_pending_matrix_template(
+                cfg, show_confirmation=show_confirmation,
+                error_title="Riskmatrisen sparades inte")
         try:
-            if pending_categories is not None:
-                self.db.apply_risk_matrix_template_without_assessments(cfg)
-                self._pending_template_categories = None
-                self._load_categories()
-                self._last_built_cfg = cfg
-                self._load_matrix_ui()
-                self._reload_axes_tables(cfg)
-            else:
-                self.db.set_risk_matrix(cfg)
+            self.db.set_risk_matrix(cfg)
         except Exception as exc:
             QMessageBox.critical(self, "Riskmatrisen sparades inte", str(exc))
             return False
         if show_confirmation:
             QMessageBox.information(self, "Sparat", "Riskmatris sparad.")
+        self.matrix_changed.emit()
+        return True
+
+    def _apply_pending_matrix_template(self, cfg, show_confirmation=True,
+                                       error_title="Riskmatrisen sparades inte"):
+        """Apply a loaded template, opening the review wizard when needed.
+
+        Preset/template buttons normally route assessed projects through the
+        migration dialog immediately.  The Axlar and Riskmatris save buttons
+        can also be reached after a working-copy preset was loaded directly,
+        though.  Do not turn that legitimate route into the misleading
+        ``Mallen innehåller bedömningar`` error: use the same reviewed,
+        backed-up migration flow here as the template buttons do.
+        """
+        source = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        template_name = getattr(self, '_pending_template_name', '') or 'den nya mallen'
+        preview = self.db.risk_matrix_migration_preview(source, cfg)
+        has_assessments = bool(
+            preview['frequency_records'] or preview['severity_records'] or
+            preview['definition_records'])
+
+        try:
+            if has_assessments:
+                dialog = RiskMatrixMigrationDialog(
+                    self.db, source, cfg, template_name, self)
+                if dialog.exec() != QDialog.DialogCode.Accepted:
+                    return False
+                result = self.db.apply_risk_matrix_migration(dialog.plan)
+            else:
+                self.db.apply_risk_matrix_template_without_assessments(cfg)
+                result = None
+        except Exception as exc:
+            QMessageBox.critical(self, error_title, str(exc))
+            return False
+
+        self._pending_template_categories = None
+        self._pending_template_name = ''
+        self._load_categories()
+        saved = self.db.get_risk_matrix() or cfg
+        self._last_built_cfg = saved
+        self._load_matrix_ui()
+        self._reload_axes_tables(saved)
+        if show_confirmation:
+            if result is None:
+                QMessageBox.information(
+                    self, "Sparat", "Mallens riskmatris sparad.")
+            else:
+                QMessageBox.information(
+                    self, "Riskmatris migrerad",
+                    f"{result['frequency_count']} frekvens- och "
+                    f"{result['severity_count']} konsekvensbedömningar "
+                    f"migrerades.\n\nBackup:\n{result['backup_path']}")
         self.matrix_changed.emit()
         return True
 
@@ -4451,7 +4489,7 @@ class HAZOPPreparationPanel(QWidget):
             getattr(self, '_last_built_cfg', None) or saved)))
         return json.dumps(saved, sort_keys=True) == json.dumps(working, sort_keys=True)
 
-    def _load_matrix_template_working_copy(self, cfg):
+    def _load_matrix_template_working_copy(self, cfg, template_name=''):
         """Show a candidate template without writing data or database config."""
         cfg = _normalise_matrix(json.loads(json.dumps(cfg)))
         senders = (self._rows_spin, self._cols_spin, self._axis_combo,
@@ -4471,6 +4509,7 @@ class HAZOPPreparationPanel(QWidget):
         self._last_built_cfg = cfg
         self._pending_template_categories = json.loads(json.dumps(
             cfg.get('consequence_categories', [])))
+        self._pending_template_name = str(template_name or '')
         self._build_matrix_grid(cfg)
 
     def _request_frequency_template(self, labels, bounds, name, codes=None):
@@ -4499,7 +4538,7 @@ class HAZOPPreparationPanel(QWidget):
         has_assessments = bool(preview['frequency_records'] or preview['severity_records'] or
                                preview['definition_records'])
         if not has_assessments:
-            self._load_matrix_template_working_copy(candidate)
+            self._load_matrix_template_working_copy(candidate, name)
             return
         dialog = RiskMatrixMigrationDialog(self.db, source, candidate, name, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -4524,7 +4563,7 @@ class HAZOPPreparationPanel(QWidget):
         This is deliberately a working copy only; the database is changed
         only when the user presses ``Spara riskmatris``.
         """
-        self._load_matrix_template_working_copy(ST1_RISK_MATRIX_PRESET)
+        self._load_matrix_template_working_copy(ST1_RISK_MATRIX_PRESET, 'ST1')
 
     def _apply_freq_preset(self, labels: list, bounds: list):
         """Populate frequency axis headers and boundary edits from a preset.

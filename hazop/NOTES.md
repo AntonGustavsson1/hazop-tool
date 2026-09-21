@@ -7655,3 +7655,17 @@ byggda `HazopTool.exe` direkt (utan installer) för att bekräfta att den
 förblir igång utan att skriva någon ny kraschrapport. Ny
 `packaging\output\HazopSetup.exe` inte själv installerad/körd genom hela
 installer-flödet den här gången — bara onedir-exen kördes direkt.
+
+## 2026-09-21 — Riskmatrismall öppnar migrering vid sparande
+
+Om en preset eller egen riskmatrismall hade laddats som arbetskopia och
+användaren därefter tryckte `Spara riskmatris` kunde
+`apply_risk_matrix_template_without_assessments()` visa felet "Mallen
+innehåller bedömningar och måste migreras i granskningsdialogen" utan att
+erbjuda dialogen. Riskmatris- och Axlar-sparandet använder nu samma granskade
+migreringsflöde som mallknapparna när projektet redan innehåller sparade
+bedömningar; vid avbryt lämnas databasen oförändrad. Regressionstestet
+`test_saving_a_loaded_preset_opens_migration_for_assessed_project` verifierar
+att dialogens godkända plan skickas vidare. Riktat riskmatristest och smoke-
+test (16 tester) passerar. Den fulla settings-filen har ett separat befintligt
+nod-/bladtestfel och kunde därefter fastna i ett orelaterat Qt-modaltest.
