@@ -7682,3 +7682,9 @@ lämnas tomma eftersom inga definitioner angavs för dessa kategorier. Befintlig
 projekt ändras inte automatiskt. Standarddefinitionerna räknas inte som
 bedömningar, så de öppnar inte migreringsdialogen i ett nytt projekt; riktade
 IPS5-, migrerings- och smoke-tester passerar.
+
+## 2026-09-21 — IPS5-knappen döpt till IPS
+
+Den synliga standardmallsknappen heter nu `IPS`. Den tidigare tekniska preset-
+konstanten `IPS5_RISK_MATRIX_PRESET` finns kvar som kompatibilitetsalias till
+`IPS_RISK_MATRIX_PRESET`, så befintliga importer påverkas inte.

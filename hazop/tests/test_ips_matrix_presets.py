@@ -35,26 +35,26 @@ class IPSRiskMatrixPresetTests(unittest.TestCase):
         self.db.conn.close()
         shutil.rmtree(self.tempdir, ignore_errors=True)
 
-    def test_ips5_is_a_complete_standard_template_and_loads_from_its_button(self):
+    def test_ips_is_a_complete_standard_template_and_loads_from_its_button(self):
         self.assertEqual(IPS_RISK_MATRIX_PRESET['rows'], 5)
         self.assertEqual(IPS_RISK_MATRIX_PRESET, IPS5_RISK_MATRIX_PRESET)
-        self.assertEqual(IPS5_RISK_MATRIX_PRESET['cols'], 7)
-        self.assertEqual(IPS5_RISK_MATRIX_PRESET['x_labels'][4], '10 - 100 år')
+        self.assertEqual(IPS_RISK_MATRIX_PRESET['cols'], 7)
+        self.assertEqual(IPS_RISK_MATRIX_PRESET['x_labels'][4], '10 - 100 år')
         self.assertEqual(
-            [item['label'] for item in IPS5_RISK_MATRIX_PRESET['risk_level_definitions']],
+            [item['label'] for item in IPS_RISK_MATRIX_PRESET['risk_level_definitions']],
             ['Låg', 'Medium', 'Hög'])
         self.assertTrue(all(item['definition'] for item in
-                            IPS5_RISK_MATRIX_PRESET['risk_level_definitions']))
+                            IPS_RISK_MATRIX_PRESET['risk_level_definitions']))
         self.assertEqual(
-            [item['name'] for item in IPS5_RISK_MATRIX_PRESET['consequence_categories']],
+            [item['name'] for item in IPS_RISK_MATRIX_PRESET['consequence_categories']],
             ['Person', 'Miljö', 'Ekonomi', 'Anläggning', 'Rykte'])
 
         panel = HAZOPPreparationPanel(self.db)
         try:
             buttons = {button.text(): button for button in panel.findChildren(QPushButton)}
-            self.assertNotIn('IPS', buttons)
-            self.assertIn('IPS5', buttons)
-            buttons['IPS5'].click()
+            self.assertIn('IPS', buttons)
+            self.assertNotIn('IPS5', buttons)
+            buttons['IPS'].click()
             self.assertEqual(panel._rows_spin.value(), 5)
             self.assertEqual(panel._cols_spin.value(), 7)
             self.assertEqual(panel._last_built_cfg['cell_labels'][1][6], 'Hög')
@@ -75,13 +75,13 @@ class IPSRiskMatrixPresetTests(unittest.TestCase):
         definitions = self.db.get_severity_definitions()
         self.assertEqual(
             [definitions[level][categories['Person']] for level in range(1, 6)],
-            IPS5_RISK_MATRIX_PRESET['consequence_categories'][0]['descriptions'])
+            IPS_RISK_MATRIX_PRESET['consequence_categories'][0]['descriptions'])
         self.assertEqual(
             [definitions[level][categories['Miljö']] for level in range(1, 6)],
-            IPS5_RISK_MATRIX_PRESET['consequence_categories'][1]['descriptions'])
+            IPS_RISK_MATRIX_PRESET['consequence_categories'][1]['descriptions'])
         self.assertEqual(
             [definitions[level][categories['Ekonomi']] for level in range(1, 6)],
-            IPS5_RISK_MATRIX_PRESET['consequence_categories'][2]['descriptions'])
+            IPS_RISK_MATRIX_PRESET['consequence_categories'][2]['descriptions'])
 
 
 if __name__ == '__main__':

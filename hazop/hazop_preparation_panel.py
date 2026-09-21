@@ -128,7 +128,7 @@ def _ips_risk_matrix_preset(red_risk_label='Hög'):
     """Return the complete ProSa IPS 5×7 risk-matrix profile.
 
     IPS has historically been saved as a project-local template.  Keeping the
-    profile here makes IPS and IPS5 available for every new project, including
+    profile here makes the IPS standard profile available for every new project, including
     their axes, colours, risk-level definitions and consequence definitions.
     """
     return {
@@ -202,10 +202,10 @@ def _ips_risk_matrix_preset(red_risk_label='Hög'):
     }
 
 
-IPS5_RISK_MATRIX_PRESET = _ips_risk_matrix_preset('Hög')
-# Backwards-compatible import name. IPS5 is now the single IPS standard
-# template shown in the UI; old callers still receive the canonical profile.
-IPS_RISK_MATRIX_PRESET = IPS5_RISK_MATRIX_PRESET
+# IPS is the canonical standard profile. Keep the former name as a backwards-
+# compatible alias for callers and saved integrations that still import it.
+IPS_RISK_MATRIX_PRESET = _ips_risk_matrix_preset('Hög')
+IPS5_RISK_MATRIX_PRESET = IPS_RISK_MATRIX_PRESET
 
 
 class DraggableColorSwatch(QLabel):
@@ -2098,12 +2098,12 @@ class HAZOPPreparationPanel(QWidget):
             "annars laddas mallen som en arbetskopia.")
         st1_btn.clicked.connect(lambda: self._request_matrix_template(
             ST1_RISK_MATRIX_PRESET, "ST1 Sverige AB"))
-        ips5_btn = QPushButton("IPS5")
-        ips5_btn.setToolTip(
-            "Läser in ProSas IPS5-riskmatris (ersätter IPS) (5×7) med komplett axel-, "
+        ips_btn = QPushButton("IPS")
+        ips_btn.setToolTip(
+            "Läser in ProSas IPS-riskmatris (5×7) med komplett axel-, "
             "risknivå- och konsekvensinformation.")
-        ips5_btn.clicked.connect(lambda: self._request_matrix_template(
-            IPS5_RISK_MATRIX_PRESET, "IPS5"))
+        ips_btn.clicked.connect(lambda: self._request_matrix_template(
+            IPS_RISK_MATRIX_PRESET, "IPS"))
         norsok_btn = QPushButton("NORSOK Z-013  (AAA – E)")
         norsok_btn.setToolTip(
             "Fyll frekvensaxeln med NORSOK Z-013-etiketter:\n"
@@ -2125,7 +2125,7 @@ class HAZOPPreparationPanel(QWidget):
             [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0], "F-skala",
             ['F-1', 'F0', 'F1', 'F2', 'F3', 'F4', 'F5']))
         preset_row.addWidget(st1_btn)
-        preset_row.addWidget(ips5_btn)
+        preset_row.addWidget(ips_btn)
         preset_row.addWidget(norsok_btn)
         preset_row.addWidget(fscale_btn)
         preset_row.addStretch()
