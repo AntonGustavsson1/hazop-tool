@@ -24,7 +24,8 @@ from PyQt6.QtGui import (
 
 from constants import CONFIG, SEV_LABELS
 from database import (
-    Database, DEFAULT_MATRIX, DEFAULT_FREQ_BOUNDARIES, _STD_OBJECTS,
+    Database, DEFAULT_MATRIX, DEFAULT_FREQ_BOUNDARIES, DEFAULT_RISK_LEVEL_DEFINITIONS,
+    _STD_OBJECTS,
     _normalise_matrix, get_matrix, freq_to_f_level,
     risk_info,
 )
@@ -123,19 +124,13 @@ ST1_RISK_MATRIX_PRESET = {
 }
 
 
-def _ips_risk_matrix_preset(red_risk_label):
+def _ips_risk_matrix_preset(red_risk_label='Hög'):
     """Return the complete ProSa IPS 5×7 risk-matrix profile.
 
     IPS has historically been saved as a project-local template.  Keeping the
     profile here makes IPS and IPS5 available for every new project, including
     their axes, colours, risk-level definitions and consequence definitions.
     """
-    red_definition = (
-        'Person- eller miljörelaterad risk i det röda området är ej tolerabel. '
-        'Prioriterade och vid behov långtgående åtgärder är motiverade i syfte '
-        'att föra risken ur matrisens högriskområde. Det kan dock vara tolerabelt '
-        'med ledningens godkännande att ligga i det röda området om det '
-        'uteslutande är den ekonomiska risken som bedöms som röd')
     return {
         'rows': 5,
         'cols': 7,
@@ -146,7 +141,7 @@ def _ips_risk_matrix_preset(red_risk_label):
         'y_codes': ['1', '2', '3', '4', '5'],
         'x_labels': [
             '<1/100 000 år', '10 000 - 100 000 år', '1 000 - 10 000 år',
-            '100 - 1 000 år', '10 - 1 000 år', '1 - 10 år',
+            '100 - 1 000 år', '10 - 100 år', '1 - 10 år',
             'Frekvent (>1/år)',
         ],
         'y_labels': ['Försumbar', 'Liten', 'Måttlig', 'Allvarlig', 'Katastrofal'],
@@ -173,24 +168,8 @@ def _ips_risk_matrix_preset(red_risk_label):
         ],
         'freq_boundaries': [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0],
         'risk_level_definitions': [
-            {
-                'color': '#27ae60',
-                'label': 'Låg',
-                'definition': (
-                    'Risken är acceptabel. Inga riskreducerande åtgärder är '
-                    'normalt nödvändiga såvida de inte kan införas enkelt och '
-                    'till låg kostnad.'),
-            },
-            {
-                'color': '#ffff00',
-                'label': 'Medium',
-                'definition': (
-                    'Detta område benämns som ”ALARP” området (As Low As '
-                    'Reasonably Practicable). Åtgärder skall genomföras där '
-                    'minskningen av risken står i rimlig proportion till '
-                    'kostnaden och/eller svårigheten.'),
-            },
-            {'color': '#e74c3c', 'label': red_risk_label, 'definition': red_definition},
+            {**item, 'label': red_risk_label} if index == 2 else dict(item)
+            for index, item in enumerate(DEFAULT_RISK_LEVEL_DEFINITIONS)
         ],
         'consequence_categories': [
             {
@@ -223,8 +202,10 @@ def _ips_risk_matrix_preset(red_risk_label):
     }
 
 
-IPS_RISK_MATRIX_PRESET = _ips_risk_matrix_preset('Kritisk')
 IPS5_RISK_MATRIX_PRESET = _ips_risk_matrix_preset('Hög')
+# Backwards-compatible import name. IPS5 is now the single IPS standard
+# template shown in the UI; old callers still receive the canonical profile.
+IPS_RISK_MATRIX_PRESET = IPS5_RISK_MATRIX_PRESET
 
 
 class DraggableColorSwatch(QLabel):
@@ -2117,15 +2098,9 @@ class HAZOPPreparationPanel(QWidget):
             "annars laddas mallen som en arbetskopia.")
         st1_btn.clicked.connect(lambda: self._request_matrix_template(
             ST1_RISK_MATRIX_PRESET, "ST1 Sverige AB"))
-        ips_btn = QPushButton("IPS")
-        ips_btn.setToolTip(
-            "Läser in ProSas IPS-riskmatris (5×7) med komplett axel-, "
-            "risknivå- och konsekvensinformation.")
-        ips_btn.clicked.connect(lambda: self._request_matrix_template(
-            IPS_RISK_MATRIX_PRESET, "IPS"))
         ips5_btn = QPushButton("IPS5")
         ips5_btn.setToolTip(
-            "Läser in ProSas IPS5-riskmatris (5×7) med komplett axel-, "
+            "Läser in ProSas IPS5-riskmatris (ersätter IPS) (5×7) med komplett axel-, "
             "risknivå- och konsekvensinformation.")
         ips5_btn.clicked.connect(lambda: self._request_matrix_template(
             IPS5_RISK_MATRIX_PRESET, "IPS5"))
@@ -2150,7 +2125,6 @@ class HAZOPPreparationPanel(QWidget):
             [1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0], "F-skala",
             ['F-1', 'F0', 'F1', 'F2', 'F3', 'F4', 'F5']))
         preset_row.addWidget(st1_btn)
-        preset_row.addWidget(ips_btn)
         preset_row.addWidget(ips5_btn)
         preset_row.addWidget(norsok_btn)
         preset_row.addWidget(fscale_btn)
@@ -4347,9 +4321,11 @@ class HAZOPPreparationPanel(QWidget):
         source = self.db.get_risk_matrix() or DEFAULT_MATRIX
         template_name = getattr(self, '_pending_template_name', '') or 'den nya mallen'
         preview = self.db.risk_matrix_migration_preview(source, cfg)
+        # Definitions are template metadata, not HAZOP assessments.  A new
+        # project now has default definitions, so they alone must not force a
+        # migration wizard when the user selects another standard template.
         has_assessments = bool(
-            preview['frequency_records'] or preview['severity_records'] or
-            preview['definition_records'])
+            preview['frequency_records'] or preview['severity_records'])
 
         try:
             if has_assessments:
@@ -4535,8 +4511,7 @@ class HAZOPPreparationPanel(QWidget):
         source = self.db.get_risk_matrix() or DEFAULT_MATRIX
         candidate = _normalise_matrix(json.loads(json.dumps(candidate)))
         preview = self.db.risk_matrix_migration_preview(source, candidate)
-        has_assessments = bool(preview['frequency_records'] or preview['severity_records'] or
-                               preview['definition_records'])
+        has_assessments = bool(preview['frequency_records'] or preview['severity_records'])
         if not has_assessments:
             self._load_matrix_template_working_copy(candidate, name)
             return

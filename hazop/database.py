@@ -294,25 +294,58 @@ CREATE TABLE IF NOT EXISTS equipment_catalog (
 # metadata for the category (separate from the colour of a risk cell).  The
 # severity descriptions belong to the template as well; projects get their
 # own category ids only when a template is applied.
+DEFAULT_RISK_LEVEL_DEFINITIONS = [
+    {
+        'color': '#27ae60',
+        'label': 'Låg',
+        'definition': (
+            'Risken är acceptabel. Inga riskreducerande åtgärder är normalt '
+            'nödvändiga såvida de inte kan införas enkelt och till låg kostnad.'),
+    },
+    {
+        'color': '#ffff00',
+        'label': 'Medium',
+        'definition': (
+            'Detta område benämns som ”ALARP” området (As Low As Reasonably '
+            'Practicable). Åtgärder skall genomföras där minskningen av risken '
+            'står i rimlig proportion till kostnaden och/eller svårigheten.'),
+    },
+    {
+        'color': '#e74c3c',
+        'label': 'Hög',
+        'definition': (
+            'Person- eller miljörelaterad risk i det röda området är ej tolerabel. '
+            'Prioriterade och vid behov långtgående åtgärder är motiverade i syfte '
+            'att föra risken ur matrisens högriskområde. Det kan dock vara tolerabelt '
+            'med ledningens godkännande att ligga i det röda området om det '
+            'uteslutande är den ekonomiska risken som bedöms som röd.'),
+    },
+]
+
 DEFAULT_TEMPLATE_CATEGORIES = [
     {'key': 'person', 'name': 'Person', 'color': '#2563eb',
-     'descriptions': ['Första hjälpen', 'Medicinsk behandling',
-                      'Allvarlig personskada', 'Enstaka dödsfall',
-                      'Flera dödsfall']},
+     'descriptions': [
+         'Övergående lindriga obehag. Lättare blessyr. Övergående obehag',
+         'Enstaka skadade. Varaktiga obehag.',
+         'Enstaka svårt skadade. Svåra obehag. Längre frånvaro',
+         'Ett dödsfall eller flera svårt skadade.',
+         'Flera döda eller 10-tals svårt skadade']},
     {'key': 'miljo', 'name': 'Miljö', 'color': '#16a34a',
-     'descriptions': ['Ingen bestående påverkan', 'Lokal och kortvarig påverkan',
-                      'Begränsad sanering', 'Omfattande sanering',
-                      'Långvarig eller omfattande miljöskada']},
+     'descriptions': [
+         'Ingen sanering, liten utbredning',
+         'Övergående kortvarig skada med liten utbredning',
+         'Reversibel långvarig skada med liten utbredning, eller kortvarig '
+         'skada med stor utbredning',
+         'Permanent skada med liten utbredning eller långvarig skada med stor '
+         'utbredning',
+         'Permanent skada med stor utbredning']},
     {'key': 'ekonomi', 'name': 'Ekonomi', 'color': '#d97706',
-     'descriptions': ['Obetydlig kostnad', 'Mindre kostnad', 'Betydande kostnad',
-                      'Stor ekonomisk skada', 'Mycket stor ekonomisk skada']},
+     'descriptions': ['< 50 kSEK', '< 500 kSEK', '< 5 MSEK', '< 50 MSEK',
+                      '> 50 MSEK']},
     {'key': 'anlaggning', 'name': 'Anläggning', 'color': '#7c3aed',
-     'descriptions': ['Ingen skada', 'Mindre skada', 'Begränsad produktionstörning',
-                      'Allvarlig anläggningsskada', 'Förlust av anläggning eller långvarigt stopp']},
+     'descriptions': ['', '', '', '', '']},
     {'key': 'rykte', 'name': 'Rykte', 'color': '#475569',
-     'descriptions': ['Ingen extern påverkan', 'Lokal uppmärksamhet',
-                      'Regional uppmärksamhet', 'Nationell uppmärksamhet',
-                      'Internationell eller långvarig uppmärksamhet']},
+     'descriptions': ['', '', '', '', '']},
 ]
 
 DEFAULT_MATRIX = {
@@ -342,23 +375,24 @@ DEFAULT_MATRIX = {
     ],
     'cell_colors': [
         # C=1: F-1 → F5
-        ['#27ae60', '#27ae60', '#27ae60', '#27ae60', '#f39c12', '#e67e22', '#e74c3c'],
+        ['#27ae60', '#27ae60', '#27ae60', '#27ae60', '#ffff00', '#e74c3c', '#e74c3c'],
         # C=2
-        ['#27ae60', '#27ae60', '#27ae60', '#f39c12', '#e67e22', '#e74c3c', '#e74c3c'],
+        ['#27ae60', '#27ae60', '#27ae60', '#ffff00', '#e74c3c', '#e74c3c', '#e74c3c'],
         # C=3
-        ['#27ae60', '#27ae60', '#f39c12', '#e67e22', '#e74c3c', '#e74c3c', '#e74c3c'],
+        ['#27ae60', '#27ae60', '#ffff00', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c'],
         # C=4
-        ['#27ae60', '#f39c12', '#e67e22', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c'],
+        ['#27ae60', '#ffff00', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c'],
         # C=5
-        ['#f39c12', '#e67e22', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c'],
+        ['#ffff00', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c', '#e74c3c'],
     ],
     'cell_labels': [
-        ['Låg',    'Låg',    'Låg',    'Låg',    'Medium', 'Hög',    'Kritisk'],
-        ['Låg',    'Låg',    'Låg',    'Medium', 'Hög',    'Kritisk','Kritisk'],
-        ['Låg',    'Låg',    'Medium', 'Hög',    'Kritisk','Kritisk','Kritisk'],
-        ['Låg',    'Medium', 'Hög',    'Kritisk','Kritisk','Kritisk','Kritisk'],
-        ['Medium', 'Hög',    'Kritisk','Kritisk','Kritisk','Kritisk','Kritisk'],
+        ['Låg',    'Låg',    'Låg',    'Låg',    'Medium', 'Hög',    'Hög'],
+        ['Låg',    'Låg',    'Låg',    'Medium', 'Hög',    'Hög',    'Hög'],
+        ['Låg',    'Låg',    'Medium', 'Hög',    'Hög',    'Hög',    'Hög'],
+        ['Låg',    'Medium', 'Hög',    'Hög',    'Hög',    'Hög',    'Hög'],
+        ['Medium', 'Hög',    'Hög',    'Hög',    'Hög',    'Hög',    'Hög'],
     ],
+    'risk_level_definitions': DEFAULT_RISK_LEVEL_DEFINITIONS,
     'consequence_categories': DEFAULT_TEMPLATE_CATEGORIES,
 }
 
@@ -2748,6 +2782,38 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 self.conn.execute(
                     "INSERT INTO consequence_categories (name, sort_order) VALUES (?,?)", (name, i))
 
+        # A genuinely new project should show the standard consequence
+        # definitions immediately in HAZOP preparation.  Do not seed these
+        # rows into an existing study: an older project may intentionally have
+        # blank definitions or its own category structure, and its saved
+        # assessments must remain untouched.
+        def _table_count(table):
+            exists = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table,)).fetchone()
+            return (self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    if exists else 0)
+
+        has_default_matrix_data = any(
+            _table_count(table)
+            for table in ('consequences', 'consequence_severities',
+                          'consequence_final_severities', 'severity_definitions'))
+        if not has_default_matrix_data and not self.get_config('risk_matrix'):
+            category_rows = self.conn.execute(
+                "SELECT id, name FROM consequence_categories ORDER BY sort_order, id"
+            ).fetchall()
+            descriptions_by_name = {
+                item['name']: item.get('descriptions') or []
+                for item in DEFAULT_TEMPLATE_CATEGORIES
+            }
+            for category in category_rows:
+                descriptions = descriptions_by_name.get(category['name'], [])
+                for level, description in enumerate(descriptions, start=1):
+                    self.conn.execute(
+                        "INSERT INTO severity_definitions "
+                        "(severity_level, category_id, description) VALUES (?,?,?)",
+                        (level, category['id'], description or ''))
+
         # Seed component types from hardcoded COMPONENT_TYPES if table is empty
         if not self.conn.execute("SELECT COUNT(*) FROM component_types").fetchone()[0]:
             from pid_viewer import COMPONENT_TYPES as _CT
@@ -5045,9 +5111,10 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         """
         cfg = self._risk_matrix_copy(cfg)
         has_data = self.conn.execute(
-            "SELECT EXISTS(SELECT 1 FROM consequence_severities) OR "
-            "EXISTS(SELECT 1 FROM consequence_final_severities) OR "
-            "EXISTS(SELECT 1 FROM severity_definitions)"
+            "SELECT EXISTS(SELECT 1 FROM causes) OR "
+            "EXISTS(SELECT 1 FROM consequences) OR "
+            "EXISTS(SELECT 1 FROM consequence_severities) OR "
+            "EXISTS(SELECT 1 FROM consequence_final_severities)"
         ).fetchone()[0]
         if has_data:
             raise RuntimeError("Mallen innehåller bedömningar och måste migreras i granskningsdialogen.")

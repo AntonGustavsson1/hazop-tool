@@ -7669,3 +7669,16 @@ bedömningar; vid avbryt lämnas databasen oförändrad. Regressionstestet
 att dialogens godkända plan skickas vidare. Riktat riskmatristest och smoke-
 test (16 tester) passerar. Den fulla settings-filen har ett separat befintligt
 nod-/bladtestfel och kunde därefter fastna i ett orelaterat Qt-modaltest.
+
+## 2026-09-21 — IPS5 som enda IPS-standardmall och standarddefinitioner
+
+IPS5 är nu den enda IPS-knappen i förberedelsevyn och ersätter den tidigare
+IPS-mallen. Det gamla importnamnet `IPS_RISK_MATRIX_PRESET` finns kvar som ett
+kompatibilitetsalias till IPS5. Frekvenskod C är rättad till `10 - 100 år`.
+
+Nya projekt får acceptanskriterierna Låg, Medium/ALARP och Hög samt de angivna
+Person-, Miljö- och Ekonomidefinitionerna som standard. Anläggning och Rykte
+lämnas tomma eftersom inga definitioner angavs för dessa kategorier. Befintliga
+projekt ändras inte automatiskt. Standarddefinitionerna räknas inte som
+bedömningar, så de öppnar inte migreringsdialogen i ett nytt projekt; riktade
+IPS5-, migrerings- och smoke-tester passerar.
