@@ -101,9 +101,10 @@ def export_lopa_excel(db, filepath, selections=None):
     summary_rows = []
     for record, revision in selected:
         calculations = [db.lopa_source_calculation(source['id'])
-                        for source in db.lopa_sources(revision['id'])]
+                        for source in db.lopa_sources(revision['id']) if source['active']]
         governing = max((item for item in calculations if item['required_rrf'] is not None),
-                         key=lambda item: item['required_rrf'], default=None)
+                         key=lambda item: item['required_rrf'], default=None) if all(
+                             item['complete'] for item in calculations) else None
         summary_rows.append([
             record['display_number'], record.get('sif_number') or '', record['sif_name'],
             record['sis_name'], revision['label'], revision['status'],

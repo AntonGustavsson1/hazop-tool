@@ -2806,13 +2806,19 @@ class LopaPanel(QWidget):
         self._calculation.resizeRowsToContents()
         self._fit_table_height(self._calculation, 48, 92)
         governing = []
+        incomplete = False
         for source in rows:
             if not source['active']:
                 continue
             result = self.db.lopa_source_calculation(source['id'])
+            if not result['complete']:
+                incomplete = True
             if result['required_rrf'] is not None:
                 governing.append((result['required_rrf'], result, source))
-        if governing:
+        if incomplete:
+            self._dimensioning_summary.setText(
+                'Dimensionerande kriterium kan inte fastställas: minst ett aktivt scenario har ofullständigt underlag.')
+        elif governing:
             _rrf, result, source = max(governing, key=lambda item: item[0])
             self._dimensioning_summary.setText(
                 f"Dimensionerande kriterium: {result['governing_category_name']} från "

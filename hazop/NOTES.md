@@ -1,5 +1,30 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: skydda resultat vid ofullständiga underlag (2026-11-05)
+
+LOPA-beräkningen ger inte längre ett dimensionerande RRF/SIL för en källa
+om en aktiv kategori saknar underlag, är okänd eller har ogiltiga värden.
+Negativ frekvens, förutsättning eller faktorsannolikhet utanför 0–100 %,
+ogiltig aktiv barriär och numeriskt ogiltigt resultat markeras som
+ofullständigt. Kategorirader med giltigt underlag finns kvar för granskning.
+Sammanfattningen i LOPA-vyn och Excel kräver att alla aktiva scenarier är
+kompletta; inaktiva scenarier styr inte sammanfattningen.
+
+Numerisk frekvens redigerad från LOPA rensar nu en eventuell tidigare
+frekvensnivå i HAZOP, i samma undo-steg. En motstridig inmatning för en
+kopplad standardorsak med numerisk frekvens avvisas med ett meddelande så
+att HAZOP och LOPA inte får olika värden. Två äldre testfixturer har anpassats
+till att en ny orsak startar med rensad frekvens. Tester täcker ogiltiga
+indata, blandade aktiva scenarier, Excel, vyn och undo/redo. Körning av
+LOPA-tester samt smoke har passerat i headless-läge (45 tester); visuellt
+GUI-flöde är inte verifierat. En bred regression fastnade i headless
+GUI-läge och avbröts. Separat databassvit: 142 tester, 7 failures och 5
+errors; samma 12 tester gav samma fel med oförändrad database.py från HEAD,
+så de behöver undersökas separat. Den breda testsviten är inte godkänd.
+Ursprungliga
+standardvärden för TEL och befintlig standardorsaksfrekvens har inte
+ändrats och behöver fortsatt granskas mot projektets underlag.
+
 ## Fix: dubbelklick på Konsekvens i LOPA sparade rå HTML istället för text (2026-09-14)
 
 Anton: "Blev något fel i LOPA-tabellen när jag dubbelklickade på en

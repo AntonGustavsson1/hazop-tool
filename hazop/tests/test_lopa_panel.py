@@ -55,7 +55,8 @@ class LopaHierarchySyncTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(cause_id, description='Test', base_frequency=0.1)
+        self.db.update_cause(cause_id, description='Test', base_frequency=0.1,
+                             frequency_cleared=False)
         cons_id = self.db.add_consequence(cause_id)
         self.db.update_consequence(cons_id, 'Test-konsekvens', 3, '')
         category = self.db.consequence_categories()[0]
@@ -89,6 +90,28 @@ class LopaHierarchySyncTests(unittest.TestCase):
             'SELECT base_frequency FROM lopa_source_scenarios WHERE id=?',
             (seed['source_id'],)).fetchone()
         self.assertEqual(0.1, mirror['base_frequency'])
+
+    def test_sync_numeric_frequency_replaces_frequency_level_and_supports_undo_redo(self):
+        seed = self._seed_hazop_source()
+        self.db.update_cause(seed['cause_id'], frequency_override=3)
+        self.db.sync_lopa_cause_frequency_to_hazop(seed['source_id'], seed['cause_id'], 0.02)
+        self.assertEqual(0.02, self.db.cause_base_frequency_per_year(self.db.get_cause(seed['cause_id'])))
+        self.assertTrue(self.db.undo())
+        self.assertEqual(3, self.db.get_cause(seed['cause_id'])['frequency_override'])
+        self.assertTrue(self.db.redo())
+        self.assertEqual(0.02, self.db.cause_base_frequency_per_year(self.db.get_cause(seed['cause_id'])))
+
+    def test_sync_does_not_diverge_from_linked_standard_cause_frequency(self):
+        seed = self._seed_hazop_source()
+        cause = self.db.get_cause(seed['cause_id'])
+        standard_id = self.db.add_standard_cause(cause['deviation_id'], 'Standardorsak')
+        self.db.update_standard_cause(standard_id, frequency=0.1)
+        self.db.update_cause(seed['cause_id'], standard_cause_id=standard_id)
+        count = self.db.undo_count
+        with self.assertRaisesRegex(ValueError, 'standardorsak'):
+            self.db.sync_lopa_cause_frequency_to_hazop(seed['source_id'], seed['cause_id'], 0.02)
+        self.assertEqual(count, self.db.undo_count)
+        self.assertEqual(0.1, self.db.lopa_sources(self.db._lopa_source_revision(seed['source_id'])['revision_id'])[0]['base_frequency'])
 
     def test_sync_consequence_description_updates_hazop_and_mirror_as_one_undo_step(self):
         seed = self._seed_hazop_source()
@@ -137,7 +160,8 @@ class LopaHierarchyTableTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         self.cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(self.cause_id, description='UI test', base_frequency=0.1)
+        self.db.update_cause(self.cause_id, description='UI test', base_frequency=0.1,
+                             frequency_cleared=False)
         cons_id = self.db.add_consequence(self.cause_id)
         self.db.update_consequence(cons_id, 'UI-konsekvens', 3, '')
         category = self.db.consequence_categories()[0]
@@ -159,6 +183,16 @@ class LopaHierarchyTableTests(unittest.TestCase):
 
     def test_add_scenario_button_removed(self):
         self.assertFalse(hasattr(self.panel, '_add_scenario_btn'))
+
+    def test_dimensioning_summary_requires_all_active_sources(self):
+        self.panel._populate_calculation()
+        self.assertIn('Beräknat behov', self.panel._dimensioning_summary.text())
+        source_id = self.db.add_lopa_local_source(self.revision_id, cause_text='Saknar underlag')
+        self.panel._populate_calculation()
+        self.assertIn('ofullständigt underlag', self.panel._dimensioning_summary.text())
+        self.db.set_lopa_source_active(source_id, False)
+        self.panel._populate_calculation()
+        self.assertIn('Beräknat behov', self.panel._dimensioning_summary.text())
 
     def test_egen_lopa_konsekvens_creates_row_without_popup(self):
         before_rows = self.panel._hazop_hierarchy.rowCount()

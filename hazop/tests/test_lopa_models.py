@@ -83,6 +83,32 @@ class LopaModelTests(unittest.TestCase):
         self.assertIsNone(result['sil'])
         self.assertIn('Numerisk grundfrekvens saknas.', result['messages'])
 
+    def test_invalid_inputs_and_missing_category_cannot_produce_governing_sil(self):
+        matrix = self._matrix()
+        config = normalise_lopa_config({}, matrix)
+        base = {'matrix': matrix, 'base_frequency': 0.1,
+                'categories': [{'category_key': 'person', 'severity': 2}]}
+        cases = [
+            {'base_frequency': -1},
+            {'assumption_percent': -1},
+            {'assumption_percent': 101},
+            {'assumption_percent': 'invalid'},
+            {'barriers': [{'description': 'Invalid', 'rrf': 0}]},
+            {'categories': [{'category_key': 'person', 'severity': 2,
+                             'factors': {'narvaro': 101}}]},
+            {'categories': [{'category_key': 'person', 'severity': 2},
+                            {'category_key': 'rykte', 'severity': 0}]},
+            {'categories': [{'category_key': 'person', 'severity': 2},
+                            {'category_key': 'unknown', 'severity': 2}]},
+        ]
+        for changes in cases:
+            with self.subTest(changes=changes):
+                result = calculate_lopa({**base, **changes}, config)
+                self.assertFalse(result['complete'])
+                self.assertIsNone(result['required_rrf'])
+                self.assertIsNone(result['sil'])
+                self.assertTrue(result['messages'])
+
 
 class LopaDatabaseTests(unittest.TestCase):
     def setUp(self):
@@ -100,7 +126,8 @@ class LopaDatabaseTests(unittest.TestCase):
         node_id = self.db.add_node()
         deviation_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(deviation_id)
-        self.db.update_cause(cause_id, description='LT-101 HH', base_frequency=0.1)
+        self.db.update_cause(cause_id, description='LT-101 HH', base_frequency=0.1,
+                             frequency_cleared=False)
         consequence_id = self.db.add_consequence(cause_id)
         self.db.update_consequence(consequence_id, 'Utsläpp', 3, '')
         category = self.db.consequence_categories()[0]

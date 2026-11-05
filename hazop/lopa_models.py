@@ -220,26 +220,31 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
     normalised = normalise_lopa_config(config, source.get('matrix'))
     messages: list[str] = []
     frequency = _number(source.get('base_frequency'))
-    if frequency is None or frequency < 0:
+    frequency_valid = frequency is not None and frequency >= 0
+    if not frequency_valid:
         messages.append('Numerisk grundfrekvens saknas.')
-    assumption = _number(
-        source.get('assumption_percent'),
-        normalised['default_assumption_percent'])
-    if assumption is None or assumption < 0:
-        messages.append('Förutsättning måste vara ett procenttal större än eller lika med 0.')
-        assumption = 0.0
+    assumption_raw = source.get('assumption_percent')
+    assumption = (_number(assumption_raw) if assumption_raw is not None
+                  else normalised['default_assumption_percent'])
+    assumption_valid = assumption is not None and 0 <= assumption <= 100
+    if not assumption_valid:
+        messages.append('Förutsättning måste vara ett procenttal mellan 0 och 100.')
     effective_frequency = (frequency * assumption / 100.0
-                           if frequency is not None and frequency >= 0 else None)
+                           if frequency_valid and assumption_valid else None)
 
     barriers = [item for item in source.get('barriers', [])
                 if isinstance(item, dict) and item.get('active', True)]
     raw_categories = [item for item in source.get('categories', [])
                       if isinstance(item, dict)]
     rows: list[dict[str, Any]] = []
+    missing_active_category = False
     for category in raw_categories:
         category_key = str(category.get('category_key') or '').strip()
         category_config = normalised['category_settings'].get(category_key)
-        if not category_key or category_config is None:
+        if not category_key or category_config is None or category_config.get('orphaned'):
+            if category.get('active', True):
+                missing_active_category = True
+                messages.append(f'Okänd konsekvenskategori: {category_key or "ej angiven"}.')
             continue
         active = bool(category.get('active', True))
         severity = int(_number(category.get('severity'), 0) or 0)
@@ -252,6 +257,7 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
             messages.append(
                 f"TEL saknas för {category.get('category_name') or category_config['name']} nivå {severity}.")
         applicable_rrf = 1.0
+        inputs_valid = True
         used_barriers: list[dict[str, Any]] = []
         for barrier in barriers:
             if not _barrier_applies(barrier, category_key):
@@ -260,6 +266,7 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
             if rrf is None or rrf < 1.0:
                 messages.append(
                     f"Ogiltig RRF för barriären {barrier.get('description') or 'utan namn'}.")
+                inputs_valid = False
                 continue
             applicable_rrf *= rrf
             used_barriers.append({
@@ -272,12 +279,13 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
         factor_product = 1.0
         factors: list[dict[str, Any]] = []
         for definition in category_config['escalation_factors']:
-            percent = _number(factor_values.get(definition['key']),
-                              definition['default_percent'])
-            if percent is None or percent < 0:
+            raw_percent = factor_values.get(definition['key'], definition['default_percent'])
+            percent = _number(raw_percent)
+            if percent is None or not 0 <= percent <= 100:
                 messages.append(
                     f"Ogiltig procentsats för {definition['label']}.")
-                percent = 0.0
+                inputs_valid = False
+                percent = 100.0
             fraction = percent / 100.0
             factor_product *= fraction
             factors.append({
@@ -290,9 +298,14 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
                                if effective_frequency is not None else None)
         accident_frequency = (remaining_frequency * factor_product
                               if remaining_frequency is not None else None)
-        required_rrf = (accident_frequency / tel
-                        if accident_frequency is not None and tel and tel > 0 else None)
-        complete = active and frequency is not None and tel is not None and severity > 0
+        complete = (active and frequency_valid and assumption_valid and inputs_valid
+                    and tel is not None and tel > 0 and severity > 0
+                    and math.isfinite(applicable_rrf) and math.isfinite(accident_frequency or 0))
+        required_rrf = (accident_frequency / tel if complete else None)
+        if required_rrf is not None and not math.isfinite(required_rrf):
+            required_rrf = None
+            complete = False
+            messages.append('Beräkningsresultatet ligger utanför tillåtet numeriskt intervall.')
         rows.append({
             # ``categories`` is a flat calculation input, but each entry is
             # an individual HAZOP consequence/category assessment.  Preserve
@@ -318,7 +331,8 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
 
     active_rows = [row for row in rows if row['active']]
     candidates = [row for row in active_rows if row['required_rrf'] is not None]
-    governing = max(candidates, key=lambda row: row['required_rrf'], default=None)
+    all_complete = bool(active_rows) and not missing_active_category and all(row['complete'] for row in active_rows)
+    governing = max(candidates, key=lambda row: row['required_rrf'], default=None) if all_complete else None
     if not active_rows:
         messages.append('Ingen aktiv konsekvenskategori är vald.')
     if active_rows and not candidates:
@@ -332,6 +346,6 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
         'governing_category_name': governing['category_name'] if governing else None,
         'required_rrf': governing['required_rrf'] if governing else None,
         'sil': governing['sil'] if governing else None,
-        'complete': bool(governing) and all(row['complete'] for row in active_rows),
+        'complete': bool(governing) and all_complete,
         'messages': list(dict.fromkeys(messages)),
     }

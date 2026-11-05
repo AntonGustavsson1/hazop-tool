@@ -4311,9 +4311,16 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         a single Ctrl+Z undoes both sides together.
         """
         source = self._lopa_source_revision(source_id)
+        cause = self.get_cause(cause_id)
+        standard = self.get_standard_cause(cause['standard_cause_id']) if cause and cause.get('standard_cause_id') else None
+        if (base_frequency is not None and standard and standard.get('frequency') is not None
+                and float(base_frequency) != float(standard['frequency'])):
+            raise ValueError('Orsaken är kopplad till en standardorsak med egen frekvens. '
+                             'Ändra frekvensunderlaget för standardorsaken först.')
         with self.history_group():
             self.update_cause(cause_id, base_frequency=base_frequency,
-                              frequency_cleared=(base_frequency is None))
+                              frequency_cleared=(base_frequency is None),
+                              frequency_override=None)
             self.conn.execute(
                 "UPDATE lopa_source_scenarios SET base_frequency=? WHERE id=?",
                 (base_frequency, source_id))

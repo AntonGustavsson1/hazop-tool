@@ -30,7 +30,8 @@ class LopaExportTests(unittest.TestCase):
         node_id = self.db.add_node()
         deviation_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(deviation_id)
-        self.db.update_cause(cause_id, description='LT-101 HH', base_frequency=0.1)
+        self.db.update_cause(cause_id, description='LT-101 HH', base_frequency=0.1,
+                             frequency_cleared=False)
         consequence_id = self.db.add_consequence(cause_id)
         self.db.update_consequence(consequence_id, 'Överfyllnad', 3, '')
         category = self.db.consequence_categories()[0]
@@ -64,6 +65,7 @@ class LopaExportTests(unittest.TestCase):
         summary = workbook['LOPA sammanfattning']
         self.assertEqual('LOPA-nr', summary['A3'].value)
         self.assertEqual('017', summary['A4'].value)
+        self.assertNotEqual('Ofullständig', summary['I4'].value)
         sheet = workbook['LOPA 017 R00']
         values = [cell.value for row in sheet.iter_rows() for cell in row if cell.value]
         for required in ('Skyddsbarriäranalys (LOPA)', 'Källscenarier från HAZOP',
@@ -72,6 +74,17 @@ class LopaExportTests(unittest.TestCase):
                          'Exportkommentar', 'SIF-017', 'Stäng ventil',
                          'Konsekvens', 'Överfyllnad'):
             self.assertIn(required, values)
+
+        incomplete = self.db.add_lopa_local_source(created['revision_id'], cause_text='Ofullständig')
+        ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
+        self.assertTrue(ok, error)
+        workbook = openpyxl.load_workbook(path, data_only=True)
+        self.assertEqual('Ofullständig', workbook['LOPA sammanfattning']['I4'].value)
+        self.db.set_lopa_source_active(incomplete, False)
+        ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
+        self.assertTrue(ok, error)
+        workbook = openpyxl.load_workbook(path, data_only=True)
+        self.assertNotEqual('Ofullständig', workbook['LOPA sammanfattning']['I4'].value)
 
     def test_export_accepts_multiple_explicit_revisions(self):
         first = self.db.create_lopa(display_number='001', sif_name='Första SIF')
