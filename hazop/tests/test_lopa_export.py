@@ -75,6 +75,13 @@ class LopaExportTests(unittest.TestCase):
                          'Konsekvens', 'Överfyllnad'):
             self.assertIn(required, values)
 
+        self.db.update_cause(cause_id, description='Ändrad HAZOP-orsak')
+        ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
+        self.assertTrue(ok, error)
+        workbook = openpyxl.load_workbook(path, data_only=True)
+        values = [cell.value for row in workbook['LOPA 017 R00'].iter_rows() for cell in row]
+        self.assertIn('HAZOP har ändrats', values)
+
         incomplete = self.db.add_lopa_local_source(created['revision_id'], cause_text='Ofullständig')
         ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
         self.assertTrue(ok, error)

@@ -134,6 +134,7 @@ class LopaHierarchySyncTests(unittest.TestCase):
     def test_local_source_edits_only_touch_lopa_mirror(self):
         created = self.db.create_lopa(sif_name='Local test')
         source_id = self.db.add_lopa_local_source(created['revision_id'])
+        self.assertEqual('local', self.db.lopa_source_sync_state(source_id)['state'])
         self.db.set_lopa_source_cause_text(source_id, 'Fritt formulerad orsak')
         self.db.set_lopa_source_frequency(source_id, 0.005)
         row = self.db.conn.execute(
@@ -193,6 +194,15 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.db.set_lopa_source_active(source_id, False)
         self.panel._populate_calculation()
         self.assertIn('Beräknat behov', self.panel._dimensioning_summary.text())
+
+    def test_source_status_reports_missing_hazop_and_local_source(self):
+        source = self.db.lopa_sources(self.revision_id)[0]
+        self.db.delete_safeguard(source['origin_safeguard_id'])
+        self.db.add_lopa_local_source(self.revision_id, cause_text='Lokal')
+        self.panel.activate_lopa(self.lopa_id, self.revision_id)
+        message = self.panel._source_sync_note.text()
+        self.assertIn('HAZOP-källa saknas', message)
+        self.assertIn('lokal LOPA-källa', message)
 
     def test_egen_lopa_konsekvens_creates_row_without_popup(self):
         before_rows = self.panel._hazop_hierarchy.rowCount()

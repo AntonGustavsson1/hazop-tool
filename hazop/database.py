@@ -3910,6 +3910,16 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
 
     def lock_lopa_revision(self, revision_id, actor=''):
         revision = self._assert_lopa_revision_editable(revision_id)
+        # A missing source must be resolved or explicitly detached/excluded
+        # before locking. Otherwise locking would make stale draft inputs
+        # appear as a valid historical calculation.
+        for source in self.lopa_sources(revision_id):
+            if not source['active']:
+                continue
+            result = self.lopa_source_calculation(source['id'])
+            if result.get('missing_hazop_sources'):
+                raise ValueError('En aktiv HAZOP-källa, konsekvens eller barriär saknas. '
+                                 'Granska eller exkludera underlaget innan revisionen låses.')
         self.conn.execute(
             "UPDATE lopa_revisions SET status='Låst',locked_at=CURRENT_TIMESTAMP,locked_by=? WHERE id=?",
             (str(actor or ''), revision_id))
@@ -3982,8 +3992,12 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         if not source:
             return {'state': 'missing', 'messages': ['LOPA-källscenariot saknas.']}
         source = dict(source)
+        if source.get('frequency_origin') == 'manual' and not source.get('origin_safeguard_id'):
+            return {'state': 'local', 'messages': ['Lokalt LOPA-scenario utan HAZOP-källa.']}
         if not source.get('follows_hazop'):
             return {'state': 'detached', 'messages': ['Frikopplad från HAZOP lokalt.']}
+        if source.get('source_missing'):
+            return {'state': 'missing', 'messages': ['HAZOP-källan eller dess objekt saknas.']}
         if not source.get('origin_safeguard_id'):
             return {'state': 'missing', 'messages': ['HAZOP-barriären finns inte längre.']}
         live = self.conn.execute(
@@ -5003,7 +5017,8 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 'active': bool(row['active']),
             }
         source['categories'] = []
-        for consequence in self.lopa_source_consequences(source_id):
+        consequences = self.lopa_source_consequences(source_id)
+        for consequence in consequences:
             escalation = factor_values.get(consequence['category_key'], {})
             source['categories'].append({
                 # Keep the stored assessment identity through calculation so
@@ -5019,7 +5034,8 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 'factors': escalation.get('values', {}),
             })
         source['barriers'] = []
-        for barrier in self.lopa_barriers(source['revision_id'], source_id):
+        barriers = self.lopa_barriers(source['revision_id'], source_id)
+        for barrier in barriers:
             if not barrier['independent']:
                 continue
             if barrier['applies_all_categories']:
@@ -5032,7 +5048,37 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 'rrf': barrier['rrf'], 'active': bool(barrier['active']),
                 'categories': categories,
             })
-        return calculate_lopa(source, source['matrix'].get('lopa') or {})
+        result = calculate_lopa(source, source['matrix'].get('lopa') or {})
+        revision = self._lopa_revision_row(source['revision_id'])
+        missing = []
+        if source.get('follows_hazop') and (source.get('source_missing') or
+                (source.get('frequency_origin') != 'manual' and not source.get('origin_safeguard_id'))):
+            missing.append('HAZOP-källan saknas')
+        if any(row.get('active') and row.get('follows_hazop') and
+               (row.get('source_missing') or not row.get('hazop_consequence_id'))
+               for row in consequences):
+            missing.append('En HAZOP-konsekvens saknas')
+        if any(row.get('active') and row.get('independent') and not row.get('manual')
+               and row.get('follows_hazop') and
+               (row.get('source_missing') or not row.get('source_safeguard_id'))
+               for row in barriers):
+            missing.append('En HAZOP-barriär saknas')
+        result['missing_hazop_sources'] = (
+            missing if revision and revision['status'] not in ('Låst', 'Godkänd', 'Arkiverad')
+            and source.get('active') else [])
+        if result['missing_hazop_sources']:
+            # Draft calculations must not present a conclusion as current
+            # after the HAZOP source disappears. Locked revisions retain the
+            # historical calculation captured before the source was removed.
+            result['complete'] = False
+            result['required_rrf'] = result['sil'] = None
+            result['governing_category_key'] = result['governing_category_name'] = None
+            result['messages'].extend(f'{message}; granska underlaget innan LOPA beräknas.'
+                                      for message in missing)
+            for row in result['categories']:
+                row['complete'] = False
+                row['required_rrf'] = row['sil'] = None
+        return result
 
     def get_custom_risk_matrix_templates(self):
         """Return this project's named, user-created risk-matrix templates.

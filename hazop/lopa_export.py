@@ -52,9 +52,20 @@ def _write_table(ws, row, headers, rows, *, widths=None):
 
 def _source_summary(db, revision_id, source):
     result = db.lopa_source_calculation(source['id'])
-    state = 'Följer HAZOP' if source['follows_hazop'] else 'Frikopplad från HAZOP'
-    if source['source_missing']:
-        state = 'Källa saknas i HAZOP'
+    revision = db.get_lopa_revision(revision_id)
+    if revision and revision['status'] in ('Låst', 'Godkänd', 'Arkiverad'):
+        state = 'Låst revisionsunderlag'
+    else:
+        sync = db.lopa_source_sync_state(source['id'])['state']
+        state = {
+            'current': 'Följer HAZOP',
+            'changed': 'HAZOP har ändrats',
+            'missing': 'Källa saknas i HAZOP',
+            'detached': 'Frikopplad från HAZOP',
+            'local': 'Lokal LOPA-källa',
+        }.get(sync, 'Okänd synkstatus')
+        if source['source_missing']:
+            state = 'Källa saknas i HAZOP'
     return result, state
 
 

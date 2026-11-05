@@ -306,6 +306,76 @@ class LopaDatabaseTests(unittest.TestCase):
         self.assertTrue(source['source_missing'])
         self.assertIsNone(source['origin_safeguard_id'])
 
+    def test_missing_hazop_source_blocks_draft_but_preserves_locked_calculation(self):
+        _cause_id, sensor_sg, _other_sg, _equipment_id = self._hazop_chain()
+        created = self.db.create_lopa()
+        source_id = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor_sg)['source_id']
+        before = self.db.lopa_source_calculation(source_id)
+        self.assertTrue(before['complete'])
+        locked_revision = self.db.create_lopa_revision(created['lopa_id'], created['revision_id'])
+        locked_source = self.db.lopa_sources(locked_revision)[0]['id']
+        self.db.lock_lopa_revision(locked_revision)
+        locked_before = self.db.lopa_source_calculation(locked_source)
+        self.db.delete_safeguard(sensor_sg)
+        draft = self.db.lopa_source_calculation(source_id)
+        self.assertFalse(draft['complete'])
+        self.assertIsNone(draft['required_rrf'])
+        self.assertIsNone(draft['sil'])
+        self.assertTrue(any('HAZOP-källan saknas' in m for m in draft['messages']))
+        self.assertTrue(all(row['sil'] is None for row in draft['categories']))
+        with self.assertRaisesRegex(ValueError, 'saknas'):
+            self.db.lock_lopa_revision(created['revision_id'])
+        self.assertEqual('Utkast', self.db.get_lopa_revision(created['revision_id'])['status'])
+        self.assertEqual(locked_before, self.db.lopa_source_calculation(locked_source))
+        self.assertTrue(self.db.undo())
+        self.assertEqual(before, self.db.lopa_source_calculation(source_id))
+        self.assertTrue(self.db.redo())
+        self.assertFalse(self.db.lopa_source_calculation(source_id)['complete'])
+
+    def test_deleted_imported_barrier_cannot_silently_reduce_draft_risk(self):
+        _cause, sensor, barrier, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.db.delete_safeguard(barrier)
+        result = self.db.lopa_source_calculation(source)
+        self.assertFalse(result['complete'])
+        self.assertIsNone(result['sil'])
+        self.assertTrue(any('HAZOP-barriär saknas' in message for message in result['messages']))
+        self.assertTrue(self.db.undo())
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(self.db.redo())
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+
+    def test_deleted_imported_consequence_cannot_remain_a_complete_draft(self):
+        cause, sensor, _barrier, _equipment = self._hazop_chain()
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Ytterligare konsekvens', 2, '')
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(consequence, category['id'], 2)
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.db.delete_consequence(consequence)
+        result = self.db.lopa_source_calculation(source)
+        self.assertFalse(result['complete'])
+        self.assertTrue(any('HAZOP-konsekvens saknas' in message for message in result['messages']))
+        self.assertTrue(self.db.undo())
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(self.db.redo())
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+
+    def test_cascaded_deletion_of_original_safeguard_is_detected(self):
+        _cause, sensor, _barrier, _equipment = self._hazop_chain()
+        origin_consequence = self.db.get_safeguard(sensor)['consequence_id']
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.delete_consequence(origin_consequence)
+        result = self.db.lopa_source_calculation(source)
+        self.assertFalse(result['complete'])
+        self.assertTrue(any('HAZOP-källan saknas' in message for message in result['messages']))
+        self.assertIsNone(result['sil'])
+
     def test_document_fields_final_element_and_revision_copy_are_traceable(self):
         _cause_id, sensor_sg, _other_sg, equipment_id = self._hazop_chain()
         created = self.db.create_lopa()

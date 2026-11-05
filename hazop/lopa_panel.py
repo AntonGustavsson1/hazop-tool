@@ -1725,11 +1725,25 @@ class LopaPanel(QWidget):
             self._fit_table_height(self._hazop_hierarchy, 72, 192)
         self._hazop_hierarchy.doItemsLayout()
         self._source_id = selected_source
-        changed = sum(1 for source in sources
-                      if self.db.lopa_source_sync_state(source['id'])['state'] == 'changed')
-        self._source_sync_note.setText(
-            'HAZOP-källor är aktuella.' if not changed else
-            f'{changed} HAZOP-koppling(ar) har ändrats – LOPA skrivs inte över automatiskt.')
+        states = [self.db.lopa_source_sync_state(source['id'])['state']
+                  for source in sources if source['active']]
+        notices = []
+        if states.count('missing'):
+            count = states.count('missing')
+            notices.append(f"{count} HAZOP-{'källa' if count == 1 else 'källor'} saknas")
+        if states.count('changed'):
+            notices.append(f"{states.count('changed')} HAZOP-koppling(ar) har ändrats")
+        if states.count('detached'):
+            count = states.count('detached')
+            notices.append(f"{count} {'källa är frikopplad' if count == 1 else 'källor är frikopplade'}")
+        if states.count('local'):
+            count = states.count('local')
+            notices.append(f"{count} {'lokal LOPA-källa' if count == 1 else 'lokala LOPA-källor'}")
+        if not states:
+            notices.append('Inga aktiva källor')
+        elif not notices:
+            notices.append('HAZOP-källor är aktuella')
+        self._source_sync_note.setText('. '.join(notices) + '.')
         self._sync_note.setText(
             'Aktiva rader följer HAZOP tills de uttryckligen kopplas loss. '
             'Låsta revisioner behåller sin egen riskmatris och sitt underlag.')
@@ -1954,6 +1968,7 @@ class LopaPanel(QWidget):
             'current': 'Kopplingen följer aktuell HAZOP-data.',
             'changed': 'HAZOP har ändrats; granska innan LOPA-uppgifterna uppdateras.',
             'detached': 'Raden är uttryckligen frikopplad från HAZOP lokalt.',
+            'local': 'Lokalt LOPA-scenario utan HAZOP-källa.',
             'missing': 'HAZOP-källan finns inte längre; LOPA-underlaget är kvar som historik.',
         }.get(sync['state'], '')
         source_reference = self.db.hazop_hierarchy_reference(

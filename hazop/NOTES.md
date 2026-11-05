@@ -1,5 +1,22 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: saknade HAZOP-källor och synkstatus (2026-11-05)
+
+En aktiv, olåst analys ger inte längre dimensionerande RRF/SIL när dess
+kopplade HAZOP-källa, en aktiv konsekvens eller aktiv oberoende barriär har
+försvunnit. Även indirekt borttagning via kaskad fångas. Revisionen kan inte
+låsas förrän det saknade underlaget har hanterats eller exkluderats, så ett
+ofullständigt utkast inte blir skenbart komplett genom låsning. Redan låsta,
+godkända eller arkiverade revisioner använder fortsatt sitt historiska
+beräkningsunderlag.
+
+LOPA-vyn skiljer på ändrade, saknade, frikopplade och lokala källor i stället
+för att felaktigt ange att alla är aktuella. Excel-exporten visar motsvarande
+synkstatus för utkast och märker låst revisionsunderlag. Syntaxkontroll och
+50 LOPA-/export-/smoketester passerade headless, inklusive borttagen källa,
+barriär och konsekvens, kaskad, låsning samt undo/redo. Ingen manuell
+GUI-verifiering är gjord.
+
 ## Rullning i frekvens- och RRF-popup (2026-11-05)
 
 Frekvens- och RRF-listorna hade begränsad höjd men rullningslisten var
