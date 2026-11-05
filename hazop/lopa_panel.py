@@ -921,6 +921,12 @@ class LopaPanel(QWidget):
         barrier_actions.addWidget(self._refresh_barrier_identity_btn)
         barrier_actions.addStretch()
         barrier_detail_layout.addLayout(barrier_actions)
+        barrier_import_actions = QHBoxLayout()
+        self._import_new_barriers_btn = QPushButton('Hämta nya HAZOP-barriärer')
+        self._import_new_barriers_btn.clicked.connect(self._import_new_barriers)
+        barrier_import_actions.addWidget(self._import_new_barriers_btn)
+        barrier_import_actions.addStretch()
+        barrier_detail_layout.addLayout(barrier_import_actions)
         barrier_footer = QHBoxLayout()
         barrier_footer.addWidget(QLabel('Kontrollfrekvens'))
         self._control_frequency = QLineEdit()
@@ -1104,7 +1110,7 @@ class LopaPanel(QWidget):
                           self._add_final_group_btn, self._add_final_btn,
                           self._add_consequence_btn, self._edit_consequence_btn, self._manage_unassessed_btn,
                           self._add_barrier_btn, self._edit_barrier_btn, self._review_barrier_btn,
-                          self._refresh_barrier_identity_btn,
+                          self._refresh_barrier_identity_btn, self._import_new_barriers_btn,
                           self._add_comment_btn):
             ghost_btn.setStyleSheet(lopa_ghost_button_stylesheet())
 
@@ -1205,6 +1211,7 @@ class LopaPanel(QWidget):
         self._edit_barrier_btn.setEnabled(False)
         self._review_barrier_btn.setEnabled(False)
         self._refresh_barrier_identity_btn.setEnabled(False)
+        self._import_new_barriers_btn.setEnabled(False)
         self._control_frequency.clear()
         self._control_frequency.setEnabled(False)
         self._assumption_percent.setValue(0)
@@ -1763,8 +1770,9 @@ class LopaPanel(QWidget):
             self._fit_table_height(self._hazop_hierarchy, 72, 192)
         self._hazop_hierarchy.doItemsLayout()
         self._source_id = selected_source
-        states = [self.db.lopa_source_sync_state(source['id'])['state']
-                  for source in sources if source['active']]
+        sync_states = [self.db.lopa_source_sync_state(source['id'])
+                       for source in sources if source['active']]
+        states = [item['state'] for item in sync_states]
         notices = []
         if states.count('missing'):
             count = states.count('missing')
@@ -1781,6 +1789,8 @@ class LopaPanel(QWidget):
             notices.append('Inga aktiva källor')
         elif not notices:
             notices.append('HAZOP-källor är aktuella')
+        if any('ny HAZOP-barriär' in item['messages'] for item in sync_states):
+            notices.append('Nya HAZOP-barriärer finns; öppna barriärdetaljer för att hämta dem')
         unassessed = sum(1 for source, groups in source_groups if source['active'] for group in groups
                          if group.get('hazop_consequence_id') is not None and not group.get('assessments')
                          and not group.get('unassessed_exclusion'))
@@ -2066,6 +2076,7 @@ class LopaPanel(QWidget):
             self._edit_barrier_btn.setEnabled(False)
             self._review_barrier_btn.setEnabled(False)
             self._refresh_barrier_identity_btn.setEnabled(False)
+            self._import_new_barriers_btn.setEnabled(False)
             self._control_frequency.clear()
             self._control_frequency.setEnabled(False)
             self._assumption_percent.setValue(0)
@@ -2579,6 +2590,11 @@ class LopaPanel(QWidget):
         self._edit_barrier_btn.setEnabled(bool(rows) and enabled)
         self._review_barrier_btn.setEnabled(bool(rows) and enabled)
         self._refresh_barrier_identity_btn.setEnabled(bool(rows) and enabled)
+        selected_source = next((item for item in self.db.lopa_sources(self._revision_id)
+                                if item['id'] == self._source_id), None) if self._revision_id else None
+        self._import_new_barriers_btn.setEnabled(bool(
+            enabled and selected_source and selected_source.get('hazop_cause_id')
+            and selected_source.get('origin_safeguard_id')))
         if self._source_id:
             result = self.db.lopa_source_calculation(self._source_id)
             index = result.get('governing_category_index')
@@ -2791,6 +2807,21 @@ class LopaPanel(QWidget):
         self._populate_escalation()
         self._populate_calculation()
         self.changed.emit()
+
+    def _import_new_barriers(self):
+        if not self._source_id:
+            return
+        try:
+            count = self.db.import_lopa_new_barriers(self._source_id)
+        except (ValueError, PermissionError) as exc:
+            QMessageBox.warning(self, 'Kunde inte hämta barriärer', str(exc))
+            return
+        self._populate_hazop_hierarchy()
+        self._populate_calculation()
+        QMessageBox.information(self, 'HAZOP-barriärer',
+                                f'{count} nya barriärer hämtades. Granska deras oberoende och kategorier.')
+        if count:
+            self.changed.emit()
 
     def _refresh_selected_barrier_identity(self):
         barrier_id = self._selected_entity_id(self._barriers)

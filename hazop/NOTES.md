@@ -1,5 +1,19 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: nya barriärer i ett befintligt HAZOP-scenario (2026-11-05)
+
+Synkstatus upptäcker nu när en ny HAZOP-barriär lagts till under en redan
+importerad konsekvens. I barriärdetaljer kan användaren hämta sådana barriärer
+i en ångra-/gör om-bar åtgärd. Befintliga LOPA-rader skrivs inte över och
+HAZOP-kategoriernas exkluderingar respekteras. Samma kontroll av objekt och
+SIF-identitet som vid den ursprungliga importen används för de nya raderna.
+En ny konsekvens utan importerad bedömning hanteras i konsekvensflödet nedan.
+
+Syntaxkontroll samt 94 LOPA-/export-/smoketester passerade headless; riktade
+tester täcker även kategoriexkludering, samma SIF, visning och undo/redo.
+Barriärvyn granskades som renderad widget, inte som ett fullständigt manuellt
+GUI-flöde.
+
 ## LOPA: obedömda konsekvenser och vald bedömning (2026-11-05)
 
 En aktiv HAZOP-konsekvens utan importerad kategoribedömning gör nu källans

@@ -263,6 +263,21 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.assertIn('Samma SIF', self.panel._barriers.item(0, 5).text())
         self.assertTrue(self.db.lopa_source_calculation(imported['source_id'])['complete'])
 
+    def test_new_hazop_barrier_can_be_imported_from_lopa_view(self):
+        source = self.db.lopa_sources(self.revision_id)[0]
+        consequence = self.db.get_safeguard(source['origin_safeguard_id'])['consequence_id']
+        barrier = self.db.add_safeguard(consequence)
+        self.db.update_safeguard(barrier, description='Ny mekanisk barriär', rrf=10, sg_type='Mekanisk')
+        self.panel._populate_hazop_hierarchy()
+        self.assertIn('HAZOP-koppling(ar) har ändrats', self.panel._source_sync_note.text())
+        self.assertIn('Nya HAZOP-barriärer finns', self.panel._source_sync_note.text())
+        self.assertTrue(self.panel._import_new_barriers_btn.isEnabled())
+        with patch('lopa_panel.QMessageBox.information'):
+            self.panel._import_new_barriers()
+        self.assertEqual(1, self.panel._barriers.rowCount())
+        self.assertEqual('Ny mekanisk barriär', self.panel._barriers.item(0, 2).text())
+        self.assertEqual('current', self.db.lopa_source_sync_state(source['id'])['state'])
+
     def test_source_status_reports_missing_hazop_and_local_source(self):
         source = self.db.lopa_sources(self.revision_id)[0]
         self.db.delete_safeguard(source['origin_safeguard_id'])

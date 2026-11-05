@@ -269,6 +269,45 @@ class LopaDatabaseTests(unittest.TestCase):
         self.assertTrue(self.db.redo())
         self.assertEqual('current', self.db.lopa_source_sync_state(source)['state'])
 
+    def test_new_hazop_barrier_is_reported_and_imported_without_changing_existing_rows(self):
+        _cause, sensor, original, equipment = self._hazop_chain()
+        consequence = self.db.get_safeguard(sensor)['consequence_id']
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        previous = self.db.lopa_barriers(created['revision_id'], source)[0]
+        duplicate = self.db.add_safeguard(consequence)
+        self.db.update_safeguard(duplicate, description='Samma SIF igen', rrf=100, sg_type='SIS')
+        self.db.add_safeguard_equipment_link(duplicate, equipment, 'HH')
+        state = self.db.lopa_source_sync_state(source)
+        self.assertEqual('changed', state['state'])
+        self.assertIn('ny HAZOP-barriär', state['messages'])
+        self.assertEqual(1, self.db.import_lopa_new_barriers(source))
+        self.assertEqual(0, self.db.import_lopa_new_barriers(source))
+        barriers = {row['source_safeguard_id']: row for row in self.db.lopa_barriers(created['revision_id'], source)}
+        self.assertEqual(previous, barriers[original])
+        self.assertEqual('same', self.db.lopa_barrier_identity_status(barriers[duplicate])['state'])
+        self.assertEqual(10, self.db.lopa_source_calculation(source)['categories'][0]['barrier_rrf'])
+        self.assertEqual('current', self.db.lopa_source_sync_state(source)['state'])
+        self.assertTrue(self.db.undo())
+        self.assertIn('ny HAZOP-barriär', self.db.lopa_source_sync_state(source)['messages'])
+        self.assertTrue(self.db.redo())
+        self.assertEqual('current', self.db.lopa_source_sync_state(source)['state'])
+
+    def test_new_barrier_import_respects_hazop_category_exclusions(self):
+        _cause, sensor, _original, _equipment = self._hazop_chain()
+        consequence = self.db.get_safeguard(sensor)['consequence_id']
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        new_barrier = self.db.add_safeguard(consequence)
+        self.db.update_safeguard(new_barrier, description='Gäller annan kategori', rrf=100, sg_type='Mekanisk')
+        severity = self.db.get_consequence_severities(consequence)[0]
+        self.db.set_severity_excluded_sgs(severity['id'], [new_barrier])
+        self.assertEqual(1, self.db.import_lopa_new_barriers(source))
+        imported = next(row for row in self.db.lopa_barriers(created['revision_id'], source)
+                        if row['source_safeguard_id'] == new_barrier)
+        self.assertEqual([], self.db.lopa_barrier_categories(imported['id']))
+        self.assertEqual(10, self.db.lopa_source_calculation(source)['categories'][0]['barrier_rrf'])
+
     def test_matrix_change_is_detected_without_altering_revision_snapshot(self):
         created = self.db.create_lopa()
         revision = created['revision_id']

@@ -4232,9 +4232,67 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             snapshot = barrier.get('equipment_identity_snapshot_json')
             if snapshot is not None and snapshot != self._lopa_safeguard_identity_snapshot(current['id']):
                 changes.append('barriärens objektkoppling')
+        if self._lopa_new_hazop_safeguards(source):
+            changes.append('ny HAZOP-barriär')
         if changes:
             return {'state': 'changed', 'messages': list(dict.fromkeys(changes))}
         return {'state': 'current', 'messages': []}
+
+    def _lopa_new_hazop_safeguards(self, source):
+        """Find new safeguards only on consequences already assessed in this LOPA."""
+        if not source.get('hazop_cause_id'):
+            return []
+        return [dict(row) for row in self.conn.execute(
+            'SELECT s.* FROM safeguards s JOIN consequences c ON c.id=s.consequence_id '
+            'WHERE c.cause_id=? AND s.id!=COALESCE(?, -1) '
+            'AND EXISTS (SELECT 1 FROM lopa_source_consequences lc '
+            'WHERE lc.source_id=? AND lc.hazop_consequence_id=c.id) '
+            'AND NOT EXISTS (SELECT 1 FROM lopa_barriers lb '
+            'WHERE lb.source_id=? AND lb.source_safeguard_id=s.id) '
+            'ORDER BY c.sort_order,c.id,s.sort_order,s.id',
+            (source['hazop_cause_id'], source.get('origin_safeguard_id'),
+             source['id'], source['id'])).fetchall()]
+
+    def import_lopa_new_barriers(self, source_id):
+        """Copy newly added HAZOP safeguards without changing existing LOPA rows."""
+        source = self._lopa_source_revision(source_id)
+        if not source.get('hazop_cause_id') or not source.get('origin_safeguard_id'):
+            raise ValueError('Källscenariot saknar en aktuell HAZOP-koppling.')
+        safeguards = self._lopa_new_hazop_safeguards(source)
+        if not safeguards:
+            return 0
+        assessments = self.lopa_source_consequences(source_id)
+        with self.history_group():
+            try:
+                self.conn.execute('BEGIN')
+                for safeguard in safeguards:
+                    consequence_id = safeguard['consequence_id']
+                    sort_order = self.conn.execute(
+                        'SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_barriers WHERE revision_id=?',
+                        (source['revision_id'],)).fetchone()[0]
+                    barrier_id = self.conn.execute(
+                        'INSERT INTO lopa_barriers(revision_id,source_id,source_safeguard_id,sg_type,'
+                        'description,rrf,manual,applies_all_categories,sort_order,hazop_consequence_snapshot_id,'
+                        'equipment_identity_snapshot_json) VALUES (?,?,?,?,?,?,0,0,?,?,?)',
+                        (source['revision_id'], source_id, safeguard['id'], safeguard.get('sg_type') or 'Övrigt',
+                         safeguard.get('description') or '', safeguard.get('rrf') or 1, sort_order,
+                         consequence_id, self._lopa_safeguard_identity_snapshot(safeguard['id']))).lastrowid
+                    severities = {row['category_id']: row for row in self.get_consequence_severities(consequence_id)}
+                    for assessment in assessments:
+                        if assessment.get('hazop_consequence_id') != consequence_id:
+                            continue
+                        severity = severities.get(assessment.get('hazop_category_id'))
+                        if severity and safeguard['id'] not in self.get_severity_excluded_sgs(severity['id']):
+                            self.conn.execute(
+                                'INSERT OR IGNORE INTO lopa_barrier_categories(barrier_id,category_key,active) '
+                                'VALUES (?,?,1)', (barrier_id, assessment['category_key']))
+                self._log_lopa(source['lopa_id'], source['revision_id'], 'hazop-barriers-imported',
+                               f'{len(safeguards)} nya HAZOP-barriärer för källscenario {source_id}')
+                self.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return len(safeguards)
 
     def lopa_source_consequences(self, source_id):
         return [dict(row) for row in self.conn.execute(
