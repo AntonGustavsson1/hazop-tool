@@ -1721,7 +1721,7 @@ class TreeContextHighlightEndToEndTests(unittest.TestCase):
         dev_id = db.deviations(node_id)[0]['id']
         eq_id = db.add_equipment_item(tag, tag, tag[0], 0, 'Ventil', '', 0)
         cause_id = db.add_cause(dev_id)
-        db.conn.execute("UPDATE causes SET equipment_id=? WHERE id=?", (eq_id, cause_id))
+        db.conn.execute("UPDATE causes SET equipment_id=?,comp_tag=? WHERE id=?", (eq_id, tag, cause_id))
         db.commit()
         marker_id = db.add_equipment_marker(eq_id, tag, 0, 10.0, 10.0, 'Ventil')
         return node_id, cause_id, eq_id, marker_id
@@ -1765,7 +1765,7 @@ class TreeContextHighlightEndToEndTests(unittest.TestCase):
             cause_id = win.db.add_cause(dev_id)
             win.db.update_cause(cause_id, equipment_id=ids[0],
                                 secondary_equipment_id=ids[1],
-                                group_equipment_ids=ids)
+                                group_equipment_ids=ids, description='V-1\nV-2\nV-3')
             markers = [win.db.add_equipment_marker(eq_id, tag, 0, float(i), 10.0, 'Ventil')
                        for i, (eq_id, tag) in enumerate(zip(ids, ('V-1', 'V-2', 'V-3')))]
 
@@ -1829,11 +1829,8 @@ class TreeContextHighlightEndToEndTests(unittest.TestCase):
             self.assertIsNone(win.pid_panel._active_node_id)
             self.assertIsNone(win.pid_panel._active_cause_id)
 
-    def test_tagged_refs_historical_tag_still_highlighted_after_retag(self):
-        """End-to-end proof of Anton's decision #2: dragging tag A then
-        tag B onto the same safeguard (comp_tag becomes 'B', but
-        tagged_refs keeps 'A,B') must highlight BOTH A's and B's markers
-        once the owning Cause is selected."""
+    def test_only_visible_tag_is_highlighted_after_retag(self):
+        """A historical tag removed from visible safeguard text is not active."""
         with _TempDbMainWindow() as win:
             self._stub_scenario_loads(win)
             _fake_pdf_loaded(win.pid_panel)
@@ -1849,13 +1846,13 @@ class TreeContextHighlightEndToEndTests(unittest.TestCase):
             # Drag A, then B — comp_tag ends up 'P-1' (latest), tagged_refs
             # keeps the full history 'V-1,P-1'.
             win.db.conn.execute(
-                "UPDATE safeguards SET comp_tag='P-1', tagged_refs='V-1,P-1' WHERE id=?",
+                "UPDATE safeguards SET comp_tag='P-1', tagged_refs='V-1,P-1',description='P-1' WHERE id=?",
                 (sg_id,))
             win.db.commit()
 
             win._on_selected(CAUSE_T, cause_id)
 
-            self.assertIn(marker_a, win.pid_panel.viewer._tree_context_highlights)
+            self.assertNotIn(marker_a, win.pid_panel.viewer._tree_context_highlights)
             self.assertIn(marker_b, win.pid_panel.viewer._tree_context_highlights)
 
 
@@ -7019,11 +7016,13 @@ class OrsTagZoneOpensMinimalPopupTests(unittest.TestCase):
         edit.assert_called_once_with(
             self.panel._table.model().index(self.row, self.panel._C_ORS))
 
-    def test_clicking_manual_cause_text_starts_standard_cause_editing(self):
+    def test_clicking_manual_cause_text_selects_it_without_starting_edit(self):
+        selected = []
+        self.panel.item_selected.connect(lambda kind, item_id: selected.append((kind, item_id)))
         with unittest.mock.patch.object(self.panel, '_try_start_edit') as edit:
             self.panel._on_cell_clicked(self.row, self.panel._C_ORS)
-
-        edit.assert_called_once_with(self.row, self.panel._C_ORS)
+        edit.assert_not_called()
+        self.assertEqual([(CAUSE_T, self.cause_id)], selected)
 
     def test_committing_the_tag_popup_calls_apply_cause_obj_with_empty_description(self):
         """The commit path must reuse _apply_cause_obj's existing "only
@@ -7100,7 +7099,8 @@ class OrsFrequencyZoneClickTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         self.cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(self.cause_id, comp_type='V', comp_tag='PV-101')
+        self.db.update_cause(self.cause_id, comp_type='V', comp_tag='PV-101',
+                             likelihood=0, frequency_override=0, frequency_cleared=False)
         self.panel.load_node(node_id)
         self.row = next(r for r, m in enumerate(self.panel._row_meta) if m[1] == self.cause_id)
 

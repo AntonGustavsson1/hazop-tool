@@ -1,5 +1,16 @@
 # NOTES.md — Beslut och kontext
 
+## Integrationstester för popup och P&ID-markering (2026-11-05)
+
+Sju äldre fel i tre integrationstestklasser reproducerades även med
+oförändrad programkod. Testerna har anpassats till senare beslut:
+orsaksklick markerar raden och dubbelklick redigerar, frekvens måste väljas
+uttryckligen, och historiska taggar som inte finns i synlig text markeras
+inte. Testdata för aktiva objekt innehåller nu taggarna som visas för
+användaren. De tre testklasserna passerar (22 tester), liksom smoke;
+ytterligare sex popup- och elva scenarioredigeringstester passerade. Ingen
+manuell GUI-verifiering gjordes i denna testomgång.
+
 ## LOPA: jämförelse av mycket små frekvenser (2026-11-05)
 
 Synkvarningen jämför frekvenser med relativ tolerans. Den tidigare fasta
