@@ -3716,6 +3716,60 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             raw = self._lopa_matrix_snapshot()
         return self._risk_matrix_copy(raw)
 
+    def lopa_matrix_has_changed(self, revision_id):
+        """Whether a revision's captured risk/LOPA settings differ from the project."""
+        revision = self._lopa_revision_row(revision_id)
+        if not revision:
+            raise ValueError('LOPA-revisionen finns inte längre.')
+        snapshot = self.lopa_revision_matrix(revision_id)
+        snapshot['lopa'] = normalise_lopa_config(snapshot.get('lopa'), snapshot)
+        return snapshot != self._lopa_matrix_snapshot()
+
+    def update_lopa_revision_matrix(self, revision_id):
+        """Adopt current project settings when existing LOPA data still fits."""
+        revision = self._assert_lopa_revision_editable(revision_id)
+        matrix = self._lopa_matrix_snapshot()
+        config = matrix['lopa']['category_settings']
+        old_matrix = self.lopa_revision_matrix(revision_id)
+        old_categories = {item.get('key'): item for item in old_matrix.get('consequence_categories', [])}
+        new_categories = {item.get('key'): item for item in matrix.get('consequence_categories', [])}
+        axis = 'y' if old_matrix.get('x_axis', 'frequency') == 'frequency' else 'x'
+        severity_fields = ('rows', 'x_axis', 'x_reversed', 'y_reversed',
+                           f'{axis}_codes', f'{axis}_labels')
+        for source in self.lopa_sources(revision_id):
+            for assessment in self.lopa_source_consequences(source['id']):
+                key = assessment['category_key']
+                category = config.get(key)
+                if not category or category.get('orphaned'):
+                    raise ValueError(f"Konsekvenskategorin {key} finns inte i den aktuella matrisen. "
+                                     'Skapa en ny LOPA med aktuell matris och granska kopplingarna.')
+                if assessment['severity'] > len(category['tel']):
+                    raise ValueError(f"Konsekvensnivån för {key} finns inte i den aktuella matrisen.")
+                old_category = old_categories.get(key) or {}
+                new_category = new_categories.get(key) or {}
+                if (any(old_matrix.get(field) != matrix.get(field) for field in severity_fields)
+                        or old_category.get('name') != new_category.get('name')
+                        or old_category.get('descriptions') != new_category.get('descriptions')):
+                    raise ValueError('Konsekvensskalan eller kategoribeskrivningarna har ändrats. '
+                                     'Skapa en ny LOPA med aktuell matris och granska bedömningarna.')
+            for escalation in self.lopa_escalation_rows(source['id']):
+                category = config.get(escalation['category_key'])
+                if not category or category.get('orphaned'):
+                    raise ValueError('En använd eskaleringskategori saknas i den aktuella matrisen.')
+                try:
+                    values = json.loads(escalation['factor_values_json'] or '{}')
+                except (TypeError, ValueError):
+                    raise ValueError('Sparade eskaleringsfaktorer kan inte läsas.')
+                keys = {item['key'] for item in category['escalation_factors']}
+                if not isinstance(values, dict) or set(values) - keys:
+                    raise ValueError('Sparade eskaleringsfaktorer saknas i den aktuella matrisen. '
+                                     'Granska dem innan underlaget uppdateras.')
+        self.conn.execute('UPDATE lopa_revisions SET matrix_snapshot_json=? WHERE id=?',
+                          (json.dumps(matrix, ensure_ascii=False), revision_id))
+        self._log_lopa(revision['lopa_id'], revision_id, 'matrix-updated',
+                       'Uppdaterade revisionen till aktuell riskmatris och LOPA-inställningar')
+        self.commit()
+
     def create_lopa(self, display_number=None, sif_number='', sif_name='', sis_name='',
                     created_by='', notes='', allow_archived_reuse=False):
         """Create an empty, editable LOPA with revision ``00``.

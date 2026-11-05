@@ -82,6 +82,15 @@ class LopaExportTests(unittest.TestCase):
         values = [cell.value for row in workbook['LOPA 017 R00'].iter_rows() for cell in row]
         self.assertIn('HAZOP har ändrats', values)
 
+        config = self.db.lopa_matrix_config()
+        key = next(iter(config['category_settings']))
+        config['category_settings'][key]['tel'][0] = 0.000001
+        self.db.set_lopa_matrix_config(config)
+        ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
+        self.assertTrue(ok, error)
+        workbook = openpyxl.load_workbook(path, data_only=True)
+        self.assertIn('Riskmatrisen', workbook['LOPA 017 R00']['A6'].value)
+
         incomplete = self.db.add_lopa_local_source(created['revision_id'], cause_text='Ofullständig')
         ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
         self.assertTrue(ok, error)

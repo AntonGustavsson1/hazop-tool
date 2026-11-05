@@ -1,5 +1,20 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: varning och aktiv uppdatering av riskmatris (2026-11-05)
+
+Ett öppet utkast varnar nu i LOPA-vyn och Excel om projektets riskmatris
+eller LOPA-inställningar avviker från revisionens sparade underlag.
+Knappen Uppdatera riskmatris låter användaren uttryckligen anta aktuella
+inställningar; åtgärden loggas och kan ångras/göras om. Den stoppas om en
+använd kategori saknas, konsekvensskalans innebörd har ändrats eller
+sparade faktorer inte längre finns. Sådana fall kräver en ny LOPA och
+granskning av bedömningarna; generell kategorimappning är inte byggd.
+Låsta revisioner uppdateras aldrig genom knappen.
+
+Syntaxkontroll och 63 LOPA-/export-/smoketester passerade headless, inklusive
+varning i vy och Excel, godkänd uppdatering, undo/redo och blockerade
+inkompatibla överföringar. Ingen manuell GUI-verifiering är gjord.
+
 ## LOPA: synkvarning för konsekvensbedömningar (2026-11-05)
 
 Synkstatus jämför nu varje HAZOP-kopplad LOPA-bedömning med aktuell

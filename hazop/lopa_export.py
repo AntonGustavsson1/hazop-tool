@@ -151,6 +151,10 @@ def export_lopa_excel(db, filepath, selections=None):
             ws.cell(row, column, label).font = Font(bold=True)
             ws.cell(row, column + 1, value)
             ws.merge_cells(start_row=row, start_column=column + 1, end_row=row, end_column=column + 2)
+        if (revision['status'] not in ('Låst', 'Godkänd', 'Arkiverad')
+                and db.lopa_matrix_has_changed(revision['id'])):
+            ws.cell(6, 1, 'Riskmatrisen eller LOPA-inställningarna har ändrats; revisionen använder sparat underlag.')
+            ws.merge_cells('A6:L6')
         row = 7
         ws.cell(row, 1, 'Källscenarier från HAZOP').font = Font(bold=True, size=12)
         row += 1

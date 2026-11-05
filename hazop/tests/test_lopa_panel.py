@@ -14,6 +14,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -25,7 +26,7 @@ for _p in (_HAZOP_DIR, _TEST_DIR):
         sys.path.insert(0, str(_p))
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from database import Database
 from lopa_panel import LopaPanel
@@ -214,6 +215,21 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.panel.activate_lopa(self.lopa_id, draft)
         self.assertEqual('Senare namn', self.panel._sif_name.text())
         self.assertTrue(self.panel._sif_name.isEnabled())
+
+    def test_source_status_warns_when_matrix_settings_change(self):
+        config = self.db.lopa_matrix_config()
+        key = next(iter(config['category_settings']))
+        config['category_settings'][key]['tel'][0] = 0.000001
+        self.db.set_lopa_matrix_config(config)
+        self.panel._populate_hazop_hierarchy()
+        self.assertIn('Riskmatrisen eller LOPA-inställningarna har ändrats', self.panel._source_sync_note.text())
+        self.assertFalse(self.panel._update_matrix_btn.isHidden())
+        with patch('lopa_panel.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes):
+            self.panel._update_revision_matrix()
+        self.assertFalse(self.db.lopa_matrix_has_changed(self.revision_id))
+        self.assertTrue(self.panel._update_matrix_btn.isHidden())
+        self.assertTrue(self.db.undo())
+        self.assertTrue(self.db.lopa_matrix_has_changed(self.revision_id))
 
     def test_source_status_reports_changed_hazop_consequence_level(self):
         source = self.db.lopa_sources(self.revision_id)[0]

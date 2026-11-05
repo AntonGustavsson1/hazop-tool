@@ -141,6 +141,88 @@ class LopaDatabaseTests(unittest.TestCase):
         self.db.add_safeguard_equipment_link(sensor_sg, equipment_id, 'HH')
         return cause_id, sensor_sg, other_sg, equipment_id
 
+    def test_matrix_change_is_detected_without_altering_revision_snapshot(self):
+        created = self.db.create_lopa()
+        revision = created['revision_id']
+        snapshot = self.db.lopa_revision_matrix(revision)
+        self.assertFalse(self.db.lopa_matrix_has_changed(revision))
+        config = self.db.lopa_matrix_config()
+        key = next(iter(config['category_settings']))
+        config['category_settings'][key]['tel'][0] = 0.000001
+        self.db.set_lopa_matrix_config(config)
+        self.assertTrue(self.db.lopa_matrix_has_changed(revision))
+        self.assertEqual(snapshot, self.db.lopa_revision_matrix(revision))
+        self.assertTrue(self.db.undo())
+        self.assertFalse(self.db.lopa_matrix_has_changed(revision))
+        self.assertTrue(self.db.redo())
+        self.assertTrue(self.db.lopa_matrix_has_changed(revision))
+
+    def test_revision_can_adopt_current_matrix_as_one_undoable_change(self):
+        _cause, sensor, _other, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)
+        revision = created['revision_id']
+        old = self.db.lopa_revision_matrix(revision)
+        config = self.db.lopa_matrix_config()
+        key = next(iter(config['category_settings']))
+        config['category_settings'][key]['tel'][0] = 0.000001
+        self.db.set_lopa_matrix_config(config)
+        self.db.update_lopa_revision_matrix(revision)
+        self.assertFalse(self.db.lopa_matrix_has_changed(revision))
+        self.assertEqual(0.000001, self.db.lopa_revision_matrix(revision)['lopa']['category_settings'][key]['tel'][0])
+        self.assertTrue(self.db.undo())
+        self.assertEqual(old, self.db.lopa_revision_matrix(revision))
+        self.assertTrue(self.db.redo())
+        self.assertFalse(self.db.lopa_matrix_has_changed(revision))
+        self.db.lock_lopa_revision(revision)
+        with self.assertRaises(PermissionError):
+            self.db.update_lopa_revision_matrix(revision)
+
+    def test_matrix_update_refuses_removed_used_category(self):
+        _cause, sensor, _other, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        assessment = self.db.lopa_source_consequences(source)[0]
+        old = self.db.lopa_revision_matrix(created['revision_id'])
+        matrix = self.db._lopa_matrix_snapshot()
+        matrix['consequence_categories'] = [c for c in matrix['consequence_categories']
+                                            if c['key'] != assessment['category_key']]
+        self.db.set_risk_matrix(matrix)
+        count = self.db.undo_count
+        with self.assertRaisesRegex(ValueError, 'kategorin'):
+            self.db.update_lopa_revision_matrix(created['revision_id'])
+        self.assertEqual(old, self.db.lopa_revision_matrix(created['revision_id']))
+        self.assertEqual(count, self.db.undo_count)
+
+    def test_matrix_update_refuses_to_discard_saved_factor_values(self):
+        _cause, sensor, _other, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        key = self.db.lopa_source_consequences(source)[0]['category_key']
+        config = self.db.lopa_matrix_config()
+        factor = config['category_settings'][key]['escalation_factors'][0]['key']
+        self.db.set_lopa_escalation_values(source, key, {factor: 10})
+        config['category_settings'][key]['escalation_factors'] = [
+            item for item in config['category_settings'][key]['escalation_factors'] if item['key'] != factor]
+        self.db.set_lopa_matrix_config(config)
+        before = self.db.lopa_revision_matrix(created['revision_id'])
+        with self.assertRaisesRegex(ValueError, 'eskaleringsfaktorer'):
+            self.db.update_lopa_revision_matrix(created['revision_id'])
+        self.assertEqual(before, self.db.lopa_revision_matrix(created['revision_id']))
+
+    def test_matrix_update_refuses_changed_severity_semantics(self):
+        _cause, sensor, _other, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)
+        before = self.db.lopa_revision_matrix(created['revision_id'])
+        matrix = self.db._lopa_matrix_snapshot()
+        axis = 'y' if matrix.get('x_axis', 'frequency') == 'frequency' else 'x'
+        matrix[f'{axis}_labels'][2] = 'Annan innebörd'
+        self.db.set_risk_matrix(matrix)
+        with self.assertRaisesRegex(ValueError, 'Konsekvensskalan'):
+            self.db.update_lopa_revision_matrix(created['revision_id'])
+        self.assertEqual(before, self.db.lopa_revision_matrix(created['revision_id']))
+
     def test_create_import_copy_and_lock_lopa_revision(self):
         _cause_id, sensor_sg, other_sg, equipment_id = self._hazop_chain()
         created = self.db.create_lopa(sif_name='SIF nivåstopp')

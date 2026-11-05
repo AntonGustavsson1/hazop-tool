@@ -653,6 +653,11 @@ class LopaPanel(QWidget):
         self._source_sync_note.setMaximumHeight(32)
         self._source_sync_note.setStyleSheet(lopa_note_stylesheet())
         source_actions.addWidget(self._source_sync_note)
+        self._update_matrix_btn = QPushButton('Uppdatera riskmatris…')
+        self._update_matrix_btn.setStyleSheet(lopa_ghost_button_stylesheet())
+        self._update_matrix_btn.clicked.connect(self._update_revision_matrix)
+        self._update_matrix_btn.hide()
+        source_actions.addWidget(self._update_matrix_btn)
         source_layout.addLayout(source_actions)
 
         scenario_card = self._card()
@@ -1752,7 +1757,14 @@ class LopaPanel(QWidget):
             notices.append('Inga aktiva källor')
         elif not notices:
             notices.append('HAZOP-källor är aktuella')
+        revision = self.db.get_lopa_revision(self._revision_id) if self._revision_id else None
+        matrix_changed = bool(revision and self._revision_is_editable()
+                              and self.db.lopa_matrix_has_changed(self._revision_id))
+        self._update_matrix_btn.setVisible(matrix_changed)
+        if matrix_changed:
+            notices.append('Riskmatrisen eller LOPA-inställningarna har ändrats; revisionen använder sparat underlag')
         self._source_sync_note.setText('. '.join(notices) + '.')
+        self._source_sync_note.setToolTip(self._source_sync_note.text())
         self._sync_note.setText(
             'Aktiva rader följer HAZOP tills de uttryckligen kopplas loss. '
             'Låsta revisioner behåller sin egen riskmatris och sitt underlag.')
@@ -1766,6 +1778,25 @@ class LopaPanel(QWidget):
                 0, lambda columns=list(category_columns):
                 self._finalize_hazop_hierarchy_geometry(columns))
         self._load_source_detail()
+
+    def _update_revision_matrix(self):
+        if not self._revision_id or not self._revision_is_editable():
+            return
+        answer = QMessageBox.question(
+            self, 'Uppdatera riskmatris?',
+            'Använd projektets aktuella riskmatris och LOPA-inställningar i denna revision? '
+            'Beräknade resultat kan ändras. Åtgärden kan ångras.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.db.update_lopa_revision_matrix(self._revision_id)
+        except ValueError as exc:
+            QMessageBox.warning(self, 'Kunde inte uppdatera riskmatrisen', str(exc))
+            return
+        self._refresh_revision_detail()
+        self.changed.emit()
 
     def _on_hazop_hierarchy_selection_changed(self, current_row, _current_column,
                                               _previous_row, _previous_column):
