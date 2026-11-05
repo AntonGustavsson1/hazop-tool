@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## Presentationstest för frekvenskod (2026-11-05)
+
+Det äldre presentationstestet väljer nu frekvensnivå uttryckligen, eftersom
+nya orsaker startar med rensad frekvens. Därmed kontrollerar testet åter att
+tabellens korta kod och popupens utförliga kod visas. 35 tester för UI-hjälpare,
+design och konstanter samt 18 LOPA-vy-/exporttester passerade headless.
+
 ## Riskmatrisbyte: manuella frekvensnivåer (2026-11-05)
 
 Förhandsgranskningen prioriterar nu en uttryckligt vald frekvensnivå även om

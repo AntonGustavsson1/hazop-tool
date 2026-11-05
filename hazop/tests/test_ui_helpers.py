@@ -122,7 +122,8 @@ class FrequencyCodePresentationTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(cause_id, likelihood=-1)
+        self.db.update_cause(cause_id, likelihood=-1, frequency_override=-1,
+                             frequency_cleared=False)
         cons_id = self.db.add_consequence(cause_id)
         category = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(cons_id, category['id'], 1)
