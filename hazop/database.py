@@ -5873,6 +5873,55 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             (tag, tag, prefix, page, is_ocr, id_))
         self.commit()
 
+    def _detach_equipment_deviations(self, equipment_id=None):
+        """Detach deviations while preserving causes when generic names collide.
+
+        An equipment-specific deviation may have the same guide word as the
+        node's generic deviation. Once detached both would violate the unique
+        generic-deviation index. Merge only those rows being detached and the
+        matching generic row, retaining their causes and LOPA source links.
+        """
+        where = 'equipment_id IS NOT NULL' if equipment_id is None else 'equipment_id=?'
+        params = () if equipment_id is None else (equipment_id,)
+        rows = self.conn.execute(
+            f'SELECT id,node_id,description FROM deviations WHERE {where} ORDER BY id',
+            params).fetchall()
+        groups = {}
+        for row in rows:
+            groups.setdefault((row['node_id'], row['description']), []).append(row['id'])
+        for (node_id, description), ids in groups.items():
+            generic = self.conn.execute(
+                'SELECT id FROM deviations WHERE node_id=? AND description=? AND equipment_id IS NULL',
+                (node_id, description)).fetchone()
+            survivor = ids[0]
+            merged = ids[1:] + ([generic['id']] if generic else [])
+            for old_id in merged:
+                self.conn.execute('UPDATE causes SET deviation_id=? WHERE deviation_id=?',
+                                  (survivor, old_id))
+                self.conn.execute('UPDATE lopa_source_scenarios SET hazop_deviation_id=? '
+                                  'WHERE hazop_deviation_id=?', (survivor, old_id))
+                self.conn.execute('DELETE FROM deviations WHERE id=?', (old_id,))
+            self.conn.execute('UPDATE deviations SET equipment_id=NULL WHERE id=?', (survivor,))
+
+    @contextmanager
+    def _equipment_cleanup_transaction(self):
+        """Roll back all detaching if any part of an equipment removal fails."""
+        started = not self.conn.in_transaction
+        if started:
+            self.conn.execute('BEGIN')
+        self.conn.execute('SAVEPOINT equipment_cleanup')
+        try:
+            yield
+        except Exception:
+            self.conn.execute('ROLLBACK TO SAVEPOINT equipment_cleanup')
+            self.conn.execute('RELEASE SAVEPOINT equipment_cleanup')
+            if started:
+                self.conn.rollback()
+            raise
+        else:
+            self.conn.execute('RELEASE SAVEPOINT equipment_cleanup')
+            self.commit()
+
     def delete_equipment_item(self, id_):
         # deviations.equipment_id (added 2026-08-07 for "Nod → Utrustning →
         # Avvikelse", see NOTES.md) and causes.equipment_id (added 2026-08-13
@@ -5893,22 +5942,24 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         # LOPA retains snapshots after an object is deleted. Flag affected
         # imports before the FK becomes NULL so the analyst sees a red/missing
         # source rather than a silently detached historical sensor.
-        self.conn.execute(
-            "UPDATE lopa_source_scenarios SET source_missing=1 WHERE equipment_id=?", (id_,))
-        self.conn.execute("UPDATE deviations SET equipment_id=NULL WHERE equipment_id=?", (id_,))
-        self.conn.execute("UPDATE causes SET equipment_id=NULL WHERE equipment_id=?", (id_,))
-        self.conn.execute("DELETE FROM equipment_catalog WHERE id=?", (id_,))
-        self.commit()
+        with self._equipment_cleanup_transaction():
+            self.conn.execute(
+                "UPDATE lopa_source_scenarios SET source_missing=1 WHERE equipment_id=?", (id_,))
+            self._detach_equipment_deviations(id_)
+            self.conn.execute("UPDATE causes SET equipment_id=NULL WHERE equipment_id=?", (id_,))
+            self.conn.execute("UPDATE causes SET secondary_equipment_id=NULL WHERE secondary_equipment_id=?", (id_,))
+            self.conn.execute("DELETE FROM equipment_catalog WHERE id=?", (id_,))
 
     def clear_equipment_catalog(self):
         # Same fix as delete_equipment_item() above, but for the full-
         # rescan-replaces-catalog path ("🔍 Skanna P&ID"/"📋 Analysera P&ID").
-        self.conn.execute(
-            "UPDATE lopa_source_scenarios SET source_missing=1 WHERE equipment_id IS NOT NULL")
-        self.conn.execute("UPDATE deviations SET equipment_id=NULL WHERE equipment_id IS NOT NULL")
-        self.conn.execute("UPDATE causes SET equipment_id=NULL WHERE equipment_id IS NOT NULL")
-        self.conn.execute("DELETE FROM equipment_catalog")
-        self.commit()
+        with self._equipment_cleanup_transaction():
+            self.conn.execute(
+                "UPDATE lopa_source_scenarios SET source_missing=1 WHERE equipment_id IS NOT NULL")
+            self._detach_equipment_deviations()
+            self.conn.execute("UPDATE causes SET equipment_id=NULL WHERE equipment_id IS NOT NULL")
+            self.conn.execute("UPDATE causes SET secondary_equipment_id=NULL WHERE secondary_equipment_id IS NOT NULL")
+            self.conn.execute("DELETE FROM equipment_catalog")
 
     # ── Nod ↔ Utrustning (2026-08-07) ────────────────────────────────────────
     def equipment_node_id(self, equipment_id):
@@ -8043,7 +8094,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         def collect_deviation(dev):
             eq_id = dev.get('equipment_id')
             eq = self.get_equipment_by_id(eq_id) if eq_id is not None else None
-            if eq and self._equipment_tag_matches_cause(dev, eq.get('tag')):
+            # Deviation descriptions are guide words, not cause cell text;
+            # their explicit equipment link is the authoritative identity.
+            if eq:
                 add_link(eq_id, 'deviation')
 
         def collect_cause(cause):

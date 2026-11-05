@@ -1505,6 +1505,88 @@ class EquipmentForeignKeyCleanupTests(unittest.TestCase):
         self.assertIsNotNone(dev)
         self.assertIsNone(dev['equipment_id'])
 
+    def test_detach_merges_colliding_deviations_without_losing_causes_and_is_undoable(self):
+        node = self.db.add_node()
+        generic = self.db.deviations(node)[0]
+        generic_cause = self.db.add_cause(generic['id'])
+        equipment = self.db.add_equipment_item('P-201', 'P-201', 'P', 0, 'Pump', '', 0)
+        specific = self.db.get_or_create_deviation(node, generic['description'], equipment_id=equipment)
+        specific_cause = self.db.add_cause(specific)
+        before = self.db.undo_count
+        self.db.delete_equipment_item(equipment)
+        self.assertEqual(before + 1, self.db.undo_count)
+        self.assertEqual(specific, self.db.get_cause(generic_cause)['deviation_id'])
+        self.assertEqual(specific, self.db.get_cause(specific_cause)['deviation_id'])
+        self.assertTrue(self.db.undo())
+        self.assertIsNotNone(self.db.get_equipment_by_id(equipment))
+        self.assertEqual(generic['id'], self.db.get_cause(generic_cause)['deviation_id'])
+        self.assertEqual(specific, self.db.get_cause(specific_cause)['deviation_id'])
+        self.assertTrue(self.db.redo())
+        self.assertIsNone(self.db.get_equipment_by_id(equipment))
+        self.assertEqual(specific, self.db.get_cause(generic_cause)['deviation_id'])
+
+    def test_clear_catalog_merges_multiple_matching_deviations(self):
+        node = self.db.add_node()
+        generic = self.db.deviations(node)[0]
+        causes = [self.db.add_cause(generic['id'])]
+        for tag in ('P-201', 'P-202'):
+            equipment = self.db.add_equipment_item(tag, tag, 'P', 0, 'Pump', '', 0)
+            deviation = self.db.get_or_create_deviation(node, generic['description'], equipment_id=equipment)
+            causes.append(self.db.add_cause(deviation))
+        self.db.clear_equipment_catalog()
+        survivors = {self.db.get_cause(cause)['deviation_id'] for cause in causes}
+        self.assertEqual(1, len(survivors))
+        self.assertIsNone(self.db.get_deviation(survivors.pop())['equipment_id'])
+        self.assertTrue(self.db.undo())
+        self.assertEqual(3, len({self.db.get_cause(cause)['deviation_id'] for cause in causes}))
+        self.assertTrue(self.db.redo())
+        self.assertEqual(1, len({self.db.get_cause(cause)['deviation_id'] for cause in causes}))
+
+    def test_deleting_secondary_equipment_unlinks_it_and_can_be_undone(self):
+        node = self.db.add_node()
+        deviation = self.db.deviations(node)[0]['id']
+        cause = self.db.add_cause(deviation)
+        equipment = self.db.add_equipment_item('P-202', 'P-202', 'P', 0, 'Pump', '', 0)
+        self.db.update_cause(cause, secondary_equipment_id=equipment)
+        self.db.delete_equipment_item(equipment)
+        self.assertIsNone(self.db.get_cause(cause)['secondary_equipment_id'])
+        self.assertTrue(self.db.undo())
+        self.assertEqual(equipment, self.db.get_cause(cause)['secondary_equipment_id'])
+        self.assertTrue(self.db.redo())
+        self.assertIsNone(self.db.get_cause(cause)['secondary_equipment_id'])
+
+    def test_merge_preserves_lopa_source_reference(self):
+        node = self.db.add_node()
+        generic = self.db.deviations(node)[0]
+        cause = self.db.add_cause(generic['id'])
+        consequence = self.db.add_consequence(cause)
+        safeguard = self.db.add_safeguard(consequence)
+        lopa = self.db.create_lopa(sif_name='Test')
+        source = self.db.add_lopa_source_from_safeguard(lopa['lopa_id'], safeguard)['source_id']
+        equipment = self.db.add_equipment_item('P-201', 'P-201', 'P', 0, 'Pump', '', 0)
+        specific = self.db.get_or_create_deviation(node, generic['description'], equipment_id=equipment)
+        self.db.delete_equipment_item(equipment)
+        self.assertEqual(specific, self.db.lopa_sources(lopa['revision_id'])[0]['hazop_deviation_id'])
+        self.assertTrue(self.db.undo())
+        self.assertEqual(generic['id'], self.db.lopa_sources(lopa['revision_id'])[0]['hazop_deviation_id'])
+        self.assertTrue(self.db.redo())
+        self.assertEqual(specific, self.db.lopa_sources(lopa['revision_id'])[0]['hazop_deviation_id'])
+
+    def test_failed_equipment_deletion_rolls_back_all_detaching(self):
+        node = self.db.add_node()
+        generic = self.db.deviations(node)[0]
+        generic_cause = self.db.add_cause(generic['id'])
+        equipment = self.db.add_equipment_item('P-201', 'P-201', 'P', 0, 'Pump', '', 0)
+        specific = self.db.get_or_create_deviation(node, generic['description'], equipment_id=equipment)
+        self.db.conn.execute("CREATE TRIGGER block_equipment_delete BEFORE DELETE ON equipment_catalog "
+                             "BEGIN SELECT RAISE(ABORT, 'blocked'); END")
+        self.db.commit()
+        with self.assertRaisesRegex(Exception, 'blocked'):
+            self.db.delete_equipment_item(equipment)
+        self.assertIsNotNone(self.db.get_equipment_by_id(equipment))
+        self.assertEqual(equipment, self.db.get_deviation(specific)['equipment_id'])
+        self.assertEqual(generic['id'], self.db.get_cause(generic_cause)['deviation_id'])
+
     def test_deleting_equipment_item_with_a_cause_linked_via_equipment_id_does_not_raise(self):
         """2026-08-24 regression: causes.equipment_id (the "Live tag-länk"
         feature, 2026-08-13) was never included in delete_equipment_item()'s
@@ -2016,19 +2098,20 @@ class EquipmentLinkTypesInScopeTests(unittest.TestCase):
         cause_id = self.db.add_cause(dev_id)
         if cause_equipment_id is not None:
             self.db.conn.execute(
-                "UPDATE causes SET equipment_id=? WHERE id=?", (cause_equipment_id, cause_id))
+                "UPDATE causes SET equipment_id=?,comp_tag=(SELECT tag FROM equipment_catalog WHERE id=?) WHERE id=?",
+                (cause_equipment_id, cause_equipment_id, cause_id))
         cons_id = self.db.add_consequence(cause_id)
         if cons_tags:
             comp_tag, tagged_refs = cons_tags
             self.db.conn.execute(
-                "UPDATE consequences SET comp_tag=?, tagged_refs=? WHERE id=?",
-                (comp_tag, tagged_refs, cons_id))
+                "UPDATE consequences SET comp_tag=?, tagged_refs=?, description=? WHERE id=?",
+                (comp_tag, tagged_refs, comp_tag, cons_id))
         sg_id = self.db.add_safeguard(cons_id)
         if sg_tags:
             comp_tag, tagged_refs = sg_tags
             self.db.conn.execute(
-                "UPDATE safeguards SET comp_tag=?, tagged_refs=? WHERE id=?",
-                (comp_tag, tagged_refs, sg_id))
+                "UPDATE safeguards SET comp_tag=?, tagged_refs=?, description=? WHERE id=?",
+                (comp_tag, tagged_refs, comp_tag, sg_id))
         self.db.commit()
         return dev_id, cause_id, cons_id, sg_id
 
@@ -2062,9 +2145,9 @@ class EquipmentLinkTypesInScopeTests(unittest.TestCase):
         eq_a = self._make_equipment("V-1")
         eq_b = self._make_equipment("V-2")
         cause_a = self.db.add_cause(dev_a)
-        self.db.conn.execute("UPDATE causes SET equipment_id=? WHERE id=?", (eq_a, cause_a))
+        self.db.conn.execute("UPDATE causes SET equipment_id=?,comp_tag='V-1' WHERE id=?", (eq_a, cause_a))
         cause_b = self.db.add_cause(dev_b)
-        self.db.conn.execute("UPDATE causes SET equipment_id=? WHERE id=?", (eq_b, cause_b))
+        self.db.conn.execute("UPDATE causes SET equipment_id=?,comp_tag='V-2' WHERE id=?", (eq_b, cause_b))
         self.db.commit()
 
         scope = self.db.equipment_link_types_in_scope(DEV_T, dev_a)
@@ -2095,10 +2178,10 @@ class EquipmentLinkTypesInScopeTests(unittest.TestCase):
         eq_sibling = self._make_equipment("T-1", "Tank")
 
         cause_a = self.db.add_cause(dev_id)
-        self.db.conn.execute("UPDATE causes SET equipment_id=? WHERE id=?", (eq_a, cause_a))
+        self.db.conn.execute("UPDATE causes SET equipment_id=?,comp_tag='V-1' WHERE id=?", (eq_a, cause_a))
         cons_a = self.db.add_consequence(cause_a)
         self.db.conn.execute(
-            "UPDATE consequences SET comp_tag='P-1' WHERE id=?", (cons_a,))
+            "UPDATE consequences SET comp_tag='P-1',description='P-1' WHERE id=?", (cons_a,))
         self.db.commit()
 
         cause_sibling = self.db.add_cause(dev_id)

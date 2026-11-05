@@ -1,5 +1,25 @@
 # NOTES.md — Beslut och kontext
 
+## Objektborttagning: krockande avvikelser och sekundärobjekt (2026-11-05)
+
+När ett P&ID-objekt togs bort eller katalogen rensades kunde en
+objektspecifik avvikelse kollidera med den generella avvikelsen för samma
+nod och guideord. Nu sammanförs de berörda avvikelserna, orsaker och
+LOPA-källans avvikelsekoppling flyttas till den kvarvarande raden och
+objektet frikopplas. Även causes.secondary_equipment_id frikopplas före
+borttagning. Ett savepoint återställer alla deländringar om borttagningen
+misslyckas; en lyckad åtgärd är ett enda undo/redo-steg.
+
+Verifiering: syntaxkontroll och 40 headless-tester för objektborttagning,
+LOPA-modell och smoke, inklusive multipla objekt, bevarade orsaker och
+LOPA-koppling, undantag samt undo/redo. Ingen manuell GUI-verifiering.
+För P&ID-scope är en avvikelses uttryckliga objektkoppling nu åter aktiv:
+guideordet innehåller normalt inte objektets tagg. Konsekvenser och
+safeguards fortsätter däremot använda synlig text, så bortredigerade och
+historiska taggar inte markeras. Scope-testernas äldre testdata har
+uppdaterats så objektet faktiskt syns i cellen; testet för bortredigerade
+historiska taggar finns kvar och båda berörda testklasserna passerar.
+
 ## LOPA: skydda resultat vid ofullständiga underlag (2026-11-05)
 
 LOPA-beräkningen ger inte längre ett dimensionerande RRF/SIL för en källa
