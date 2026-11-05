@@ -5237,7 +5237,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         frequency_records = []
         cause_rows = self.conn.execute("""
             SELECT c.id AS cause_id, c.description AS cause_description,
-                   c.likelihood, c.base_frequency, c.frequency_cleared,
+                   c.likelihood, c.base_frequency, c.frequency_cleared, c.frequency_override,
                    sc.frequency AS standard_frequency,
                    n.name AS node_name, d.description AS deviation_description
             FROM causes c
@@ -5250,9 +5250,15 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             r = dict(row)
             if r.get('frequency_cleared'):
                 continue
-            numeric = (r.get('base_frequency') if r.get('base_frequency') is not None
-                       else r.get('standard_frequency'))
-            if numeric is not None and float(numeric) > 0:
+            override = r.get('frequency_override')
+            numeric = (r.get('standard_frequency') if r.get('standard_frequency') is not None
+                       else r.get('base_frequency'))
+            if override is not None:
+                source_value = int(override)
+                target_value = frequency_map.get(str(source_value), -1)
+                source_kind = 'manual'
+                numeric = None
+            elif numeric is not None and float(numeric) > 0:
                 source_value = freq_to_f_level(float(numeric), source.get('freq_boundaries'))
                 target_value = freq_to_f_level(float(numeric), target.get('freq_boundaries'))
                 source_kind = 'numeric'
@@ -5268,6 +5274,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 'source': source_value, 'target': target_value,
                 'source_kind': source_kind, 'numeric_frequency': numeric,
                 'expected_likelihood': r.get('likelihood'),
+                'expected_frequency_override': override,
+                'expected_base_frequency': r.get('base_frequency'),
+                'expected_standard_frequency': r.get('standard_frequency'),
             })
 
         severity_records = []
@@ -5482,8 +5491,13 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             for record in plan.get('frequency_records', []):
                 target_value = _target(record, freq_min, freq_max, "Frekvens")
                 cur = self.conn.execute(
-                    "UPDATE causes SET likelihood=? WHERE id=? AND likelihood=?",
-                    (target_value, record['cause_id'], record.get('expected_likelihood')))
+                    "UPDATE causes SET likelihood=?, frequency_override=CASE "
+                    "WHEN frequency_override IS NOT NULL THEN ? ELSE NULL END "
+                    "WHERE id=? AND likelihood=? AND frequency_override IS ? AND COALESCE(frequency_cleared,0)=0 "
+                    "AND base_frequency IS ? AND (SELECT frequency FROM standard_causes WHERE id=causes.standard_cause_id) IS ?",
+                    (target_value, target_value, record['cause_id'], record.get('expected_likelihood'),
+                     record.get('expected_frequency_override'), record.get('expected_base_frequency'),
+                     record.get('expected_standard_frequency')))
                 if cur.rowcount != 1:
                     raise RuntimeError("En orsak ändrades medan migreringen granskades.")
             for record in plan.get('severity_records', []):

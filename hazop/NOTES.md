@@ -1,5 +1,20 @@
 # NOTES.md — Beslut och kontext
 
+## Riskmatrisbyte: manuella frekvensnivåer (2026-11-05)
+
+Förhandsgranskningen prioriterar nu en uttryckligt vald frekvensnivå även om
+ett äldre numeriskt värde finns kvar, och använder standardorsakens frekvens
+före lokal frekvens i enlighet med HAZOP-visningen. Vid genomförande mappas
+den manuella nivån tillsammans med likelihood; tidigare ändrades bara den
+senare, så användaren kunde fortsätta se den gamla nivån. Förändrad frekvens
+eller nivå efter förhandsgranskning stoppar bytet i stället för att använda
+ett inaktuellt underlag. Testfixturen för matrisbyten anger nu uttrycklig
+frekvens och egna konsekvensbeskrivningar, oberoende av standardmallen.
+Verifiering: syntaxkontroll, 34 riktade LOPA-/migrerings- och smoke-tester
+samt hela databassviten (149 tester) passerade i headless-läge. Testerna
+omfattar även ångra/gör om och avbrott när underlaget ändrats efter
+förhandsgranskningen. Ingen manuell GUI-verifiering är gjord.
+
 ## Objektborttagning: krockande avvikelser och sekundärobjekt (2026-11-05)
 
 När ett P&ID-objekt togs bort eller katalogen rensades kunde en

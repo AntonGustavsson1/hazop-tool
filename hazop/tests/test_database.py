@@ -2577,11 +2577,16 @@ class RiskMatrixTemplateMigrationTests(unittest.TestCase):
         self.dev_id = self.db.deviations(self.node_id)[0]['id']
         self.cause_id = self.db.add_cause(self.dev_id)
         self.cons_id = self.db.add_consequence(self.cause_id)
-        self.db.update_cause(self.cause_id, description='Pump P-101 felar', likelihood=0)
+        self.db.update_cause(self.cause_id, description='Pump P-101 felar', likelihood=0,
+                             frequency_override=0, frequency_cleared=False)
         self.db.update_consequence(self.cons_id, 'Övertryck i behållare', 2)
         self.category_id = self.db.consequence_categories()[0]['id']
         self.db.set_consequence_severity(self.cons_id, self.category_id, 3)
         self.db.set_final_consequence_severity(self.cons_id, self.category_id, 2)
+        # This test's source profile has exactly one description, independent
+        # of the current default template's pre-populated descriptions.
+        self.db.conn.execute('DELETE FROM severity_definitions')
+        self.db.commit()
         self.db.set_severity_definition(2, self.category_id, 'Måttlig personskada')
         self.source = {
             'rows': 3, 'cols': 3,
@@ -2602,7 +2607,7 @@ class RiskMatrixTemplateMigrationTests(unittest.TestCase):
     def test_preview_keeps_manual_and_numeric_frequency_separate(self):
         numeric_id = self.db.add_cause(self.dev_id)
         self.db.update_cause(numeric_id, description='Numerisk frekvens',
-                             likelihood=1, base_frequency=0.5)
+                             likelihood=1, base_frequency=0.5, frequency_cleared=False)
         preview = self.db.risk_matrix_migration_preview(self.source, self.target)
         records = {row['cause_id']: row for row in preview['frequency_records']}
         self.assertEqual(records[self.cause_id]['source_kind'], 'manual')
@@ -2610,6 +2615,31 @@ class RiskMatrixTemplateMigrationTests(unittest.TestCase):
         self.assertEqual(records[numeric_id]['source_kind'], 'numeric')
         self.assertEqual(records[numeric_id]['target'], 0,
                          '0.5/år must be classified using the target boundary 0.1/år')
+
+    def test_manual_override_wins_over_old_numeric_frequency_and_is_migrated(self):
+        self.db.update_cause(self.cause_id, base_frequency=0.5,
+                             frequency_override=1, likelihood=1, frequency_cleared=False)
+        plan = self.db.risk_matrix_migration_preview(self.source, self.target)
+        record = next(row for row in plan['frequency_records'] if row['cause_id'] == self.cause_id)
+        self.assertEqual('manual', record['source_kind'])
+        self.assertEqual(1, record['source'])
+        record['target'] = 0
+        self.db.apply_risk_matrix_migration(plan)
+        self.assertEqual(0, self.db.get_cause(self.cause_id)['frequency_override'])
+        self.assertEqual(0, self.db.cause_f_level(self.db.get_cause(self.cause_id)))
+        self.assertTrue(self.db.undo())
+        self.assertEqual(1, self.db.get_cause(self.cause_id)['frequency_override'])
+        self.assertTrue(self.db.redo())
+        self.assertEqual(0, self.db.get_cause(self.cause_id)['frequency_override'])
+
+    def test_migration_rejects_frequency_changed_after_preview(self):
+        plan = self.db.risk_matrix_migration_preview(self.source, self.target)
+        self.db.update_cause(self.cause_id, base_frequency=0.4)
+        with self.assertRaisesRegex(RuntimeError, 'orsak ändrades'):
+            self.db.apply_risk_matrix_migration(plan)
+        self.assertEqual(0.4, self.db.get_cause(self.cause_id)['base_frequency'])
+        self.assertEqual(0, self.db.get_cause(self.cause_id)['frequency_override'])
+        self.assertEqual(3, self.db.get_risk_matrix()['rows'])
 
     def test_apply_migration_updates_all_severity_forms_and_writes_audit(self):
         plan = self.db.risk_matrix_migration_preview(self.source, self.target)
