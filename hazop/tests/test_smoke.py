@@ -465,6 +465,11 @@ class SmokeTests(unittest.TestCase):
             # NOTES.md) summing the Återstående frekvens column.
             self.assertEqual(2, p._barrier_matrix.rowCount())
             self.assertEqual('Summa (max per aktiv källa)', p._barrier_matrix.item(1, 0).text())
+            self.assertIn('Oklassificerad följd saknar bedömning', p._barrier_summary.text())
+            self.db.set_lopa_unassessed_exclusion(imported['source_id'], unassessed_cons_id,
+                                                   'Utanför smoke-scenariot')
+            p._populate_barriers()
+            p._populate_calculation()
             self.assertIn('Återstående frekvens', p._barrier_summary.text())
             self.assertIn('Dimensionerande kriterium', p._dimensioning_summary.text())
             self.assertEqual('2026-09-02', p._document_date.text())

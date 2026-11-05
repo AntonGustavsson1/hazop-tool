@@ -546,6 +546,8 @@ class LopaDatabaseTests(unittest.TestCase):
         self.assertEqual([2, 2, 0], [len(group['assessments']) for group in groups])
 
         calculation = self.db.lopa_source_calculation(source_id)
+        self.assertFalse(calculation['complete'])
+        self.assertTrue(any('Oklassificerad följd' in message for message in calculation['messages']))
         self.assertEqual(4, len(calculation['categories']))
         self.assertEqual(
             [first_consequence_id, first_consequence_id,
@@ -564,6 +566,104 @@ class LopaDatabaseTests(unittest.TestCase):
                       if row['hazop_consequence_id'] == first_consequence_id]
         self.assertEqual(['Lokal överfyllnadstext', 'Lokal överfyllnadstext'],
                          [row['description'] for row in first_rows])
+
+    def test_unassessed_consequence_requires_a_revisioned_decision(self):
+        cause, sensor, _barrier, _equipment = self._hazop_chain()
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Obedömt utsläpp', 0, '')
+        created = self.db.create_lopa()
+        revision = created['revision_id']
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        with self.assertRaisesRegex(ValueError, 'konsekvens'):
+            self.db.lock_lopa_revision(revision)
+        with self.assertRaises(ValueError):
+            self.db.set_lopa_unassessed_exclusion(source, consequence, ' ')
+        self.db.set_lopa_unassessed_exclusion(source, consequence, 'Utanför avgränsningen')
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(self.db.undo())
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(self.db.redo())
+        self.db.lock_lopa_revision(revision)
+        before = self.db.lopa_source_calculation(source)
+        new_revision = self.db.create_lopa_revision(created['lopa_id'], revision)
+        new_source = self.db.lopa_sources(new_revision)[0]['id']
+        self.assertTrue(self.db.lopa_source_calculation(new_source)['complete'])
+        self.db.delete_consequence(consequence)
+        self.assertEqual(before, self.db.lopa_source_calculation(source))
+        groups = self.db.lopa_source_consequence_groups(source)
+        self.assertEqual('Utanför avgränsningen', groups[-1]['unassessed_exclusion']['reason'])
+
+    def test_new_hazop_assessment_reopens_exclusion_and_can_be_imported(self):
+        cause, sensor, _barrier, _equipment = self._hazop_chain()
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Tidigare obedömd', 0, '')
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.set_lopa_unassessed_exclusion(source, consequence, 'Avgränsning')
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(consequence, category['id'], 3)
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.db.import_lopa_unassessed_consequence(source, consequence)
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(any(row['hazop_consequence_id'] == consequence
+                            for row in self.db.lopa_source_consequences(source)))
+        self.assertTrue(self.db.undo())
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(self.db.redo())
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+
+    def test_changed_unassessed_consequence_requires_new_exclusion_decision(self):
+        cause, sensor, _barrier, _equipment = self._hazop_chain()
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Ursprunglig konsekvens', 0, '')
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.set_lopa_unassessed_exclusion(source, consequence, 'Utanför analysen')
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.db.update_consequence(consequence, 'Ändrad konsekvens', 0, '')
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.db.set_lopa_unassessed_exclusion(source, consequence, 'Ny avgränsning')
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+
+    def test_importing_new_consequence_adds_its_barriers_without_changing_existing_rows(self):
+        cause, sensor, original_barrier, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        existing = self.db.lopa_barriers(created['revision_id'], source)[0]
+        self.db.set_lopa_barrier_category_keys(existing['id'], [])
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Senare konsekvens', 3, '')
+        self.db.set_consequence_severity(consequence, self.db.consequence_categories()[0]['id'], 3)
+        new_barrier = self.db.add_safeguard(consequence)
+        self.db.update_safeguard(new_barrier, description='Nytt skydd', rrf=10, sg_type='Mekanisk')
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.db.import_lopa_unassessed_consequence(source, consequence)
+        barriers = {row['source_safeguard_id']: row for row in self.db.lopa_barriers(created['revision_id'], source)}
+        self.assertEqual([], self.db.lopa_barrier_categories(barriers[original_barrier]['id']))
+        self.assertEqual(consequence, barriers[new_barrier]['hazop_consequence_snapshot_id'])
+        result = self.db.lopa_source_calculation(source)
+        self.assertTrue(result['complete'])
+        self.assertEqual(10, next(row for row in result['categories']
+                                  if row['hazop_consequence_id'] == consequence)['barrier_rrf'])
+        self.assertTrue(self.db.undo())
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.assertNotIn(new_barrier, [row['source_safeguard_id']
+                                     for row in self.db.lopa_barriers(created['revision_id'], source)])
+
+    def test_old_project_migration_does_not_assume_unassessed_consequence_was_excluded(self):
+        cause, sensor, _barrier, _equipment = self._hazop_chain()
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Obedömd sedan tidigare', 0, '')
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.conn.execute('ALTER TABLE lopa_source_scenarios DROP COLUMN unassessed_exclusions_json')
+        self.db.conn.commit()
+        self.db.conn.close()
+        self.db = Database(path=os.path.join(self._tmpdir, 'project.db'))
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(any('Obedömd sedan tidigare' in message
+                            for message in self.db.lopa_source_calculation(source)['messages']))
 
     def test_manual_archived_number_requires_explicit_confirmation(self):
         first = self.db.create_lopa(display_number='017')
@@ -885,6 +985,7 @@ class LopaDatabaseTests(unittest.TestCase):
         created = self.db.create_lopa(sif_number='SIF-1', sif_name='Tidigare namn', sis_name='SIS-A')
         revision = created['revision_id']
         source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.set_lopa_unassessed_exclusion(source, extra, 'Utanför denna analys')
         original_groups = self.db.lopa_source_consequence_groups(source)
         self.db.lock_lopa_revision(revision)
         self.assertTrue(self.db.undo())

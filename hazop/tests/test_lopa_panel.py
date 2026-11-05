@@ -272,6 +272,56 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.assertIn('HAZOP-källa saknas', message)
         self.assertIn('lokal LOPA-källa', message)
 
+    def test_unassessed_consequence_can_be_excluded_and_later_imported(self):
+        consequence = self.db.add_consequence(self.cause_id)
+        self.db.update_consequence(consequence, 'Obedömd konsekvens', 0, '')
+        source = self.db.lopa_sources(self.revision_id)[0]['id']
+        self.panel._populate_hazop_hierarchy()
+        self.assertIn('1 konsekvens saknar bedömning', self.panel._source_sync_note.text())
+        row = next(i for i in range(self.panel._hazop_hierarchy.rowCount())
+                   if self.panel._hazop_row_data(i, self.panel._ROLE_HAZOP_CONSEQUENCE_ID) == consequence)
+        self.panel._hazop_hierarchy.setCurrentCell(row, self.panel._HAZOP_CONSEQUENCE_COL)
+        self.assertTrue(self.panel._manage_unassessed_btn.isEnabled())
+        self.assertIn('Bedömning saknas',
+                      self.panel._hazop_hierarchy.item(row, self.panel._HAZOP_CONSEQUENCE_COL).toolTip())
+        with patch('lopa_panel.QInputDialog.getItem', return_value=('Exkludera med motivering', True)), \
+                patch('lopa_panel.QInputDialog.getMultiLineText', return_value=('Utanför analysen', True)):
+            self.panel._manage_unassessed_consequence()
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.assertIn('1 obedömd konsekvens är exkluderad', self.panel._source_sync_note.text())
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(consequence, category['id'], 3)
+        self.panel._populate_hazop_hierarchy()
+        self.panel._hazop_hierarchy.setCurrentCell(row, self.panel._HAZOP_CONSEQUENCE_COL)
+        with patch('lopa_panel.QInputDialog.getItem', return_value=('Hämta bedömning från HAZOP', True)), \
+                patch('lopa_panel.QMessageBox.information'):
+            self.panel._manage_unassessed_consequence()
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(any(item['hazop_consequence_id'] == consequence
+                            for item in self.db.lopa_source_consequences(source)))
+
+    def test_local_editor_uses_assessment_id_not_hazop_consequence_id(self):
+        original_source = self.db.lopa_sources(self.revision_id)[0]
+        category = self.db.consequence_categories()[0]
+        self.db.add_lopa_custom_consequence(original_source['id'], 'person', category['name'], 2, 'Lokal')
+        consequence = self.db.add_consequence(self.cause_id)
+        self.db.update_consequence(consequence, 'Andra följden', 3, '')
+        self.db.set_consequence_severity(consequence, category['id'], 3)
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(
+            created['lopa_id'], original_source['origin_safeguard_id'])['source_id']
+        expected = next(item for item in self.db.lopa_source_consequences(source)
+                        if item['hazop_consequence_id'] == consequence)
+        self.assertNotEqual(expected['id'], consequence)
+        self.panel.activate_lopa(created['lopa_id'], created['revision_id'])
+        row = next(i for i in range(self.panel._hazop_hierarchy.rowCount())
+                   if self.panel._hazop_row_data(i, self.panel._ROLE_HAZOP_CONSEQUENCE_ID) == consequence)
+        self.panel._hazop_hierarchy.setCurrentCell(row, self.panel._HAZOP_CONSEQUENCE_COL)
+        with patch('lopa_panel.LopaConsequenceDialog') as dialog:
+            dialog.return_value.exec.return_value = 0
+            self.panel._edit_selected_consequence()
+        self.assertEqual(expected['id'], dialog.call_args.args[0]['id'])
+
     def test_locked_revision_displays_and_protects_its_original_header(self):
         self.db.lock_lopa_revision(self.revision_id)
         self.db.update_lopa_record(self.lopa_id, sif_name='Senare namn')

@@ -178,6 +178,29 @@ def export_lopa_excel(db, filepath, selections=None):
                            source_rows,
                            widths=[9, 22, 28, 33, 16, 14, 20, 20, 12, 13, 24])
 
+        ws.cell(row, 1, 'Konsekvenser och bedömningar').font = Font(bold=True, size=12)
+        row += 1
+        consequence_rows = []
+        for source in sources:
+            for group in db.lopa_source_consequence_groups(source['id']):
+                assessments = group.get('assessments') or []
+                if assessments:
+                    for assessment in assessments:
+                        consequence_rows.append([
+                            source.get('cause_text') or '', group.get('description') or '',
+                            assessment.get('category_name') or assessment.get('category_key') or '',
+                            assessment.get('severity'), 'Aktiv' if assessment.get('active') else 'Exkluderad', '',
+                        ])
+                else:
+                    decision = group.get('unassessed_exclusion')
+                    consequence_rows.append([
+                        source.get('cause_text') or '', group.get('description') or '', '', '',
+                        'Exkluderad' if decision else 'Bedömning saknas',
+                        decision.get('reason') or '' if decision else '',
+                    ])
+        row = _write_table(ws, row, ['Källscenario', 'Konsekvens', 'Kategori', 'Nivå', 'Status', 'Motivering'],
+                           consequence_rows, widths=[28, 38, 20, 10, 22, 40])
+
         ws.cell(row, 1, 'Givardel').font = Font(bold=True, size=12)
         row += 1
         sensor_rows = []

@@ -149,6 +149,34 @@ class LopaExportTests(unittest.TestCase):
         self.assertIn('Gemensamt objekt – oberoende bedömt', values)
         self.assertIn('Ritning 42 granskad', values)
 
+    def test_export_lists_unassessed_consequence_and_exclusion_reason(self):
+        node = self.db.add_node()
+        cause = self.db.add_cause(self.db.deviations(node)[0]['id'])
+        self.db.update_cause(cause, description='Källa', base_frequency=0.1, frequency_cleared=False)
+        assessed = self.db.add_consequence(cause)
+        self.db.update_consequence(assessed, 'Bedömd', 3, '')
+        self.db.set_consequence_severity(assessed, self.db.consequence_categories()[0]['id'], 3)
+        sensor = self.db.add_safeguard(assessed)
+        unassessed = self.db.add_consequence(cause)
+        self.db.update_consequence(unassessed, 'Obedömd', 0, '')
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        path = os.path.join(self._tmpdir, 'konsekvenser.xlsx')
+        import openpyxl
+        ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
+        self.assertTrue(ok, error)
+        workbook = openpyxl.load_workbook(path, data_only=True)
+        self.assertEqual('Ofullständig', workbook.worksheets[0]['I4'].value)
+        values = [cell.value for row in workbook.worksheets[1].iter_rows() for cell in row]
+        self.assertIn('Bedömning saknas', values)
+        self.db.set_lopa_unassessed_exclusion(source, unassessed, 'Utanför analysen')
+        ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
+        self.assertTrue(ok, error)
+        workbook = openpyxl.load_workbook(path, data_only=True)
+        values = [cell.value for row in workbook.worksheets[1].iter_rows() for cell in row]
+        self.assertIn('Obedömd', values)
+        self.assertIn('Utanför analysen', values)
+
     def test_export_accepts_multiple_explicit_revisions(self):
         first = self.db.create_lopa(display_number='001', sif_name='Första SIF')
         second = self.db.create_lopa(display_number='002', sif_name='Andra SIF')

@@ -1,5 +1,27 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: obedömda konsekvenser och vald bedömning (2026-11-05)
+
+En aktiv HAZOP-konsekvens utan importerad kategoribedömning gör nu källans
+beräkning ofullständig. Användaren kan hämta en ny bedömning från HAZOP eller
+exkludera den obedömda konsekvensen med motivering. Beslutet kan ångras och
+följer revisionen; ändrad konsekvenstext eller en ny HAZOP-bedömning kräver
+ny granskning. Låsta revisioner använder sin sparade konsekvensbild. Äldre
+revisioner där en obedömd konsekvens aldrig uttryckligen exkluderats kan nu
+visas som ofullständiga; skapa en ny revision för att komplettera underlaget.
+
+Vid hämtning importeras även tidigare okända HAZOP-barriärer för konsekvensen.
+Kategorival på befintliga barriärer ändras inte automatiskt och ska granskas
+av användaren. Excel redovisar samtliga konsekvenser, kategori och eventuell
+exkluderingsmotivering. Scenariotabellen visar antal obedömda och exkluderade.
+Redigeringsknappen använder nu LOPA-bedömningens id i stället för HAZOP-
+konsekvensens id, så den inte öppnar fel lokal bedömning när id-numren skiljer.
+
+LOPA-/export-/smoketestsviten passerade med 90 tester; efter kompletteringar
+kördes 77 LOPA-/exporttester samt riktade tester. Databassviten passerade 149
+tester. Renderade widgets har granskats visuellt, men ett fullständigt manuellt
+GUI-arbetsflöde har inte genomförts.
+
 ## LOPA: samma SIF och oberoende barriärer (2026-11-05)
 
 Importerade barriärer jämförs mot revisionens aktiva givardel med strukturerat

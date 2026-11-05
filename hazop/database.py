@@ -1208,6 +1208,9 @@ class Database:
             self.conn.execute("UPDATE lopa_source_scenarios SET equipment_tag_snapshot="
                               "COALESCE((SELECT tag FROM equipment_catalog "
                               "WHERE id=lopa_source_scenarios.equipment_id),'')")
+        if source_columns and 'unassessed_exclusions_json' not in source_columns:
+            self.conn.execute("ALTER TABLE lopa_source_scenarios ADD COLUMN "
+                              "unassessed_exclusions_json TEXT NOT NULL DEFAULT '[]'")
         consequence_columns = {row['name'] for row in self.conn.execute(
             'PRAGMA table_info(lopa_source_consequences)').fetchall()}
         if consequence_columns and 'hazop_consequence_snapshot_id' not in consequence_columns:
@@ -4049,6 +4052,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             if result.get('unreviewed_barriers'):
                 raise ValueError('En aktiv barriärs objektkoppling eller oberoende måste granskas '
                                  'innan revisionen låses.')
+            if result.get('unassessed_consequences'):
+                raise ValueError('En konsekvens saknar bedömning. Komplettera eller exkludera den '
+                                 'med motivering innan revisionen låses.')
         groups = []
         for source in sources:
             captured_groups = self.lopa_source_consequence_groups(source['id'])
@@ -4251,7 +4257,8 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         hierarchy without altering the stored revision snapshot.
         """
         source = self.conn.execute(
-            "SELECT ls.hazop_cause_id,ls.consequence_groups_snapshot_json,lr.status "
+            "SELECT ls.hazop_cause_id,ls.consequence_groups_snapshot_json,"
+            "ls.unassessed_exclusions_json,lr.status "
             "FROM lopa_source_scenarios ls JOIN lopa_revisions lr ON lr.id=ls.revision_id "
             "WHERE ls.id=?", (source_id,)
         ).fetchone()
@@ -4276,6 +4283,12 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
 
         groups = []
         cause_id = source['hazop_cause_id']
+        try:
+            exclusions = json.loads(source['unassessed_exclusions_json'] or '[]')
+            if not isinstance(exclusions, list):
+                exclusions = []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            exclusions = []
         if cause_id is not None:
             for consequence in self.consequences(cause_id):
                 consequence = dict(consequence)
@@ -4285,6 +4298,14 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                     (row for row in assessments
                      if not row.get('follows_hazop') and row.get('description')),
                     None)
+                decision = next((item for item in exclusions if isinstance(item, dict)
+                                 and item.get('consequence_id') == consequence_id
+                                 and item.get('description') == (consequence.get('description') or '')
+                                 and str(item.get('reason') or '').strip()), None)
+                # A new HAZOP assessment invalidates an earlier decision to
+                # exclude an unassessed consequence; it must be reviewed again.
+                if assessments or self.get_consequence_severities(consequence_id):
+                    decision = None
                 groups.append({
                     'key': f'hazop:{consequence_id}',
                     'hazop_consequence_id': consequence_id,
@@ -4293,6 +4314,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                     'assessments': assessments,
                     'follows_hazop': not bool(local_override),
                     'source_missing': False,
+                    'unassessed_exclusion': decision,
                 })
 
         # Retain historical assessment data if the HAZOP row has subsequently
@@ -4337,6 +4359,107 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 'source_missing': False,
             })
         return groups
+
+    def set_lopa_unassessed_exclusion(self, source_id, consequence_id, reason=None):
+        """Explicitly exclude an unassessed HAZOP consequence, or undo the exclusion."""
+        source = self._lopa_source_revision(source_id)
+        group = next((row for row in self.lopa_source_consequence_groups(source_id)
+                      if row.get('hazop_consequence_id') == consequence_id), None)
+        if not group or group.get('assessments') or group.get('source_missing'):
+            raise ValueError('Välj en obedömd konsekvens från det aktuella HAZOP-källscenariot.')
+        if reason is not None:
+            reason = str(reason).strip()
+            if not reason:
+                raise ValueError('Ange varför konsekvensen exkluderas.')
+            if self.get_consequence_severities(consequence_id):
+                raise ValueError('Konsekvensen har nu en HAZOP-bedömning. Hämta den till LOPA först.')
+        try:
+            exclusions = json.loads(source.get('unassessed_exclusions_json') or '[]')
+            if not isinstance(exclusions, list):
+                exclusions = []
+        except (TypeError, ValueError, json.JSONDecodeError):
+            exclusions = []
+        exclusions = [row for row in exclusions if isinstance(row, dict)
+                      and row.get('consequence_id') != consequence_id]
+        if reason is not None:
+            exclusions.append({'consequence_id': consequence_id,
+                               'description': group.get('description') or '', 'reason': reason})
+        self.conn.execute('UPDATE lopa_source_scenarios SET unassessed_exclusions_json=? WHERE id=?',
+                          (json.dumps(exclusions, ensure_ascii=False), source_id))
+        self._log_lopa(source['lopa_id'], source['revision_id'], 'unassessed-consequence-decision',
+                       f"Konsekvens {consequence_id}: {reason or 'åter inkluderad'}")
+        self.commit()
+
+    def import_lopa_unassessed_consequence(self, source_id, consequence_id):
+        """Import newly assessed HAZOP categories without overwriting local barriers."""
+        source = self._lopa_source_revision(source_id)
+        group = next((row for row in self.lopa_source_consequence_groups(source_id)
+                      if row.get('hazop_consequence_id') == consequence_id), None)
+        if not group or group.get('assessments') or group.get('source_missing'):
+            raise ValueError('Välj en konsekvens utan importerad bedömning.')
+        severities = [dict(row) for row in self.get_consequence_severities(consequence_id)]
+        if not severities:
+            raise ValueError('Ange först konsekvenskategori och nivå i HAZOP.')
+        matrix = self.lopa_revision_matrix(source['revision_id'])
+        keys = self._lopa_category_key_map(matrix)
+        if any(row['name'] not in keys for row in severities):
+            raise ValueError('HAZOP-kategorin finns inte i revisionens riskmatris. Granska riskmatrisen först.')
+        with self.history_group():
+            try:
+                self.conn.execute('BEGIN')
+                for severity in severities:
+                    key = keys[severity['name']]
+                    self.conn.execute(
+                        'INSERT INTO lopa_source_consequences(source_id,hazop_consequence_id,'
+                        'hazop_category_id,category_key,category_name,severity,description,hazop_consequence_snapshot_id) '
+                        'VALUES (?,?,?,?,?,?,?,?)',
+                        (source_id, consequence_id, severity['category_id'], key, severity['name'],
+                         severity['severity'], group.get('description') or '', consequence_id))
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO lopa_escalation_rows(source_id,category_key,factor_values_json,reason,active) "
+                        "VALUES (?,?,'{}','',1)", (source_id, key))
+                # A consequence may have been added to HAZOP after this LOPA
+                # was created. Import its previously unseen safeguards, but
+                # do not overwrite categories on existing locally edited rows.
+                for safeguard in self.safeguards(consequence_id):
+                    safeguard = dict(safeguard)
+                    if safeguard['id'] == source.get('origin_safeguard_id'):
+                        continue
+                    if self.conn.execute(
+                            'SELECT 1 FROM lopa_barriers WHERE source_id=? AND source_safeguard_id=?',
+                            (source_id, safeguard['id'])).fetchone():
+                        continue
+                    sort_order = self.conn.execute(
+                        'SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_barriers WHERE revision_id=?',
+                        (source['revision_id'],)).fetchone()[0]
+                    barrier_id = self.conn.execute(
+                        'INSERT INTO lopa_barriers(revision_id,source_id,source_safeguard_id,sg_type,'
+                        'description,rrf,manual,applies_all_categories,sort_order,hazop_consequence_snapshot_id,'
+                        'equipment_identity_snapshot_json) VALUES (?,?,?,?,?,?,0,0,?,?,?)',
+                        (source['revision_id'], source_id, safeguard['id'], safeguard.get('sg_type') or 'Övrigt',
+                         safeguard.get('description') or '', safeguard.get('rrf') or 1, sort_order,
+                         consequence_id, self._lopa_safeguard_identity_snapshot(safeguard['id']))).lastrowid
+                    for severity in severities:
+                        if safeguard['id'] not in self.get_severity_excluded_sgs(severity['id']):
+                            self.conn.execute(
+                                'INSERT INTO lopa_barrier_categories(barrier_id,category_key,active) VALUES (?,?,1)',
+                                (barrier_id, keys[severity['name']]))
+                try:
+                    exclusions = json.loads(source.get('unassessed_exclusions_json') or '[]')
+                    if not isinstance(exclusions, list):
+                        exclusions = []
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    exclusions = []
+                exclusions = [row for row in exclusions if isinstance(row, dict)
+                              and row.get('consequence_id') != consequence_id]
+                self.conn.execute('UPDATE lopa_source_scenarios SET unassessed_exclusions_json=? WHERE id=?',
+                                  (json.dumps(exclusions, ensure_ascii=False), source_id))
+                self._log_lopa(source['lopa_id'], source['revision_id'], 'consequence-assessments-imported',
+                               f'Konsekvens {consequence_id}: bedömning hämtad från HAZOP')
+                self.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def lopa_sensor_groups(self, revision_id):
         return [dict(row) for row in self.conn.execute(
@@ -5444,7 +5567,14 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             and source.get('active') else [])
         if source.get('active') and scope_unknown:
             result['missing_hazop_sources'].append('Barriärens koppling till konsekvens kan inte fastställas')
-        problems = result['missing_hazop_sources'] + result['unreviewed_barriers']
+        result['unassessed_consequences'] = [
+            f"Konsekvensen {group.get('description') or 'utan beskrivning'} saknar bedömning"
+            for group in self.lopa_source_consequence_groups(source_id)
+            if source.get('active') and group.get('hazop_consequence_id') is not None
+            and not group.get('assessments') and not group.get('unassessed_exclusion')
+        ]
+        problems = (result['missing_hazop_sources'] + result['unreviewed_barriers']
+                    + result['unassessed_consequences'])
         if problems:
             # Draft calculations must not present a conclusion as current
             # after the HAZOP source disappears. Locked revisions retain the

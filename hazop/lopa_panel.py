@@ -692,6 +692,9 @@ class LopaPanel(QWidget):
         self._add_consequence_btn = QPushButton('+ Egen LOPA-konsekvens')
         self._add_consequence_btn.clicked.connect(self._add_custom_consequence)
         consequence_actions.addWidget(self._add_consequence_btn)
+        self._manage_unassessed_btn = QPushButton('Hantera obedömd konsekvens…')
+        self._manage_unassessed_btn.clicked.connect(self._manage_unassessed_consequence)
+        consequence_actions.addWidget(self._manage_unassessed_btn)
         consequence_actions.addStretch()
         self._edit_consequence_btn = QPushButton('Ändra lokal bedömning…')
         self._edit_consequence_btn.clicked.connect(self._edit_selected_consequence)
@@ -1099,7 +1102,7 @@ class LopaPanel(QWidget):
         # secondary tier -- so this list is deliberately just these nine.
         for ghost_btn in (self._add_sensor_group_btn, self._add_sensor_btn,
                           self._add_final_group_btn, self._add_final_btn,
-                          self._add_consequence_btn, self._edit_consequence_btn,
+                          self._add_consequence_btn, self._edit_consequence_btn, self._manage_unassessed_btn,
                           self._add_barrier_btn, self._edit_barrier_btn, self._review_barrier_btn,
                           self._refresh_barrier_identity_btn,
                           self._add_comment_btn):
@@ -1185,7 +1188,9 @@ class LopaPanel(QWidget):
         self._scenario_text.clear()
         self._scenario_text.setEnabled(False)
         self._save_scenario_btn.setEnabled(False)
+        self._add_consequence_btn.setEnabled(False)
         self._edit_consequence_btn.setEnabled(False)
+        self._manage_unassessed_btn.setEnabled(False)
         self._sensor_voting.setEnabled(False)
         self._add_sensor_group_btn.setEnabled(False)
         self._add_sensor_btn.setEnabled(False)
@@ -1198,6 +1203,8 @@ class LopaPanel(QWidget):
         self._final_action.setEnabled(False)
         self._add_barrier_btn.setEnabled(False)
         self._edit_barrier_btn.setEnabled(False)
+        self._review_barrier_btn.setEnabled(False)
+        self._refresh_barrier_identity_btn.setEnabled(False)
         self._control_frequency.clear()
         self._control_frequency.setEnabled(False)
         self._assumption_percent.setValue(0)
@@ -1389,6 +1396,9 @@ class LopaPanel(QWidget):
     def _selected_hierarchy_consequence_id(self):
         return self._hazop_row_data(self._hazop_hierarchy.currentRow(),
                                     self._ROLE_HAZOP_CONSEQUENCE_ID)
+
+    def _selected_hierarchy_assessment_id(self):
+        return self._hazop_row_data(self._hazop_hierarchy.currentRow(), self._ROLE_ENTITY_ID)
 
     def _hazop_row_data(self, row, role):
         """Read shared row metadata from the compact HAZOP scenarios table."""
@@ -1645,7 +1655,7 @@ class LopaPanel(QWidget):
         if selected_source is None and sources:
             selected_source = sources[0]['id']
         if select_consequence_id is None:
-            select_consequence_id = self._selected_hierarchy_consequence_id()
+            select_consequence_id = self._selected_hierarchy_assessment_id()
 
         source_groups = [
             (source, self.db.lopa_source_consequence_groups(source['id']))
@@ -1702,6 +1712,11 @@ class LopaPanel(QWidget):
                             text, source_id=source['id'], cause_id=cause_id,
                             consequence_id=consequence_id, entity_id=col_entity_id,
                             editable=col_editable))
+                if not assessments:
+                    decision = consequence.get('unassessed_exclusion')
+                    note = (f"Exkluderad: {decision['reason']}" if decision else
+                            'Bedömning saknas. Välj raden och hantera den obedömda konsekvensen.')
+                    self._hazop_hierarchy.item(row, self._HAZOP_CONSEQUENCE_COL).setToolTip(note)
                 assessments_by_category = {
                     assessment.get('category_key'): assessment
                     for assessment in assessments if assessment.get('category_key')
@@ -1766,6 +1781,17 @@ class LopaPanel(QWidget):
             notices.append('Inga aktiva källor')
         elif not notices:
             notices.append('HAZOP-källor är aktuella')
+        unassessed = sum(1 for source, groups in source_groups if source['active'] for group in groups
+                         if group.get('hazop_consequence_id') is not None and not group.get('assessments')
+                         and not group.get('unassessed_exclusion'))
+        excluded = sum(1 for source, groups in source_groups if source['active'] for group in groups
+                       if not group.get('assessments') and group.get('unassessed_exclusion'))
+        if unassessed:
+            word = 'konsekvens' if unassessed == 1 else 'konsekvenser'
+            notices.append(f'{unassessed} {word} saknar bedömning; välj raden och hantera den')
+        if excluded:
+            word = 'obedömd konsekvens är exkluderad' if excluded == 1 else 'obedömda konsekvenser är exkluderade'
+            notices.append(f'{excluded} {word}')
         revision = self.db.get_lopa_revision(self._revision_id) if self._revision_id else None
         matrix_changed = bool(revision and self._revision_is_editable()
                               and self.db.lopa_matrix_has_changed(self._revision_id))
@@ -1854,7 +1880,7 @@ class LopaPanel(QWidget):
         # _populate_hazop_hierarchy's select_consequence_id expects), not a
         # hazop_consequence_id -- keep whatever row was already selected
         # unless this edit touched a specific local assessment row.
-        select_id = self._selected_hierarchy_consequence_id()
+        select_id = self._selected_hierarchy_assessment_id()
         try:
             if column == self._HAZOP_CAUSE_COL:
                 self.db.set_lopa_source_cause_text(source_id, text)
@@ -1970,8 +1996,53 @@ class LopaPanel(QWidget):
     def _update_hierarchy_actions(self):
         editable = self._revision_is_editable()
         self._edit_consequence_btn.setEnabled(
-            bool(self._selected_hierarchy_consequence_id()) and editable)
+            bool(self._selected_hierarchy_assessment_id()) and editable)
         self._add_consequence_btn.setEnabled(bool(self._revision_id) and editable)
+        consequence_id = self._selected_hierarchy_consequence_id()
+        source_id = self._hazop_row_data(self._hazop_hierarchy.currentRow(), self._ROLE_SOURCE_ID)
+        group = next((row for row in self.db.lopa_source_consequence_groups(source_id)
+                      if row.get('hazop_consequence_id') == consequence_id), None) if source_id else None
+        self._manage_unassessed_btn.setEnabled(bool(editable and group and not group.get('assessments')))
+
+    def _manage_unassessed_consequence(self):
+        consequence_id = self._selected_hierarchy_consequence_id()
+        source_id = self._hazop_row_data(self._hazop_hierarchy.currentRow(), self._ROLE_SOURCE_ID)
+        group = next((row for row in self.db.lopa_source_consequence_groups(source_id)
+                      if row.get('hazop_consequence_id') == consequence_id), None) if source_id else None
+        if not group or group.get('assessments'):
+            return
+        excluded = bool(group.get('unassessed_exclusion'))
+        options = ['Hämta bedömning från HAZOP',
+                   'Inkludera igen' if excluded else 'Exkludera med motivering']
+        choice, accepted = QInputDialog.getItem(
+            self, 'Obedömd konsekvens', group.get('description') or 'Konsekvens:', options, 0, False)
+        if not accepted:
+            return
+        try:
+            if choice == options[0]:
+                self.db.import_lopa_unassessed_consequence(source_id, consequence_id)
+                QMessageBox.information(
+                    self, 'Bedömning hämtad',
+                    'Granska även barriärernas kategorier. Lokala barriärval ändras inte automatiskt.')
+            elif excluded:
+                self.db.set_lopa_unassessed_exclusion(source_id, consequence_id)
+            else:
+                reason, accepted = QInputDialog.getMultiLineText(
+                    self, 'Exkludera konsekvens', 'Varför ska konsekvensen exkluderas från denna LOPA?')
+                if not accepted:
+                    return
+                self.db.set_lopa_unassessed_exclusion(source_id, consequence_id, reason)
+        except (ValueError, PermissionError) as exc:
+            QMessageBox.warning(self, 'Kunde inte hantera konsekvensen', str(exc))
+            return
+        self._populate_hazop_hierarchy()
+        for row in range(self._hazop_hierarchy.rowCount()):
+            if (self._hazop_row_data(row, self._ROLE_SOURCE_ID) == source_id and
+                    self._hazop_row_data(row, self._ROLE_HAZOP_CONSEQUENCE_ID) == consequence_id):
+                self._hazop_hierarchy.setCurrentCell(row, self._HAZOP_CONSEQUENCE_COL)
+                break
+        self._populate_calculation()
+        self.changed.emit()
 
     def _load_source_detail(self):
         source = next((row for row in self.db.lopa_sources(self._revision_id)
@@ -1990,8 +2061,11 @@ class LopaPanel(QWidget):
             self._escalation.setRowCount(0)
             self._edit_consequence_btn.setEnabled(False)
             self._add_consequence_btn.setEnabled(bool(self._revision_id) and editable)
+            self._manage_unassessed_btn.setEnabled(False)
             self._add_barrier_btn.setEnabled(False)
             self._edit_barrier_btn.setEnabled(False)
+            self._review_barrier_btn.setEnabled(False)
+            self._refresh_barrier_identity_btn.setEnabled(False)
             self._control_frequency.clear()
             self._control_frequency.setEnabled(False)
             self._assumption_percent.setValue(0)
@@ -2070,7 +2144,7 @@ class LopaPanel(QWidget):
         self.changed.emit()
 
     def _edit_selected_consequence(self):
-        consequence_id = self._selected_hierarchy_consequence_id()
+        consequence_id = self._selected_hierarchy_assessment_id()
         if not consequence_id:
             QMessageBox.information(
                 self, 'Välj riskbedömning',
