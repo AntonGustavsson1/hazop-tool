@@ -158,6 +158,117 @@ class LopaDatabaseTests(unittest.TestCase):
         self.db.add_safeguard_equipment_link(sensor_sg, equipment_id, 'HH')
         return cause_id, sensor_sg, other_sg, equipment_id
 
+    def _lopa_with_shared_object(self, barrier_trigger):
+        cause, sensor, _other, equipment = self._hazop_chain()
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Annan konsekvens', 3, '')
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(consequence, category['id'], 3)
+        barrier = self.db.add_safeguard(consequence)
+        self.db.update_safeguard(barrier, description='Skydd på samma givare', rrf=100, sg_type='SIS')
+        self.db.add_safeguard_equipment_link(barrier, equipment, barrier_trigger)
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        imported = next(row for row in self.db.lopa_barriers(created['revision_id'], source)
+                        if row['source_safeguard_id'] == barrier)
+        return created, source, imported, equipment, barrier, consequence
+
+    def test_same_sif_on_another_hazop_consequence_is_not_credited(self):
+        created, source, imported, _equipment, _barrier, consequence = self._lopa_with_shared_object('HH')
+        result = self.db.lopa_source_calculation(source)
+        row = next(row for row in result['categories'] if row['hazop_consequence_id'] == consequence)
+        self.assertTrue(result['complete'])
+        self.assertEqual(1, row['barrier_rrf'])
+        self.assertEqual('same', self.db.lopa_barrier_identity_status(imported)['state'])
+        self.assertTrue(any('Samma SIF' in message for message in result['messages']))
+        with self.assertRaises(ValueError):
+            self.db.confirm_lopa_barrier_independence(imported['id'], 'Inte oberoende')
+        self.db.lock_lopa_revision(created['revision_id'])
+
+    def test_shared_object_requires_recorded_review_and_invalidates_it_on_change(self):
+        created, source, imported, equipment, _barrier, consequence = self._lopa_with_shared_object('LL')
+        result = self.db.lopa_source_calculation(source)
+        self.assertFalse(result['complete'])
+        self.assertIsNone(result['sil'])
+        self.assertEqual('needs_review', self.db.lopa_barrier_identity_status(imported)['state'])
+        with self.assertRaises(ValueError):
+            self.db.confirm_lopa_barrier_independence(imported['id'], '  ')
+        with self.assertRaisesRegex(ValueError, 'oberoende'):
+            self.db.lock_lopa_revision(created['revision_id'])
+        self.db.confirm_lopa_barrier_independence(imported['id'], 'Oberoende kedjor verifierade mot ritning')
+        result = self.db.lopa_source_calculation(source)
+        row = next(row for row in result['categories'] if row['hazop_consequence_id'] == consequence)
+        self.assertTrue(result['complete'])
+        self.assertEqual(100, row['barrier_rrf'])
+        self.assertTrue(self.db.undo())
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(self.db.redo())
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.db.add_lopa_sensor_member(created['revision_id'], equipment, trigger_code='LL')
+        result = self.db.lopa_source_calculation(source)
+        self.assertEqual(1, next(row for row in result['categories']
+                                 if row['hazop_consequence_id'] == consequence)['barrier_rrf'])
+        imported = next(row for row in self.db.lopa_barriers(created['revision_id'], source)
+                        if row['id'] == imported['id'])
+        self.assertEqual('same', self.db.lopa_barrier_identity_status(imported)['state'])
+
+    def test_locked_sif_identity_survives_deletion_of_hazop_rows_and_equipment(self):
+        created, source, imported, equipment, barrier, consequence = self._lopa_with_shared_object('HH')
+        self.db.lock_lopa_revision(created['revision_id'])
+        before = self.db.lopa_source_calculation(source)
+        self.db.delete_safeguard(barrier)
+        self.db.delete_equipment_item(equipment)
+        after = self.db.lopa_source_calculation(source)
+        self.assertEqual(before, after)
+        imported = next(row for row in self.db.lopa_barriers(created['revision_id'], source)
+                        if row['id'] == imported['id'])
+        self.assertEqual('same', self.db.lopa_barrier_identity_status(imported)['state'])
+
+    def test_missing_trigger_on_shared_object_requires_review(self):
+        _created, source, imported, _equipment, _barrier, _consequence = self._lopa_with_shared_object('')
+        self.assertEqual('needs_review', self.db.lopa_barrier_identity_status(imported)['state'])
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.db.set_lopa_barrier_active(imported['id'], False)
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+
+    def test_old_project_reconstructs_identity_and_marks_it_as_legacy(self):
+        created, source, imported, equipment, _barrier, _consequence = self._lopa_with_shared_object('HH')
+        self.db.lock_lopa_revision(created['revision_id'])
+        self.db.conn.execute('ALTER TABLE lopa_barriers DROP COLUMN equipment_identity_snapshot_json')
+        self.db.conn.execute('ALTER TABLE lopa_barriers DROP COLUMN identity_snapshot_legacy')
+        self.db.conn.execute('ALTER TABLE lopa_barriers DROP COLUMN independence_fingerprint')
+        self.db.conn.execute('ALTER TABLE lopa_barriers DROP COLUMN independence_reason')
+        self.db.conn.execute('ALTER TABLE lopa_sensor_members DROP COLUMN equipment_id_snapshot')
+        self.db.conn.commit()
+        self.db.conn.close()
+        self.db = Database(path=os.path.join(self._tmpdir, 'project.db'))
+        imported = next(row for row in self.db.lopa_barriers(created['revision_id'], source)
+                        if row['id'] == imported['id'])
+        self.assertTrue(imported['identity_snapshot_legacy'])
+        self.assertEqual('same', self.db.lopa_barrier_identity_status(imported)['state'])
+        group = self.db.lopa_sensor_groups(created['revision_id'])[0]
+        self.assertEqual(equipment, self.db.lopa_sensor_members(group['id'])[0]['equipment_id_snapshot'])
+
+    def test_hazop_object_link_changes_warn_without_overwriting_revision_identity(self):
+        _cause, sensor, barrier, equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        imported = self.db.lopa_barriers(created['revision_id'], source)[0]
+        self.assertEqual('unlinked', self.db.lopa_barrier_identity_status(imported)['state'])
+        self.db.add_safeguard_equipment_link(barrier, equipment, 'HH')
+        self.assertIn('barriärens objektkoppling', self.db.lopa_source_sync_state(source)['messages'])
+        self.assertEqual('changed', self.db.lopa_barrier_identity_status(imported)['state'])
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.db.refresh_lopa_barrier_identity(imported['id'])
+        imported = self.db.lopa_barriers(created['revision_id'], source)[0]
+        self.assertEqual('same', self.db.lopa_barrier_identity_status(imported)['state'])
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(self.db.undo())
+        imported = self.db.lopa_barriers(created['revision_id'], source)[0]
+        self.assertEqual('changed', self.db.lopa_barrier_identity_status(imported)['state'])
+        self.assertTrue(self.db.redo())
+        self.assertEqual('current', self.db.lopa_source_sync_state(source)['state'])
+
     def test_matrix_change_is_detected_without_altering_revision_snapshot(self):
         created = self.db.create_lopa()
         revision = created['revision_id']

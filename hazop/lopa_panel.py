@@ -910,6 +910,12 @@ class LopaPanel(QWidget):
         self._edit_barrier_btn = QPushButton('Ändra lokalt…')
         self._edit_barrier_btn.clicked.connect(self._edit_selected_barrier)
         barrier_actions.addWidget(self._edit_barrier_btn)
+        self._review_barrier_btn = QPushButton('Bedöm oberoende…')
+        self._review_barrier_btn.clicked.connect(self._review_selected_barrier)
+        barrier_actions.addWidget(self._review_barrier_btn)
+        self._refresh_barrier_identity_btn = QPushButton('Uppdatera objekt från HAZOP')
+        self._refresh_barrier_identity_btn.clicked.connect(self._refresh_selected_barrier_identity)
+        barrier_actions.addWidget(self._refresh_barrier_identity_btn)
         barrier_actions.addStretch()
         barrier_detail_layout.addLayout(barrier_actions)
         barrier_footer = QHBoxLayout()
@@ -1094,7 +1100,8 @@ class LopaPanel(QWidget):
         for ghost_btn in (self._add_sensor_group_btn, self._add_sensor_btn,
                           self._add_final_group_btn, self._add_final_btn,
                           self._add_consequence_btn, self._edit_consequence_btn,
-                          self._add_barrier_btn, self._edit_barrier_btn,
+                          self._add_barrier_btn, self._edit_barrier_btn, self._review_barrier_btn,
+                          self._refresh_barrier_identity_btn,
                           self._add_comment_btn):
             ghost_btn.setStyleSheet(lopa_ghost_button_stylesheet())
 
@@ -2459,6 +2466,13 @@ class LopaPanel(QWidget):
                 status = 'Följer HAZOP' if barrier['follows_hazop'] else 'Frikopplad från HAZOP'
             if barrier['source_missing']:
                 status = 'Källa saknas i HAZOP'
+            identity = self.db.lopa_barrier_identity_status(barrier)
+            if not barrier['independent']:
+                status += ' · Inte oberoende – räknas inte'
+            else:
+                status += f" · {identity['label']}"
+            if barrier.get('identity_snapshot_legacy'):
+                status += ' · Äldre objektunderlag'
             if barrier['applies_all_categories']:
                 applies = 'Alla'
             else:
@@ -2476,12 +2490,21 @@ class LopaPanel(QWidget):
             applicability_item = self._readonly_cell(applies)
             applicability_item.setToolTip(applies)
             self._barriers.setItem(row_index, 4, applicability_item)
-            self._barriers.setItem(row_index, 5, self._readonly_cell(status))
+            status_item = self._readonly_cell(status)
+            tooltip = status
+            if identity.get('reason'):
+                tooltip += f"\nMotivering: {identity['reason']}"
+            if barrier.get('identity_snapshot_legacy'):
+                tooltip += '\nObjektkopplingen återskapades från aktuellt HAZOP-underlag.'
+            status_item.setToolTip(tooltip)
+            self._barriers.setItem(row_index, 5, status_item)
         self._barriers.resizeRowsToContents()
         self._fit_table_height(self._barriers, 48, 106)
         enabled = bool(self._source_id) and self._revision_is_editable()
         self._add_barrier_btn.setEnabled(enabled)
         self._edit_barrier_btn.setEnabled(bool(rows) and enabled)
+        self._review_barrier_btn.setEnabled(bool(rows) and enabled)
+        self._refresh_barrier_identity_btn.setEnabled(bool(rows) and enabled)
         if self._source_id:
             result = self.db.lopa_source_calculation(self._source_id)
             index = result.get('governing_category_index')
@@ -2499,6 +2522,7 @@ class LopaPanel(QWidget):
             else:
                 details = '; '.join(result['messages']) or 'Underlag saknas.'
                 self._barrier_summary.setText(f'Underlaget är ofullständigt: {details}')
+            self._barrier_summary.setToolTip(self._barrier_summary.text())
         else:
             self._barrier_summary.clear()
         self._loading = old_loading
@@ -2557,9 +2581,11 @@ class LopaPanel(QWidget):
                 if barriers:
                     desc_text = '\n'.join(
                         f"{barrier.get('description') or 'Namnlös'} — "
-                        f"{self.db.lopa_barrier_scope_label(barrier)}" for barrier in barriers)
+                        f"{self.db.lopa_barrier_scope_label(barrier)} — "
+                        f"{self.db.lopa_barrier_identity_status(barrier)['label']}" for barrier in barriers)
                     rrf_text = '\n'.join(
-                        f'{barrier["rrf"]:.6g}' for barrier in barriers)
+                        (f'{barrier["rrf"]:.6g}' if self.db.lopa_barrier_identity_status(barrier)['state']
+                         not in ('same', 'needs_review', 'unknown', 'changed') else '—') for barrier in barriers)
                 else:
                     desc_text = '—'
                     rrf_text = '—'
@@ -2686,6 +2712,52 @@ class LopaPanel(QWidget):
                 sg_type=dialog.sg_type(), category_keys=dialog.category_keys(), manual=True)
         except Exception as exc:
             QMessageBox.warning(self, 'Kunde inte lägga till barriär', str(exc))
+            return
+        self._populate_barriers()
+        self._populate_escalation()
+        self._populate_calculation()
+        self.changed.emit()
+
+    def _refresh_selected_barrier_identity(self):
+        barrier_id = self._selected_entity_id(self._barriers)
+        if not barrier_id:
+            QMessageBox.information(self, 'Välj barriär', 'Välj först en barriärrad att uppdatera.')
+            return
+        try:
+            self.db.refresh_lopa_barrier_identity(barrier_id)
+        except (ValueError, PermissionError) as exc:
+            QMessageBox.warning(self, 'Kunde inte uppdatera objekt', str(exc))
+            return
+        self._populate_barriers()
+        self._populate_escalation()
+        self._populate_calculation()
+        self._populate_hazop_hierarchy()
+        self.changed.emit()
+
+    def _review_selected_barrier(self):
+        barrier_id = self._selected_entity_id(self._barriers)
+        if not barrier_id:
+            QMessageBox.information(self, 'Välj barriär', 'Välj först en barriärrad att bedöma.')
+            return
+        barrier = next((row for row in self.db.lopa_barriers(self._revision_id, self._source_id)
+                        if row['id'] == barrier_id), None)
+        if not barrier:
+            return
+        identity = self.db.lopa_barrier_identity_status(barrier)
+        if identity['state'] not in ('needs_review', 'reviewed'):
+            QMessageBox.information(self, 'Oberoende', identity['label'])
+            return
+        reason, accepted = QInputDialog.getMultiLineText(
+            self, 'Bedöm oberoende',
+            'Barriären och SIF använder samma objekt. Beskriv varför skydden ändå '
+            'är oberoende och vilket underlag som stöder bedömningen:',
+            identity.get('reason') or '')
+        if not accepted:
+            return
+        try:
+            self.db.confirm_lopa_barrier_independence(barrier_id, reason)
+        except (ValueError, PermissionError) as exc:
+            QMessageBox.warning(self, 'Kunde inte spara bedömningen', str(exc))
             return
         self._populate_barriers()
         self._populate_escalation()

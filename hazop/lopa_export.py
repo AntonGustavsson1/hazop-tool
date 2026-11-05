@@ -222,15 +222,22 @@ def export_lopa_excel(db, filepath, selections=None):
                          ('Följer HAZOP' if barrier['follows_hazop'] else 'Frikopplad från HAZOP'))
                 if barrier['source_missing']:
                     state = 'Källa saknas i HAZOP'
+                identity = db.lopa_barrier_identity_status(barrier)
+                identity_label = identity['label']
+                if not barrier['independent']:
+                    identity_label = 'Inte oberoende – räknas inte'
+                if barrier.get('identity_snapshot_legacy'):
+                    identity_label += ' · Äldre objektunderlag från aktuell HAZOP'
                 barrier_rows.append([
                     source.get('cause_text') or '', 'Ja' if barrier['active'] else 'Nej',
                     barrier.get('sg_type') or '', barrier.get('description') or '', _number(barrier.get('rrf')),
-                    categories, db.lopa_barrier_scope_label(barrier), state,
+                    categories, db.lopa_barrier_scope_label(barrier), state, identity_label,
+                    identity.get('reason') or '',
                 ])
         row = _write_table(ws, row,
                            ['Källscenario', 'Aktiv', 'Typ', 'Beskrivning', 'RRF', 'Kategorier',
-                            'Gäller för konsekvens', 'Status'],
-                           barrier_rows, widths=[28, 9, 18, 34, 12, 22, 35, 24])
+                            'Gäller för konsekvens', 'Status', 'Jämförelse med SIF', 'Motivering oberoende'],
+                           barrier_rows, widths=[28, 9, 18, 34, 12, 22, 35, 24, 40, 42])
 
         ws.cell(row, 1, 'Eskalering och beräkningsspår').font = Font(bold=True, size=12)
         row += 1

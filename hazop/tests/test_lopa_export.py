@@ -117,6 +117,38 @@ class LopaExportTests(unittest.TestCase):
         self.assertNotIn('LT-102', values)
         self.assertNotIn('LT-102 HH', values)
 
+    def test_export_includes_reviewed_independence_and_excludes_same_sif(self):
+        node = self.db.add_node()
+        deviation = self.db.deviations(node)[0]['id']
+        cause = self.db.add_cause(deviation)
+        self.db.update_cause(cause, description='Gemensam givare', base_frequency=0.1,
+                             frequency_cleared=False)
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Utsläpp', 3, '')
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(consequence, category['id'], 3)
+        equipment = self.db.add_equipment_item('LT-1', 'LT-1', 'LT', 0, 'Givare', '', 0)
+        sensor = self.db.add_safeguard(consequence)
+        self.db.add_safeguard_equipment_link(sensor, equipment, 'HH')
+        duplicate = self.db.add_safeguard(consequence)
+        self.db.add_safeguard_equipment_link(duplicate, equipment, 'HH')
+        other = self.db.add_safeguard(consequence)
+        self.db.add_safeguard_equipment_link(other, equipment, 'LL')
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        reviewed = next(row for row in self.db.lopa_barriers(created['revision_id'], source)
+                        if row['source_safeguard_id'] == other)
+        self.db.confirm_lopa_barrier_independence(reviewed['id'], 'Ritning 42 granskad')
+        path = os.path.join(self._tmpdir, 'oberoende.xlsx')
+        ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
+        self.assertTrue(ok, error)
+        import openpyxl
+        workbook = openpyxl.load_workbook(path, data_only=True)
+        values = [cell.value for row in workbook.worksheets[1].iter_rows() for cell in row]
+        self.assertIn('Samma SIF – räknas inte som barriär', values)
+        self.assertIn('Gemensamt objekt – oberoende bedömt', values)
+        self.assertIn('Ritning 42 granskad', values)
+
     def test_export_accepts_multiple_explicit_revisions(self):
         first = self.db.create_lopa(display_number='001', sif_name='Första SIF')
         second = self.db.create_lopa(display_number='002', sif_name='Andra SIF')

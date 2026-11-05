@@ -1220,6 +1220,33 @@ class Database:
             self.conn.execute('UPDATE lopa_barriers SET hazop_consequence_snapshot_id='
                               '(SELECT consequence_id FROM safeguards WHERE id=lopa_barriers.source_safeguard_id) '
                               'WHERE manual=0')
+        sensor_columns = {row['name'] for row in self.conn.execute(
+            'PRAGMA table_info(lopa_sensor_members)').fetchall()}
+        if sensor_columns and 'equipment_id_snapshot' not in sensor_columns:
+            self.conn.execute('ALTER TABLE lopa_sensor_members ADD COLUMN equipment_id_snapshot INTEGER')
+            self.conn.execute('UPDATE lopa_sensor_members SET equipment_id_snapshot=equipment_id')
+        if barrier_columns:
+            needs_identity_snapshot = 'equipment_identity_snapshot_json' not in barrier_columns
+            if needs_identity_snapshot:
+                self.conn.execute('ALTER TABLE lopa_barriers ADD COLUMN equipment_identity_snapshot_json TEXT')
+            if 'identity_snapshot_legacy' not in barrier_columns:
+                self.conn.execute('ALTER TABLE lopa_barriers ADD COLUMN identity_snapshot_legacy INTEGER NOT NULL DEFAULT 0')
+            # This is the best available reconstruction, not proof of what an
+            # older locked revision contained when it was approved.
+            if needs_identity_snapshot:
+                rows = self.conn.execute(
+                    'SELECT id,source_safeguard_id FROM lopa_barriers WHERE manual=0').fetchall()
+                for row in rows:
+                    safeguard_id = row['source_safeguard_id']
+                    snapshot = (self._lopa_safeguard_identity_snapshot(safeguard_id)
+                                if safeguard_id and self.get_safeguard(safeguard_id) else None)
+                    self.conn.execute(
+                        'UPDATE lopa_barriers SET equipment_identity_snapshot_json=?,identity_snapshot_legacy=1 WHERE id=?',
+                        (snapshot, row['id']))
+            if 'independence_fingerprint' not in barrier_columns:
+                self.conn.execute("ALTER TABLE lopa_barriers ADD COLUMN independence_fingerprint TEXT NOT NULL DEFAULT ''")
+            if 'independence_reason' not in barrier_columns:
+                self.conn.execute("ALTER TABLE lopa_barriers ADD COLUMN independence_reason TEXT NOT NULL DEFAULT ''")
         self._migrate_participant_company_column()
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS reduction_factor_catalog ("
@@ -4019,6 +4046,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             if result.get('missing_hazop_sources'):
                 raise ValueError('En aktiv HAZOP-källa, konsekvens eller barriär saknas. '
                                  'Granska eller exkludera underlaget innan revisionen låses.')
+            if result.get('unreviewed_barriers'):
+                raise ValueError('En aktiv barriärs objektkoppling eller oberoende måste granskas '
+                                 'innan revisionen låses.')
         groups = []
         for source in sources:
             captured_groups = self.lopa_source_consequence_groups(source['id'])
@@ -4193,6 +4223,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                     float(current.get('rrf') or 1) != float(barrier.get('rrf') or 1) or
                     (current.get('sg_type') or '') != (barrier.get('sg_type') or '')):
                 changes.append('oberoende barriär')
+            snapshot = barrier.get('equipment_identity_snapshot_json')
+            if snapshot is not None and snapshot != self._lopa_safeguard_identity_snapshot(current['id']):
+                changes.append('barriärens objektkoppling')
         if changes:
             return {'state': 'changed', 'messages': list(dict.fromkeys(changes))}
         return {'state': 'current', 'messages': []}
@@ -4332,6 +4365,102 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         return [dict(row) for row in self.conn.execute(
             "SELECT * FROM lopa_barrier_categories WHERE barrier_id=? ORDER BY category_key",
             (barrier_id,)).fetchall()]
+
+    @staticmethod
+    def _lopa_identity(link):
+        """Return structured, revision-stable object/trigger data only."""
+        return {
+            'equipment_id': link.get('equipment_id_snapshot') or link.get('equipment_id'),
+            'trigger_code': str(link.get('trigger_code') or '').strip().upper(),
+            'trigger_custom': ' '.join(str(link.get('trigger_custom') or '').split()).casefold(),
+        }
+
+    @staticmethod
+    def _lopa_trigger_identity(identity):
+        custom = identity.get('trigger_custom') or ''
+        code = identity.get('trigger_code') or ''
+        return ('custom', custom) if custom else (('code', code) if code else None)
+
+    def _lopa_safeguard_identity_snapshot(self, safeguard_id):
+        links = [self._lopa_identity(row) for row in self.safeguard_equipment_links(safeguard_id)]
+        links.sort(key=lambda row: json.dumps(row, sort_keys=True))
+        return json.dumps(links, ensure_ascii=False, sort_keys=True)
+
+    def lopa_barrier_identity_status(self, barrier):
+        """Compare a barrier with the SIF; never infer identity from text or tag."""
+        if barrier.get('manual'):
+            return {'state': 'manual', 'label': 'Manuell: oberoende bedöms av användaren'}
+        try:
+            raw = barrier.get('equipment_identity_snapshot_json')
+            links = json.loads(raw) if raw is not None else None
+            if not isinstance(links, list) or any(not isinstance(row, dict) for row in links):
+                raise ValueError('Objektunderlag saknas')
+            links = [self._lopa_identity(row) for row in links]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {'state': 'unknown', 'label': 'Objektkoppling saknas i underlaget'}
+        revision = self._lopa_revision_row(barrier['revision_id'])
+        safeguard_id = barrier.get('source_safeguard_id')
+        if (revision and revision['status'] not in ('Låst', 'Godkänd', 'Arkiverad')
+                and safeguard_id and self.get_safeguard(safeguard_id)):
+            stored = json.dumps(sorted(links, key=lambda row: json.dumps(row, sort_keys=True)),
+                                ensure_ascii=False, sort_keys=True)
+            if stored != self._lopa_safeguard_identity_snapshot(safeguard_id):
+                return {'state': 'changed', 'label': 'Objektkoppling i HAZOP ändrad – uppdatera'}
+        sensors = [self._lopa_identity(member)
+                   for group in self.lopa_sensor_groups(barrier['revision_id'])
+                   for member in self.lopa_sensor_members(group['id']) if member['active']]
+        if any(row['equipment_id'] is None for row in links + sensors):
+            return {'state': 'unknown', 'label': 'Objektkoppling kan inte fastställas'}
+        if not links:
+            return {'state': 'unlinked', 'label': 'Inget objekt angivet; oberoende måste granskas'}
+        if not sensors:
+            return {'state': 'unlinked', 'label': 'Ingen strukturerad SIF-givare; oberoende måste granskas'}
+        pairs = [(sensor, link) for sensor in sensors for link in links
+                 if sensor['equipment_id'] == link['equipment_id']]
+        if any(self._lopa_trigger_identity(sensor) is not None
+               and self._lopa_trigger_identity(sensor) == self._lopa_trigger_identity(link)
+               for sensor, link in pairs):
+            return {'state': 'same', 'label': 'Samma SIF – räknas inte som barriär'}
+        if pairs:
+            ordered = lambda rows: sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
+            fingerprint = json.dumps({'sensors': ordered(sensors), 'barriers': ordered(links)},
+                                     ensure_ascii=False, sort_keys=True)
+            reason = str(barrier.get('independence_reason') or '').strip()
+            if reason and fingerprint == barrier.get('independence_fingerprint'):
+                return {'state': 'reviewed', 'label': 'Gemensamt objekt – oberoende bedömt',
+                        'reason': reason, 'fingerprint': fingerprint}
+            return {'state': 'needs_review', 'label': 'Gemensamt objekt – bedöm oberoende',
+                    'fingerprint': fingerprint}
+        return {'state': 'distinct', 'label': 'Inget gemensamt strukturerat objekt'}
+
+    def confirm_lopa_barrier_independence(self, barrier_id, reason):
+        """Record an analyst's review only for a shared object, never the same SIF."""
+        barrier = self._lopa_barrier_revision(barrier_id)
+        status = self.lopa_barrier_identity_status(barrier)
+        if status['state'] not in ('needs_review', 'reviewed'):
+            raise ValueError('Den valda barriären har ingen sådan objektkoppling att bedöma.')
+        reason = str(reason or '').strip()
+        if not reason:
+            raise ValueError('Ange en motivering till bedömningen av oberoende.')
+        self.conn.execute('UPDATE lopa_barriers SET independence_fingerprint=?,independence_reason=? WHERE id=?',
+                          (status['fingerprint'], reason, barrier_id))
+        self._log_lopa(barrier['lopa_id'], barrier['revision_id'], 'barrier-independence-reviewed',
+                       f'Barriär {barrier_id}: {reason}')
+        self.commit()
+
+    def refresh_lopa_barrier_identity(self, barrier_id):
+        """Adopt current HAZOP object links explicitly, clearing any old review."""
+        barrier = self._lopa_barrier_revision(barrier_id)
+        safeguard_id = barrier.get('source_safeguard_id')
+        if barrier.get('manual') or not safeguard_id or not self.get_safeguard(safeguard_id):
+            raise ValueError('En aktuell HAZOP-koppling krävs för att uppdatera objektunderlaget.')
+        snapshot = self._lopa_safeguard_identity_snapshot(safeguard_id)
+        self.conn.execute(
+            "UPDATE lopa_barriers SET equipment_identity_snapshot_json=?,identity_snapshot_legacy=0,"
+            "independence_fingerprint='',independence_reason='' WHERE id=?", (snapshot, barrier_id))
+        self._log_lopa(barrier['lopa_id'], barrier['revision_id'], 'barrier-identity-refreshed',
+                       f'Barriär {barrier_id}: objektkoppling uppdaterad från HAZOP')
+        self.commit()
 
     def lopa_barrier_scope_label(self, barrier):
         """Explain which consequence an imported or manual barrier covers."""
@@ -4970,9 +5099,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             (group_id,)).fetchone()[0]
         cur = self.conn.execute(
             "INSERT INTO lopa_sensor_members(group_id,equipment_id,origin_safeguard_id,"
-            "trigger_code,trigger_custom,tag_snapshot,sort_order) VALUES (?,?,?,?,?,?,?)",
+            "trigger_code,trigger_custom,tag_snapshot,sort_order,equipment_id_snapshot) VALUES (?,?,?,?,?,?,?,?)",
             (group_id, equipment_id, origin_safeguard_id, trigger_code,
-             trigger_custom, tag_snapshot, sort_order))
+             trigger_custom, tag_snapshot, sort_order, equipment_id))
         # The second sensor is a deliberate review point.  The database
         # keeps 1oo1 until the user explicitly confirms/provides voting.
         if member_count >= 1:
@@ -5122,15 +5251,16 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                         else:
                             barrier_id = self.conn.execute(
                                 "INSERT INTO lopa_barriers(revision_id,source_id,source_safeguard_id,"
-                                "sg_type,description,rrf,manual,applies_all_categories,sort_order,hazop_consequence_snapshot_id) "
-                                "VALUES (?,?,?,?,?,?,0,0,?,?)",
+                                "sg_type,description,rrf,manual,applies_all_categories,sort_order,hazop_consequence_snapshot_id,"
+                                "equipment_identity_snapshot_json) VALUES (?,?,?,?,?,?,0,0,?,?,?)",
                                 (revision['id'], source_id, safeguard['id'],
                                  safeguard.get('sg_type') or 'Övrigt',
                                  safeguard.get('description') or '',
                                  safeguard.get('rrf') or 1,
                                  self.conn.execute(
                                      "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_barriers WHERE revision_id=?",
-                                     (revision['id'],)).fetchone()[0], consequence['id'])).lastrowid
+                                     (revision['id'],)).fetchone()[0], consequence['id'],
+                                 self._lopa_safeguard_identity_snapshot(safeguard['id']))).lastrowid
                         for severity in severities:
                             severity = dict(severity)
                             category_key = category_keys.get(severity['name']) or self._template_category_key(
@@ -5243,6 +5373,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             })
         source['barriers'] = []
         barriers = self.lopa_barriers(source['revision_id'], source_id)
+        identity_statuses = {row['id']: self.lopa_barrier_identity_status(row) for row in barriers}
         for barrier in barriers:
             if not barrier['independent']:
                 continue
@@ -5253,7 +5384,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                               for row in self.lopa_barrier_categories(barrier['id'])}
             source['barriers'].append({
                 'id': barrier['id'], 'description': barrier['description'],
-                'rrf': barrier['rrf'], 'active': bool(barrier['active']),
+                'rrf': barrier['rrf'],
+                'active': bool(barrier['active']) and identity_statuses[barrier['id']]['state'] != 'same',
+                'selected': bool(barrier['active']),
                 'categories': categories,
                 'hazop_consequence_id': barrier.get('hazop_consequence_snapshot_id'),
             })
@@ -5261,7 +5394,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         active_assessment_ids = {row['lopa_consequence_id'] for row in source['categories'] if row['active']}
         relevant_barrier_ids = set()
         for barrier in source['barriers']:
-            if not barrier['active']:
+            if not barrier['selected']:
                 continue
             for category in source['categories']:
                 if not category['active']:
@@ -5273,6 +5406,18 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 if applies and matches:
                     relevant_barrier_ids.add(barrier['id'])
                     break
+        same_sif_ids = {barrier_id for barrier_id in relevant_barrier_ids
+                        if identity_statuses[barrier_id]['state'] == 'same'}
+        relevant_barrier_ids -= same_sif_ids
+        barrier_names = {row['id']: row.get('description') or f'Barriär {row["id"]}' for row in barriers}
+        result['barrier_identity_warnings'] = [f"{barrier_names[barrier_id]}: {identity_statuses[barrier_id]['label']}"
+                                               for barrier_id in sorted(same_sif_ids)]
+        result['unreviewed_barriers'] = [f"{barrier_names[barrier_id]}: {identity_statuses[barrier_id]['label']}"
+                                         for barrier_id in sorted(relevant_barrier_ids)
+                                         if identity_statuses[barrier_id]['state'] in ('needs_review', 'unknown', 'changed')]
+        if not source.get('active'):
+            result['unreviewed_barriers'] = []
+        result['messages'].extend(result['barrier_identity_warnings'])
         missing = []
         if source.get('follows_hazop') and (source.get('source_missing') or
                 (source.get('frequency_origin') != 'manual' and not source.get('origin_safeguard_id'))):
@@ -5299,7 +5444,8 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             and source.get('active') else [])
         if source.get('active') and scope_unknown:
             result['missing_hazop_sources'].append('Barriärens koppling till konsekvens kan inte fastställas')
-        if result['missing_hazop_sources']:
+        problems = result['missing_hazop_sources'] + result['unreviewed_barriers']
+        if problems:
             # Draft calculations must not present a conclusion as current
             # after the HAZOP source disappears. Locked revisions retain the
             # historical calculation captured before the source was removed.
@@ -5308,7 +5454,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             result['governing_category_key'] = result['governing_category_name'] = None
             result['governing_category_index'] = None
             result['messages'].extend(f'{message}; granska underlaget innan LOPA beräknas.'
-                                      for message in result['missing_hazop_sources'])
+                                      for message in problems)
             for row in result['categories']:
                 row['complete'] = False
                 row['required_rrf'] = row['sil'] = None

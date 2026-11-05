@@ -1,5 +1,32 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: samma SIF och oberoende barriärer (2026-11-05)
+
+Importerade barriärer jämförs mot revisionens aktiva givardel med strukturerat
+objekt-id och utlösare. Samma objekt och samma angivna utlösare är samma SIF
+och räknas inte som ett oberoende skydd, även om den finns på flera HAZOP-rader.
+För samma objekt med olika eller saknad utlösare krävs en motiverad bedömning
+av oberoendet innan barriären får krediteras. Bedömningen loggas, kan ångras
+och gäller endast för den granskade kombinationen av objekt. Samma SIF kan inte
+godkännas som egen barriär via bedömningsfunktionen. Vyn och Excel redovisar
+status och motivering.
+
+Ändrade objektkopplingar i HAZOP gör ett aktivt utkast ofullständigt tills
+användaren uttryckligen uppdaterar vald barriär eller exkluderar den. Uppdatering
+kan ångras och tar bort tidigare bedömning. Låsta revisioner behåller sina
+sparade objektidentiteter. Äldre databaser kompletteras med de objektkopplingar
+som finns i HAZOP vid migrering; dessa markeras som äldre underlag eftersom det
+inte går att bevisa att kopplingen var densamma när en äldre revision låstes.
+Om objekt saknas kan identiteten inte fastställas. Manuella barriärer och
+HAZOP-barriärer utan strukturerat objekt kan inte jämföras automatiskt och deras
+oberoende måste granskas av användaren. Befintliga beräkningar och exporter kan
+behöva granskas på nytt efter korrigeringen.
+
+Syntaxkontroll, 84 LOPA-/export-/smoketester och 149 databastester passerade
+headless; ytterligare riktade tester kördes efter migrationsjustering. Den nya
+barriärvyn granskades som renderad widget, men inte genom ett fullständigt
+manuellt arbetsflöde i applikationen.
+
 ## LOPA: barriärens konsekvenstillhörighet (2026-11-05)
 
 En importerad HAZOP-barriär räknas nu enbart för den konsekvens där den
@@ -14,8 +41,8 @@ Kopplings-id sparas separat från HAZOP-länkarna, även för låsta revisioner.
 relevant koppling och kan den inte återskapas, visas inget RRF/SIL-värde,
 även i låsta revisioner. Historiska beräkningar kan ändras eftersom den
 tidigare beräkningen tillgodoräknade barriärer på fel konsekvens; befintliga
-LOPA-studier och tidigare exporter behöver därför granskas. Samma SIF på
-flera HAZOP-rader kräver separat kontroll och hanteras i en följande ändring.
+LOPA-studier och tidigare exporter behöver därför granskas. Kontrollen av samma
+SIF på flera HAZOP-rader beskrivs i avsnittet ovan.
 
 Syntaxkontroll, 76 LOPA-/export-/smoketester och 149 databastester passerade
 headless. Renderade vyer granskades visuellt; hela GUI-flödet är inte manuellt

@@ -234,6 +234,35 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.assertIn('Annan konsekvens', self.panel._dimensioning_summary.text())
         self.assertIn('Konsekvens: UI-konsekvens', self.panel._barriers.item(0, 4).toolTip())
 
+    def test_shared_object_can_be_reviewed_from_barrier_table(self):
+        source = self.db.lopa_sources(self.revision_id)[0]
+        sensor = source['origin_safeguard_id']
+        first = self.db.get_safeguard(sensor)['consequence_id']
+        equipment = self.db.add_equipment_item('LT-1', 'LT-1', 'LT', 0, 'Givare', '', 0)
+        self.db.add_safeguard_equipment_link(sensor, equipment, 'HH')
+        other = self.db.add_safeguard(first)
+        self.db.update_safeguard(other, description='Gemensamt objekt', rrf=10, sg_type='SIS')
+        self.db.add_safeguard_equipment_link(other, equipment, 'LL')
+        created = self.db.create_lopa(sif_name='Oberoende')
+        imported = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)
+        self.panel.activate_lopa(created['lopa_id'], created['revision_id'])
+        self.assertIn('bedöm oberoende', self.panel._barriers.item(0, 5).text())
+        self.assertFalse(self.db.lopa_source_calculation(imported['source_id'])['complete'])
+        self.panel._barriers.selectRow(0)
+        with patch('lopa_panel.QInputDialog.getMultiLineText', return_value=('Ritning 42 granskad', True)):
+            self.panel._review_selected_barrier()
+        self.assertTrue(self.db.lopa_source_calculation(imported['source_id'])['complete'])
+        self.assertIn('oberoende bedömt', self.panel._barriers.item(0, 5).text())
+        self.assertIn('Ritning 42 granskad', self.panel._barriers.item(0, 5).toolTip())
+        self.db.add_safeguard_equipment_link(other, equipment, 'HH')
+        self.panel._populate_barriers()
+        self.assertIn('Objektkoppling i HAZOP ändrad', self.panel._barriers.item(0, 5).text())
+        self.assertFalse(self.db.lopa_source_calculation(imported['source_id'])['complete'])
+        self.panel._barriers.selectRow(0)
+        self.panel._refresh_selected_barrier_identity()
+        self.assertIn('Samma SIF', self.panel._barriers.item(0, 5).text())
+        self.assertTrue(self.db.lopa_source_calculation(imported['source_id'])['complete'])
+
     def test_source_status_reports_missing_hazop_and_local_source(self):
         source = self.db.lopa_sources(self.revision_id)[0]
         self.db.delete_safeguard(source['origin_safeguard_id'])
