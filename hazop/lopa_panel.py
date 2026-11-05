@@ -1248,6 +1248,15 @@ class LopaPanel(QWidget):
             return
         locked = revision['status'] in ('Låst', 'Godkänd', 'Arkiverad')
         record = self.db.get_lopa_record(self._lopa_id) or {}
+        display_record = self.db.lopa_record_for_revision(self._revision_id) or record
+        loading = self._loading
+        self._loading = True
+        self._record_title.setText(f"LOPA {display_record.get('display_number', '')}")
+        for widget, key in ((self._number, 'display_number'), (self._sif_number, 'sif_number'),
+                            (self._sif_name, 'sif_name'), (self._sis_name, 'sis_name')):
+            widget.setText(display_record.get(key) or '')
+            widget.setEnabled(not locked and not bool(record.get('archived')))
+        self._loading = loading
         self._status.setText(revision['status'])
         self._status.setStyleSheet(lopa_status_stylesheet(revision['status']))
         self._status.show()

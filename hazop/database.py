@@ -1174,8 +1174,10 @@ class Database:
             "ALTER TABLE lopa_revisions ADD COLUMN additional_actions TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE lopa_revisions ADD COLUMN additional_requirements TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE lopa_revisions ADD COLUMN process_safety_time REAL DEFAULT NULL",
+            "ALTER TABLE lopa_revisions ADD COLUMN identity_snapshot_json TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE lopa_source_scenarios ADD COLUMN control_frequency TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE lopa_source_scenarios ADD COLUMN assumption_reason TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE lopa_source_scenarios ADD COLUMN consequence_groups_snapshot_json TEXT NOT NULL DEFAULT ''",
             # Distinct from cause_text, which already stores the "L-001"
             # local-source reference label (add_lopa_local_source,
             # _build_scenario_reference) -- a local row's own free-typed
@@ -3670,6 +3672,25 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         row = self.conn.execute("SELECT * FROM lopa_records WHERE id=?", (lopa_id,)).fetchone()
         return dict(row) if row else None
 
+    def lopa_record_for_revision(self, revision_id):
+        """Return the revision's captured identity, or the current draft identity."""
+        revision = self._lopa_revision_row(revision_id)
+        if not revision:
+            return None
+        current = self.get_lopa_record(revision['lopa_id'])
+        if not current:
+            return None
+        if revision['status'] in ('Låst', 'Godkänd', 'Arkiverad'):
+            try:
+                captured = json.loads(revision.get('identity_snapshot_json') or '{}')
+            except (TypeError, ValueError):
+                captured = {}
+            if isinstance(captured, dict):
+                for key in ('display_number', 'sif_number', 'sif_name', 'sis_name'):
+                    if key in captured:
+                        current[key] = captured[key]
+        return current
+
     def lopa_revisions(self, lopa_id):
         return [dict(row) for row in self.conn.execute(
             "SELECT * FROM lopa_revisions WHERE lopa_id=? ORDER BY id", (lopa_id,)).fetchall()]
@@ -3923,13 +3944,32 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         # A missing source must be resolved or explicitly detached/excluded
         # before locking. Otherwise locking would make stale draft inputs
         # appear as a valid historical calculation.
-        for source in self.lopa_sources(revision_id):
+        sources = self.lopa_sources(revision_id)
+        for source in sources:
             if not source['active']:
                 continue
             result = self.lopa_source_calculation(source['id'])
             if result.get('missing_hazop_sources'):
                 raise ValueError('En aktiv HAZOP-källa, konsekvens eller barriär saknas. '
                                  'Granska eller exkludera underlaget innan revisionen låses.')
+        groups = []
+        for source in sources:
+            captured_groups = self.lopa_source_consequence_groups(source['id'])
+            for group in captured_groups:
+                assessments = group.get('assessments') or []
+                if assessments:
+                    # Show the same stored consequence text that backs the
+                    # calculation, even if live HAZOP has since changed.
+                    local_override = next((row for row in assessments
+                                           if not row.get('follows_hazop') and row.get('description')), None)
+                    group['description'] = (local_override or assessments[0]).get('description') or ''
+            groups.append((source['id'], json.dumps(captured_groups, ensure_ascii=False)))
+        record = self.get_lopa_record(revision['lopa_id']) or {}
+        identity = {key: record.get(key, '') for key in
+                    ('display_number', 'sif_number', 'sif_name', 'sis_name')}
+        for source_id, snapshot in groups:
+            self.conn.execute('UPDATE lopa_source_scenarios SET consequence_groups_snapshot_json=? WHERE id=?',
+                              (snapshot, source_id))
         self.conn.execute(
             "UPDATE lopa_source_scenarios SET equipment_tag_snapshot=COALESCE("
             "(SELECT tag FROM equipment_catalog WHERE id=lopa_source_scenarios.equipment_id),"
@@ -3943,8 +3983,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             "(SELECT tag FROM equipment_catalog WHERE id=lopa_final_members.equipment_id),name_snapshot) "
             "WHERE group_id IN (SELECT id FROM lopa_final_groups WHERE revision_id=?)", (revision_id,))
         self.conn.execute(
-            "UPDATE lopa_revisions SET status='Låst',locked_at=CURRENT_TIMESTAMP,locked_by=? WHERE id=?",
-            (str(actor or ''), revision_id))
+            "UPDATE lopa_revisions SET status='Låst',locked_at=CURRENT_TIMESTAMP,locked_by=?,"
+            "identity_snapshot_json=? WHERE id=?",
+            (str(actor or ''), json.dumps(identity, ensure_ascii=False), revision_id))
         self._log_lopa(revision['lopa_id'], revision_id, 'locked', '', actor)
         self.commit()
 
@@ -4081,10 +4122,19 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         hierarchy without altering the stored revision snapshot.
         """
         source = self.conn.execute(
-            "SELECT hazop_cause_id FROM lopa_source_scenarios WHERE id=?", (source_id,)
+            "SELECT ls.hazop_cause_id,ls.consequence_groups_snapshot_json,lr.status "
+            "FROM lopa_source_scenarios ls JOIN lopa_revisions lr ON lr.id=ls.revision_id "
+            "WHERE ls.id=?", (source_id,)
         ).fetchone()
         if not source:
             return []
+        if source['status'] in ('Låst', 'Godkänd', 'Arkiverad') and source['consequence_groups_snapshot_json']:
+            try:
+                captured = json.loads(source['consequence_groups_snapshot_json'])
+                if isinstance(captured, list):
+                    return captured
+            except (TypeError, ValueError):
+                pass
 
         by_hazop_id = {}
         local_assessments = []

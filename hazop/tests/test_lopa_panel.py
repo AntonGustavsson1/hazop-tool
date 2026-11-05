@@ -204,6 +204,17 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.assertIn('HAZOP-källa saknas', message)
         self.assertIn('lokal LOPA-källa', message)
 
+    def test_locked_revision_displays_and_protects_its_original_header(self):
+        self.db.lock_lopa_revision(self.revision_id)
+        self.db.update_lopa_record(self.lopa_id, sif_name='Senare namn')
+        self.panel._refresh_revision_detail()
+        self.assertEqual('UI test', self.panel._sif_name.text())
+        self.assertFalse(self.panel._sif_name.isEnabled())
+        draft = self.db.create_lopa_revision(self.lopa_id, self.revision_id)
+        self.panel.activate_lopa(self.lopa_id, draft)
+        self.assertEqual('Senare namn', self.panel._sif_name.text())
+        self.assertTrue(self.panel._sif_name.isEnabled())
+
     def test_egen_lopa_konsekvens_creates_row_without_popup(self):
         before_rows = self.panel._hazop_hierarchy.rowCount()
         # No dialog is shown any more -- a direct call (same as a real

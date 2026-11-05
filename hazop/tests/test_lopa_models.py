@@ -464,9 +464,50 @@ class LopaDatabaseTests(unittest.TestCase):
         self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)
         self.db.lock_lopa_revision(created['revision_id'])
         self.db.conn.execute('ALTER TABLE lopa_source_scenarios DROP COLUMN equipment_tag_snapshot')
+        self.db.conn.execute('ALTER TABLE lopa_source_scenarios DROP COLUMN consequence_groups_snapshot_json')
+        self.db.conn.execute('ALTER TABLE lopa_revisions DROP COLUMN identity_snapshot_json')
         self.db.conn.commit()
         self.db.conn.close()
         self.db = Database(path=os.path.join(self._tmpdir, 'project.db'))
         self.assertEqual('LT-101', self.db.lopa_sources(created['revision_id'])[0]['equipment_tag'])
+        self.assertIsNotNone(self.db.lopa_record_for_revision(created['revision_id']))
         self.db.update_equipment_item(equipment, 'LT-102', 'LT', 'Nivågivare', '')
         self.assertEqual('LT-101', self.db.lopa_sources(created['revision_id'])[0]['equipment_tag'])
+
+    def test_locked_revision_retains_header_and_visible_consequence_groups(self):
+        cause, sensor, _other, _equipment = self._hazop_chain()
+        extra = self.db.add_consequence(cause)
+        self.db.update_consequence(extra, 'Oklassificerad följd', 0, '')
+        created = self.db.create_lopa(sif_number='SIF-1', sif_name='Tidigare namn', sis_name='SIS-A')
+        revision = created['revision_id']
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        original_groups = self.db.lopa_source_consequence_groups(source)
+        self.db.lock_lopa_revision(revision)
+        self.assertTrue(self.db.undo())
+        self.assertEqual('Utkast', self.db.get_lopa_revision(revision)['status'])
+        self.assertTrue(self.db.redo())
+        self.assertEqual('Låst', self.db.get_lopa_revision(revision)['status'])
+        self.db.update_lopa_record(created['lopa_id'], sif_name='Nytt namn')
+        self.db.update_consequence(extra, 'Ändrad följd', 0, '')
+        later = self.db.add_consequence(cause)
+        self.db.update_consequence(later, 'Ny följd efter låsning', 0, '')
+        self.assertEqual('Tidigare namn', self.db.lopa_record_for_revision(revision)['sif_name'])
+        self.assertEqual(original_groups, self.db.lopa_source_consequence_groups(source))
+        draft = self.db.create_lopa_revision(created['lopa_id'], revision)
+        draft_source = self.db.lopa_sources(draft)[0]['id']
+        self.assertEqual('Nytt namn', self.db.lopa_record_for_revision(draft)['sif_name'])
+        names = [item['description'] for item in self.db.lopa_source_consequence_groups(draft_source)]
+        self.assertIn('Ändrad följd', names)
+        self.assertIn('Ny följd efter låsning', names)
+
+    def test_locked_group_description_matches_stored_assessment_when_hazop_changed(self):
+        _cause, sensor, _other, _equipment = self._hazop_chain()
+        consequence = self.db.get_safeguard(sensor)['consequence_id']
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.update_consequence(consequence, 'Ny HAZOP-text', 3, '')
+        self.assertEqual('changed', self.db.lopa_source_sync_state(source)['state'])
+        self.db.lock_lopa_revision(created['revision_id'])
+        group = self.db.lopa_source_consequence_groups(source)[0]
+        self.assertEqual('Utsläpp', group['description'])
+        self.assertEqual('Utsläpp', group['assessments'][0]['description'])

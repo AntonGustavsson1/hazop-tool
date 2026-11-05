@@ -1,5 +1,21 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: revisionsbundet huvud och konsekvensvy (2026-11-05)
+
+Vid låsning sparas nu LOPA-/SIF-/SIS-identitet och den visade
+konsekvenshierarkin, även konsekvenser utan kategoribedömning. En låst
+revision visar sina sparade uppgifter i vyn och Excel, och huvudfälten är
+inte redigerbara där. Nya utkast använder aktuellt huvud och aktuell
+konsekvensvy. För konsekvenser med bedömningar hämtas den sparade texten
+från LOPA-underlaget som ligger bakom beräkningen, även om HAZOP-texten
+redan hunnit ändras. Låsning och dess snapshots kan ångras/göras om.
+
+Äldre revisioner utan dessa snapshots öppnas med tidigare beteende; namn
+eller konsekvenser som aldrig sparats historiskt kan inte återskapas säkert.
+Syntaxkontroll och 55 LOPA-/export-/smoketester passerade headless samt ett
+separat uppgraderingstest för äldre databas. Hela databassviten passerade
+också (149 tester). Ingen manuell GUI-verifiering.
+
 ## LOPA: objekttaggar vid revisionslåsning (2026-11-05)
 
 Vid låsning sparas källans, givarnas och manöverdelarnas aktuella

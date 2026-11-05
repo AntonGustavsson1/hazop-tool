@@ -94,6 +94,7 @@ class LopaExportTests(unittest.TestCase):
         self.assertNotEqual('Ofullständig', workbook['LOPA sammanfattning']['I4'].value)
 
         self.db.lock_lopa_revision(created['revision_id'])
+        self.db.update_lopa_record(created['lopa_id'], sif_name='Namn efter låsning')
         self.db.update_equipment_item(equipment_id, 'LT-102', 'LT', 'Nivågivare', '')
         ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
         self.assertTrue(ok, error)
@@ -101,6 +102,8 @@ class LopaExportTests(unittest.TestCase):
         values = [cell.value for row in workbook['LOPA 017 R00'].iter_rows() for cell in row]
         self.assertIn('LT-101', values)
         self.assertIn('LT-101 HH', values)
+        self.assertIn('Överfyllnadsskydd', values)
+        self.assertNotIn('Namn efter låsning', values)
         self.assertNotIn('LT-102', values)
         self.assertNotIn('LT-102 HH', values)
 

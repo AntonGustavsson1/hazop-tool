@@ -73,8 +73,8 @@ def _selected_revisions(db, selections):
     if selections is not None:
         result = []
         for lopa_id, revision_id in selections:
-            record = db.get_lopa_record(lopa_id)
             revision = db.get_lopa_revision(revision_id)
+            record = db.lopa_record_for_revision(revision_id) if revision else None
             if record and revision and revision['lopa_id'] == lopa_id:
                 result.append((record, revision))
         return result
@@ -82,7 +82,7 @@ def _selected_revisions(db, selections):
     for record in db.lopa_records(include_archived=True):
         revision = db.current_lopa_revision(record['id'])
         if revision:
-            result.append((record, revision))
+            result.append((db.lopa_record_for_revision(revision['id']), revision))
     return result
 
 
