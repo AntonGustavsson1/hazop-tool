@@ -1469,11 +1469,11 @@ class TreePanelSystemHierarchyTests(unittest.TestCase):
         self.assertEqual(len(nodes), 2)
         self.assertTrue(all(n['system_id'] == sid for n in nodes))
 
-    def test_add_node_button_with_nothing_relevant_selected_is_ungrouped(self):
+    def test_add_node_button_with_nothing_relevant_selected_uses_default_system(self):
         self._button("+ Nod").click()
         nodes = self.db.nodes()
         self.assertEqual(len(nodes), 1)
-        self.assertIsNone(nodes[0]['system_id'])
+        self.assertEqual(nodes[0]['system_id'], self.db.default_system_id())
 
     def test_rename_system_via_context_menu(self):
         sid = self.db.add_system("Original")
@@ -1565,6 +1565,29 @@ class RRFPopupStyleTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
+    def test_rrf_choices_can_be_scrolled_and_selected(self):
+        from PyQt6.QtTest import QTest
+        from tree_panel import RRFPopup
+
+        popup = RRFPopup(current_rrf=1)
+        try:
+            popup.show()
+            self.app.processEvents()
+            choices = popup.findChild(QListWidget)
+            choices.setFixedHeight(45)
+            self.app.processEvents()
+            self.assertGreater(choices.verticalScrollBar().maximum(), 0)
+            self.assertTrue(choices.verticalScrollBar().isVisible())
+            last = choices.item(choices.count() - 1)
+            choices.scrollToItem(last)
+            self.app.processEvents()
+            QTest.mouseClick(choices.viewport(), Qt.MouseButton.LeftButton,
+                             pos=choices.visualItemRect(last).center())
+            self.assertEqual(10000, popup._spin.value())
+        finally:
+            popup.close()
+            popup.deleteLater()
+
     def test_rrf_popup_uses_the_same_compact_list_presentation(self):
         """The lightweight RRF route must not regress to wide blue buttons."""
         from tree_panel import RRFPopup
@@ -1611,6 +1634,31 @@ class FrequencyPickerPopupTests(unittest.TestCase):
             self.assertEqual(selected[0].data(Qt.ItemDataRole.UserRole), 1)
             self.assertIn("border:1px solid #4B5563", popup.styleSheet())
             self.assertTrue(popup.testAttribute(Qt.WidgetAttribute.WA_StyledBackground))
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+    def test_long_frequency_list_can_scroll_and_select_last_level(self):
+        from PyQt6.QtTest import QTest
+        from tree_panel import FrequencyPickerPopup
+
+        with unittest.mock.patch('tree_panel.get_matrix', return_value={'cols': 12}):
+            popup = FrequencyPickerPopup(current_f_level=0)
+        selected = []
+        popup.frequency_selected.connect(lambda level, numeric: selected.append((level, numeric)))
+        try:
+            popup.show()
+            self.app.processEvents()
+            choices = popup.findChild(QListWidget)
+            self.assertGreater(choices.verticalScrollBar().maximum(), 0)
+            self.assertTrue(choices.verticalScrollBar().isVisible())
+            last = choices.item(choices.count() - 1)
+            choices.scrollToItem(last)
+            self.app.processEvents()
+            rect = choices.visualItemRect(last)
+            self.assertTrue(choices.viewport().rect().contains(rect.center()))
+            QTest.mouseClick(choices.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+            self.assertEqual([(10, None)], selected)
         finally:
             popup.close()
             popup.deleteLater()

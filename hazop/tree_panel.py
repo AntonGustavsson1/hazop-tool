@@ -959,8 +959,7 @@ class TreePanel(QWidget):
         # belongs to (2026-08-24, see NOTES.md "Ny toppnivå System") —
         # same "derive from where you're standing in the tree" convention
         # add_cause()/add_consequence() already use for node/avvikelse.
-        # None (ungrouped) if nothing is selected, or the selection isn't
-        # inside any System yet.
+        # If nothing relevant is selected, use the first system or create one.
         type_, id_ = self._current()
         system_id = self._resolve_system_id(type_, id_) if type_ else None
         if system_id is None:
@@ -2282,7 +2281,7 @@ class RRFPopup(QDialog):
         presets = QListWidget()
         presets.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         presets.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        presets.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        presets.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         presets.setMinimumWidth(150)
         presets.setMaximumHeight(120)
         for val in (1, 10, 100, 1000, 10000):
@@ -2290,7 +2289,7 @@ class RRFPopup(QDialog):
             item.setData(Qt.ItemDataRole.UserRole, val)
             presets.addItem(item)
             if val == current_rrf:
-                item.setSelected(True)
+                presets.setCurrentItem(item)
         layout.addWidget(presets)
 
         # Custom value
@@ -2373,7 +2372,7 @@ class FrequencyPickerPopup(QDialog):
         presets = QListWidget()
         presets.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         presets.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        presets.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        presets.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         presets.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         presets.setMinimumWidth(200)
         presets.setMaximumHeight(150)
@@ -2385,7 +2384,7 @@ class FrequencyPickerPopup(QDialog):
             presets.addItem(item)
             self._preset_items[f] = item
             if f == current_f_level:
-                item.setSelected(True)
+                presets.setCurrentItem(item)
         presets.itemClicked.connect(
             lambda item: self._pick_preset(item.data(Qt.ItemDataRole.UserRole)))
         layout.addWidget(presets)

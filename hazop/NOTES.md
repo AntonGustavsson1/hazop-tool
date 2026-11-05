@@ -1,5 +1,20 @@
 # NOTES.md — Beslut och kontext
 
+## Rullning i frekvens- och RRF-popup (2026-11-05)
+
+Frekvens- och RRF-listorna hade begränsad höjd men rullningslisten var
+avstängd, vilket kunde dölja val vid större teckensnitt eller fler nivåer.
+Rullningslist visas nu vid behov och valt alternativ görs till aktuell rad.
+Tester visar att nedre valet kan nås och väljas i båda popupfönstren; de
+genererade widgetbilderna har granskats visuellt i en separat testkopia.
+Ingen fullständig manuell genomgång av programmets gränssnitt är gjord.
+Syntaxkontroll, trädmodulens 76 tester samt 36 smoke-/UI-hjälptester
+passerade i headless-läge.
+
+Ett äldre trädtest och en kommentar har också anpassats till den sedan
+2026-09-10 implementerade regeln att en ny nod utan relevant markering
+läggs i standardsystemet.
+
 ## Presentationstest för frekvenskod (2026-11-05)
 
 Det äldre presentationstestet väljer nu frekvensnivå uttryckligen, eftersom
