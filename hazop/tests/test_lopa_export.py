@@ -93,6 +93,17 @@ class LopaExportTests(unittest.TestCase):
         workbook = openpyxl.load_workbook(path, data_only=True)
         self.assertNotEqual('Ofullständig', workbook['LOPA sammanfattning']['I4'].value)
 
+        self.db.lock_lopa_revision(created['revision_id'])
+        self.db.update_equipment_item(equipment_id, 'LT-102', 'LT', 'Nivågivare', '')
+        ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
+        self.assertTrue(ok, error)
+        workbook = openpyxl.load_workbook(path, data_only=True)
+        values = [cell.value for row in workbook['LOPA 017 R00'].iter_rows() for cell in row]
+        self.assertIn('LT-101', values)
+        self.assertIn('LT-101 HH', values)
+        self.assertNotIn('LT-102', values)
+        self.assertNotIn('LT-102 HH', values)
+
     def test_export_accepts_multiple_explicit_revisions(self):
         first = self.db.create_lopa(display_number='001', sif_name='Första SIF')
         second = self.db.create_lopa(display_number='002', sif_name='Andra SIF')

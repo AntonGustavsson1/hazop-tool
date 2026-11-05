@@ -1195,6 +1195,16 @@ class Database:
                 self.conn.execute(statement)
             except sqlite3.OperationalError:
                 pass
+        source_columns = {row['name'] for row in self.conn.execute(
+            'PRAGMA table_info(lopa_source_scenarios)').fetchall()}
+        if source_columns and 'equipment_tag_snapshot' not in source_columns:
+            self.conn.execute("ALTER TABLE lopa_source_scenarios ADD COLUMN "
+                              "equipment_tag_snapshot TEXT NOT NULL DEFAULT ''")
+            # Older projects did not capture this tag. Preserve the best
+            # available value once; prior historic names cannot be recovered.
+            self.conn.execute("UPDATE lopa_source_scenarios SET equipment_tag_snapshot="
+                              "COALESCE((SELECT tag FROM equipment_catalog "
+                              "WHERE id=lopa_source_scenarios.equipment_id),'')")
         self._migrate_participant_company_column()
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS reduction_factor_catalog ("
@@ -3921,6 +3931,18 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 raise ValueError('En aktiv HAZOP-källa, konsekvens eller barriär saknas. '
                                  'Granska eller exkludera underlaget innan revisionen låses.')
         self.conn.execute(
+            "UPDATE lopa_source_scenarios SET equipment_tag_snapshot=COALESCE("
+            "(SELECT tag FROM equipment_catalog WHERE id=lopa_source_scenarios.equipment_id),"
+            "equipment_tag_snapshot) WHERE revision_id=?", (revision_id,))
+        self.conn.execute(
+            "UPDATE lopa_sensor_members SET tag_snapshot=COALESCE("
+            "(SELECT tag FROM equipment_catalog WHERE id=lopa_sensor_members.equipment_id),tag_snapshot) "
+            "WHERE group_id IN (SELECT id FROM lopa_sensor_groups WHERE revision_id=?)", (revision_id,))
+        self.conn.execute(
+            "UPDATE lopa_final_members SET name_snapshot=COALESCE("
+            "(SELECT tag FROM equipment_catalog WHERE id=lopa_final_members.equipment_id),name_snapshot) "
+            "WHERE group_id IN (SELECT id FROM lopa_final_groups WHERE revision_id=?)", (revision_id,))
+        self.conn.execute(
             "UPDATE lopa_revisions SET status='Låst',locked_at=CURRENT_TIMESTAMP,locked_by=? WHERE id=?",
             (str(actor or ''), revision_id))
         self._log_lopa(revision['lopa_id'], revision_id, 'locked', '', actor)
@@ -3976,7 +3998,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
 
     def lopa_sources(self, revision_id):
         return [dict(row) for row in self.conn.execute(
-            "SELECT ls.*,COALESCE(ec.tag,'') AS equipment_tag FROM lopa_source_scenarios ls "
+            "SELECT ls.*,CASE WHEN lr.status IN ('Låst','Godkänd','Arkiverad') "
+            "THEN ls.equipment_tag_snapshot ELSE COALESCE(ec.tag,ls.equipment_tag_snapshot,'') END AS equipment_tag "
+            "FROM lopa_source_scenarios ls JOIN lopa_revisions lr ON lr.id=ls.revision_id "
             "LEFT JOIN equipment_catalog ec ON ec.id=ls.equipment_id "
             "WHERE ls.revision_id=? ORDER BY ls.id", (revision_id,)).fetchall()]
 
@@ -4142,8 +4166,11 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
 
     def lopa_sensor_members(self, group_id):
         return [dict(row) for row in self.conn.execute(
-            "SELECT lm.*,COALESCE(ec.tag,lm.tag_snapshot,'') AS tag "
-            "FROM lopa_sensor_members lm LEFT JOIN equipment_catalog ec ON ec.id=lm.equipment_id "
+            "SELECT lm.*,CASE WHEN lr.status IN ('Låst','Godkänd','Arkiverad') THEN lm.tag_snapshot "
+            "ELSE COALESCE(ec.tag,lm.tag_snapshot,'') END AS tag "
+            "FROM lopa_sensor_members lm JOIN lopa_sensor_groups lg ON lg.id=lm.group_id "
+            "JOIN lopa_revisions lr ON lr.id=lg.revision_id "
+            "LEFT JOIN equipment_catalog ec ON ec.id=lm.equipment_id "
             "WHERE lm.group_id=? ORDER BY lm.sort_order,lm.id", (group_id,)).fetchall()]
 
     def lopa_barriers(self, revision_id, source_id=None):
@@ -4633,8 +4660,11 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
 
     def lopa_final_members(self, group_id):
         return [dict(row) for row in self.conn.execute(
-            "SELECT fm.*,COALESCE(ec.tag,fm.name_snapshot,'') AS tag "
-            "FROM lopa_final_members fm LEFT JOIN equipment_catalog ec ON ec.id=fm.equipment_id "
+            "SELECT fm.*,CASE WHEN lr.status IN ('Låst','Godkänd','Arkiverad') THEN fm.name_snapshot "
+            "ELSE COALESCE(ec.tag,fm.name_snapshot,'') END AS tag "
+            "FROM lopa_final_members fm JOIN lopa_final_groups fg ON fg.id=fm.group_id "
+            "JOIN lopa_revisions lr ON lr.id=fg.revision_id "
+            "LEFT JOIN equipment_catalog ec ON ec.id=fm.equipment_id "
             "WHERE fm.group_id=? ORDER BY fm.sort_order,fm.id", (group_id,)).fetchall()]
 
     def add_lopa_final_group(self, revision_id, voting='1oo1'):
@@ -4870,15 +4900,16 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 source_id = self.conn.execute(
                     "INSERT INTO lopa_source_scenarios(revision_id,hazop_node_id,hazop_deviation_id,"
                     "hazop_cause_id,origin_safeguard_id,equipment_id,trigger_code,trigger_custom,"
-                    "cause_text,scenario_text,base_frequency,frequency_origin,assumption_percent) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "cause_text,scenario_text,base_frequency,frequency_origin,assumption_percent,equipment_tag_snapshot) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (revision['id'], source_row['node_id'], source_row['deviation_id'],
                      source_row['cause_id'], safeguard_id, chosen_equipment_id,
                      str(primary_link.get('trigger_code') or trigger_code or '').upper(),
                      str(primary_link.get('trigger_custom') or trigger_custom or ''),
                      source_row.get('cause_text') or '', source_row.get('scenario_text') or '',
                      numeric_frequency, origin,
-                     (matrix.get('lopa') or {}).get('default_assumption_percent', 100.0))).lastrowid
+                     (matrix.get('lopa') or {}).get('default_assumption_percent', 100.0),
+                     primary_link.get('tag') or '')).lastrowid
 
                 # A cause can produce several HAZOP consequences. Import each
                 # assessed category, not just the consequence where the user

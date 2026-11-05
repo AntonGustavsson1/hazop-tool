@@ -1,5 +1,20 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: objekttaggar vid revisionslåsning (2026-11-05)
+
+Vid låsning sparas källans, givarnas och manöverdelarnas aktuella
+objekttaggar i revisionen. Låsta/godkända/arkiverade revisioner och deras
+Excel-export använder de sparade taggarna; utkast och nya revisioner visar
+aktuella objektnamn. Befintliga databaser uppgraderas med en källtaggskolumn
+och får den tagg som finns tillgänglig vid uppgraderingen. För äldre låsta
+revisioner kan tidigare namn som aldrig sparats inte återskapas säkert.
+
+Syntaxkontroll och 52 LOPA-/export-/smoketester passerade headless, bland
+annat objektbyte före och efter låsning, ny revision, äldre databas och
+Excel-export. Hela databassviten passerade också (149 tester).
+Fullständig historisk frysning av LOPA-huvud och visade
+konsekvensgrupper behöver fortsatt granskas; ingen manuell GUI-verifiering.
+
 ## LOPA: saknade HAZOP-källor och synkstatus (2026-11-05)
 
 En aktiv, olåst analys ger inte längre dimensionerande RRF/SIL när dess

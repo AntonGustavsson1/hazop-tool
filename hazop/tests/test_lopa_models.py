@@ -436,3 +436,37 @@ class LopaDatabaseTests(unittest.TestCase):
 
         self.db.set_lopa_source_scenario_text(source_id, 'Lokal scenarioavvikelse')
         self.assertEqual('detached', self.db.lopa_source_sync_state(source_id)['state'])
+
+    def test_locked_revision_retains_object_tags_as_they_were_at_lock(self):
+        _cause, sensor, _other, equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        revision_id = created['revision_id']
+        self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)
+        sensor_group = self.db.lopa_sensor_groups(revision_id)[0]['id']
+        final_group = self.db.add_lopa_final_group(revision_id)
+        self.db.add_lopa_final_member(revision_id, equipment_id=equipment, group_id=final_group)
+        self.db.update_equipment_item(equipment, 'LT-102', 'LT', 'Nivågivare', '')
+        self.db.lock_lopa_revision(revision_id)
+        self.db.update_equipment_item(equipment, 'LT-103', 'LT', 'Nivågivare', '')
+        self.assertEqual('LT-102', self.db.lopa_sources(revision_id)[0]['equipment_tag'])
+        self.assertEqual('LT-102', self.db.lopa_sensor_members(sensor_group)[0]['tag'])
+        self.assertEqual('LT-102', self.db.lopa_final_members(final_group)[0]['tag'])
+        new_revision = self.db.create_lopa_revision(created['lopa_id'], revision_id)
+        new_sensor = self.db.lopa_sensor_groups(new_revision)[0]['id']
+        new_final = self.db.lopa_final_groups(new_revision)[0]['id']
+        self.assertEqual('LT-103', self.db.lopa_sources(new_revision)[0]['equipment_tag'])
+        self.assertEqual('LT-103', self.db.lopa_sensor_members(new_sensor)[0]['tag'])
+        self.assertEqual('LT-103', self.db.lopa_final_members(new_final)[0]['tag'])
+
+    def test_older_database_backfills_new_source_tag_snapshot_once(self):
+        _cause, sensor, _other, equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)
+        self.db.lock_lopa_revision(created['revision_id'])
+        self.db.conn.execute('ALTER TABLE lopa_source_scenarios DROP COLUMN equipment_tag_snapshot')
+        self.db.conn.commit()
+        self.db.conn.close()
+        self.db = Database(path=os.path.join(self._tmpdir, 'project.db'))
+        self.assertEqual('LT-101', self.db.lopa_sources(created['revision_id'])[0]['equipment_tag'])
+        self.db.update_equipment_item(equipment, 'LT-102', 'LT', 'Nivågivare', '')
+        self.assertEqual('LT-101', self.db.lopa_sources(created['revision_id'])[0]['equipment_tag'])
