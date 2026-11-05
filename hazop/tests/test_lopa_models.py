@@ -437,6 +437,26 @@ class LopaDatabaseTests(unittest.TestCase):
         self.db.set_lopa_source_scenario_text(source_id, 'Lokal scenarioavvikelse')
         self.assertEqual('detached', self.db.lopa_source_sync_state(source_id)['state'])
 
+    def test_sync_detects_changed_and_new_hazop_consequence_assessments(self):
+        _cause, sensor, _other, _equipment = self._hazop_chain()
+        consequence = self.db.get_safeguard(sensor)['consequence_id']
+        categories = self.db.consequence_categories()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.assertEqual('current', self.db.lopa_source_sync_state(source)['state'])
+        self.db.set_consequence_severity(consequence, categories[0]['id'], 2)
+        state = self.db.lopa_source_sync_state(source)
+        self.assertEqual('changed', state['state'])
+        self.assertIn('konsekvensbedömning', state['messages'])
+        stored = self.db.lopa_source_consequences(source)[0]
+        self.assertEqual(3, stored['severity'])
+        self.assertTrue(self.db.undo())
+        self.assertEqual('current', self.db.lopa_source_sync_state(source)['state'])
+        self.assertTrue(self.db.redo())
+        self.assertEqual('changed', self.db.lopa_source_sync_state(source)['state'])
+        self.db.set_consequence_severity(consequence, categories[1]['id'], 1)
+        self.assertIn('ny konsekvensbedömning', self.db.lopa_source_sync_state(source)['messages'])
+
     def test_locked_revision_retains_object_tags_as_they_were_at_lock(self):
         _cause, sensor, _other, equipment = self._hazop_chain()
         created = self.db.create_lopa()

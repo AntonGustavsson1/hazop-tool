@@ -75,7 +75,7 @@ class LopaExportTests(unittest.TestCase):
                          'Konsekvens', 'Överfyllnad'):
             self.assertIn(required, values)
 
-        self.db.update_cause(cause_id, description='Ändrad HAZOP-orsak')
+        self.db.set_consequence_severity(consequence_id, category['id'], 2)
         ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
         self.assertTrue(ok, error)
         workbook = openpyxl.load_workbook(path, data_only=True)

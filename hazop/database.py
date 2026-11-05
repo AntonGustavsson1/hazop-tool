@@ -4085,6 +4085,35 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 (live_frequency is not None and stored_frequency is not None and
                  abs(float(live_frequency) - float(stored_frequency)) > 1e-12)):
             changes.append('grundfrekvens')
+        assessments = self.lopa_source_consequences(source_id)
+        live_consequences = {row['id']: dict(row) for row in self.consequences(source['hazop_cause_id'])}
+        severities = self.get_consequence_severities_for_consequences(live_consequences.keys())
+        current_assessments = {
+            (consequence_id, row['category_id']): dict(row)
+            for consequence_id, rows in severities.items() for row in rows
+        }
+        captured_keys = set()
+        for assessment in assessments:
+            consequence_id = assessment.get('hazop_consequence_id')
+            category_id = assessment.get('hazop_category_id')
+            if consequence_id is None or category_id is None:
+                if assessment.get('follows_hazop'):
+                    changes.append('konsekvensbedömning saknas')
+                continue
+            key = (consequence_id, category_id)
+            captured_keys.add(key)
+            if not assessment.get('follows_hazop'):
+                continue
+            consequence = live_consequences.get(consequence_id)
+            current = current_assessments.get(key)
+            if consequence is None or current is None:
+                changes.append('konsekvensbedömning saknas')
+            elif ((consequence.get('description') or '') != (assessment.get('description') or '') or
+                  current['severity'] != assessment['severity'] or
+                  (current['name'] or '') != (assessment['category_name'] or '')):
+                changes.append('konsekvensbedömning')
+        if set(current_assessments) - captured_keys:
+            changes.append('ny konsekvensbedömning')
         for barrier in self.lopa_barriers(source['revision_id'], source_id):
             if barrier['manual'] or not barrier['follows_hazop']:
                 continue
@@ -5136,7 +5165,8 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 (source.get('frequency_origin') != 'manual' and not source.get('origin_safeguard_id'))):
             missing.append('HAZOP-källan saknas')
         if any(row.get('active') and row.get('follows_hazop') and
-               (row.get('source_missing') or not row.get('hazop_consequence_id'))
+               (row.get('source_missing') or not row.get('hazop_consequence_id')
+                or not row.get('hazop_category_id'))
                for row in consequences):
             missing.append('En HAZOP-konsekvens saknas')
         if any(row.get('active') and row.get('independent') and not row.get('manual')

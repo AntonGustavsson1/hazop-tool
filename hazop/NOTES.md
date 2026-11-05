@@ -1,5 +1,16 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: synkvarning för konsekvensbedömningar (2026-11-05)
+
+Synkstatus jämför nu varje HAZOP-kopplad LOPA-bedömning med aktuell
+konsekvenstext, kategorinamn och konsekvensnivå, och upptäcker nya eller
+borttagna bedömningar. Lokalt frikopplade bedömningar ändras inte.
+Varningen syns i LOPA-vyn och Excel medan sparat beräkningsunderlag förblir
+oförändrat. En försvunnen kategorikoppling markeras också som saknad i ett
+aktivt utkast. Syntaxkontroll och 57 LOPA-/export-/smoketester passerade
+headless, inklusive ändrad nivå, ny bedömning och undo/redo. Ingen manuell
+GUI-verifiering är gjord.
+
 ## LOPA: revisionsbundet huvud och konsekvensvy (2026-11-05)
 
 Vid låsning sparas nu LOPA-/SIF-/SIS-identitet och den visade

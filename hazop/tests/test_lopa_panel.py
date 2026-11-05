@@ -215,6 +215,14 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.assertEqual('Senare namn', self.panel._sif_name.text())
         self.assertTrue(self.panel._sif_name.isEnabled())
 
+    def test_source_status_reports_changed_hazop_consequence_level(self):
+        source = self.db.lopa_sources(self.revision_id)[0]
+        assessment = self.db.lopa_source_consequences(source['id'])[0]
+        self.db.set_consequence_severity(assessment['hazop_consequence_id'],
+                                         assessment['hazop_category_id'], 2)
+        self.panel._populate_hazop_hierarchy()
+        self.assertIn('har ändrats', self.panel._source_sync_note.text())
+
     def test_egen_lopa_konsekvens_creates_row_without_popup(self):
         before_rows = self.panel._hazop_hierarchy.rowCount()
         # No dialog is shown any more -- a direct call (same as a real
