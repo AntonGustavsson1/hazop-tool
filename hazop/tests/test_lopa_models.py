@@ -5,6 +5,7 @@ the SQLite migration/import route.  A LOPA result must never look complete
 when its numeric demand frequency or TEL is missing.
 """
 
+import json
 import os
 import shutil
 import sys
@@ -68,6 +69,22 @@ class LopaModelTests(unittest.TestCase):
         # visible category as governing rather than inventing a second rule.
         self.assertEqual('person', result['governing_category_key'])
         self.assertTrue(result['complete'])
+
+    def test_barrier_only_reduces_its_own_consequence(self):
+        matrix = self._matrix()
+        result = calculate_lopa({
+            'matrix': matrix, 'base_frequency': 0.1,
+            'categories': [
+                {'category_key': 'person', 'severity': 3, 'hazop_consequence_id': 11},
+                {'category_key': 'person', 'severity': 3, 'hazop_consequence_id': 12},
+            ],
+            'barriers': [{'description': 'Barriär', 'rrf': 10, 'hazop_consequence_id': 11}],
+        }, normalise_lopa_config({}, matrix))
+        self.assertEqual([10, 1], [row['barrier_rrf'] for row in result['categories']])
+        self.assertAlmostEqual(0.01, result['categories'][0]['accident_frequency'])
+        self.assertAlmostEqual(0.1, result['categories'][1]['accident_frequency'])
+        self.assertEqual(result['categories'][1]['required_rrf'], result['required_rrf'])
+        self.assertEqual(1, result['governing_category_index'])
 
     def test_calculator_never_claims_sil_without_numeric_frequency_or_tel(self):
         matrix = self._matrix()
@@ -256,6 +273,142 @@ class LopaDatabaseTests(unittest.TestCase):
         self.db.unlock_lopa_revision(copied_revision, 'Ny granskning', actor='Anton')
         self.assertEqual('Utkast', self.db.get_lopa_revision(copied_revision)['status'])
 
+    def test_imported_barrier_stays_with_its_hazop_consequence(self):
+        cause, sensor, _barrier, _equipment = self._hazop_chain()
+        first = self.db.get_safeguard(sensor)['consequence_id']
+        second = self.db.add_consequence(cause)
+        self.db.update_consequence(second, 'Annan konsekvens', 3, '')
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(second, category['id'], 3)
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        before = self.db.lopa_source_calculation(source)
+        rows = {row['hazop_consequence_id']: row for row in before['categories']}
+        self.assertEqual(10, rows[first]['barrier_rrf'])
+        self.assertEqual(1, rows[second]['barrier_rrf'])
+        self.assertEqual(rows[second]['required_rrf'], before['required_rrf'])
+        self.db.lock_lopa_revision(created['revision_id'])
+        self.db.delete_consequence(first)
+        after = self.db.lopa_source_calculation(source)
+        rows_after = {row['hazop_consequence_id']: row for row in after['categories']}
+        self.assertEqual(10, rows_after[first]['barrier_rrf'])
+        self.assertEqual(1, rows_after[second]['barrier_rrf'])
+        self.assertEqual(before['required_rrf'], after['required_rrf'])
+        self.assertEqual(before, after)
+
+    def test_manual_barrier_can_apply_to_both_consequences(self):
+        cause, sensor, _barrier, _equipment = self._hazop_chain()
+        first = self.db.get_safeguard(sensor)['consequence_id']
+        second = self.db.add_consequence(cause)
+        self.db.update_consequence(second, 'Annan konsekvens', 3, '')
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(second, category['id'], 3)
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        barrier_id = self.db.add_lopa_barrier(created['revision_id'], source, 'Gemensam barriär', 2)
+        barriers = self.db.lopa_barriers(created['revision_id'], source)
+        manual = next(row for row in barriers if row['id'] == barrier_id)
+        self.assertEqual('Alla konsekvenser i källscenariot', self.db.lopa_barrier_scope_label(manual))
+        rows = {row['hazop_consequence_id']: row
+                for row in self.db.lopa_source_calculation(source)['categories']}
+        self.assertEqual(20, rows[first]['barrier_rrf'])
+        self.assertEqual(2, rows[second]['barrier_rrf'])
+
+    def test_unknown_imported_barrier_scope_never_produces_sil(self):
+        _cause, sensor, _barrier, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.conn.execute('UPDATE lopa_barriers SET hazop_consequence_snapshot_id=NULL WHERE source_id=?', (source,))
+        self.db.commit()
+        result = self.db.lopa_source_calculation(source)
+        self.assertFalse(result['complete'])
+        self.assertIsNone(result['sil'])
+        self.assertTrue(any('koppling till konsekvens' in message for message in result['messages']))
+        self.assertTrue(all(row['barrier_rrf'] is None and row['remaining_frequency'] is None
+                            for row in result['categories']))
+        with self.assertRaises(ValueError):
+            self.db.lock_lopa_revision(created['revision_id'])
+
+    def test_locked_legacy_revision_with_unknown_barrier_scope_is_incomplete(self):
+        _cause, sensor, _barrier, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.lock_lopa_revision(created['revision_id'])
+        # Simulate an older locked project whose barrier source was already
+        # removed before the migration could capture its consequence.
+        self.db.conn.execute('UPDATE lopa_barriers SET hazop_consequence_snapshot_id=NULL WHERE source_id=?', (source,))
+        self.db.conn.commit()
+        result = self.db.lopa_source_calculation(source)
+        self.assertFalse(result['complete'])
+        self.assertIsNone(result['sil'])
+        self.assertTrue(any('koppling till konsekvens' in message for message in result['messages']))
+        self.assertTrue(all(row['barrier_rrf'] is None and row['remaining_frequency'] is None
+                            for row in result['categories']))
+
+    def test_old_project_migration_captures_barrier_and_consequence_links(self):
+        cause, sensor, _barrier, _equipment = self._hazop_chain()
+        first = self.db.get_safeguard(sensor)['consequence_id']
+        second = self.db.add_consequence(cause)
+        self.db.update_consequence(second, 'Annan konsekvens', 3, '')
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(second, category['id'], 3)
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.conn.execute('ALTER TABLE lopa_barriers DROP COLUMN hazop_consequence_snapshot_id')
+        self.db.conn.execute('ALTER TABLE lopa_source_consequences DROP COLUMN hazop_consequence_snapshot_id')
+        self.db.conn.commit()
+        self.db.conn.close()
+        self.db = Database(path=os.path.join(self._tmpdir, 'project.db'))
+        rows = {row['hazop_consequence_id']: row
+                for row in self.db.lopa_source_calculation(source)['categories']}
+        self.assertEqual(10, rows[first]['barrier_rrf'])
+        self.assertEqual(1, rows[second]['barrier_rrf'])
+        barrier = self.db.lopa_barriers(created['revision_id'], source)[0]
+        self.assertEqual('Konsekvens: Utsläpp', self.db.lopa_barrier_scope_label(barrier))
+
+    def test_old_locked_project_without_barrier_origin_is_not_reconstructed_by_guessing(self):
+        _cause, sensor, barrier, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.lock_lopa_revision(created['revision_id'])
+        self.db.delete_safeguard(barrier)
+        self.db.conn.execute('ALTER TABLE lopa_barriers DROP COLUMN hazop_consequence_snapshot_id')
+        self.db.conn.execute('ALTER TABLE lopa_source_consequences DROP COLUMN hazop_consequence_snapshot_id')
+        self.db.conn.commit()
+        self.db.conn.close()
+        self.db = Database(path=os.path.join(self._tmpdir, 'project.db'))
+        result = self.db.lopa_source_calculation(source)
+        self.assertFalse(result['complete'])
+        self.assertIsNone(result['sil'])
+        self.assertTrue(any('koppling till konsekvens' in message for message in result['messages']))
+
+    def test_old_locked_group_snapshot_retains_scope_after_source_deletion(self):
+        cause, sensor, _barrier, _equipment = self._hazop_chain()
+        first = self.db.get_safeguard(sensor)['consequence_id']
+        second = self.db.add_consequence(cause)
+        self.db.update_consequence(second, 'Annan konsekvens', 3, '')
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(second, category['id'], 3)
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.lock_lopa_revision(created['revision_id'])
+        before = self.db.lopa_source_calculation(source)
+        row = self.db.conn.execute('SELECT consequence_groups_snapshot_json FROM lopa_source_scenarios WHERE id=?',
+                                   (source,)).fetchone()
+        groups = json.loads(row[0])
+        for group in groups:
+            for assessment in group.get('assessments', []):
+                assessment.pop('hazop_consequence_snapshot_id', None)
+        self.db.conn.execute('UPDATE lopa_source_scenarios SET consequence_groups_snapshot_json=? WHERE id=?',
+                             (json.dumps(groups), source))
+        self.db.conn.execute('ALTER TABLE lopa_barriers DROP COLUMN hazop_consequence_snapshot_id')
+        self.db.conn.execute('ALTER TABLE lopa_source_consequences DROP COLUMN hazop_consequence_snapshot_id')
+        self.db.conn.commit()
+        self.db.conn.close()
+        self.db = Database(path=os.path.join(self._tmpdir, 'project.db'))
+        self.db.delete_consequence(first)
+        self.assertEqual(before, self.db.lopa_source_calculation(source))
+
     def test_imported_lopa_keeps_consequences_separate_from_category_assessments(self):
         """A source is one cause, not one row for every category assessment."""
         cause_id, sensor_sg, _other_sg, _equipment_id = self._hazop_chain()
@@ -428,6 +581,35 @@ class LopaDatabaseTests(unittest.TestCase):
         self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
         self.assertTrue(self.db.redo())
         self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+
+    def test_deleted_barrier_for_excluded_consequence_does_not_block_other_consequence(self):
+        cause, sensor, barrier, _equipment = self._hazop_chain()
+        first = self.db.get_safeguard(sensor)['consequence_id']
+        second = self.db.add_consequence(cause)
+        self.db.update_consequence(second, 'Annan konsekvens', 3, '')
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(second, category['id'], 3)
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        first_assessment = next(row for row in self.db.lopa_source_consequences(source)
+                                if row['hazop_consequence_id'] == first)
+        self.db.set_lopa_consequence_active(first_assessment['id'], False)
+        self.db.delete_safeguard(barrier)
+        result = self.db.lopa_source_calculation(source)
+        self.assertTrue(result['complete'])
+        self.assertEqual(second, result['categories'][result['governing_category_index']]['hazop_consequence_id'])
+        self.assertEqual(1, result['categories'][result['governing_category_index']]['barrier_rrf'])
+
+    def test_deleted_barrier_with_no_active_categories_does_not_block_result(self):
+        _cause, sensor, barrier, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        imported = self.db.lopa_barriers(created['revision_id'], source)[0]
+        self.db.set_lopa_barrier_category_keys(imported['id'], [])
+        self.db.delete_safeguard(barrier)
+        result = self.db.lopa_source_calculation(source)
+        self.assertTrue(result['complete'])
+        self.assertEqual(1, result['categories'][result['governing_category_index']]['barrier_rrf'])
 
     def test_deleted_imported_consequence_cannot_remain_a_complete_draft(self):
         cause, sensor, _barrier, _equipment = self._hazop_chain()

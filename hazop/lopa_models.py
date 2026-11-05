@@ -197,7 +197,11 @@ def sil_band_for_rrf(rrf: float | None, bands: list[dict[str, Any]] | None = Non
     return f"> {ordered[-1]['label']}" if ordered else None
 
 
-def _barrier_applies(barrier: dict[str, Any], category_key: str) -> bool:
+def _barrier_applies(barrier: dict[str, Any], category_key: str,
+                     consequence_id: Any = None) -> bool:
+    scope = barrier.get('hazop_consequence_id')
+    if scope is not None and scope != consequence_id:
+        return False
     applies = barrier.get('categories')
     if applies is None:
         return True
@@ -260,7 +264,7 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
         inputs_valid = True
         used_barriers: list[dict[str, Any]] = []
         for barrier in barriers:
-            if not _barrier_applies(barrier, category_key):
+            if not _barrier_applies(barrier, category_key, category.get('hazop_consequence_id')):
                 continue
             rrf = _number(barrier.get('rrf'))
             if rrf is None or rrf < 1.0:
@@ -344,6 +348,7 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
         'categories': rows,
         'governing_category_key': governing['category_key'] if governing else None,
         'governing_category_name': governing['category_name'] if governing else None,
+        'governing_category_index': rows.index(governing) if governing else None,
         'required_rrf': governing['required_rrf'] if governing else None,
         'sil': governing['sil'] if governing else None,
         'complete': bool(governing) and all_complete,

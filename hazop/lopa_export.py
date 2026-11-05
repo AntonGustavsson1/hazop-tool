@@ -225,11 +225,12 @@ def export_lopa_excel(db, filepath, selections=None):
                 barrier_rows.append([
                     source.get('cause_text') or '', 'Ja' if barrier['active'] else 'Nej',
                     barrier.get('sg_type') or '', barrier.get('description') or '', _number(barrier.get('rrf')),
-                    categories, state,
+                    categories, db.lopa_barrier_scope_label(barrier), state,
                 ])
         row = _write_table(ws, row,
-                           ['Källscenario', 'Aktiv', 'Typ', 'Beskrivning', 'RRF', 'Kategorier', 'Status'],
-                           barrier_rows, widths=[28, 9, 18, 34, 12, 22, 24])
+                           ['Källscenario', 'Aktiv', 'Typ', 'Beskrivning', 'RRF', 'Kategorier',
+                            'Gäller för konsekvens', 'Status'],
+                           barrier_rows, widths=[28, 9, 18, 34, 12, 22, 35, 24])
 
         ws.cell(row, 1, 'Eskalering och beräkningsspår').font = Font(bold=True, size=12)
         row += 1

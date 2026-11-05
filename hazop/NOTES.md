@@ -1,5 +1,26 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: barriärens konsekvenstillhörighet (2026-11-05)
+
+En importerad HAZOP-barriär räknas nu enbart för den konsekvens där den
+förekommer och för valda kategorier; en manuell barriär gäller valda
+kategorier för källscenariots alla konsekvenser. Kopplingen visas i LOPA
+och Excel. Dimensionerande rad identifieras per konsekvens och kategori,
+och matrisens summa anger att den summerar maxvärdet per aktiv källa utan
+att kontrollera överlapp. Summan visas inte vid ofullständigt underlag.
+
+Kopplings-id sparas separat från HAZOP-länkarna, även för låsta revisioner.
+Äldre databaser kompletteras från fortfarande tillgängligt underlag. Saknas
+relevant koppling och kan den inte återskapas, visas inget RRF/SIL-värde,
+även i låsta revisioner. Historiska beräkningar kan ändras eftersom den
+tidigare beräkningen tillgodoräknade barriärer på fel konsekvens; befintliga
+LOPA-studier och tidigare exporter behöver därför granskas. Samma SIF på
+flera HAZOP-rader kräver separat kontroll och hanteras i en följande ändring.
+
+Syntaxkontroll, 76 LOPA-/export-/smoketester och 149 databastester passerade
+headless. Renderade vyer granskades visuellt; hela GUI-flödet är inte manuellt
+genomgånget i denna testomgång.
+
 ## Integrationstester för popup och P&ID-markering (2026-11-05)
 
 Sju äldre fel i tre integrationstestklasser reproducerades även med

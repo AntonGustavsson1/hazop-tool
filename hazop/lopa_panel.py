@@ -646,13 +646,11 @@ class LopaPanel(QWidget):
         self._hazop_hierarchy.currentCellChanged.connect(self._on_hazop_hierarchy_selection_changed)
         source_layout.addWidget(self._hazop_hierarchy)
         source_actions = QHBoxLayout()
-        source_actions.addStretch(1)
         self._source_sync_note = QLabel('')
         self._source_sync_note.setWordWrap(True)
         self._source_sync_note.setMinimumWidth(0)
-        self._source_sync_note.setMaximumHeight(32)
         self._source_sync_note.setStyleSheet(lopa_note_stylesheet())
-        source_actions.addWidget(self._source_sync_note)
+        source_actions.addWidget(self._source_sync_note, 1)
         self._update_matrix_btn = QPushButton('Uppdatera riskmatris…')
         self._update_matrix_btn.setStyleSheet(lopa_ghost_button_stylesheet())
         self._update_matrix_btn.clicked.connect(self._update_revision_matrix)
@@ -892,10 +890,14 @@ class LopaPanel(QWidget):
         barrier_detail_layout.setSpacing(4)
         self._barriers = QTableWidget(0, 6)
         self._barriers.setHorizontalHeaderLabels(
-            ['Aktiv', 'Typ', 'Beskrivning', 'RRF', 'Gäller kategori', 'Status'])
+            ['Aktiv', 'Typ', 'Beskrivning', 'RRF', 'Gäller för', 'Status'])
         self._barriers.verticalHeader().setVisible(False)
         self._barriers.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._barriers.horizontalHeader().setStretchLastSection(True)
+        barrier_header = self._barriers.horizontalHeader()
+        barrier_header.setStretchLastSection(False)
+        barrier_header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        barrier_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        barrier_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self._barriers.setWordWrap(True)
         self._barriers.setStyleSheet(lopa_table_stylesheet())
         self._barriers.itemChanged.connect(self._on_barrier_item_changed)
@@ -2463,13 +2465,17 @@ class LopaPanel(QWidget):
                 keys = [row['category_key'] for row in self.db.lopa_barrier_categories(barrier['id'])
                         if row['active']]
                 applies = ', '.join(names.get(key, key) for key in keys) or 'Ingen'
+            scope = self.db.lopa_barrier_scope_label(barrier)
+            applies = f'{applies} · {scope}'
             self._barriers.setItem(
                 row_index, 0, self._check_cell(bool(barrier['active']),
                                                 enabled=self._revision_is_editable(), entity_id=barrier['id']))
             self._barriers.setItem(row_index, 1, self._readonly_cell(barrier['sg_type']))
             self._barriers.setItem(row_index, 2, self._readonly_cell(barrier['description']))
             self._barriers.setItem(row_index, 3, self._readonly_cell(f"{barrier['rrf']:.6g}"))
-            self._barriers.setItem(row_index, 4, self._readonly_cell(applies))
+            applicability_item = self._readonly_cell(applies)
+            applicability_item.setToolTip(applies)
+            self._barriers.setItem(row_index, 4, applicability_item)
             self._barriers.setItem(row_index, 5, self._readonly_cell(status))
         self._barriers.resizeRowsToContents()
         self._fit_table_height(self._barriers, 48, 106)
@@ -2478,20 +2484,21 @@ class LopaPanel(QWidget):
         self._edit_barrier_btn.setEnabled(bool(rows) and enabled)
         if self._source_id:
             result = self.db.lopa_source_calculation(self._source_id)
-            governing = next((row for row in result['categories']
-                              if row['category_key'] == result['governing_category_key']), None)
+            index = result.get('governing_category_index')
+            governing = result['categories'][index] if index is not None else None
             if governing and governing['remaining_frequency'] is not None:
                 required = ('—' if governing['required_rrf'] is None
                             else f"{governing['required_rrf']:.6g}")
                 self._barrier_summary.setText(
-                    f"Återstående frekvens efter oberoende barriärer: "
+                    f"Återstående frekvens efter oberoende barriärer för "
+                    f"{governing['description'] or 'vald konsekvens'}: "
                     f"{governing['remaining_frequency']:.6g} /år. "
                     f"Dimensionerande behov: "
                     f"{required} "
                     f"({governing['sil'] or 'SIL saknas'}).")
             else:
-                self._barrier_summary.setText(
-                    'Återstående frekvens och SIL kan beräknas när numerisk grundfrekvens och TEL finns.')
+                details = '; '.join(result['messages']) or 'Underlag saknas.'
+                self._barrier_summary.setText(f'Underlaget är ofullständigt: {details}')
         else:
             self._barrier_summary.clear()
         self._loading = old_loading
@@ -2509,7 +2516,7 @@ class LopaPanel(QWidget):
         for kind in types:
             headers.append(kind)
             headers.append(f'{kind} RRF')
-        headers.append('Återstående frekvens')
+        headers.append('Största återstående frekvens')
         old_loading = self._loading
         self._loading = True
         self._barrier_matrix.setColumnCount(len(headers))
@@ -2529,6 +2536,7 @@ class LopaPanel(QWidget):
         self._barrier_matrix.setRowCount(len(sources) + 1 if sources else 0)
         total_remaining = 0.0
         any_remaining = False
+        incomplete_active_source = False
         for row_index, source in enumerate(sources):
             cause = source.get('cause_text') or f"Källscenario {source['id']}"
             self._barrier_matrix.setItem(row_index, 0, self._barrier_matrix_cell(cause))
@@ -2538,7 +2546,7 @@ class LopaPanel(QWidget):
                     '—' if frequency is None else f'{frequency:.6g} /år', numeric=True))
             by_type = {kind: [] for kind in types}
             for barrier in self.db.lopa_barriers(self._revision_id, source['id']):
-                if not barrier['active']:
+                if not barrier['active'] or not barrier['independent']:
                     continue
                 kind = barrier.get('sg_type') or 'Övrigt'
                 by_type.setdefault(kind, []).append(barrier)
@@ -2548,27 +2556,32 @@ class LopaPanel(QWidget):
                 barriers = by_type.get(kind) or []
                 if barriers:
                     desc_text = '\n'.join(
-                        barrier.get('description') or 'Namnlös' for barrier in barriers)
+                        f"{barrier.get('description') or 'Namnlös'} — "
+                        f"{self.db.lopa_barrier_scope_label(barrier)}" for barrier in barriers)
                     rrf_text = '\n'.join(
                         f'{barrier["rrf"]:.6g}' for barrier in barriers)
                 else:
                     desc_text = '—'
                     rrf_text = '—'
-                self._barrier_matrix.setItem(
-                    row_index, desc_column, self._barrier_matrix_cell(desc_text))
+                description_item = self._barrier_matrix_cell(desc_text)
+                description_item.setToolTip(desc_text)
+                self._barrier_matrix.setItem(row_index, desc_column, description_item)
                 self._barrier_matrix.setItem(
                     row_index, rrf_column,
                     self._barrier_matrix_cell(rrf_text, numeric=True))
             result = self.db.lopa_source_calculation(source['id'])
             remaining = [item['remaining_frequency'] for item in result['categories']
                          if item['active'] and item['remaining_frequency'] is not None]
-            if remaining:
+            if not source['active']:
+                text = 'Exkluderad'
+            elif not result['complete'] or not remaining:
+                incomplete_active_source = True
+                text = 'Ofullständig'
+            else:
                 row_remaining = max(remaining)
                 total_remaining += row_remaining
                 any_remaining = True
                 text = f'{row_remaining:.6g} /år'
-            else:
-                text = '—'
             self._barrier_matrix.setItem(
                 row_index, len(headers) - 1,
                 self._barrier_matrix_cell(text, numeric=True))
@@ -2576,14 +2589,19 @@ class LopaPanel(QWidget):
             total_row = len(sources)
             bold_font = self._barrier_matrix.font()
             bold_font.setBold(True)
-            total_label = self._barrier_matrix_cell('Totalt')
+            total_label = self._barrier_matrix_cell('Summa (max per aktiv källa)')
+            total_label.setToolTip('Summan förutsätter att källscenarierna inte överlappar; '
+                                   'programmet kontrollerar inte detta.')
             total_label.setFont(bold_font)
             self._barrier_matrix.setItem(total_row, 0, total_label)
             for column in range(1, len(headers) - 1):
                 self._barrier_matrix.setItem(
                     total_row, column, self._barrier_matrix_cell('', empty=True))
-            total_text = f'{total_remaining:.6g} /år' if any_remaining else '—'
+            total_text = (f'{total_remaining:.6g} /år'
+                          if any_remaining and not incomplete_active_source else '—')
             total_cell = self._barrier_matrix_cell(total_text, numeric=True)
+            if incomplete_active_source:
+                total_cell.setToolTip('Summan kan inte visas när ett aktivt källscenario är ofullständigt.')
             total_cell.setFont(bold_font)
             self._barrier_matrix.setItem(total_row, len(headers) - 1, total_cell)
         self._barrier_matrix.resizeRowsToContents()
@@ -2875,9 +2893,11 @@ class LopaPanel(QWidget):
                 'Dimensionerande kriterium kan inte fastställas: minst ett aktivt scenario har ofullständigt underlag.')
         elif governing:
             _rrf, result, source = max(governing, key=lambda item: item[0])
+            governing_row = result['categories'][result['governing_category_index']]
+            consequence = governing_row.get('description') or 'beskrivning saknas'
             self._dimensioning_summary.setText(
                 f"Dimensionerande kriterium: {result['governing_category_name']} från "
-                f"{source.get('cause_text') or 'källscenario'}. Beräknat behov: "
+                f"{source.get('cause_text') or 'källscenario'}, konsekvens {consequence}. Beräknat behov: "
                 f"RRF {result['required_rrf']:.6g} ({result['sil'] or 'SIL saknas'}).")
         elif rows:
             self._dimensioning_summary.setText(

@@ -72,7 +72,8 @@ class LopaExportTests(unittest.TestCase):
                          'Givardel', 'Manöverdel', 'Oberoende barriärer',
                          'Eskalering och beräkningsspår', 'Kommentarer',
                          'Exportkommentar', 'SIF-017', 'Stäng ventil',
-                         'Konsekvens', 'Överfyllnad'):
+                         'Konsekvens', 'Överfyllnad', 'Gäller för konsekvens',
+                         'Konsekvens: Överfyllnad'):
             self.assertIn(required, values)
 
         self.db.set_consequence_severity(consequence_id, category['id'], 2)

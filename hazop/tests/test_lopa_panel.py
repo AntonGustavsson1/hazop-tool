@@ -196,6 +196,44 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.panel._populate_calculation()
         self.assertIn('Beräknat behov', self.panel._dimensioning_summary.text())
 
+    def test_barrier_matrix_excludes_inactive_sources_and_withholds_incomplete_sum(self):
+        original_source = self.db.lopa_sources(self.revision_id)[0]
+        self.assertTrue(self.db.lopa_source_calculation(original_source['id'])['complete'])
+        local = self.db.add_lopa_local_source(self.revision_id, cause_text='Ytterligare orsak', frequency=0.2)
+        self.panel._populate_barrier_matrix()
+        table = self.panel._barrier_matrix
+        final_column = table.columnCount() - 1
+        self.assertEqual('Ofullständig', table.item(1, final_column).text())
+        self.assertEqual('—', table.item(2, final_column).text())
+        self.db.set_lopa_source_active(local, False)
+        self.panel._populate_barrier_matrix()
+        self.assertEqual('Exkluderad', table.item(1, final_column).text())
+        self.assertEqual('0.1 /år', table.item(2, final_column).text())
+        self.assertIn('inte överlappar', table.item(2, 0).toolTip())
+
+    def test_barrier_summary_uses_governing_consequence_not_first_same_category(self):
+        source = self.db.lopa_sources(self.revision_id)[0]
+        selected_safeguard = source['origin_safeguard_id']
+        first = self.db.get_safeguard(selected_safeguard)['consequence_id']
+        barrier = self.db.add_safeguard(first)
+        self.db.update_safeguard(barrier, description='Tryckavlastning', rrf=10, sg_type='Mekanisk')
+        second = self.db.add_consequence(self.cause_id)
+        self.db.update_consequence(second, 'Annan konsekvens', 3, '')
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(second, category['id'], 3)
+        created = self.db.create_lopa(sif_name='Två konsekvenser')
+        imported = self.db.add_lopa_source_from_safeguard(created['lopa_id'], selected_safeguard)
+        self.panel.activate_lopa(created['lopa_id'], created['revision_id'])
+        self.panel._populate_barriers()
+        result = self.db.lopa_source_calculation(imported['source_id'])
+        governing = result['categories'][result['governing_category_index']]
+        self.assertEqual(second, governing['hazop_consequence_id'])
+        self.assertIn(f"{governing['remaining_frequency']:.6g} /år", self.panel._barrier_summary.text())
+        self.assertIn(f"{result['required_rrf']:.6g}", self.panel._barrier_summary.text())
+        self.assertIn('Annan konsekvens', self.panel._barrier_summary.text())
+        self.assertIn('Annan konsekvens', self.panel._dimensioning_summary.text())
+        self.assertIn('Konsekvens: UI-konsekvens', self.panel._barriers.item(0, 4).toolTip())
+
     def test_source_status_reports_missing_hazop_and_local_source(self):
         source = self.db.lopa_sources(self.revision_id)[0]
         self.db.delete_safeguard(source['origin_safeguard_id'])

@@ -1208,6 +1208,18 @@ class Database:
             self.conn.execute("UPDATE lopa_source_scenarios SET equipment_tag_snapshot="
                               "COALESCE((SELECT tag FROM equipment_catalog "
                               "WHERE id=lopa_source_scenarios.equipment_id),'')")
+        consequence_columns = {row['name'] for row in self.conn.execute(
+            'PRAGMA table_info(lopa_source_consequences)').fetchall()}
+        if consequence_columns and 'hazop_consequence_snapshot_id' not in consequence_columns:
+            self.conn.execute('ALTER TABLE lopa_source_consequences ADD COLUMN hazop_consequence_snapshot_id INTEGER')
+            self.conn.execute('UPDATE lopa_source_consequences SET hazop_consequence_snapshot_id=hazop_consequence_id')
+        barrier_columns = {row['name'] for row in self.conn.execute(
+            'PRAGMA table_info(lopa_barriers)').fetchall()}
+        if barrier_columns and 'hazop_consequence_snapshot_id' not in barrier_columns:
+            self.conn.execute('ALTER TABLE lopa_barriers ADD COLUMN hazop_consequence_snapshot_id INTEGER')
+            self.conn.execute('UPDATE lopa_barriers SET hazop_consequence_snapshot_id='
+                              '(SELECT consequence_id FROM safeguards WHERE id=lopa_barriers.source_safeguard_id) '
+                              'WHERE manual=0')
         self._migrate_participant_company_column()
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS reduction_factor_catalog ("
@@ -4321,6 +4333,26 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             "SELECT * FROM lopa_barrier_categories WHERE barrier_id=? ORDER BY category_key",
             (barrier_id,)).fetchall()]
 
+    def lopa_barrier_scope_label(self, barrier):
+        """Explain which consequence an imported or manual barrier covers."""
+        if barrier.get('manual'):
+            return 'Alla konsekvenser i källscenariot'
+        consequence_id = barrier.get('hazop_consequence_snapshot_id')
+        source_id = barrier.get('source_id')
+        if consequence_id is None or source_id is None:
+            return 'Okänd konsekvens'
+        assessments = [row for row in self.lopa_source_consequences(source_id)
+                       if row.get('hazop_consequence_snapshot_id') == consequence_id]
+        if assessments:
+            chosen = next((row for row in assessments
+                           if not row.get('follows_hazop') and row.get('description')), assessments[0])
+            description = chosen.get('description') or 'beskrivning saknas'
+            return f'Konsekvens: {description}'
+        for group in self.lopa_source_consequence_groups(source_id):
+            if group.get('hazop_consequence_id') == consequence_id:
+                return f"Konsekvens: {group.get('description') or 'beskrivning saknas'}"
+        return 'Konsekvens: beskrivning saknas'
+
     def lopa_escalation_rows(self, source_id):
         return [dict(row) for row in self.conn.execute(
             "SELECT * FROM lopa_escalation_rows WHERE source_id=? ORDER BY category_key,id",
@@ -5058,10 +5090,10 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                             severity['name'], f"category-{severity['category_id']}")
                         self.conn.execute(
                             "INSERT INTO lopa_source_consequences(source_id,hazop_consequence_id,"
-                            "hazop_category_id,category_key,category_name,severity,description) "
-                            "VALUES (?,?,?,?,?,?,?)",
+                            "hazop_category_id,category_key,category_name,severity,description,hazop_consequence_snapshot_id) "
+                            "VALUES (?,?,?,?,?,?,?,?)",
                             (source_id, consequence['id'], severity['category_id'], category_key,
-                             severity['name'], severity['severity'], consequence.get('description') or ''))
+                             severity['name'], severity['severity'], consequence.get('description') or '', consequence['id']))
                         # One local escalation row per active consequence
                         # category.  The factor payload starts empty so the
                         # revision snapshot's configured defaults apply until
@@ -5090,15 +5122,15 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                         else:
                             barrier_id = self.conn.execute(
                                 "INSERT INTO lopa_barriers(revision_id,source_id,source_safeguard_id,"
-                                "sg_type,description,rrf,manual,applies_all_categories,sort_order) "
-                                "VALUES (?,?,?,?,?,?,0,0,?)",
+                                "sg_type,description,rrf,manual,applies_all_categories,sort_order,hazop_consequence_snapshot_id) "
+                                "VALUES (?,?,?,?,?,?,0,0,?,?)",
                                 (revision['id'], source_id, safeguard['id'],
                                  safeguard.get('sg_type') or 'Övrigt',
                                  safeguard.get('description') or '',
                                  safeguard.get('rrf') or 1,
                                  self.conn.execute(
                                      "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_barriers WHERE revision_id=?",
-                                     (revision['id'],)).fetchone()[0])).lastrowid
+                                     (revision['id'],)).fetchone()[0], consequence['id'])).lastrowid
                         for severity in severities:
                             severity = dict(severity)
                             category_key = category_keys.get(severity['name']) or self._template_category_key(
@@ -5170,6 +5202,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         if not source:
             raise ValueError('LOPA-källscenariot finns inte längre.')
         source = dict(source)
+        revision = self._lopa_revision_row(source['revision_id'])
         source['matrix'] = self.lopa_revision_matrix(source['revision_id'])
         factor_values = {}
         for row in self.lopa_escalation_rows(source_id):
@@ -5182,7 +5215,12 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 'active': bool(row['active']),
             }
         source['categories'] = []
-        consequences = self.lopa_source_consequences(source_id)
+        if (revision and revision['status'] in ('Låst', 'Godkänd', 'Arkiverad')
+                and source.get('consequence_groups_snapshot_json')):
+            consequences = [assessment for group in self.lopa_source_consequence_groups(source_id)
+                            for assessment in group.get('assessments', [])]
+        else:
+            consequences = self.lopa_source_consequences(source_id)
         for consequence in consequences:
             escalation = factor_values.get(consequence['category_key'], {})
             source['categories'].append({
@@ -5190,13 +5228,18 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 # every consequence/category pair can be rendered and audited
                 # separately instead of being collapsed by category.
                 'lopa_consequence_id': consequence['id'],
-                'hazop_consequence_id': consequence.get('hazop_consequence_id'),
+                'hazop_consequence_id': (consequence.get('hazop_consequence_snapshot_id')
+                                         or consequence.get('hazop_consequence_id')),
                 'description': consequence.get('description') or '',
                 'category_key': consequence['category_key'],
                 'category_name': consequence['category_name'],
                 'severity': consequence['severity'],
                 'active': bool(consequence['active']) and escalation.get('active', True),
                 'factors': escalation.get('values', {}),
+                'unknown_hazop_consequence': bool(
+                    (consequence.get('follows_hazop') or consequence.get('source_missing'))
+                    and consequence.get('hazop_consequence_snapshot_id') is None
+                    and consequence.get('hazop_consequence_id') is None),
             })
         source['barriers'] = []
         barriers = self.lopa_barriers(source['revision_id'], source_id)
@@ -5212,26 +5255,50 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 'id': barrier['id'], 'description': barrier['description'],
                 'rrf': barrier['rrf'], 'active': bool(barrier['active']),
                 'categories': categories,
+                'hazop_consequence_id': barrier.get('hazop_consequence_snapshot_id'),
             })
         result = calculate_lopa(source, source['matrix'].get('lopa') or {})
-        revision = self._lopa_revision_row(source['revision_id'])
+        active_assessment_ids = {row['lopa_consequence_id'] for row in source['categories'] if row['active']}
+        relevant_barrier_ids = set()
+        for barrier in source['barriers']:
+            if not barrier['active']:
+                continue
+            for category in source['categories']:
+                if not category['active']:
+                    continue
+                applies = barrier['categories'] is None or barrier['categories'].get(category['category_key'], False)
+                scope = barrier['hazop_consequence_id']
+                matches = (scope is None or scope == category['hazop_consequence_id']
+                           or category['unknown_hazop_consequence'])
+                if applies and matches:
+                    relevant_barrier_ids.add(barrier['id'])
+                    break
         missing = []
         if source.get('follows_hazop') and (source.get('source_missing') or
                 (source.get('frequency_origin') != 'manual' and not source.get('origin_safeguard_id'))):
             missing.append('HAZOP-källan saknas')
-        if any(row.get('active') and row.get('follows_hazop') and
+        if any(row['id'] in active_assessment_ids and row.get('follows_hazop') and
                (row.get('source_missing') or not row.get('hazop_consequence_id')
                 or not row.get('hazop_category_id'))
                for row in consequences):
             missing.append('En HAZOP-konsekvens saknas')
-        if any(row.get('active') and row.get('independent') and not row.get('manual')
+        if any(row['id'] in relevant_barrier_ids and not row.get('manual')
                and row.get('follows_hazop') and
                (row.get('source_missing') or not row.get('source_safeguard_id'))
                for row in barriers):
             missing.append('En HAZOP-barriär saknas')
+        imported_barriers = [row for row in barriers if row['id'] in relevant_barrier_ids
+                             and not row.get('manual')]
+        scope_unknown = bool(imported_barriers) and (
+            any(row.get('hazop_consequence_snapshot_id') is None for row in imported_barriers)
+            or any(row['id'] in active_assessment_ids and (row.get('follows_hazop') or row.get('source_missing'))
+                   and row.get('hazop_consequence_snapshot_id') is None
+                   and row.get('hazop_consequence_id') is None for row in consequences))
         result['missing_hazop_sources'] = (
             missing if revision and revision['status'] not in ('Låst', 'Godkänd', 'Arkiverad')
             and source.get('active') else [])
+        if source.get('active') and scope_unknown:
+            result['missing_hazop_sources'].append('Barriärens koppling till konsekvens kan inte fastställas')
         if result['missing_hazop_sources']:
             # Draft calculations must not present a conclusion as current
             # after the HAZOP source disappears. Locked revisions retain the
@@ -5239,11 +5306,14 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             result['complete'] = False
             result['required_rrf'] = result['sil'] = None
             result['governing_category_key'] = result['governing_category_name'] = None
+            result['governing_category_index'] = None
             result['messages'].extend(f'{message}; granska underlaget innan LOPA beräknas.'
-                                      for message in missing)
+                                      for message in result['missing_hazop_sources'])
             for row in result['categories']:
                 row['complete'] = False
                 row['required_rrf'] = row['sil'] = None
+                row['barrier_rrf'] = row['remaining_frequency'] = row['accident_frequency'] = None
+                row['barriers'] = []
         return result
 
     def get_custom_risk_matrix_templates(self):

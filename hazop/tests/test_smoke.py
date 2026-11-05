@@ -243,7 +243,7 @@ class SmokeTests(unittest.TestCase):
                 self.assertEqual(center, matrix.item(0, 4).textAlignment())
                 self.assertEqual('—', matrix.item(0, 5).text())
                 self.assertEqual(center, matrix.item(0, 5).textAlignment())
-                self.assertEqual('Totalt', matrix.item(1, 0).text())
+                self.assertEqual('Summa (max per aktiv källa)', matrix.item(1, 0).text())
                 self.assertTrue(matrix.item(1, 0).font().bold())
                 self.assertEqual('', matrix.item(1, 1).text())
 
@@ -264,7 +264,8 @@ class SmokeTests(unittest.TestCase):
         node_id = self.db.add_node()
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
-        self.db.update_cause(cause_id, description='LSHH test', base_frequency=0.2)
+        self.db.update_cause(cause_id, description='LSHH test', base_frequency=0.2,
+                             frequency_cleared=False)
         cons_id = self.db.add_consequence(cause_id)
         self.db.update_consequence(cons_id, 'Överfyllnad', 3, '')
         categories = self.db.consequence_categories()
@@ -463,7 +464,7 @@ class SmokeTests(unittest.TestCase):
             # One source row plus a "Totalt" summary row (2026-09-04, see
             # NOTES.md) summing the Återstående frekvens column.
             self.assertEqual(2, p._barrier_matrix.rowCount())
-            self.assertEqual('Totalt', p._barrier_matrix.item(1, 0).text())
+            self.assertEqual('Summa (max per aktiv källa)', p._barrier_matrix.item(1, 0).text())
             self.assertIn('Återstående frekvens', p._barrier_summary.text())
             self.assertIn('Dimensionerande kriterium', p._dimensioning_summary.text())
             self.assertEqual('2026-09-02', p._document_date.text())
