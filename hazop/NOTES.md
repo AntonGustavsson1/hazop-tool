@@ -1,5 +1,12 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: jämförelse av mycket små frekvenser (2026-11-05)
+
+Synkvarningen jämför frekvenser med relativ tolerans. Den tidigare fasta
+gränsen kunde missa exempelvis en fördubbling från 1e-14 till 2e-14 per år.
+Ett regressionstest för detta och 42 LOPA-modell-/smoketester passerade
+headless; numeriska värden och LOPA-underlag ändras inte automatiskt.
+
 ## LOPA: varning och aktiv uppdatering av riskmatris (2026-11-05)
 
 Ett öppet utkast varnar nu i LOPA-vyn och Excel om projektets riskmatris

@@ -539,6 +539,15 @@ class LopaDatabaseTests(unittest.TestCase):
         self.db.set_consequence_severity(consequence, categories[1]['id'], 1)
         self.assertIn('ny konsekvensbedömning', self.db.lopa_source_sync_state(source)['messages'])
 
+    def test_sync_detects_material_changes_in_very_small_frequencies(self):
+        cause, sensor, _other, _equipment = self._hazop_chain()
+        self.db.update_cause(cause, base_frequency=1e-14, frequency_cleared=False)
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.assertEqual('current', self.db.lopa_source_sync_state(source)['state'])
+        self.db.update_cause(cause, base_frequency=2e-14)
+        self.assertIn('grundfrekvens', self.db.lopa_source_sync_state(source)['messages'])
+
     def test_locked_revision_retains_object_tags_as_they_were_at_lock(self):
         _cause, sensor, _other, equipment = self._hazop_chain()
         created = self.db.create_lopa()

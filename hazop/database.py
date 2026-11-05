@@ -5,6 +5,7 @@ fler filer"). No Qt — importable standalone."""
 
 import json
 import logging
+import math
 import sqlite3
 import datetime
 import re
@@ -4137,7 +4138,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         stored_frequency = source.get('base_frequency')
         if ((live_frequency is None) != (stored_frequency is None) or
                 (live_frequency is not None and stored_frequency is not None and
-                 abs(float(live_frequency) - float(stored_frequency)) > 1e-12)):
+                 not math.isclose(float(live_frequency), float(stored_frequency), rel_tol=1e-9))):
             changes.append('grundfrekvens')
         assessments = self.lopa_source_consequences(source_id)
         live_consequences = {row['id']: dict(row) for row in self.consequences(source['hazop_cause_id'])}
