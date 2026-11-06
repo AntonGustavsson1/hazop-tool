@@ -225,6 +225,31 @@ class LopaExportTests(unittest.TestCase):
         values = [cell.value for row in workbook.worksheets[1].iter_rows() for cell in row]
         self.assertIn('Låst; äldre givarkoppling återskapad från HAZOP', values)
 
+    def test_export_exposes_unconfirmed_voting_alongside_calculated_sil(self):
+        node = self.db.add_node()
+        cause = self.db.add_cause(self.db.deviations(node)[0]['id'])
+        self.db.update_cause(cause, description='Källa', base_frequency=0.1, frequency_cleared=False)
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Utsläpp', 3, '')
+        self.db.set_consequence_severity(consequence, self.db.consequence_categories()[0]['id'], 3)
+        sensor = self.db.add_safeguard(consequence)
+        created = self.db.create_lopa()
+        self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)
+        group = self.db.add_lopa_final_group(created['revision_id'])
+        self.db.add_lopa_final_member(created['revision_id'], name='Ventil A', group_id=group)
+        self.db.add_lopa_final_member(created['revision_id'], name='Ventil B', group_id=group)
+        path = os.path.join(self._tmpdir, 'voting.xlsx')
+        ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
+        self.assertTrue(ok, error)
+        import openpyxl
+        workbook = openpyxl.load_workbook(path, data_only=True)
+        summary = workbook.worksheets[0]
+        self.assertNotEqual('Ofullständig', summary['I4'].value)
+        self.assertEqual('Votingstatus', summary['J3'].value)
+        self.assertIn('stämmer inte med 2 aktiva rader', summary['J4'].value)
+        values = [cell.value for row in workbook.worksheets[1].iter_rows() for cell in row]
+        self.assertIn('Manövergrupp: 1oo1 stämmer inte med 2 aktiva rader', values)
+
     def test_export_accepts_multiple_explicit_revisions(self):
         first = self.db.create_lopa(display_number='001', sif_name='Första SIF')
         second = self.db.create_lopa(display_number='002', sif_name='Andra SIF')

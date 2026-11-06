@@ -720,11 +720,13 @@ class LopaPanel(QWidget):
         sensor_title.setStyleSheet(lopa_section_title_stylesheet())
         sensor_layout.addWidget(sensor_title)
         self._sensor_note = QLabel('Givare kommer från den kopplade HAZOP-barriären. Flera givare kräver att voting bekräftas.')
-        self._sensor_note.setWordWrap(False)
-        self._sensor_note.setMaximumHeight(18)
+        self._sensor_note.setWordWrap(True)
+        self._sensor_note.setMinimumWidth(0)
+        self._sensor_note.setMaximumHeight(40)
         self._sensor_note.setStyleSheet(lopa_note_stylesheet())
         self._sensor_note.setToolTip(self._sensor_note.text())
         self._sensor_note.hide()
+        sensor_layout.addWidget(self._sensor_note)
         sensor_controls = QHBoxLayout()
         sensor_controls.addWidget(QLabel('Givargrupp'))
         self._sensor_group = QComboBox()
@@ -777,11 +779,13 @@ class LopaPanel(QWidget):
         self._final_note = QLabel(
             'Manöverobjekt och voting är LOPA-specifika. Flera aktiva objekt '
             'kräver att voting bekräftas.')
-        self._final_note.setWordWrap(False)
-        self._final_note.setMaximumHeight(18)
+        self._final_note.setWordWrap(True)
+        self._final_note.setMinimumWidth(0)
+        self._final_note.setMaximumHeight(40)
         self._final_note.setStyleSheet(lopa_note_stylesheet())
         self._final_note.setToolTip(self._final_note.text())
         self._final_note.hide()
+        final_layout.addWidget(self._final_note)
         final_controls = QHBoxLayout()
         final_controls.addWidget(QLabel('Manövergrupp'))
         self._final_group = QComboBox()
@@ -2319,8 +2323,8 @@ class LopaPanel(QWidget):
         self._sensor_group.clear()
         for index, group in enumerate(groups, start=1):
             title = f'Givardel {index} – {group["voting"]}'
-            if group['needs_voting_review']:
-                title += ' (bekräfta voting)'
+            if self.db.lopa_group_voting_issue('sensor', group):
+                title += ' (granska voting)'
             self._sensor_group.addItem(title, group['id'])
         if selected is not None:
             self._sensor_group.setCurrentIndex(self._sensor_group.findData(selected))
@@ -2374,15 +2378,16 @@ class LopaPanel(QWidget):
                              for source in self.db.lopa_sources(self._revision_id)) if self._revision_id else False
         if group:
             self._sensor_voting.setCurrentText(group['voting'])
+            voting_issue = self.db.lopa_group_voting_issue('sensor', group)
             if missing_sensor:
                 note = 'En källas primära givare är inte aktiv; kontrollera givardelen.'
-                if group['needs_voting_review']:
-                    note += ' Voting behöver också bekräftas.'
+                if voting_issue:
+                    note += f' {voting_issue}.'
             else:
-                note = ('Flera aktiva givare kräver bekräftad voting.' if group['needs_voting_review'] else
+                note = (voting_issue if voting_issue else
                         'Givardel från HAZOP. Voting och givare sparas på denna LOPA-revision.')
             self._sensor_note.setText(note)
-            self._sensor_note.setVisible(bool(missing_sensor or group['needs_voting_review']))
+            self._sensor_note.setVisible(bool(missing_sensor or voting_issue))
         else:
             self._sensor_voting.setCurrentText('1oo1')
             self._sensor_note.setText('En källas primära givare är inte aktiv; kontrollera givardelen.'
@@ -2482,8 +2487,8 @@ class LopaPanel(QWidget):
         self._final_group.clear()
         for index, group in enumerate(groups, start=1):
             title = f'Manöverdel {index} – {group["voting"]}'
-            if group['needs_voting_review']:
-                title += ' (bekräfta voting)'
+            if self.db.lopa_group_voting_issue('final', group):
+                title += ' (granska voting)'
             self._final_group.addItem(title, group['id'])
         if selected is not None:
             self._final_group.setCurrentIndex(self._final_group.findData(selected))
@@ -2532,10 +2537,11 @@ class LopaPanel(QWidget):
         self._fit_table_height(self._final_members, 48, 92)
         if group:
             self._final_voting.setCurrentText(group['voting'])
+            issue = self.db.lopa_group_voting_issue('final', group)
             self._final_note.setText(
-                'Flera aktiva manöverobjekt kräver bekräftad voting.' if group['needs_voting_review'] else
+                issue if issue else
                 'Manöverdel sparas på denna LOPA-revision. Dubbelklicka på en rad för att ändra objekt eller åtgärd.')
-            self._final_note.setVisible(bool(group['needs_voting_review']))
+            self._final_note.setVisible(bool(issue))
         else:
             self._final_voting.setCurrentText('1oo1')
             self._final_note.setText('Lägg till en manövergrupp när LOPA:n behöver en definierad manöverdel.')

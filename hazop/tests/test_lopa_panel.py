@@ -356,6 +356,41 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.assertFalse(self.panel._sensor_note.isHidden())
         self.assertIn('primära givare är inte aktiv', self.panel._sensor_note.text())
 
+    def test_final_voting_warning_tracks_active_members(self):
+        group = self.db.add_lopa_final_group(self.revision_id)
+        self.db.add_lopa_final_member(self.revision_id, name='Ventil A', group_id=group)
+        self.db.add_lopa_final_member(self.revision_id, name='Ventil B', group_id=group)
+        self.panel._populate_final_groups()
+        self.panel.show()
+        self.app.processEvents()
+        self.assertIn('granska voting', self.panel._final_group.currentText())
+        self.assertIn('stämmer inte med 2 aktiva rader', self.panel._final_note.text())
+        self.assertTrue(self.panel._final_note.isVisible())
+        self.assertFalse(self.panel._final_note.isWindow())
+        self.assertIs(self.panel._final_note.parentWidget(), self.panel._final_members.parentWidget())
+        self.panel._final_voting.setCurrentText('1oo2')
+        self.panel._save_final_voting()
+        self.assertTrue(self.panel._final_note.isHidden())
+        self.assertEqual([], self.db.lopa_voting_issues(self.revision_id))
+        self.panel._confirm_lopa_only = lambda _text: True
+        self.panel._final_members.item(1, 0).setCheckState(Qt.CheckState.Unchecked)
+        self.assertIn('stämmer inte med 1 aktiv rad', self.panel._final_note.text())
+
+    def test_sensor_voting_warning_is_embedded_in_sensor_card(self):
+        group = self.db.add_lopa_sensor_group(self.revision_id)
+        first = self.db.add_equipment_item('LT-11', 'LT-11', 'LT', 0, 'Givare', '', 0)
+        second = self.db.add_equipment_item('LT-12', 'LT-12', 'LT', 0, 'Givare', '', 0)
+        self.db.add_lopa_sensor_member(self.revision_id, first, 'HH', group_id=group)
+        self.db.add_lopa_sensor_member(self.revision_id, second, 'HH', group_id=group)
+        self.panel._sensor_group_id = group
+        self.panel._populate_sensor_groups()
+        self.panel.show()
+        self.app.processEvents()
+        self.assertIn('stämmer inte med 2 aktiva rader', self.panel._sensor_note.text())
+        self.assertTrue(self.panel._sensor_note.isVisible())
+        self.assertFalse(self.panel._sensor_note.isWindow())
+        self.assertIs(self.panel._sensor_note.parentWidget(), self.panel._sensor_members.parentWidget())
+
     def test_source_status_reports_missing_hazop_and_local_source(self):
         source = self.db.lopa_sources(self.revision_id)[0]
         self.db.delete_safeguard(source['origin_safeguard_id'])

@@ -1,5 +1,26 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: voting och varningar i givare/manöverdel (2026-11-06)
+
+Voting i aktiva givar- och manövergrupper valideras som MooN med 1 ≤ M ≤ N.
+Antalet N jämförs med antalet aktiva rader; ändrad aktiv medlemsuppsättning
+kräver ny bekräftelse och revisionen kan inte låsas om en aktiv grupp har
+ogiltig, inkonsekvent eller obekräftad voting. En tom grupp kan fortfarande
+användas som arbetsutkast. Votingstatus visas i vyn och i Excel, även på
+sammanfattningsbladet. Det beräknade SIL-behovet hålls separat från granskning
+av den tänkta SIF-arkitekturen. Antalskontrollen bevisar inte fysisk
+oberoende, gemensamma fel eller funktionens uppnådda SIL.
+
+Varningstexterna för givar- och manöverdel är nu inlagda i sina respektive
+kort; de tidigare fristående etiketterna kunde annars visas som egna fönster.
+Första manöverobjektet och dess automatiskt skapade grupp sparas som en enda
+ångra-bar transaktion, i linje med givardelen.
+
+Syntaxkontroll, 117 LOPA-/export-/smoketester och 149 databastester passerade
+headless; riktade tester kördes efter sista textjusteringen. Varningslayouten
+granskades som renderad widget, men ett fullständigt manuellt GUI-flöde är
+inte genomfört.
+
 ## LOPA: läsbar scenariotabell på smala skärmar (2026-11-06)
 
 På smala fönster behåller kolumnerna Orsak och Konsekvens sin läsbara bredd.

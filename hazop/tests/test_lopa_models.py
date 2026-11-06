@@ -876,6 +876,76 @@ class LopaDatabaseTests(unittest.TestCase):
         self.assertEqual('1oo2', self.db.lopa_sensor_groups(created['revision_id'])[0]['voting'])
         self.assertFalse(self.db.lopa_sensor_groups(created['revision_id'])[0]['needs_voting_review'])
 
+    def test_voting_rejects_impossible_m_out_of_n_values(self):
+        created = self.db.create_lopa()
+        for value in ('0oo1', '1oo0', '3oo2', '0oo0', 'otydligt'):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    self.db.add_lopa_sensor_group(created['revision_id'], value)
+                with self.assertRaises(ValueError):
+                    self.db.add_lopa_final_group(created['revision_id'], value)
+
+    def test_lock_requires_confirmed_sensor_voting_for_active_members(self):
+        _cause, sensor, _other, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)
+        second = self.db.add_equipment_item('LT-202', 'LT-202', 'LT', 0, 'Givare', '', 0)
+        group = self.db.lopa_sensor_groups(created['revision_id'])[0]
+        self.db.add_lopa_sensor_member(created['revision_id'], second, 'HH', group_id=group['id'])
+        with self.assertRaisesRegex(ValueError, 'voting'):
+            self.db.lock_lopa_revision(created['revision_id'])
+        self.db.set_lopa_sensor_group_voting(group['id'], '1oo3')
+        self.assertIn('stämmer inte med 2 aktiva rader', self.db.lopa_voting_issues(created['revision_id'])[0])
+        with self.assertRaisesRegex(ValueError, 'voting'):
+            self.db.lock_lopa_revision(created['revision_id'])
+        self.db.set_lopa_sensor_group_voting(group['id'], '1oo2')
+        self.db.lock_lopa_revision(created['revision_id'])
+
+    def test_final_voting_must_be_reconfirmed_after_active_members_change(self):
+        _cause, sensor, _other, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)
+        group = self.db.add_lopa_final_group(created['revision_id'])
+        self.db.add_lopa_final_member(created['revision_id'], name='Ventil A', group_id=group)
+        second = self.db.add_lopa_final_member(created['revision_id'], name='Ventil B', group_id=group)
+        with self.assertRaisesRegex(ValueError, 'voting'):
+            self.db.lock_lopa_revision(created['revision_id'])
+        self.db.set_lopa_final_group_voting(group, '1oo2')
+        self.assertEqual([], self.db.lopa_voting_issues(created['revision_id']))
+        self.db.update_lopa_final_member(second, active=False)
+        self.assertIn('stämmer inte med 1 aktiv rad', self.db.lopa_voting_issues(created['revision_id'])[0])
+        self.db.set_lopa_final_group_voting(group, '1oo1')
+        self.assertEqual([], self.db.lopa_voting_issues(created['revision_id']))
+        self.db.update_lopa_final_member(second, active=True)
+        self.assertTrue(self.db.lopa_voting_issues(created['revision_id']))
+        self.assertTrue(self.db.undo())
+        self.assertEqual([], self.db.lopa_voting_issues(created['revision_id']))
+        self.assertTrue(self.db.redo())
+        self.db.set_lopa_final_group_voting(group, '1oo2')
+        self.db.lock_lopa_revision(created['revision_id'])
+
+    def test_first_final_member_and_group_are_one_undoable_action(self):
+        created = self.db.create_lopa()
+        before = self.db.undo_count
+        member = self.db.add_lopa_final_member(created['revision_id'], name='Ventil')
+        groups = self.db.lopa_final_groups(created['revision_id'])
+        self.assertEqual(member, self.db.lopa_final_members(groups[0]['id'])[0]['id'])
+        self.assertEqual(before + 1, self.db.undo_count)
+        self.assertTrue(self.db.undo())
+        self.assertEqual([], self.db.lopa_final_groups(created['revision_id']))
+        self.assertTrue(self.db.redo())
+        self.assertEqual(1, len(self.db.lopa_final_groups(created['revision_id'])))
+
+    def test_legacy_invalid_voting_remains_visible_and_blocks_locking(self):
+        created = self.db.create_lopa()
+        group = self.db.add_lopa_final_group(created['revision_id'])
+        self.db.add_lopa_final_member(created['revision_id'], name='Ventil', group_id=group)
+        self.db.conn.execute("UPDATE lopa_final_groups SET voting='3oo1',needs_voting_review=0 WHERE id=?", (group,))
+        self.db.conn.commit()
+        self.assertIn('ogiltig voting', self.db.lopa_voting_issues(created['revision_id'])[0])
+        with self.assertRaisesRegex(ValueError, 'voting'):
+            self.db.lock_lopa_revision(created['revision_id'])
+
     def test_lopa_detail_edits_are_revision_scoped_and_traceable(self):
         _cause_id, sensor_sg, _other_sg, _equipment_id = self._hazop_chain()
         created = self.db.create_lopa()

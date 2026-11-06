@@ -4084,6 +4084,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             if result.get('unassessed_consequences'):
                 raise ValueError('En konsekvens saknar bedömning. Komplettera eller exkludera den '
                                  'med motivering innan revisionen låses.')
+        voting_issues = self.lopa_voting_issues(revision_id)
+        if voting_issues:
+            raise ValueError('Granska och bekräfta voting innan revisionen låses: ' + '; '.join(voting_issues))
         groups = []
         for source in sources:
             captured_groups = self.lopa_source_consequence_groups(source['id'])
@@ -5194,12 +5197,81 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                        f'Källscenario {source_id}, {category_key}')
         self.commit()
 
+    @staticmethod
+    def _lopa_voting_parts(voting):
+        text = str(voting or '').strip()
+        match = re.fullmatch(r'(\d+)oo(\d+)', text, re.IGNORECASE)
+        if not match:
+            raise ValueError('Ange voting som exempelvis 1oo1 eller 2oo3.')
+        try:
+            required, total = (int(value) for value in match.groups())
+        except ValueError:
+            raise ValueError('Voting måste innehålla giltiga heltal.')
+        if required < 1 or total < 1 or required > total:
+            raise ValueError('Voting måste uppfylla 1 ≤ M ≤ N i MooN.')
+        return required, total
+
+    def lopa_group_voting_issue(self, kind, group):
+        """Describe unconfirmed or inconsistent voting for active members."""
+        if kind == 'sensor':
+            members = self.lopa_sensor_members(group['id'])
+            label = 'Givargrupp'
+        elif kind == 'final':
+            members = self.lopa_final_members(group['id'])
+            label = 'Manövergrupp'
+        else:
+            raise ValueError('Okänd grupp för voting.')
+        active_count = sum(bool(member['active']) for member in members)
+        if not active_count:
+            return ''
+        try:
+            _required, total = self._lopa_voting_parts(group.get('voting'))
+        except ValueError:
+            return f"{label}: ogiltig voting {group.get('voting') or 'saknas'}"
+        if total != active_count:
+            count_label = 'aktiv rad' if active_count == 1 else 'aktiva rader'
+            return f"{label}: {group['voting']} stämmer inte med {active_count} {count_label}"
+        if group.get('needs_voting_review'):
+            return f"{label}: bekräfta voting {group['voting']} för de aktiva raderna"
+        return ''
+
+    def lopa_voting_issues(self, revision_id):
+        return [issue for kind, groups in (
+                    ('sensor', self.lopa_sensor_groups(revision_id)),
+                    ('final', self.lopa_final_groups(revision_id)))
+                for group in groups if (issue := self.lopa_group_voting_issue(kind, group))]
+
+    def _set_lopa_group_voting(self, kind, group_id, voting):
+        table, members_table, label = {
+            'sensor': ('lopa_sensor_groups', 'lopa_sensor_members', 'Givargruppen'),
+            'final': ('lopa_final_groups', 'lopa_final_members', 'Manövergruppen'),
+        }[kind]
+        row = self.conn.execute(
+            f'SELECT g.revision_id,g.voting,g.needs_voting_review,lr.lopa_id FROM {table} g '
+            'JOIN lopa_revisions lr ON lr.id=g.revision_id WHERE g.id=?', (group_id,)).fetchone()
+        if not row:
+            raise ValueError(f'{label} finns inte längre.')
+        self._assert_lopa_revision_editable(row['revision_id'])
+        required, total = self._lopa_voting_parts(voting)
+        text = f'{required}oo{total}'
+        count = self.conn.execute(
+            f'SELECT COUNT(*) FROM {members_table} WHERE group_id=? AND active=1', (group_id,)).fetchone()[0]
+        # Allow incomplete draft groups, but never label a voting choice as
+        # confirmed while its denominator disagrees with active members.
+        needs_review = bool(count and total != count)
+        if row['voting'] == text and bool(row['needs_voting_review']) == needs_review:
+            return
+        self.conn.execute(f'UPDATE {table} SET voting=?,needs_voting_review=? WHERE id=?',
+                          (text, int(needs_review), group_id))
+        self._log_lopa(row['lopa_id'], row['revision_id'], f'{kind}-voting-updated',
+                       f'{label} {group_id}: {text}, {count} aktiva')
+        self.commit()
+
     def add_lopa_sensor_group(self, revision_id, voting='1oo1'):
         """Add a separate sensor voting group to an editable LOPA revision."""
         revision = self._assert_lopa_revision_editable(revision_id)
-        text = str(voting or '').strip().lower()
-        if not re.fullmatch(r'\d+oo\d+', text, re.IGNORECASE):
-            raise ValueError('Ange röstning som exempelvis 1oo1 eller 2oo3.')
+        required, total = self._lopa_voting_parts(voting)
+        text = f'{required}oo{total}'
         sort_order = self.conn.execute(
             "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_sensor_groups WHERE revision_id=?",
             (revision_id,)).fetchone()[0]
@@ -5244,15 +5316,19 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
 
     def set_lopa_sensor_member_active(self, member_id, active):
         row = self.conn.execute(
-            "SELECT lm.group_id,lg.revision_id,lr.lopa_id FROM lopa_sensor_members lm "
+            "SELECT lm.group_id,lm.active,lg.revision_id,lr.lopa_id FROM lopa_sensor_members lm "
             "JOIN lopa_sensor_groups lg ON lg.id=lm.group_id "
             "JOIN lopa_revisions lr ON lr.id=lg.revision_id WHERE lm.id=?", (member_id,)).fetchone()
         if not row:
             raise ValueError('Givarobjektet finns inte längre.')
         row = dict(row)
         self._assert_lopa_revision_editable(row['revision_id'])
+        if bool(row['active']) == bool(active):
+            return
         self.conn.execute("UPDATE lopa_sensor_members SET active=? WHERE id=?",
                           (int(bool(active)), member_id))
+        self.conn.execute('UPDATE lopa_sensor_groups SET needs_voting_review=1 WHERE id=?',
+                          (row['group_id'],))
         self._log_lopa(row['lopa_id'], row['revision_id'], 'sensor-inclusion-changed',
                        f"Givare {member_id}: {'aktiv' if active else 'exkluderad'}")
         self.commit()
@@ -5273,9 +5349,8 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
 
     def add_lopa_final_group(self, revision_id, voting='1oo1'):
         revision = self._assert_lopa_revision_editable(revision_id)
-        text = str(voting or '').strip().lower()
-        if not re.fullmatch(r'\d+oo\d+', text, re.IGNORECASE):
-            raise ValueError('Ange röstning som exempelvis 1oo1 eller 2oo3.')
+        required, total = self._lopa_voting_parts(voting)
+        text = f'{required}oo{total}'
         sort_order = self.conn.execute(
             "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_final_groups WHERE revision_id=?",
             (revision_id,)).fetchone()[0]
@@ -5287,46 +5362,48 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         return group_id
 
     def set_lopa_final_group_voting(self, group_id, voting):
-        row = self.conn.execute(
-            "SELECT revision_id FROM lopa_final_groups WHERE id=?", (group_id,)).fetchone()
-        if not row:
-            raise ValueError('Manövergruppen finns inte längre.')
-        self._assert_lopa_revision_editable(row['revision_id'])
-        text = str(voting or '').strip().lower()
-        if not re.fullmatch(r'\d+oo\d+', text, re.IGNORECASE):
-            raise ValueError('Ange röstning som exempelvis 1oo1 eller 2oo3.')
-        self.conn.execute(
-            "UPDATE lopa_final_groups SET voting=?,needs_voting_review=0 WHERE id=?",
-            (text, group_id))
-        self.commit()
+        self._set_lopa_group_voting('final', group_id, voting)
 
     def add_lopa_final_member(self, revision_id, equipment_id=None, name='', action_text='', group_id=None):
         revision = self._assert_lopa_revision_editable(revision_id)
         equipment = self.get_equipment_by_id(equipment_id) if equipment_id is not None else None
         if equipment_id is not None and not equipment:
             raise ValueError('Objektet finns inte längre i objektdatabasen.')
-        if group_id is None:
-            groups = self.lopa_final_groups(revision_id)
-            group_id = groups[0]['id'] if groups else self.add_lopa_final_group(revision_id)
-        group = self.conn.execute(
-            "SELECT id FROM lopa_final_groups WHERE id=? AND revision_id=?", (group_id, revision_id)).fetchone()
-        if not group:
-            raise ValueError('Manövergruppen hör inte till den här LOPA-revisionen.')
         label = (equipment.get('tag') if equipment else '') or str(name or '').strip()
         if not label:
             raise ValueError('Ange ett objekt eller ett namn för manöverdelen.')
-        member_count = self.conn.execute(
-            "SELECT COUNT(*) FROM lopa_final_members WHERE group_id=? AND active=1", (group_id,)).fetchone()[0]
-        sort_order = self.conn.execute(
-            "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_final_members WHERE group_id=?", (group_id,)).fetchone()[0]
-        cur = self.conn.execute(
-            "INSERT INTO lopa_final_members(group_id,equipment_id,name_snapshot,action_text,sort_order) "
-            "VALUES (?,?,?,?,?)", (group_id, equipment_id, label, str(action_text or ''), sort_order))
-        if member_count >= 1:
-            self.conn.execute("UPDATE lopa_final_groups SET needs_voting_review=1 WHERE id=?", (group_id,))
-        self._log_lopa(revision['lopa_id'], revision_id, 'final-member-added', label)
-        self.commit()
-        return cur.lastrowid
+        with self.history_group():
+            try:
+                self.conn.execute('BEGIN')
+                if group_id is None:
+                    groups = self.lopa_final_groups(revision_id)
+                    group_id = (groups[0]['id'] if groups else self.conn.execute(
+                        "INSERT INTO lopa_final_groups(revision_id,voting,sort_order) VALUES (?,'1oo1',0)",
+                        (revision_id,)).lastrowid)
+                group = self.conn.execute(
+                    "SELECT id,voting FROM lopa_final_groups WHERE id=? AND revision_id=?",
+                    (group_id, revision_id)).fetchone()
+                if not group:
+                    raise ValueError('Manövergruppen hör inte till den här LOPA-revisionen.')
+                member_count = self.conn.execute(
+                    "SELECT COUNT(*) FROM lopa_final_members WHERE group_id=? AND active=1", (group_id,)).fetchone()[0]
+                sort_order = self.conn.execute(
+                    "SELECT COALESCE(MAX(sort_order),-1)+1 FROM lopa_final_members WHERE group_id=?", (group_id,)).fetchone()[0]
+                member_id = self.conn.execute(
+                    "INSERT INTO lopa_final_members(group_id,equipment_id,name_snapshot,action_text,sort_order) "
+                    "VALUES (?,?,?,?,?)", (group_id, equipment_id, label, str(action_text or ''), sort_order)).lastrowid
+                try:
+                    _required, total = self._lopa_voting_parts(group['voting'])
+                except ValueError:
+                    total = 0
+                if member_count >= 1 or total != member_count + 1:
+                    self.conn.execute("UPDATE lopa_final_groups SET needs_voting_review=1 WHERE id=?", (group_id,))
+                self._log_lopa(revision['lopa_id'], revision_id, 'final-member-added', label)
+                self.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        return member_id
 
     def update_lopa_final_member(self, member_id, name=None, action_text=None, active=None):
         row = self.conn.execute(
@@ -5348,6 +5425,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             return
         values.append(member_id)
         self.conn.execute(f"UPDATE lopa_final_members SET {','.join(assignments)} WHERE id=?", values)
+        if active is not None and bool(active) != bool(row['active']):
+            self.conn.execute('UPDATE lopa_final_groups SET needs_voting_review=1 WHERE id=?',
+                              (row['group_id'],))
         self._log_lopa(row['lopa_id'], row['revision_id'], 'final-member-updated', str(member_id))
         self.commit()
 
@@ -5376,18 +5456,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             (revision_id,)).lastrowid
 
     def set_lopa_sensor_group_voting(self, group_id, voting):
-        row = self.conn.execute(
-            "SELECT revision_id FROM lopa_sensor_groups WHERE id=?", (group_id,)).fetchone()
-        if not row:
-            raise ValueError('Givargruppen finns inte längre.')
-        self._assert_lopa_revision_editable(row['revision_id'])
-        text = str(voting or '').strip()
-        if not re.fullmatch(r'\d+oo\d+', text, re.IGNORECASE):
-            raise ValueError('Ange röstning som exempelvis 1oo1 eller 2oo3.')
-        self.conn.execute(
-            "UPDATE lopa_sensor_groups SET voting=?,needs_voting_review=0 WHERE id=?",
-            (text.lower(), group_id))
-        self.commit()
+        self._set_lopa_group_voting('sensor', group_id, voting)
 
     def _add_lopa_sensor_member(self, revision_id, equipment_id, origin_safeguard_id,
                                 trigger_code='', trigger_custom='', tag_snapshot='', group_id=None):
@@ -5413,7 +5482,12 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
              trigger_custom, tag_snapshot, sort_order, equipment_id))
         # The second sensor is a deliberate review point.  The database
         # keeps 1oo1 until the user explicitly confirms/provides voting.
-        if member_count >= 1:
+        group = self.conn.execute('SELECT voting FROM lopa_sensor_groups WHERE id=?', (group_id,)).fetchone()
+        try:
+            _required, total = self._lopa_voting_parts(group['voting'])
+        except (TypeError, ValueError):
+            total = 0
+        if member_count >= 1 or total != member_count + 1:
             self.conn.execute(
                 "UPDATE lopa_sensor_groups SET needs_voting_review=1 WHERE id=?",
                 (group_id,))

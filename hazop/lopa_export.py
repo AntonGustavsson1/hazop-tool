@@ -115,13 +115,18 @@ def export_lopa_excel(db, filepath, selections=None):
     summary.title = 'LOPA sammanfattning'
     summary['A1'] = 'Skyddsbarriäranalys (LOPA) – sammanfattning'
     summary['A1'].font = Font(bold=True, size=14)
-    summary.merge_cells('A1:I1')
+    summary.merge_cells('A1:J1')
     summary.freeze_panes = 'A4'
     summary_row = 3
     summary_rows = []
     for record, revision in selected:
         calculations = [db.lopa_source_calculation(source['id'])
                         for source in db.lopa_sources(revision['id']) if source['active']]
+        voting_issues = db.lopa_voting_issues(revision['id'])
+        active_voting = any(member['active'] for group in db.lopa_sensor_groups(revision['id'])
+                            for member in db.lopa_sensor_members(group['id'])) or any(
+            member['active'] for group in db.lopa_final_groups(revision['id'])
+            for member in db.lopa_final_members(group['id']))
         governing = max((item for item in calculations if item['required_rrf'] is not None),
                          key=lambda item: item['required_rrf'], default=None) if all(
                              item['complete'] for item in calculations) else None
@@ -131,11 +136,12 @@ def export_lopa_excel(db, filepath, selections=None):
             governing['governing_category_name'] if governing else '—',
             _number(governing['required_rrf'] if governing else None),
             governing['sil'] if governing else 'Ofullständig',
+            '; '.join(voting_issues) or ('Inga anmärkningar' if active_voting else 'Inga aktiva grupper'),
         ])
     _write_table(summary, summary_row,
                  ['LOPA-nr', 'SIF-nr', 'SIF-namn', 'SIS', 'Rev.', 'Status',
-                  'Dimensionerande kategori', 'RRF', 'Beräknad SIL'], summary_rows,
-                 widths=[12, 14, 28, 20, 8, 13, 24, 14, 18])
+                  'Dimensionerande kategori', 'RRF', 'Beräknad SIL', 'Votingstatus'], summary_rows,
+                 widths=[12, 14, 28, 20, 8, 13, 24, 14, 18, 48])
 
     used_names = {summary.title}
     for record, revision in selected:
@@ -215,32 +221,38 @@ def export_lopa_excel(db, filepath, selections=None):
         sensor_rows = []
         for group_index, group in enumerate(db.lopa_sensor_groups(revision['id']), 1):
             members = db.lopa_sensor_members(group['id'])
+            voting_status = (db.lopa_group_voting_issue('sensor', group) or
+                             ('Inga anmärkningar' if any(member['active'] for member in members)
+                              else 'Inga aktiva objekt'))
             if not members:
-                sensor_rows.append([f'Givardel {group_index}', group['voting'], '—', '—', '—'])
+                sensor_rows.append([f'Givardel {group_index}', group['voting'], '—', '—', '—', voting_status])
             for member in members:
                 trip = ' '.join(part for part in (member.get('trigger_code') or '',
                                                    member.get('trigger_custom') or '') if part)
                 sensor_rows.append([
                     f'Givardel {group_index}', group['voting'], member.get('tag') or '—', trip or '—',
-                    'Ja' if member['active'] else 'Nej',
+                    'Ja' if member['active'] else 'Nej', voting_status,
                 ])
-        row = _write_table(ws, row, ['Grupp', 'Voting', 'Objekt', 'Anrop', 'Aktiv'], sensor_rows,
-                           widths=[18, 12, 24, 18, 10])
+        row = _write_table(ws, row, ['Grupp', 'Voting', 'Objekt', 'Anrop', 'Aktiv', 'Votingstatus'], sensor_rows,
+                           widths=[18, 12, 24, 18, 10, 48])
 
         ws.cell(row, 1, 'Manöverdel').font = Font(bold=True, size=12)
         row += 1
         final_rows = []
         for group_index, group in enumerate(db.lopa_final_groups(revision['id']), 1):
             members = db.lopa_final_members(group['id'])
+            voting_status = (db.lopa_group_voting_issue('final', group) or
+                             ('Inga anmärkningar' if any(member['active'] for member in members)
+                              else 'Inga aktiva objekt'))
             if not members:
-                final_rows.append([f'Manöverdel {group_index}', group['voting'], '—', '—', '—'])
+                final_rows.append([f'Manöverdel {group_index}', group['voting'], '—', '—', '—', voting_status])
             for member in members:
                 final_rows.append([
                     f'Manöverdel {group_index}', group['voting'], member.get('tag') or '—',
-                    member.get('action_text') or '—', 'Ja' if member['active'] else 'Nej',
+                    member.get('action_text') or '—', 'Ja' if member['active'] else 'Nej', voting_status,
                 ])
-        row = _write_table(ws, row, ['Grupp', 'Voting', 'Objekt', 'Åtgärd', 'Aktiv'], final_rows,
-                           widths=[18, 12, 24, 30, 10])
+        row = _write_table(ws, row, ['Grupp', 'Voting', 'Objekt', 'Åtgärd', 'Aktiv', 'Votingstatus'], final_rows,
+                           widths=[18, 12, 24, 30, 10, 48])
 
         ws.cell(row, 1, 'Oberoende barriärer').font = Font(bold=True, size=12)
         row += 1
