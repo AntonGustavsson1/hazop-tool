@@ -35,6 +35,22 @@ from database import get_matrix, freq_to_f_level
 from equipment_detection import COMPONENT_TYPES, _equip_prefix_from_tag
 
 
+def parse_rrf_integer(text):
+    """Parse an exact positive RRF representable by SQLite's INTEGER type."""
+    value_text = str(text or '').strip()
+    if not re.fullmatch(r'\+?[0-9]+', value_text):
+        raise ValueError('Ange RRF som ett heltal på minst 1.')
+    try:
+        value = int(value_text)
+    except ValueError:
+        raise ValueError('RRF-värdet är för stort för att lagras.') from None
+    if value < 1:
+        raise ValueError('Ange RRF som ett heltal på minst 1.')
+    if value > 9_223_372_036_854_775_807:
+        raise ValueError('RRF-värdet är för stort för att lagras.')
+    return value
+
+
 class _MiniPopupCloseButton(QObject):
     """Keep a small close affordance pinned to a lightweight popup.
 

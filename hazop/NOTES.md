@@ -1,5 +1,20 @@
 # NOTES.md — Beslut och kontext
 
+## HAZOP: exakt RRF-inmatning (2026-11-06)
+
+RRF-popupens tidigare numeriska ruta begränsade värden till 1 000 000 och
+kunde krascha vid befintliga värden utanför Qt:s 32-bitarsgräns. Båda
+popupvarianterna visar nu lagrade värden utan kapning och accepterar positiva
+heltal inom SQLite-databasens 64-bitarsintervall. Ogiltiga värden visar ett
+meddelande i popupen och sparas inte. Enter i fältet sparar en gång. Även
+befintliga ogiltiga decimalvärden visas för rättning i stället för att tyst
+avrundas av öppningsvägen.
+
+Syntaxkontroll, 99 träd-/smoketester och 38 P&ID-/barriärpopuptester passerade
+headless. Testerna omfattar ett stort värde hela vägen till en testdatabas.
+Båda popupvarianterna har granskats som renderade widgets; ett fullständigt
+manuellt arbetsflöde i programmet är inte genomfört.
+
 ## HAZOP: konsekventa barriärtyper och åtkomliga RRF-val (2026-11-06)
 
 RRF-popupen i scenariotabellen och P&ID-vyn använder nu samma projektspecifika

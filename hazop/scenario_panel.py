@@ -57,7 +57,7 @@ from ui_helpers import (
     _draw_text_with_bold_tags, standard_cause_options,
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
     find_bold_tag_at_position, _equipment_type_options,
-    add_mini_popup_close_button,
+    add_mini_popup_close_button, parse_rrf_integer,
     # Re-exported so every existing `from scenario_panel import
     # _BoldTagTextEdit` / `patch('scenario_panel._BoldTagTextEdit', ...)`
     # call site keeps working unchanged after the 2026-09-04 move to
@@ -3968,7 +3968,7 @@ class SgRRFCategoryPopup(QDialog):
         type_row.addWidget(self._type_combo)
         outer.addLayout(type_row)
 
-        # RRF preset list + custom spinbox
+        # RRF preset list + exact custom value
         presets = QListWidget()
         presets.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         presets.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -3984,16 +3984,23 @@ class SgRRFCategoryPopup(QDialog):
             if v == self._current_rrf:
                 presets.setCurrentItem(item)
         presets.itemClicked.connect(
-            lambda item: self._spin.setValue(item.data(Qt.ItemDataRole.UserRole)))
+            lambda item: self._rrf_edit.setText(str(item.data(Qt.ItemDataRole.UserRole))))
         outer.addWidget(presets)
         spin_row = QHBoxLayout()
         spin_row.addWidget(QLabel("Eget:"))
-        self._spin = QSpinBox()
-        self._spin.setRange(1, 1_000_000)
-        self._spin.setValue(self._current_rrf)
-        self._spin.setStyleSheet("font-size:10px;")
-        spin_row.addWidget(self._spin)
+        self._rrf_edit = QLineEdit('' if self._current_rrf is None else str(self._current_rrf))
+        self._rrf_edit.setAccessibleName('Eget RRF-värde')
+        self._rrf_edit.setToolTip('Ange ett heltal på minst 1.')
+        self._rrf_edit.setStyleSheet(popup_input_stylesheet() + 'font-size:10px;')
+        spin_row.addWidget(self._rrf_edit)
         outer.addLayout(spin_row)
+        self._rrf_error = QLabel()
+        self._rrf_error.setWordWrap(True)
+        self._rrf_error.setMaximumWidth(260)
+        self._rrf_error.setStyleSheet('border:none;color:#A11A1A;font-size:10px;')
+        self._rrf_error.hide()
+        outer.addWidget(self._rrf_error)
+        self._rrf_edit.textChanged.connect(self._rrf_error.hide)
 
         # Keep category applicability separate from the retired per-cause
         # selection.  Each category assessment owns its own exclusion set,
@@ -4019,17 +4026,25 @@ class SgRRFCategoryPopup(QDialog):
                 outer.addWidget(check)
 
         ok = QPushButton("OK")
-        ok.setDefault(True)
+        ok.setAutoDefault(False)
         ok.setStyleSheet(popup_primary_button_stylesheet())
         ok.clicked.connect(self._ok)
+        self._rrf_edit.returnPressed.connect(self._ok)
         outer.addWidget(ok, alignment=Qt.AlignmentFlag.AlignRight)
 
     def _ok(self):
+        try:
+            new_rrf = parse_rrf_integer(self._rrf_edit.text())
+        except ValueError as exc:
+            self._rrf_error.setText(str(exc))
+            self._rrf_error.show()
+            self._rrf_edit.setFocus()
+            self._rrf_edit.selectAll()
+            return
         with self.db.history_group():
-            return self._ok_inner()
+            return self._ok_inner(new_rrf)
 
-    def _ok_inner(self):
-        new_rrf  = self._spin.value()
+    def _ok_inner(self, new_rrf):
         new_type = self._type_combo.currentText()
         if new_rrf != self._current_rrf or new_type != self._current_type:
             self.db.update_safeguard(self._sg_id, rrf=new_rrf, sg_type=new_type)
@@ -7298,7 +7313,7 @@ class ScenarioTablePanel(QWidget):
         self._finish_inline_editor_for_external_click(None)
         sg = self.db.get_safeguard(sg_id)
         sg_d        = dict(sg) if sg else {}
-        current_rrf     = int(sg_d.get('rrf', 1))
+        current_rrf     = sg_d.get('rrf', 1)
         current_sg_type = sg_d.get('sg_type', 'Övrigt') or 'Övrigt'
 
         # Use the extended popup only for consequence-category applicability.

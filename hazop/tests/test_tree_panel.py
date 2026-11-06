@@ -1565,6 +1565,73 @@ class RRFPopupStyleTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
+    def test_large_saved_rrf_round_trips_without_clipping(self):
+        from tree_panel import RRFPopup
+
+        for value in (1_200_000, 3_000_000_000, 9_223_372_036_854_775_807):
+            with self.subTest(value=value):
+                popup = RRFPopup(value, 'SIS')
+                selected = []
+                popup.rrf_selected.connect(lambda rrf, kind: selected.append((rrf, kind)))
+                try:
+                    next(button for button in popup.findChildren(QPushButton)
+                         if button.text() == 'OK').click()
+                    self.assertEqual([(value, 'SIS')], selected)
+                finally:
+                    popup.close()
+                    popup.deleteLater()
+
+    def test_invalid_rrf_does_not_save_and_enter_saves_only_once(self):
+        from PyQt6.QtTest import QTest
+        from tree_panel import RRFPopup
+
+        popup = RRFPopup(10, 'SIS')
+        selected = []
+        popup.rrf_selected.connect(lambda rrf, kind: selected.append((rrf, kind)))
+        try:
+            popup.setWindowFlags(Qt.WindowType.Tool)
+            popup.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+            popup.show()
+            self.app.processEvents()
+            button = next(button for button in popup.findChildren(QPushButton)
+                          if button.text() == 'OK')
+            for invalid in ('', '0', '-1', '1.5', '1e3', '9223372036854775808'):
+                with self.subTest(value=invalid):
+                    popup._rrf_edit.setText(invalid)
+                    button.click()
+                    self.assertEqual([], selected)
+                    self.assertTrue(popup.isVisible())
+                    self.assertTrue(popup._rrf_error.text())
+            popup._rrf_edit.setText('3000000000')
+            QTest.keyClick(popup._rrf_edit, Qt.Key.Key_Return)
+            self.assertEqual([(3_000_000_000, 'SIS')], selected)
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+    def test_large_rrf_from_popup_is_saved_exactly_in_database(self):
+        from tree_panel import RRFPopup
+
+        with tempfile.TemporaryDirectory(prefix='hazop_rrf_popup_') as directory:
+            db = Database(path=os.path.join(directory, 'test.db'))
+            node = db.add_node()
+            cause = db.add_cause(db.deviations(node)[0]['id'])
+            consequence = db.add_consequence(cause)
+            safeguard = db.add_safeguard(consequence)
+            popup = RRFPopup(1, 'Övrigt')
+            popup.rrf_selected.connect(
+                lambda value, kind: db.update_safeguard(safeguard, rrf=value, sg_type=kind))
+            try:
+                popup._rrf_edit.setText('9223372036854775807')
+                next(button for button in popup.findChildren(QPushButton)
+                     if button.text() == 'OK').click()
+                self.assertEqual(9_223_372_036_854_775_807,
+                                 db.get_safeguard(safeguard)['rrf'])
+            finally:
+                popup.close()
+                popup.deleteLater()
+                db.conn.close()
+
     def test_rrf_popup_retains_saved_type_and_offers_project_types(self):
         from tree_panel import RRFPopup
 
@@ -1599,7 +1666,7 @@ class RRFPopupStyleTests(unittest.TestCase):
             self.app.processEvents()
             QTest.mouseClick(choices.viewport(), Qt.MouseButton.LeftButton,
                              pos=choices.visualItemRect(last).center())
-            self.assertEqual(10000, popup._spin.value())
+            self.assertEqual('10000', popup._rrf_edit.text())
         finally:
             popup.close()
             popup.deleteLater()
@@ -1623,7 +1690,7 @@ class RRFPopupStyleTests(unittest.TestCase):
 
             chosen = []
             popup.rrf_selected.connect(lambda value, sg_type: chosen.append((value, sg_type)))
-            popup._spin.setValue(250)
+            popup._rrf_edit.setText('250')
             next(button for button in popup.findChildren(QPushButton)
                  if button.text() == 'OK').click()
             self.assertEqual(chosen, [(250, popup._type_combo.currentText())])

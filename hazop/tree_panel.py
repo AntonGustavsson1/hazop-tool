@@ -35,7 +35,7 @@ from ui_helpers import (
     _maybe_save_as_standard_cause,
     _create_cause_from_pick,
     standard_cause_options,
-    add_mini_popup_close_button,
+    add_mini_popup_close_button, parse_rrf_integer,
 )
 from design import (
     TEXT, popup_clear_button_stylesheet, popup_compact_title_stylesheet,
@@ -2244,7 +2244,8 @@ class RRFPopup(QDialog):
     an optional numeric value. The only difference is that this lightweight
     route has no consequence-category checkboxes to display.
     """
-    rrf_selected = pyqtSignal(int, str)   # (rrf_value, sg_type)
+    # Qt's `int` signal is 32-bit, while SQLite INTEGER is 64-bit.
+    rrf_selected = pyqtSignal(object, str)   # (rrf_value, sg_type)
 
     def __init__(self, current_rrf: int, current_sg_type: str = 'Övrigt', parent=None,
                  *, safeguard_types=None):
@@ -2301,22 +2302,41 @@ class RRFPopup(QDialog):
         custom_row = QHBoxLayout()
         custom_row.setSpacing(4)
         custom_row.addWidget(QLabel("Eget:"))
-        self._spin = QSpinBox()
-        self._spin.setRange(1, 1_000_000)
-        self._spin.setValue(current_rrf)
-        self._spin.setStyleSheet(compact_control_stylesheet())
-        custom_row.addWidget(self._spin)
+        self._rrf_edit = QLineEdit('' if current_rrf is None else str(current_rrf))
+        self._rrf_edit.setAccessibleName('Eget RRF-värde')
+        self._rrf_edit.setToolTip('Ange ett heltal på minst 1.')
+        self._rrf_edit.setStyleSheet(popup_input_stylesheet())
+        custom_row.addWidget(self._rrf_edit)
         ok_btn = QPushButton("OK")
-        ok_btn.setDefault(True)
+        ok_btn.setAutoDefault(False)
         ok_btn.setStyleSheet(popup_primary_button_stylesheet())
-        ok_btn.clicked.connect(lambda: self._pick(self._spin.value()))
+        ok_btn.clicked.connect(self._save_rrf)
+        self._rrf_edit.returnPressed.connect(self._save_rrf)
         custom_row.addWidget(ok_btn)
         layout.addLayout(custom_row)
 
+        self._rrf_error = QLabel()
+        self._rrf_error.setWordWrap(True)
+        self._rrf_error.setMaximumWidth(260)
+        self._rrf_error.setStyleSheet('border:none;color:#A11A1A;font-size:10px;')
+        self._rrf_error.hide()
+        layout.addWidget(self._rrf_error)
+        self._rrf_edit.textChanged.connect(self._rrf_error.hide)
         presets.itemClicked.connect(
-            lambda item: self._spin.setValue(item.data(Qt.ItemDataRole.UserRole)))
+            lambda item: self._rrf_edit.setText(str(item.data(Qt.ItemDataRole.UserRole))))
         self.adjustSize()
         add_mini_popup_close_button(self)
+
+    def _save_rrf(self):
+        try:
+            value = parse_rrf_integer(self._rrf_edit.text())
+        except ValueError as exc:
+            self._rrf_error.setText(str(exc))
+            self._rrf_error.show()
+            self._rrf_edit.setFocus()
+            self._rrf_edit.selectAll()
+            return
+        self._pick(value)
 
     def _pick(self, val: int):
         self.rrf_selected.emit(val, self._type_combo.currentText())

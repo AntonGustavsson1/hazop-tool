@@ -3228,6 +3228,29 @@ class SgRRFPopupTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
+    def test_large_or_invalid_saved_rrf_is_not_silently_changed(self):
+        from scenario_panel import SgRRFCategoryPopup
+
+        db = unittest.mock.MagicMock()
+        db.safeguard_types.return_value = ['SIS', 'Övrigt']
+        popup = SgRRFCategoryPopup(db, 1, 3_000_000_000, 'SIS', [])
+        try:
+            self.assertEqual('3000000000', popup._rrf_edit.text())
+            popup._ok()
+            db.update_safeguard.assert_not_called()
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+        popup = SgRRFCategoryPopup(db, 1, 1.5, 'SIS', [])
+        try:
+            popup._ok()
+            db.update_safeguard.assert_not_called()
+            self.assertTrue(popup._rrf_error.text())
+        finally:
+            popup.close()
+            popup.deleteLater()
+
     def test_popup_retains_type_no_longer_in_project_list(self):
         from scenario_panel import SgRRFCategoryPopup
 
@@ -3268,7 +3291,7 @@ class SgRRFPopupTests(unittest.TestCase):
             self.app.processEvents()
             QTest.mouseClick(choices.viewport(), Qt.MouseButton.LeftButton,
                              pos=choices.visualItemRect(last).center())
-            self.assertEqual(10000, popup._spin.value())
+            self.assertEqual('10000', popup._rrf_edit.text())
         finally:
             popup.close()
             popup.deleteLater()
