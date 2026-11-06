@@ -1242,7 +1242,10 @@ class LopaPanel(QWidget):
 
     def _reset_detail_scroll(self):
         """Open another LOPA at its document header, never mid-sheet."""
-        QTimer.singleShot(0, lambda: self._detail_scroll.verticalScrollBar().setValue(0))
+        def reset():
+            self._detail_scroll.verticalScrollBar().setValue(0)
+            self._hazop_hierarchy.horizontalScrollBar().setValue(0)
+        QTimer.singleShot(0, reset)
 
     def _load_record(self, revision_id=None):
         record = self.db.get_lopa_record(self._lopa_id)
@@ -1556,14 +1559,39 @@ class LopaPanel(QWidget):
             self._hazop_hierarchy.setColumnWidth(
                 column, max(72, header_width, toggle_width))
 
+        # Preserve readable descriptions when the risk categories take more
+        # space than a narrow window can provide. The table scrolls locally;
+        # the whole LOPA page must not acquire a horizontal scrollbar.
+        fixed_columns = [self._HAZOP_REFERENCE_COL, self._HAZOP_FREQUENCY_COL]
+        fixed_columns.extend(range(self._HAZOP_CATEGORY_START_COL, self._hazop_hierarchy.columnCount()))
+        required = sum(self._hazop_hierarchy.columnWidth(column) for column in fixed_columns) + 320
+        if self._hazop_hierarchy.viewport().width() < required:
+            for column, width in ((self._HAZOP_CAUSE_COL, 160), (self._HAZOP_CONSEQUENCE_COL, 160)):
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+                self._hazop_hierarchy.setColumnWidth(column, width)
+
+    def _fit_hazop_hierarchy_height(self):
+        """Keep the table's horizontal scrollbar visible below its rows."""
+        table = self._hazop_hierarchy
+        scrollbar = table.horizontalScrollBar()
+        scroll_height = scrollbar.sizeHint().height() if scrollbar.maximum() > 0 else 0
+        height = (max(22, table.horizontalHeader().height()) +
+                  sum(table.rowHeight(row) for row in range(table.rowCount())) +
+                  table.frameWidth() * 2 + 2 + scroll_height)
+        table.setFixedHeight(max(72, min(192, height)))
+
     def _finalize_hazop_hierarchy_geometry(self, category_columns):
         """Reapply section sizing after the panel has received its real width."""
         if self._loading:
             return
+        previous_scroll = self._hazop_hierarchy.horizontalScrollBar().value()
         self._configure_hazop_hierarchy_columns(category_columns)
         self._hazop_hierarchy.resizeColumnsToContents()
         self._fit_hazop_category_columns(category_columns)
         self._hazop_hierarchy.doItemsLayout()
+        self._hazop_hierarchy.resizeRowsToContents()
+        self._fit_hazop_hierarchy_height()
+        self._hazop_hierarchy.horizontalScrollBar().setValue(previous_scroll)
 
     def _build_scenario_reference(self, source):
         """Build reference: H-1.1.1.1 for HAZOP or L-001.1 for local sources."""
@@ -1662,6 +1690,7 @@ class LopaPanel(QWidget):
     def _populate_hazop_hierarchy(self, *, select_consequence_id=None,
                                   preserve_geometry=None):
         """Render one row per consequence with a numeric active cell per category."""
+        previous_scroll = self._hazop_hierarchy.horizontalScrollBar().value()
         sources = self.db.lopa_sources(self._revision_id) if self._revision_id else []
         selected_source = (self._source_id if any(source['id'] == self._source_id
                                                    for source in sources) else None)
@@ -1773,8 +1802,9 @@ class LopaPanel(QWidget):
             self._hazop_hierarchy.resizeColumnsToContents()
             self._fit_hazop_category_columns(category_columns)
             self._hazop_hierarchy.resizeRowsToContents()
-            self._fit_table_height(self._hazop_hierarchy, 72, 192)
+            self._fit_hazop_hierarchy_height()
         self._hazop_hierarchy.doItemsLayout()
+        self._hazop_hierarchy.horizontalScrollBar().setValue(previous_scroll)
         self._source_id = selected_source
         sync_states = [self.db.lopa_source_sync_state(source['id'])
                        for source in sources if source['active']]

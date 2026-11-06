@@ -1,5 +1,18 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: läsbar scenariotabell på smala skärmar (2026-11-06)
+
+På smala fönster behåller kolumnerna Orsak och Konsekvens sin läsbara bredd.
+Riskkategorier som inte får plats nås via tabellens egen horisontella rullning,
+utan att hela LOPA-sidan behöver rulla i sidled. Rullningslisten får plats under
+raderna, och när ett LOPA-ark öppnas visas tabellens början. Vid vanlig
+uppdatering behålls den valda rullningspositionen; breda fönster utnyttjar
+fortfarande hela tillgängliga bredden.
+
+Syntaxkontroll och 44 panel-/smoketester passerade headless, följt av riktat
+test för öppning och rullningsposition. Renderade exempel granskades vid cirka
+600 och 1 500 pixlars fönsterbredd; inget komplett manuellt GUI-flöde kördes.
+
 ## LOPA: ändrad givarkoppling och aktiv givare (2026-11-06)
 
 En LOPA-källa sparar nu HAZOP-givarens strukturerade objekt och anrop. Om

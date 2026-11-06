@@ -186,6 +186,33 @@ class LopaHierarchyTableTests(unittest.TestCase):
     def test_add_scenario_button_removed(self):
         self.assertFalse(hasattr(self.panel, '_add_scenario_btn'))
 
+    def test_narrow_hazop_table_keeps_descriptions_readable_and_scrolls_locally(self):
+        self.panel.resize(600, 1000)
+        self.panel.show()
+        for _ in range(3):
+            self.app.processEvents()
+        table = self.panel._hazop_hierarchy
+        scroll = table.horizontalScrollBar()
+        self.assertGreaterEqual(table.columnWidth(self.panel._HAZOP_CAUSE_COL), 160)
+        self.assertGreaterEqual(table.columnWidth(self.panel._HAZOP_CONSEQUENCE_COL), 160)
+        self.assertGreater(scroll.maximum(), 0)
+        self.assertEqual(0, self.panel._detail_scroll.horizontalScrollBar().maximum())
+        scroll.setValue(scroll.maximum())
+        previous = scroll.value()
+        self.panel._populate_hazop_hierarchy()
+        for _ in range(3):
+            self.app.processEvents()
+        self.assertEqual(previous, scroll.value())
+        self.panel.activate_lopa(self.lopa_id, self.revision_id)
+        for _ in range(3):
+            self.app.processEvents()
+        self.assertEqual(0, scroll.value())
+        self.panel.resize(1500, 1000)
+        for _ in range(3):
+            self.app.processEvents()
+        self.assertEqual(0, scroll.maximum())
+        self.assertGreater(table.columnWidth(self.panel._HAZOP_CAUSE_COL), 160)
+
     def test_dimensioning_summary_requires_all_active_sources(self):
         self.panel._populate_calculation()
         self.assertIn('Beräknat behov', self.panel._dimensioning_summary.text())
