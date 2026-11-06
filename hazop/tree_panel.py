@@ -4,6 +4,7 @@ hazop.py 2026-08-17, see NOTES.md "Förenkla koden + dela upp hazop.py i
 fler filer"."""
 
 import math
+import logging
 import re
 import traceback
 from decimal import Decimal, InvalidOperation
@@ -35,7 +36,7 @@ from ui_helpers import (
     _maybe_save_as_standard_cause,
     _create_cause_from_pick,
     standard_cause_options,
-    add_mini_popup_close_button, parse_rrf_integer,
+    add_mini_popup_close_button, parse_rrf_integer, sync_rrf_preset_selection,
 )
 from design import (
     TEXT, popup_clear_button_stylesheet, popup_compact_title_stylesheet,
@@ -2248,8 +2249,9 @@ class RRFPopup(QDialog):
     rrf_selected = pyqtSignal(object, str)   # (rrf_value, sg_type)
 
     def __init__(self, current_rrf: int, current_sg_type: str = 'Övrigt', parent=None,
-                 *, safeguard_types=None):
+                 *, safeguard_types=None, save_callback=None):
         super().__init__(parent)
+        self._save_callback = save_callback
         self.setWindowTitle("Ändra RRF")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -2322,6 +2324,9 @@ class RRFPopup(QDialog):
         self._rrf_error.hide()
         layout.addWidget(self._rrf_error)
         self._rrf_edit.textChanged.connect(self._rrf_error.hide)
+        self._rrf_edit.textChanged.connect(
+            lambda text: sync_rrf_preset_selection(presets, text))
+        sync_rrf_preset_selection(presets, self._rrf_edit.text())
         presets.itemClicked.connect(
             lambda item: self._rrf_edit.setText(str(item.data(Qt.ItemDataRole.UserRole))))
         self.adjustSize()
@@ -2339,7 +2344,20 @@ class RRFPopup(QDialog):
         self._pick(value)
 
     def _pick(self, val: int):
-        self.rrf_selected.emit(val, self._type_combo.currentText())
+        sg_type = self._type_combo.currentText()
+        try:
+            if self._save_callback is not None:
+                self._save_callback(val, sg_type)
+        except ValueError as exc:
+            self._rrf_error.setText(str(exc))
+            self._rrf_error.show()
+            return
+        except Exception:
+            logging.warning('Could not save barrier RRF and type', exc_info=True)
+            self._rrf_error.setText('Kunde inte spara. Försök igen; inga ändringar sparades.')
+            self._rrf_error.show()
+            return
+        self.rrf_selected.emit(val, sg_type)
         self.accept()
 
 

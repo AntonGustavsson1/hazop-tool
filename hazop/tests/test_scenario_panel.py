@@ -3343,6 +3343,23 @@ class SgRRFPopupTests(unittest.TestCase):
             popup.close()
             popup.deleteLater()
 
+    def test_preset_highlight_tracks_custom_value_in_extended_popup(self):
+        from PyQt6.QtWidgets import QListWidget
+        from scenario_panel import SgRRFCategoryPopup
+
+        db = unittest.mock.MagicMock()
+        db.safeguard_types.return_value = ['SIS']
+        popup = SgRRFCategoryPopup(db, 1, 100, 'SIS', [])
+        try:
+            choices = popup.findChild(QListWidget)
+            popup._rrf_edit.setText('250')
+            self.assertEqual([], choices.selectedItems())
+            popup._rrf_edit.setText('10')
+            self.assertEqual('10', choices.currentItem().text())
+        finally:
+            popup.close()
+            popup.deleteLater()
+
     def test_category_changes_preserve_other_exclusions_and_never_touch_causes(self):
         from scenario_panel import SgRRFCategoryPopup
 
@@ -3375,8 +3392,8 @@ class SgRRFPopupPersistenceTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix='hazop_rrf_persistence_')
         self.db = Database(path=os.path.join(self.tmpdir, 'test.db'))
-        node = self.db.add_node()
-        self.cause = self.db.add_cause(self.db.deviations(node)[0]['id'])
+        self.node = self.db.add_node()
+        self.cause = self.db.add_cause(self.db.deviations(self.node)[0]['id'])
         self.cons = self.db.add_consequence(self.cause)
         self.sg = self.db.add_safeguard(self.cons)
         self.other1 = self.db.add_safeguard(self.cons)
@@ -3476,6 +3493,30 @@ class SgRRFPopupPersistenceTests(unittest.TestCase):
         finally:
             popup.close()
             popup.deleteLater()
+
+    def test_simple_scenario_popup_saves_through_transactional_path(self):
+        from PyQt6.QtCore import QPoint
+        from scenario_panel import ScenarioTablePanel
+        from tree_panel import RRFPopup
+
+        self.db.conn.execute('DELETE FROM consequence_severities WHERE consequence_id=?', (self.cons,))
+        self.db.commit()
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.load_node(self.node)
+            row = next(r for r in range(panel._table.rowCount())
+                       if panel._table.item(r, panel._C_SG) is not None and
+                       panel._table.item(r, panel._C_SG).data(Qt.ItemDataRole.UserRole) ==
+                       ('safeguard', self.sg))
+            def choose_value(popup):
+                popup._rrf_edit.setText('1234')
+                popup._save_rrf()
+                return popup.result()
+            with unittest.mock.patch.object(RRFPopup, 'exec', new=choose_value):
+                panel._show_rrf_popup_at(row, self.sg, QPoint(100, 100))
+            self.assertEqual(1234, self.db.get_safeguard(self.sg)['rrf'])
+        finally:
+            panel.deleteLater()
 
 
 class RiskMatrixCategorySectionTests(unittest.TestCase):

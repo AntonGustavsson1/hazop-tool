@@ -83,6 +83,36 @@ from test_helpers import (
     _TempDbMainWindow, _find_tree_item,
 )
 
+class SafeguardRibbonSaveTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def test_rrf_popup_saves_before_emitting_item_changed(self):
+        from node_markup import PropertiesRibbon
+
+        with tempfile.TemporaryDirectory(prefix='hazop_ribbon_rrf_') as directory:
+            db = Database(path=os.path.join(directory, 'test.db'))
+            node = db.add_node()
+            cause = db.add_cause(db.deviations(node)[0]['id'])
+            safeguard = db.add_safeguard(db.add_consequence(cause))
+            panel = PropertiesRibbon(db)
+            panel._id = safeguard
+            panel._mw = object()
+            observed = []
+            panel.item_changed.connect(lambda: observed.append(db.get_safeguard(safeguard)['rrf']))
+            def select_value(_button, popup):
+                popup._rrf_edit.setText('1234')
+                popup._save_rrf()
+            try:
+                with unittest.mock.patch.object(panel, '_show_popup', side_effect=select_value):
+                    panel._edit_sg_rrf(None)
+                self.assertEqual(1234, db.get_safeguard(safeguard)['rrf'])
+                self.assertEqual([1234], observed)
+            finally:
+                panel.deleteLater()
+                db.conn.close()
+
 class NodeMarkupPanelNavigateTests(unittest.TestCase):
     """The node-markup toolbar's prev/next node buttons (⬆/⬇) crashed with
     TypeError: 'method' object is not iterable — _navigate_prev/

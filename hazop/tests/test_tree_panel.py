@@ -1632,6 +1632,57 @@ class RRFPopupStyleTests(unittest.TestCase):
                 popup.deleteLater()
                 db.conn.close()
 
+    def test_save_failure_keeps_popup_open_and_retry_saves_once(self):
+        from tree_panel import RRFPopup
+
+        with tempfile.TemporaryDirectory(prefix='hazop_rrf_failure_') as directory:
+            db = Database(path=os.path.join(directory, 'test.db'))
+            node = db.add_node()
+            cause = db.add_cause(db.deviations(node)[0]['id'])
+            safeguard = db.add_safeguard(db.add_consequence(cause))
+            db.conn.execute(
+                'CREATE TRIGGER reject_rrf BEFORE UPDATE ON safeguards '
+                'WHEN NEW.rrf=100 BEGIN SELECT RAISE(ABORT, "testfel"); END')
+            db.commit()
+            popup = RRFPopup(1, 'Övrigt', save_callback=lambda value, kind:
+                             db.save_safeguard_rrf_applicability(safeguard, value, kind, {}))
+            selected = []
+            popup.rrf_selected.connect(lambda value, kind: selected.append((value, kind)))
+            try:
+                popup.setWindowFlags(Qt.WindowType.Tool)
+                popup.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+                popup.show()
+                self.app.processEvents()
+                popup._rrf_edit.setText('100')
+                popup._save_rrf()
+                self.assertTrue(popup.isVisible())
+                self.assertTrue(popup._rrf_error.text())
+                self.assertEqual([], selected)
+                self.assertEqual(1, db.get_safeguard(safeguard)['rrf'])
+                db.conn.execute('DROP TRIGGER reject_rrf')
+                db.commit()
+                popup._save_rrf()
+                self.assertEqual(100, db.get_safeguard(safeguard)['rrf'])
+                self.assertEqual([(100, 'Övrigt')], selected)
+            finally:
+                popup.close()
+                popup.deleteLater()
+                db.conn.close()
+
+    def test_preset_highlight_tracks_custom_value(self):
+        from tree_panel import RRFPopup
+
+        popup = RRFPopup(100)
+        try:
+            choices = popup.findChild(QListWidget)
+            popup._rrf_edit.setText('250')
+            self.assertEqual([], choices.selectedItems())
+            popup._rrf_edit.setText('10')
+            self.assertEqual('10', choices.currentItem().text())
+        finally:
+            popup.close()
+            popup.deleteLater()
+
     def test_rrf_popup_retains_saved_type_and_offers_project_types(self):
         from tree_panel import RRFPopup
 

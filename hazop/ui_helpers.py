@@ -51,6 +51,19 @@ def parse_rrf_integer(text):
     return value
 
 
+def sync_rrf_preset_selection(presets, text):
+    """Keep a popup's highlighted preset in step with its numeric field."""
+    try:
+        value = parse_rrf_integer(text)
+    except ValueError:
+        value = None
+    match = next((presets.item(i) for i in range(presets.count())
+                  if presets.item(i).data(Qt.ItemDataRole.UserRole) == value), None)
+    if match is None:
+        presets.clearSelection()
+    presets.setCurrentItem(match)
+
+
 class _MiniPopupCloseButton(QObject):
     """Keep a small close affordance pinned to a lightweight popup.
 

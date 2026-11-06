@@ -925,10 +925,11 @@ class PropertiesRibbon(QWidget):
         sgd = dict(sg)
         sg_id = self._id   # capture by value for the signal lambda
         popup = RRFPopup(sgd.get('rrf', 1), sgd.get('sg_type', 'Övrigt'), self,
-                         safeguard_types=self.db.safeguard_types())
+                         safeguard_types=self.db.safeguard_types(),
+                         save_callback=lambda value, kind, sid=sg_id:
+                         self.db.save_safeguard_rrf_applicability(sid, value, kind, {}))
         popup.rrf_selected.connect(
-            lambda v, t, sid=sg_id: (self.db.update_safeguard(sid, rrf=v, sg_type=t),
-                                     self.item_changed.emit()))
+            lambda _value, _kind: self.item_changed.emit())
         self._show_popup(btn, popup)
 
     def _zoom_to_sg(self, btn):

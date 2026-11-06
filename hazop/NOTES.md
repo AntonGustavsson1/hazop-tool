@@ -1,5 +1,18 @@
 # NOTES.md — Beslut och kontext
 
+## HAZOP: sparfel och markering i båda RRF-popuperna (2026-11-06)
+
+Den enklare RRF-popupen använder samma transaktionssäkra sparväg som
+kategorivarianten, både i scenariotabellen och i P&ID-raden. Vid sparfel visas
+ett meddelande och popupen är kvar för ett nytt försök; uppdateringssignal
+skickas först när ändringen faktiskt sparats. I båda varianterna följer den
+markerade förvalsraden det aktuella värdet och avmarkeras för egna värden.
+
+Syntaxkontroll, 101 träd-/smoketester och 46 P&ID-/barriärpopuptester
+passerade headless; riktade popuptester kördes efter sista justeringen.
+Testerna omfattar sparfel, nytt försök och båda öppningsvägarna. Felvyn
+granskades som renderad widget; fullständigt manuellt GUI-flöde återstår.
+
 ## HAZOP: sökning och ersättning (2026-11-06)
 
 Sökdialogens svenska texter har rättats, sökträffar målas inte längre dubbelt

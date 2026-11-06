@@ -57,7 +57,7 @@ from ui_helpers import (
     _draw_text_with_bold_tags, standard_cause_options,
     total_freq_reduction, CHAIN_ITEMS, build_consequence_text, parse_chain_from_json,
     find_bold_tag_at_position, _equipment_type_options,
-    add_mini_popup_close_button, parse_rrf_integer,
+    add_mini_popup_close_button, parse_rrf_integer, sync_rrf_preset_selection,
     # Re-exported so every existing `from scenario_panel import
     # _BoldTagTextEdit` / `patch('scenario_panel._BoldTagTextEdit', ...)`
     # call site keeps working unchanged after the 2026-09-04 move to
@@ -4003,6 +4003,9 @@ class SgRRFCategoryPopup(QDialog):
         outer.addWidget(self._rrf_error)
         self._rrf_edit.textChanged.connect(
             lambda: self._rrf_error.hide() if not self._category_load_failed else None)
+        self._rrf_edit.textChanged.connect(
+            lambda text: sync_rrf_preset_selection(presets, text))
+        sync_rrf_preset_selection(presets, self._rrf_edit.text())
 
         # Keep category applicability separate from the retired per-cause
         # selection.  Each category assessment owns its own exclusion set,
@@ -7342,9 +7345,9 @@ class ScenarioTablePanel(QWidget):
                 sev_cat_list, parent=self)
         else:
             popup = RRFPopup(current_rrf, current_sg_type, self,
-                             safeguard_types=self.db.safeguard_types())
-            popup.rrf_selected.connect(
-                lambda v, t, r=row, sid=sg_id: self._update_sg_rrf(r, sid, v, t))
+                             safeguard_types=self.db.safeguard_types(),
+                             save_callback=lambda value, kind, sid=sg_id:
+                             self.db.save_safeguard_rrf_applicability(sid, value, kind, {}))
 
         popup.adjustSize()
         # Prefer ABOVE global_pos (2026-08-26, see NOTES.md "Flytta
@@ -8614,10 +8617,6 @@ class ScenarioTablePanel(QWidget):
                 QMessageBox.StandardButton.No)
             return 'rename' if answer == QMessageBox.StandardButton.Yes else 'cancel'
         return 'rename'
-
-    def _update_sg_rrf(self, row, sg_id, rrf, sg_type=None):
-        self.db.update_safeguard(sg_id, rrf=rrf, sg_type=sg_type)
-        self._schedule_rebuild()
 
     def _on_ors_frequency_picked(self, cause_id, f_level, numeric):
         """FrequencyPickerPopup.frequency_selected handler for the ORS
