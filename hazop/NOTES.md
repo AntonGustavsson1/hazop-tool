@@ -1,5 +1,20 @@
 # NOTES.md — Beslut och kontext
 
+## HAZOP: säker numerisk frekvens i popupen (2026-11-06)
+
+Frekvenspopupens tidigare sex decimaler avrundade exempelvis 1e-10/år till
+noll när användaren sparade. Numerisk frekvens visas och sparas nu utan den
+avrundningen och kan anges med decimalpunkt, decimalkomma eller tiopotens.
+Tom, negativ, ogiltig, oändlig eller så liten/stor inmatning att den inte kan
+representeras avvisas i popupen; noll kan fortfarande anges uttryckligen.
+Val av frekvensnivå och Rensa fungerar som tidigare. Enter sparar ett värde.
+
+Syntaxkontroll, 95 träd-/smoketester och åtta integrationsfall för
+frekvensklick passerade headless. Testerna omfattar bland annat 1e-14/år hela
+vägen till databasen, ogiltiga värden och tangentbord. Popupen granskades som
+renderad widget med ett litet värde och en felsituation; ett fullständigt
+manuellt GUI-arbetsflöde är inte genomfört.
+
 ## LOPA: voting och varningar i givare/manöverdel (2026-11-06)
 
 Voting i aktiva givar- och manövergrupper valideras som MooN med 1 ≤ M ≤ N.

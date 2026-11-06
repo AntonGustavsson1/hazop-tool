@@ -6,6 +6,7 @@ fler filer"."""
 import math
 import re
 import traceback
+from decimal import Decimal, InvalidOperation
 from functools import partial
 
 from PyQt6.QtWidgets import (
@@ -13,7 +14,7 @@ from PyQt6.QtWidgets import (
     QTreeWidgetItemIterator, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGridLayout, QLineEdit, QLabel, QPushButton, QComboBox, QDialog,
     QDialogButtonBox, QMessageBox, QGroupBox, QMenu, QSpinBox,
-    QDoubleSpinBox, QFrame, QListWidget, QListWidgetItem, QInputDialog,
+    QFrame, QListWidget, QListWidgetItem, QInputDialog,
     QCheckBox, QButtonGroup, QRadioButton, QSplitter, QColorDialog,
     QAbstractItemView,
 )
@@ -2393,16 +2394,20 @@ class FrequencyPickerPopup(QDialog):
         custom_row = QHBoxLayout()
         custom_row.setSpacing(4)
         custom_row.addWidget(QLabel("Eget (händelser/år):"))
-        self._spin = QDoubleSpinBox()
-        self._spin.setDecimals(6)
-        self._spin.setRange(0.0, 1_000_000.0)
-        self._spin.setSingleStep(0.01)
+        self._numeric_edit = QLineEdit()
+        self._numeric_edit.setAccessibleName('Numerisk frekvens i händelser per år')
+        self._numeric_edit.setPlaceholderText('t.ex. 0,001 eller 1e-8')
+        self._numeric_edit.setToolTip('Ange ett icke-negativt tal, med decimaltecken eller tiopotens.')
         if current_numeric_freq is not None:
-            self._spin.setValue(float(current_numeric_freq))
-        self._spin.valueChanged.connect(self._update_preview_label)
-        custom_row.addWidget(self._spin)
+            try:
+                self._numeric_edit.setText(repr(float(current_numeric_freq)))
+            except (TypeError, ValueError, OverflowError):
+                self._numeric_edit.setText(str(current_numeric_freq))
+        custom_row.addWidget(self._numeric_edit)
         ok_btn = QPushButton("OK")
+        ok_btn.setAutoDefault(False)
         ok_btn.clicked.connect(self._pick_numeric)
+        self._numeric_edit.returnPressed.connect(self._pick_numeric)
         custom_row.addWidget(ok_btn)
         layout.addLayout(custom_row)
 
@@ -2420,25 +2425,55 @@ class FrequencyPickerPopup(QDialog):
         self._preview_lbl.setStyleSheet(
             "border:none;" + popup_muted_label_stylesheet()
         )
+        self._preview_lbl.setWordWrap(True)
+        self._preview_lbl.setMaximumWidth(330)
         layout.addWidget(self._preview_lbl)
-        if current_numeric_freq is not None:
-            self._update_preview_label(float(current_numeric_freq))
-        else:
-            self._update_preview_label(self._spin.value())
+        self._numeric_edit.textChanged.connect(self._update_preview_label)
+        self._update_preview_label(self._numeric_edit.text())
 
         self.adjustSize()
         add_mini_popup_close_button(self)
 
-    def _update_preview_label(self, val):
-        f_lvl = freq_to_f_level(val) if val else -1
-        self._preview_lbl.setText(f"→ {freq_axis_label_full(f_lvl)}")
+    @staticmethod
+    def _parse_numeric_frequency(text):
+        value = str(text or '').strip()
+        if not re.fullmatch(r'[+]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:[eE][+-]?\d+)?', value):
+            raise ValueError('Ange en frekvens, exempelvis 0,001 eller 1e-8.')
+        try:
+            exact = Decimal(value.replace(',', '.'))
+            numeric = float(exact)
+        except (InvalidOperation, ValueError, OverflowError):
+            raise ValueError('Frekvensen kunde inte tolkas.')
+        if not math.isfinite(numeric):
+            raise ValueError('Frekvensen är för stor för att lagras.')
+        if exact != 0 and numeric == 0:
+            raise ValueError('Frekvensen är för liten för att lagras.')
+        return numeric
+
+    def _update_preview_label(self, text):
+        if not str(text or '').strip():
+            self._preview_lbl.setText('Välj en nivå eller ange en numerisk frekvens.')
+            return
+        try:
+            value = self._parse_numeric_frequency(text)
+        except ValueError as exc:
+            self._preview_lbl.setText(str(exc))
+            return
+        self._preview_lbl.setText(f"→ {freq_axis_label_full(freq_to_f_level(value))}")
 
     def _pick_preset(self, f_level: int):
         self.frequency_selected.emit(f_level, None)
         self.accept()
 
     def _pick_numeric(self):
-        self.frequency_selected.emit(None, self._spin.value())
+        try:
+            value = self._parse_numeric_frequency(self._numeric_edit.text())
+        except ValueError as exc:
+            self._preview_lbl.setText(str(exc))
+            self._numeric_edit.setFocus()
+            self._numeric_edit.selectAll()
+            return
+        self.frequency_selected.emit(None, value)
         self.accept()
 
     def _clear_frequency(self):

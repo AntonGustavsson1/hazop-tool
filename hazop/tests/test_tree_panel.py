@@ -1621,6 +1621,86 @@ class FrequencyPickerPopupTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
+    def test_existing_small_numeric_frequency_is_not_rounded_to_zero_on_save(self):
+        from tree_panel import FrequencyPickerPopup
+
+        popup = FrequencyPickerPopup(current_numeric_freq=1e-10)
+        selected = []
+        popup.frequency_selected.connect(lambda level, numeric: selected.append((level, numeric)))
+        try:
+            popup._pick_numeric()
+            self.assertEqual([(None, 1e-10)], selected)
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+    def test_numeric_frequency_accepts_scientific_and_swedish_decimal_notation(self):
+        from tree_panel import FrequencyPickerPopup
+
+        for text, expected in (('1e-12', 1e-12), ('0,0000000004', 4e-10),
+                               ('+1.5e-8', 1.5e-8), ('0', 0.0), ('2e7', 2e7)):
+            with self.subTest(text=text):
+                popup = FrequencyPickerPopup()
+                selected = []
+                popup.frequency_selected.connect(lambda level, numeric: selected.append((level, numeric)))
+                try:
+                    popup._numeric_edit.setText(text)
+                    popup._pick_numeric()
+                    self.assertEqual([(None, expected)], selected)
+                finally:
+                    popup.close()
+                    popup.deleteLater()
+
+    def test_invalid_numeric_frequency_does_not_save_or_close_popup(self):
+        from tree_panel import FrequencyPickerPopup
+
+        popup = FrequencyPickerPopup(current_numeric_freq=0.1)
+        selected = []
+        popup.frequency_selected.connect(lambda level, numeric: selected.append((level, numeric)))
+        try:
+            popup.show()
+            self.app.processEvents()
+            for text in ('', '-1', 'nan', 'inf', '1e309', '1e-400', '1,2,3'):
+                with self.subTest(text=text):
+                    popup._numeric_edit.setText(text)
+                    popup._pick_numeric()
+                    self.assertEqual([], selected)
+                    self.assertTrue(popup.isVisible())
+                    self.assertTrue(popup._preview_lbl.text())
+            popup._numeric_edit.setText('0,02')
+            popup._pick_numeric()
+            self.assertEqual([(None, 0.02)], selected)
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+    def test_numeric_frequency_enter_saves_once_and_round_trips_in_database(self):
+        from PyQt6.QtTest import QTest
+        from tree_panel import FrequencyPickerPopup
+
+        with tempfile.TemporaryDirectory(prefix='hazop_freq_popup_') as directory:
+            db = Database(path=os.path.join(directory, 'test.db'))
+            node = db.add_node()
+            cause = db.add_cause(db.deviations(node)[0]['id'])
+            popup = FrequencyPickerPopup()
+            selected = []
+            def save(level, numeric):
+                selected.append((level, numeric))
+                db.update_cause(cause, base_frequency=numeric, frequency_override=None,
+                                frequency_cleared=False)
+            popup.frequency_selected.connect(save)
+            try:
+                popup.show()
+                popup._numeric_edit.setText('1e-14')
+                self.app.processEvents()
+                QTest.keyClick(popup._numeric_edit, Qt.Key.Key_Return)
+                self.assertEqual([(None, 1e-14)], selected)
+                self.assertEqual(1e-14, db.get_cause(cause)['base_frequency'])
+            finally:
+                popup.close()
+                popup.deleteLater()
+                db.conn.close()
+
     def test_frequency_levels_are_shown_in_a_compact_list_with_frame(self):
         from tree_panel import FrequencyPickerPopup
 
