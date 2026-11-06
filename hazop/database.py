@@ -9857,6 +9857,10 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         self._record_committed_state()
         self._write_backup()
 
+    def commit_strict(self):
+        """Commit with normal history while letting write errors reach the caller."""
+        self._commit_with_history()
+
     def commit(self):
         """Write-through commit: history snapshot, then throttled backup."""
         try:

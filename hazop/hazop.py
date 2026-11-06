@@ -777,7 +777,7 @@ class GlobalSearchDialog(QDialog):
         ('causes', 'Orsak', 'cause', ('description', 'comment', 'comp_type', 'comp_tag')),
         ('consequences', 'Konsekvens', 'consequence', ('description', 'category', 'consequence_chain', 'comp_type', 'comp_tag', 'tagged_refs')),
         ('consequence_steps', 'Konsekvensdel', 'consequence_step', ('text', 'ref_tag')),
-        ('safeguards', 'Safeguard', 'safeguard', ('description', 'sg_type', 'comp_type', 'comp_tag', 'tagged_refs')),
+        ('safeguards', 'Barriär', 'safeguard', ('description', 'sg_type', 'comp_type', 'comp_tag', 'tagged_refs')),
         ('reduction_factors', 'Reduktionsfaktor', 'reduction_factor', ('description',)),
         ('recommendations', 'Rekommendation', 'recommendation', ('description', 'responsible', 'due_date', 'status')),
         ('equipment_catalog', 'Utrustning', 'equipment', ('tag', 'original_tag', 'equipment_type', 'description')),
@@ -799,7 +799,7 @@ class GlobalSearchDialog(QDialog):
         'comment': 'Kommentar', 'comp_type': 'Objekttyp', 'comp_tag': 'Objekttagg',
         'category': 'Kategori', 'consequence_chain': 'Konsekvenskedja',
         'tagged_refs': 'Taggreferenser', 'text': 'Text', 'ref_tag': 'Referenstagg',
-        'sg_type': 'Safeguardtyp', 'responsible': 'Ansvarig', 'due_date': 'Förfallodatum',
+        'sg_type': 'Barriärtyp', 'responsible': 'Ansvarig', 'due_date': 'Förfallodatum',
         'status': 'Status', 'tag': 'Tagg', 'original_tag': 'Ursprunglig tagg',
         'equipment_type': 'Utrustningstyp', 'revision': 'Revision', 'notes': 'Noteringar',
         'created_at': 'Skapad', 'pdf_path': 'PDF-dokument', 'sheet_name': 'Sidnamn',
@@ -839,13 +839,13 @@ class GlobalSearchDialog(QDialog):
         lay.addLayout(row)
 
         replace_row = QHBoxLayout()
-        replace_row.addWidget(QLabel("ErsÃ¤tt med:"))
+        replace_row.addWidget(QLabel("Ersätt med:"))
         self._replace_edit = QLineEdit()
         self._replace_edit.setPlaceholderText("Ny text")
         replace_row.addWidget(self._replace_edit, 1)
-        self._replace_btn = QPushButton("ErsÃ¤tt")
-        self._replace_all_btn = QPushButton("ErsÃ¤tt alla")
-        self._undo_replace_btn = QPushButton("Ã…ngra senaste ersÃ¤ttning")
+        self._replace_btn = QPushButton("Ersätt")
+        self._replace_all_btn = QPushButton("Ersätt alla")
+        self._undo_replace_btn = QPushButton("Ångra senaste ersättning")
         self._replace_btn.clicked.connect(self._replace_current)
         self._replace_all_btn.clicked.connect(self._replace_all)
         self._undo_replace_btn.clicked.connect(self._undo_last_replace)
@@ -869,6 +869,7 @@ class GlobalSearchDialog(QDialog):
 
         self._edit.setFocus()
         self._edit.installEventFilter(self)
+        self._list.installEventFilter(self)
 
     def eventFilter(self, obj, event):
         from PyQt6.QtCore import QEvent
@@ -880,7 +881,43 @@ class GlobalSearchDialog(QDialog):
                 if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._list.currentItem():
                     self._navigate(self._list.currentItem())
                 return True
+        if (obj is self._list and event.type() == QEvent.Type.KeyPress and
+                event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)):
+            self._navigate(self._list.currentItem())
+            return True
         return super().eventFilter(obj, event)
+
+    @staticmethod
+    def _match_spans(value, query):
+        """Return whole-character, case-insensitive literal match spans.
+
+        Unicode case folding can expand a character (for example ß to ss),
+        so offsets in the folded string cannot be used as original offsets.
+        """
+        if not value or not query:
+            return []
+        folded_value = value.casefold()
+        folded_query = query.casefold()
+        if not folded_query or folded_query not in folded_value:
+            return []
+        boundaries = {0: 0}
+        offset = 0
+        for position, character in enumerate(value):
+            offset += len(character.casefold())
+            boundaries[offset] = position + 1
+        spans = []
+        offset = 0
+        while True:
+            start = folded_value.find(folded_query, offset)
+            if start < 0:
+                break
+            end = start + len(folded_query)
+            if start in boundaries and end in boundaries:
+                spans.append((boundaries[start], boundaries[end]))
+                offset = end
+            else:
+                offset = start + 1
+        return spans
 
     def _search(self, text):
         self._list.clear()
@@ -905,13 +942,14 @@ class GlobalSearchDialog(QDialog):
             for row in conn.execute(f'SELECT {selected} FROM "{table}"'):
                 data = dict(row)
                 for field in fields:
-                    value = str(data.get(field) or '').strip()
-                    if value and q_fold in value.casefold():
+                    value = str(data.get(field) or '')
+                    if value.strip() and self._match_spans(value, q):
                         protected = (field in self._PROTECTED_FIELDS or
                                      field in self._NON_REPLACEABLE_FIELDS or
                                      (table in ('nodes', 'systems') and field == 'name') or
                                      (table == 'equipment_catalog' and field == 'equipment_type'))
                         results.append({'kind': kind, 'id': data['_search_id'], 'table': table,
+                            'id_column': id_expr,
                             'document': document, 'post': f'{post_name} #{data["_search_id"]}',
                             'field': field, 'field_label': self._FIELD_LABELS.get(field, field),
                             'value': value, 'protected': protected})
@@ -934,30 +972,37 @@ class GlobalSearchDialog(QDialog):
                 logging.exception('GlobalSearchDialog: P&ID text search failed')
         results.sort(key=lambda h: (h['post'].casefold(), h['field_label'].casefold(), h['id']))
         for hit in results[:200]:
-            excerpt = hit['value'].replace('\n', ' ')
+            excerpt = hit['value'].replace('\n', ' ').strip()
             if len(excerpt) > 100:
                 excerpt = excerpt[:97] + '…'
             label = f"{hit['document']}  ›  {hit['post']}  ›  {hit['field_label']}: {excerpt}"
-            item = QListWidgetItem(label)
+            # The rich label below paints the text; leaving the same text in
+            # DisplayRole makes Qt paint a second copy underneath it.
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.AccessibleTextRole, label)
             item.setToolTip(label)
             item.setData(Qt.ItemDataRole.UserRole, hit)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Unchecked if hit['protected'] else Qt.CheckState.Checked)
             if hit['protected']:
-                item.setToolTip(label + "\nSkyddat identitetsfÃ¤lt â€” Ã¤ndra via objektets ordinarie redigering.")
+                item.setToolTip(label + "\nSkyddat identitetsfält — ändra via objektets ordinarie redigering.")
             self._list.addItem(item)
-            rich_excerpt = html.escape(excerpt)
-            if q:
-                rich_excerpt = re.sub(
-                    re.escape(html.escape(q)),
-                    lambda m: f'<span style="background:#FFE08A;font-weight:600">{m.group(0)}</span>',
-                    rich_excerpt, flags=re.IGNORECASE)
+            rich_parts = []
+            previous = 0
+            for start, end in self._match_spans(excerpt, q):
+                rich_parts.append(html.escape(excerpt[previous:start]))
+                rich_parts.append('<span style="background:#FFE08A;font-weight:600">'
+                                  + html.escape(excerpt[start:end]) + '</span>')
+                previous = end
+            rich_parts.append(html.escape(excerpt[previous:]))
+            rich_excerpt = ''.join(rich_parts)
             rich = (f"{html.escape(hit['document'])} &rsaquo; {html.escape(hit['post'])} "
                     f"&rsaquo; {html.escape(hit['field_label'])}: {rich_excerpt}")
             rich_label = QLabel(rich)
             rich_label.setTextFormat(Qt.TextFormat.RichText)
             rich_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             rich_label.setContentsMargins(4, 1, 4, 1)
+            item.setSizeHint(QSize(0, max(24, rich_label.fontMetrics().height() + 8)))
             self._list.setItemWidget(item, rich_label)
         self._count.setText(f"{min(len(results),200)} träffar" + (" (begränsat till 200)" if len(results)>200 else ""))
 
@@ -984,9 +1029,9 @@ class GlobalSearchDialog(QDialog):
         hit = item.data(Qt.ItemDataRole.UserRole)
         if hit.get('protected'):
             QMessageBox.warning(
-                self, "Skyddat identitetsfÃ¤lt",
-                "Taggar, objektnamn och objektkopplingar mÃ¥ste Ã¤ndras via "
-                "objektets ordinarie redigering, dÃ¤r dubbletter och kopplingar kontrolleras.")
+                self, "Skyddat identitetsfält",
+                "Taggar, objektnamn och objektkopplingar måste ändras via "
+                "objektets ordinarie redigering, där dubbletter och kopplingar kontrolleras.")
             self.navigate_requested.emit(hit)
             return
         row = self._list.currentRow()
@@ -998,14 +1043,14 @@ class GlobalSearchDialog(QDialog):
     def _replace_all(self):
         hits = self._selected_replace_hits()
         if not hits:
-            QMessageBox.information(self, "ErsÃ¤tt alla", "Inga valda, Ã¤ndringsbara trÃ¤ffar.")
+            QMessageBox.information(self, "Ersätt alla", "Inga valda, ändringsbara träffar.")
             return
-        source = self._edit.text()
+        source = self._edit.text().strip()
         replacement = self._replace_edit.text()
         reply = QMessageBox.question(
-            self, "BekrÃ¤fta ErsÃ¤tt alla",
-            f"Du Ã¤r pÃ¥ vÃ¤g att ersÃ¤tta '{source}' med '{replacement}' "
-            f"pÃ¥ {len(hits)} platser. Vill du fortsÃ¤tta?",
+            self, "Bekräfta Ersätt alla",
+            f"Du är på väg att ersätta '{source}' med '{replacement}' "
+            f"på {len(hits)} platser. Vill du fortsätta?",
             QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Ok,
             QMessageBox.StandardButton.Cancel)
         if reply != QMessageBox.StandardButton.Ok:
@@ -1013,48 +1058,65 @@ class GlobalSearchDialog(QDialog):
         count = self._apply_replacements(hits)
         if count:
             self._search(self._edit.text())
-            QMessageBox.information(self, "ErsÃ¤tt alla", f"{count} fÃ¶rekomster ersattes.")
+            QMessageBox.information(self, "Ersätt alla", f"{count} förekomster ersattes.")
 
     def _apply_replacements(self, hits):
-        source = self._edit.text()
+        source = self._edit.text().strip()
         if not source:
             return 0
         replacement = self._replace_edit.text()
         changes = []
         conn = self._db.conn
+        started_transaction = False
         try:
+            if conn.in_transaction:
+                raise RuntimeError('En annan databasändring är inte färdigsparad.')
             conn.execute('BEGIN')
+            started_transaction = True
             current_rows = []
             for hit in hits:
+                id_column = hit.get('id_column', 'id')
+                if id_column not in ('id', 'rowid'):
+                    raise ValueError('Sökträffens identitet kunde inte verifieras.')
                 row = conn.execute(
-                    f'SELECT "{hit["field"]}" FROM "{hit["table"]}" WHERE id=?',
+                    f'SELECT "{hit["field"]}" FROM "{hit["table"]}" WHERE "{id_column}"=?',
                     (hit['id'],)).fetchone()
                 if not row:
-                    raise RuntimeError("En sÃ¶ktrÃ¤ff har tagits bort. SÃ¶kningen har inte Ã¤ndrats.")
+                    raise RuntimeError("En sökträff har tagits bort. Sökningen har inte ändrats.")
                 old = str(row[0] or '')
                 if old != hit.get('value', old):
                     raise RuntimeError(
-                        "En sÃ¶ktrÃ¤ff har Ã¤ndrats sedan sÃ¶kningen gjordes. "
-                        "Uppdatera sÃ¶kningen och fÃ¶rsÃ¶k igen.")
+                        "En sökträff har ändrats sedan sökningen gjordes. "
+                        "Uppdatera sökningen och försök igen.")
                 current_rows.append((hit, old))
             for hit, old in current_rows:
-                new, occurrences = re.subn(re.escape(source), replacement, old,
-                                           flags=re.IGNORECASE)
+                spans = self._match_spans(old, source)
+                occurrences = len(spans)
+                pieces = []
+                previous = 0
+                for start, end in spans:
+                    pieces.extend((old[previous:start], replacement))
+                    previous = end
+                pieces.append(old[previous:])
+                new = ''.join(pieces)
                 if not occurrences or new == old:
                     continue
+                id_column = hit.get('id_column', 'id')
                 conn.execute(
-                    f'UPDATE "{hit["table"]}" SET "{hit["field"]}"=? WHERE id=?',
+                    f'UPDATE "{hit["table"]}" SET "{hit["field"]}"=? WHERE "{id_column}"=?',
                     (new, hit['id']))
                 changes.append({'table': hit['table'], 'field': hit['field'],
-                                'id': hit['id'], 'old': old, 'new': new,
+                                'id': hit['id'], 'id_column': id_column,
+                                'old': old, 'new': new,
                                 'occurrences': occurrences})
             # Route the transaction through Database so global replacement
             # participates in the same Ctrl+Z/Ctrl+Y history as all other
             # writes. The explicit BEGIN above keeps the replacement atomic.
-            self._db.commit()
+            self._db.commit_strict()
         except Exception as exc:
-            conn.rollback()
-            QMessageBox.critical(self, "ErsÃ¤ttning misslyckades", str(exc))
+            if started_transaction and conn.in_transaction:
+                conn.rollback()
+            QMessageBox.critical(self, "Ersättning misslyckades", str(exc))
             return 0
         if not changes:
             return 0
@@ -3355,12 +3417,17 @@ class MainWindow(QMainWindow):
             'history_snapshot': getattr(self.db, '_history_snapshot', None),
         })
         self.status_bar.showMessage(
-            f"{sum(c.get('occurrences', 1) for c in changes)} fÃ¶rekomster ersattes", 4000)
+            f"{sum(c.get('occurrences', 1) for c in changes)} förekomster ersattes", 4000)
 
     def _undo_global_replace(self):
         if not self._global_replace_undo_stack:
-            QMessageBox.information(self, "Ã…ngra ersÃ¤ttning",
-                                    "Det finns ingen global ersÃ¤ttning att Ã¥ngra.")
+            QMessageBox.information(self, "Ångra ersättning",
+                                    "Det finns ingen global ersättning att ångra.")
+            return False
+        if self.db.conn.in_transaction:
+            QMessageBox.information(
+                self, "Ångra ersättning",
+                "En annan databasändring är inte färdigsparad. Försök igen senare.")
             return False
         entry = self._global_replace_undo_stack.pop()
         if isinstance(entry, dict):
@@ -3377,37 +3444,39 @@ class MainWindow(QMainWindow):
                 getattr(self.db, 'undo_count', history_count) != history_count):
             self._global_replace_undo_stack.append(entry)
             QMessageBox.information(
-                self, "Angra ersattning",
-                "En annan andring har gjorts efter ersattningen. "
-                "Angra den forst och forsok sedan igen.")
+                self, "Ångra ersättning",
+                "En annan ändring har gjorts efter ersättningen. "
+                "Ångra den först och försök sedan igen.")
             return False
         if (history_snapshot is not None and
                 getattr(self.db, '_history_snapshot', None) != history_snapshot):
             self._global_replace_undo_stack.append(entry)
             QMessageBox.information(
-                self, "Ã„ndringen har Ã¤ndrats",
-                "En annan Ã¤ndring har gjorts efter ersÃ¤ttningen. "
-                "Ã…ngra den fÃ¶rst och fÃ¶rsÃ¶k sedan igen.")
+                self, "Ändringen har ändrats",
+                "En annan ändring har gjorts efter ersättningen. "
+                "Ångra den först och försök sedan igen.")
             return False
         try:
             for change in changes:
+                id_column = change.get('id_column', 'id')
+                if id_column not in ('id', 'rowid'):
+                    raise ValueError('Sökträffens identitet kunde inte verifieras.')
                 current = self.db.conn.execute(
-                    f'SELECT "{change["field"]}" FROM "{change["table"]}" WHERE id=?',
+                    f'SELECT "{change["field"]}" FROM "{change["table"]}" WHERE "{id_column}"=?',
                     (change['id'],)).fetchone()
                 if not current or str(current[0] or '') != change['new']:
                     raise RuntimeError(
-                        "En post har Ã¤ndrats efter ersÃ¤ttningen. Ã…ngra avbrÃ¶ts utan Ã¤ndringar.")
+                        "En post har ändrats efter ersättningen. Ångra avbröts utan ändringar.")
             # Validation above preserves stale-search protection.  Restore
             # the complete atomic snapshot through the shared history layer.
             if not self.db.undo():
-                raise RuntimeError("Ersattningen ar inte langre senaste andringen.")
+                raise RuntimeError("Ersättningen är inte längre den senaste ändringen.")
         except Exception as exc:
-            self.db.conn.rollback()
             self._global_replace_undo_stack.append(entry)
-            QMessageBox.critical(self, "Ã…ngra misslyckades", str(exc))
+            QMessageBox.critical(self, "Ångra misslyckades", str(exc))
             return False
         self._refresh_after_global_replace()
-        self.status_bar.showMessage("Global ersÃ¤ttning Ã¥ngrades", 3500)
+        self.status_bar.showMessage("Global ersättning ångrades", 3500)
         return True
 
     def _refresh_after_global_replace(self):

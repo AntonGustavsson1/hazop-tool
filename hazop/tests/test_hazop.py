@@ -106,6 +106,170 @@ class GlobalSearchDialogTests(unittest.TestCase):
         self.db.conn.commit()
         return cur.lastrowid
 
+    def _cause_with_description(self, text):
+        node = self._add_node('Nod')
+        deviation = self.db.add_deviation(node, 'Avvikelse')
+        cause = self.db.add_cause(deviation)
+        self.db.update_cause(cause, description=text)
+        return cause
+
+    def test_search_controls_use_readable_swedish(self):
+        dlg = hazop.GlobalSearchDialog(self.db)
+        try:
+            self.assertEqual('Ersätt', dlg._replace_btn.text())
+            self.assertEqual('Ersätt alla', dlg._replace_all_btn.text())
+            self.assertEqual('Ångra senaste ersättning', dlg._undo_replace_btn.text())
+        finally:
+            dlg.close()
+
+    def test_replacement_preserves_whitespace_and_uses_literal_text(self):
+        cause = self._cause_with_description('  Pump stopped  ')
+        dlg = hazop.GlobalSearchDialog(self.db)
+        try:
+            dlg._edit.setText('  Pump  ')
+            dlg._replace_edit.setText(r'\1\ny pump')
+            row = next(i for i in range(dlg._list.count())
+                       if dlg._list.item(i).data(Qt.ItemDataRole.UserRole)['kind'] == 'cause')
+            dlg._list.setCurrentRow(row)
+            with unittest.mock.patch.object(QMessageBox, 'critical') as error:
+                dlg._replace_current()
+            error.assert_not_called()
+            self.assertEqual(r'  \1\ny pump stopped  ', self.db.get_cause(cause)['description'])
+        finally:
+            dlg.close()
+
+    def test_casefold_match_can_also_be_replaced(self):
+        cause = self._cause_with_description('Ventil på Straße, STRASSE och strasse')
+        dlg = hazop.GlobalSearchDialog(self.db)
+        try:
+            dlg._edit.setText('STRASSE')
+            dlg._replace_edit.setText('gatan')
+            row = next(i for i in range(dlg._list.count())
+                       if dlg._list.item(i).data(Qt.ItemDataRole.UserRole)['kind'] == 'cause')
+            dlg._list.setCurrentRow(row)
+            dlg._replace_current()
+            self.assertEqual('Ventil på gatan, gatan och gatan',
+                             self.db.get_cause(cause)['description'])
+        finally:
+            dlg.close()
+
+    def test_search_highlighting_keeps_html_entities_intact(self):
+        self._cause_with_description('Ampere & tryck')
+        dlg = hazop.GlobalSearchDialog(self.db)
+        try:
+            dlg._edit.setText('amp')
+            item = next(dlg._list.item(i) for i in range(dlg._list.count())
+                        if dlg._list.item(i).data(Qt.ItemDataRole.UserRole)['kind'] == 'cause')
+            rich = dlg._list.itemWidget(item).text()
+            self.assertIn('>Amp</span>ere &amp; tryck', rich)
+        finally:
+            dlg.close()
+
+    def test_search_describes_safeguards_as_barriers(self):
+        cause = self._cause_with_description('Orsak')
+        safeguard = self.db.add_safeguard(self.db.add_consequence(cause))
+        self.db.update_safeguard(safeguard, description='Ventilbarriär', sg_type='SIS')
+        dlg = hazop.GlobalSearchDialog(self.db)
+        try:
+            dlg._edit.setText('SIS')
+            label = next(dlg._list.item(i).data(Qt.ItemDataRole.AccessibleTextRole)
+                         for i in range(dlg._list.count())
+                         if dlg._list.item(i).data(Qt.ItemDataRole.UserRole)['kind'] == 'safeguard')
+            self.assertIn('Barriär #', label)
+            self.assertIn('Barriärtyp:', label)
+        finally:
+            dlg.close()
+
+    def test_replace_and_undo_work_for_participant_values_without_id_column(self):
+        participant = self.db.conn.execute(
+            "INSERT INTO participants(first_name) VALUES ('Anna')").lastrowid
+        column = self.db.conn.execute(
+            "INSERT INTO participant_columns(name) VALUES ('Kontakt')").lastrowid
+        self.db.conn.execute(
+            'INSERT INTO participant_column_values(participant_id,column_id,value) VALUES (?,?,?)',
+            (participant, column, 'Gammal kontakt'))
+        self.db.commit()
+        with _TempDbMainWindow() as win:
+            window_db = win.db
+            try:
+                win.db = self.db
+                dlg = hazop.GlobalSearchDialog(self.db, win)
+                dlg._edit.setText('Gammal')
+                dlg._replace_edit.setText('Ny')
+                row = next(i for i in range(dlg._list.count())
+                           if dlg._list.item(i).data(Qt.ItemDataRole.UserRole)['kind'] == 'participant_value')
+                dlg._list.setCurrentRow(row)
+                with unittest.mock.patch.object(QMessageBox, 'critical') as error:
+                    dlg._replace_current()
+                    self.assertEqual('Ny kontakt', self.db.conn.execute(
+                        'SELECT value FROM participant_column_values WHERE participant_id=? AND column_id=?',
+                        (participant, column)).fetchone()[0])
+                    self.assertTrue(win._undo_global_replace())
+                error.assert_not_called()
+                self.assertEqual('Gammal kontakt', self.db.conn.execute(
+                    'SELECT value FROM participant_column_values WHERE participant_id=? AND column_id=?',
+                    (participant, column)).fetchone()[0])
+            finally:
+                win.db = window_db
+
+    def test_failed_commit_rolls_back_replace_and_reports_error(self):
+        cause = self._cause_with_description('Pump stopped')
+        self.db.clear_undo_history()
+        dlg = hazop.GlobalSearchDialog(self.db)
+        try:
+            dlg._edit.setText('Pump')
+            dlg._replace_edit.setText('Ventil')
+            dlg._list.setCurrentRow(0)
+            with unittest.mock.patch.object(self.db, '_commit_with_history',
+                                            side_effect=sqlite3.OperationalError('testlås')), \
+                 unittest.mock.patch.object(QMessageBox, 'critical') as error:
+                dlg._replace_current()
+            error.assert_called_once()
+            self.assertEqual('Pump stopped', self.db.get_cause(cause)['description'])
+            self.assertFalse(self.db.conn.in_transaction)
+            self.assertEqual(0, self.db.undo_count)
+        finally:
+            dlg.close()
+
+    def test_replace_does_not_rollback_some_other_pending_transaction(self):
+        cause = self._cause_with_description('Pump stopped')
+        dlg = hazop.GlobalSearchDialog(self.db)
+        try:
+            dlg._edit.setText('Pump')
+            dlg._replace_edit.setText('Ventil')
+            dlg._list.setCurrentRow(0)
+            self.db.conn.execute('BEGIN')
+            self.db.conn.execute('UPDATE causes SET comment=? WHERE id=?', ('Väntar', cause))
+            with unittest.mock.patch.object(QMessageBox, 'critical') as error:
+                dlg._replace_current()
+            error.assert_called_once()
+            self.assertTrue(self.db.conn.in_transaction)
+            self.assertEqual('Väntar', self.db.get_cause(cause)['comment'])
+            self.assertEqual('Pump stopped', self.db.get_cause(cause)['description'])
+            self.db.conn.rollback()
+        finally:
+            dlg.close()
+
+    def test_stale_result_prevents_all_selected_replacements(self):
+        first = self._cause_with_description('Pump A')
+        second = self._cause_with_description('Pump B')
+        dlg = hazop.GlobalSearchDialog(self.db)
+        try:
+            dlg._edit.setText('Pump')
+            dlg._replace_edit.setText('Ventil')
+            hits = [hit for hit in dlg._selected_replace_hits()
+                    if hit['kind'] == 'cause']
+            self.assertEqual(2, len(hits))
+            self.db.update_cause(second, description='Pump ändrad')
+            with unittest.mock.patch.object(QMessageBox, 'critical') as error:
+                count = dlg._apply_replacements(hits)
+            error.assert_called_once()
+            self.assertEqual(0, count)
+            self.assertEqual('Pump A', self.db.get_cause(first)['description'])
+            self.assertEqual('Pump ändrad', self.db.get_cause(second)['description'])
+        finally:
+            dlg.close()
+
     def test_partial_search_is_case_insensitive_and_names_the_field(self):
         node_id = self._add_node('Stockholms terminal')
         self.db.conn.execute(
@@ -114,7 +278,8 @@ class GlobalSearchDialogTests(unittest.TestCase):
         self.db.conn.commit()
         dlg = hazop.GlobalSearchDialog(self.db)
         dlg._search('stock')
-        labels = [dlg._list.item(i).text() for i in range(dlg._list.count())]
+        labels = [dlg._list.item(i).data(Qt.ItemDataRole.AccessibleTextRole)
+                  for i in range(dlg._list.count())]
         self.assertTrue(any('Nod #' in label and 'Namn:' in label for label in labels))
         self.assertTrue(any('Beskrivning:' in label for label in labels))
 
@@ -144,6 +309,22 @@ class GlobalSearchDialogTests(unittest.TestCase):
         self.assertEqual(received[0]['kind'], 'node')
         self.assertEqual(received[0]['id'], node_id)
         self.assertEqual(received[0]['field'], 'name')
+
+    def test_enter_in_result_list_navigates_the_selected_hit_once(self):
+        node_id = self._add_node('Stockholm')
+        dlg = hazop.GlobalSearchDialog(self.db)
+        received = []
+        dlg.navigate_requested.connect(received.append)
+        try:
+            dlg._edit.setText('stock')
+            dlg.show()
+            self.app.processEvents()
+            dlg._list.setCurrentRow(0)
+            QTest.keyClick(dlg._list, Qt.Key.Key_Return)
+            self.assertEqual(1, len(received))
+            self.assertEqual(node_id, received[0]['id'])
+        finally:
+            dlg.close()
 
     def test_replace_current_changes_only_selected_hit_and_moves_on(self):
         node_id = self._add_node('Nod')

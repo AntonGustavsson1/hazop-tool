@@ -1656,7 +1656,7 @@ class RiskMatrixMigrationDialog(QDialog):
         if hasattr(self, '_category_progress'):
             self._category_progress.setText(
                 f"{category_mapped} av {category_total} konsekvenskategorier "
-                "mappade. Kopplingen Ã¤r ett obligatoriskt fÃ¶rsta steg.")
+                "mappade. Kopplingen är ett obligatoriskt första steg.")
         self._apply_button.setEnabled(mapped == total and
                                       category_mapped == category_total)
 

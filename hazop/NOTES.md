@@ -1,5 +1,24 @@
 # NOTES.md — Beslut och kontext
 
+## HAZOP: sökning och ersättning (2026-11-06)
+
+Sökdialogens svenska texter har rättats, sökträffar målas inte längre dubbelt
+och Enter på en markerad träff öppnar den. Resultatraderna har mer utrymme
+och en tillgänglig text för skärmläsare. Barriärer benämns konsekvent på
+svenska. En felkodad text i förberedelsevyn har också rättats.
+
+Sök och ersätt använder samma skiftlägesoberoende, Unicode-medvetna matchning.
+Inledande och avslutande blanksteg i lagrade fält bevaras, ersättningstext
+tolkas bokstavligt även med omvänt snedstreck och deltagaruppgifter utan egen
+id-kolumn kan ersättas och ångras. Inaktuella träffar stoppar hela åtgärden;
+databasfel återställs och rapporteras utan att en annan pågående transaktion
+rullas tillbaka.
+
+Syntaxkontroll, 34 sök-/ångra-/smoketester och 149 databastester passerade
+headless. Testerna täcker bland annat teckenmarkering, bokstavlig ersättning,
+deltagaruppgifter, ångra, inaktuella träffar och simulerat sparfel. Sökfönstret
+granskades som renderad widget; ett fullständigt manuellt GUI-flöde återstår.
+
 ## HAZOP: sammanhållen sparning av barriärens kategorival (2026-11-06)
 
 Den utökade RRF-popupen sparar nu RRF, typ och konsekvenskategorier i en
