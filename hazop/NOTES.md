@@ -1,5 +1,30 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: ändrad givarkoppling och aktiv givare (2026-11-06)
+
+En LOPA-källa sparar nu HAZOP-givarens strukturerade objekt och anrop. Om
+kopplingen ändras blir ett aktivt utkast ofullständigt och kan inte låsas
+innan givardelen granskats. Funktionen Granska givarkoppling visar sparat och
+aktuellt underlag; alla aktuella HAZOP-objekt måste finnas som aktiva LOPA-
+givare innan kopplingen uppdateras. Befintliga givare tas inte bort automatiskt.
+Åtgärden loggas och kan ångras. En låst revision behåller sitt sparade underlag.
+
+En aktiv källa vars primära SIF-objekt saknar aktiv givare ger inte längre en
+komplett beräkning. Källans sparade SIF-identitet ingår fortfarande i kontrollen
+av oberoende barriärer, så en avaktiverad givare inte kan göra samma SIF till
+en krediterad barriär. Vyn uppdaterar barriärer och beräkning direkt när en
+givare läggs till eller ändras, och Excel redovisar problem med givarkopplingen.
+Skapande av första givaren i en tom LOPA är nu en fungerande, ångra-bar
+transaktion tillsammans med den automatiskt skapade givargruppen.
+
+Äldre givarkopplingar rekonstrueras från tillgängligt HAZOP-underlag och
+markeras som äldre eftersom ursprungligt underlag inte alltid kan bevisas.
+Där sparat primärobjekt och aktuellt HAZOP skiljer sig krävs granskning.
+Nummer och SIL i tidigare analyser kan därför behöva kontrolleras på nytt.
+Syntaxkontroll, 107 LOPA-/export-/smoketester och 149 databastester passerade
+headless, följt av riktade tester. Scenariovyn granskades som renderad widget
+vid bred och smal fönsterstorlek; ett komplett manuellt GUI-flöde återstår.
+
 ## LOPA: nya barriärer i ett befintligt HAZOP-scenario (2026-11-05)
 
 Synkstatus upptäcker nu när en ny HAZOP-barriär lagts till under en redan

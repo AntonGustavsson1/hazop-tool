@@ -54,7 +54,10 @@ def _source_summary(db, revision_id, source):
     result = db.lopa_source_calculation(source['id'])
     revision = db.get_lopa_revision(revision_id)
     if revision and revision['status'] in ('Låst', 'Godkänd', 'Arkiverad'):
-        state = 'Låst revisionsunderlag'
+        state = ('Låst; äldre givarkoppling återskapad från HAZOP'
+                 if source.get('origin_equipment_snapshot_legacy') else 'Låst revisionsunderlag')
+        if result.get('origin_identity_problems'):
+            state += '; aktiv SIF-givare saknas'
     else:
         sync = db.lopa_source_sync_state(source['id'])['state']
         state = {
@@ -66,6 +69,12 @@ def _source_summary(db, revision_id, source):
         }.get(sync, 'Okänd synkstatus')
         if source['source_missing']:
             state = 'Källa saknas i HAZOP'
+        elif db.lopa_source_origin_identity_status(source['id'])['state'] in ('changed', 'unknown'):
+            state = 'HAZOP-givarkoppling ändrad'
+        elif result.get('origin_identity_problems'):
+            state = 'Aktiv SIF-givare saknas'
+        elif source.get('origin_equipment_snapshot_legacy') and sync == 'current':
+            state = 'Äldre givarkoppling – granska'
     return result, state
 
 

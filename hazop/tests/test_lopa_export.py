@@ -177,6 +177,54 @@ class LopaExportTests(unittest.TestCase):
         self.assertIn('Obedömd', values)
         self.assertIn('Utanför analysen', values)
 
+    def test_export_marks_changed_origin_sensor_as_incomplete(self):
+        node = self.db.add_node()
+        cause = self.db.add_cause(self.db.deviations(node)[0]['id'])
+        self.db.update_cause(cause, description='Nivå', base_frequency=0.1, frequency_cleared=False)
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Utsläpp', 3, '')
+        self.db.set_consequence_severity(consequence, self.db.consequence_categories()[0]['id'], 3)
+        sensor = self.db.add_safeguard(consequence)
+        equipment = self.db.add_equipment_item('LT-3', 'LT-3', 'LT', 0, 'Givare', '', 0)
+        self.db.add_safeguard_equipment_link(sensor, equipment, 'HH')
+        created = self.db.create_lopa()
+        self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)
+        self.db.add_safeguard_equipment_link(sensor, equipment, 'LL')
+        path = os.path.join(self._tmpdir, 'sensor.xlsx')
+        ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
+        self.assertTrue(ok, error)
+        import openpyxl
+        workbook = openpyxl.load_workbook(path, data_only=True)
+        self.assertEqual('Ofullständig', workbook.worksheets[0]['I4'].value)
+        values = [cell.value for row in workbook.worksheets[1].iter_rows() for cell in row]
+        self.assertIn('HAZOP-givarkoppling ändrad', values)
+
+    def test_export_labels_reconstructed_legacy_origin_even_after_locking(self):
+        node = self.db.add_node()
+        cause = self.db.add_cause(self.db.deviations(node)[0]['id'])
+        self.db.update_cause(cause, description='Källa', base_frequency=0.1, frequency_cleared=False)
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Utsläpp', 3, '')
+        self.db.set_consequence_severity(consequence, self.db.consequence_categories()[0]['id'], 3)
+        sensor = self.db.add_safeguard(consequence)
+        equipment = self.db.add_equipment_item('LT-4', 'LT-4', 'LT', 0, 'Givare', '', 0)
+        self.db.add_safeguard_equipment_link(sensor, equipment, 'HH')
+        created = self.db.create_lopa()
+        self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)
+        self.db.conn.execute('ALTER TABLE lopa_source_scenarios DROP COLUMN origin_equipment_snapshot_json')
+        self.db.conn.execute('ALTER TABLE lopa_source_scenarios DROP COLUMN origin_equipment_snapshot_legacy')
+        self.db.conn.commit()
+        self.db.conn.close()
+        self.db = Database(path=os.path.join(self._tmpdir, 'project.db'))
+        self.db.lock_lopa_revision(created['revision_id'])
+        path = os.path.join(self._tmpdir, 'gammal-sensor.xlsx')
+        ok, error = export_lopa_excel(self.db, path, [(created['lopa_id'], created['revision_id'])])
+        self.assertTrue(ok, error)
+        import openpyxl
+        workbook = openpyxl.load_workbook(path, data_only=True)
+        values = [cell.value for row in workbook.worksheets[1].iter_rows() for cell in row]
+        self.assertIn('Låst; äldre givarkoppling återskapad från HAZOP', values)
+
     def test_export_accepts_multiple_explicit_revisions(self):
         first = self.db.create_lopa(display_number='001', sif_name='Första SIF')
         second = self.db.create_lopa(display_number='002', sif_name='Andra SIF')

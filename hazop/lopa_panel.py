@@ -651,6 +651,11 @@ class LopaPanel(QWidget):
         self._source_sync_note.setMinimumWidth(0)
         self._source_sync_note.setStyleSheet(lopa_note_stylesheet())
         source_actions.addWidget(self._source_sync_note, 1)
+        self._review_origin_btn = QPushButton('Granska givarkoppling…')
+        self._review_origin_btn.setStyleSheet(lopa_ghost_button_stylesheet())
+        self._review_origin_btn.clicked.connect(self._review_source_origin_identity)
+        self._review_origin_btn.hide()
+        source_actions.addWidget(self._review_origin_btn)
         self._update_matrix_btn = QPushButton('Uppdatera riskmatris…')
         self._update_matrix_btn.setStyleSheet(lopa_ghost_button_stylesheet())
         self._update_matrix_btn.clicked.connect(self._update_revision_matrix)
@@ -1166,6 +1171,7 @@ class LopaPanel(QWidget):
         self._hazop_hierarchy.clearContents()
         self._hazop_hierarchy.setRowCount(0)
         self._source_sync_note.clear()
+        self._review_origin_btn.hide()
         self._sensor_group.clear()
         self._sensor_members.setRowCount(0)
         self._sensor_equipment.clear()
@@ -1791,6 +1797,11 @@ class LopaPanel(QWidget):
             notices.append('HAZOP-källor är aktuella')
         if any('ny HAZOP-barriär' in item['messages'] for item in sync_states):
             notices.append('Nya HAZOP-barriärer finns; öppna barriärdetaljer för att hämta dem')
+        if any(self.db.lopa_source_origin_identity_status(source['id'])['state'] in ('changed', 'unknown')
+               for source in sources if source['active']):
+            notices.append('HAZOP-givarkoppling har ändrats; granska givardelen och kopplingen')
+        if any(source.get('origin_equipment_snapshot_legacy') for source in sources if source['active']):
+            notices.append('Äldre givarkoppling har återskapats från HAZOP; historiken behöver granskas')
         unassessed = sum(1 for source, groups in source_groups if source['active'] for group in groups
                          if group.get('hazop_consequence_id') is not None and not group.get('assessments')
                          and not group.get('unassessed_exclusion'))
@@ -2061,6 +2072,7 @@ class LopaPanel(QWidget):
         old_loading = self._loading
         self._loading = True
         if not source:
+            self._review_origin_btn.hide()
             self._scenario_text.clear()
             self._scenario_text.setEnabled(False)
             self._save_scenario_btn.setEnabled(False)
@@ -2088,6 +2100,10 @@ class LopaPanel(QWidget):
             self._loading = old_loading
             return
         self._scenario_text.setPlainText(source.get('scenario_text') or '')
+        origin_identity = self.db.lopa_source_origin_identity_status(source['id'])
+        needs_review = (origin_identity['state'] in ('changed', 'unknown') or
+                        (origin_identity['state'] == 'current' and origin_identity.get('legacy')))
+        self._review_origin_btn.setVisible(bool(editable and needs_review))
         self._scenario_text.setEnabled(editable)
         self._save_scenario_btn.setEnabled(editable)
         self._control_frequency.setText(source.get('control_frequency') or '')
@@ -2117,6 +2133,45 @@ class LopaPanel(QWidget):
         self._populate_barriers()
         self._populate_escalation()
         self._update_hierarchy_actions()
+
+    def _review_source_origin_identity(self):
+        if not self._source_id or not self._revision_is_editable():
+            return
+        source = next((row for row in self.db.lopa_sources(self._revision_id)
+                       if row['id'] == self._source_id), None)
+        if not source:
+            return
+        status = self.db.lopa_source_origin_identity_status(self._source_id)
+        if status['state'] not in ('changed', 'unknown') and not (
+                status['state'] == 'current' and status.get('legacy')):
+            return
+        current = ', '.join(' '.join(part for part in (
+            link.get('tag') or 'Objekt saknas', link.get('trigger_code') or '',
+            link.get('trigger_custom') or '') if part) for link in status['links']) or 'Inga objekt'
+        previous_parts = []
+        for link in status.get('stored_links', []):
+            equipment = self.db.get_equipment_by_id(link.get('equipment_id')) if link.get('equipment_id') else None
+            tag = (equipment or {}).get('tag') or f"Objekt {link.get('equipment_id') or 'saknas'}"
+            previous_parts.append(' '.join(part for part in (
+                tag, link.get('trigger_code') or '', link.get('trigger_custom') or '') if part))
+        previous = ', '.join(previous_parts) or 'Inget känt objektunderlag'
+        answer = QMessageBox.question(
+            self, 'Granska givarkoppling',
+            f'Sparad koppling: {previous}\nAktuell koppling i HAZOP: {current}\n\n'
+            'Kontrollera att aktuella givare finns aktiva i LOPA:s givardel och att voting är granskad. '
+            'Befintliga givare ändras inte automatiskt. Uppdatera källans koppling?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.db.refresh_lopa_source_origin_identity(self._source_id)
+        except (ValueError, PermissionError) as exc:
+            QMessageBox.warning(self, 'Kunde inte uppdatera givarkopplingen', str(exc))
+            return
+        self._populate_hazop_hierarchy()
+        self._populate_sensor_groups()
+        self._populate_calculation()
+        self.changed.emit()
 
     def _save_scenario_text(self):
         if not self._source_id:
@@ -2285,16 +2340,25 @@ class LopaPanel(QWidget):
             self._sensor_members.setItem(row_index, 3, self._readonly_cell(origin))
         self._sensor_members.resizeRowsToContents()
         self._fit_table_height(self._sensor_members, 48, 92)
+        missing_sensor = any(source['active'] and self.db.lopa_source_sensor_membership_issue(source['id'])
+                             for source in self.db.lopa_sources(self._revision_id)) if self._revision_id else False
         if group:
             self._sensor_voting.setCurrentText(group['voting'])
-            self._sensor_note.setText(
-                'Flera aktiva givare kräver bekräftad voting.' if group['needs_voting_review'] else
-                'Givardel från HAZOP. Voting och givare sparas på denna LOPA-revision.')
-            self._sensor_note.setVisible(bool(group['needs_voting_review']))
+            if missing_sensor:
+                note = 'En källas primära givare är inte aktiv; kontrollera givardelen.'
+                if group['needs_voting_review']:
+                    note += ' Voting behöver också bekräftas.'
+            else:
+                note = ('Flera aktiva givare kräver bekräftad voting.' if group['needs_voting_review'] else
+                        'Givardel från HAZOP. Voting och givare sparas på denna LOPA-revision.')
+            self._sensor_note.setText(note)
+            self._sensor_note.setVisible(bool(missing_sensor or group['needs_voting_review']))
         else:
             self._sensor_voting.setCurrentText('1oo1')
-            self._sensor_note.setText('Lägg till en givargrupp när LOPA:n behöver en definierad givardel.')
-            self._sensor_note.hide()
+            self._sensor_note.setText('En källas primära givare är inte aktiv; kontrollera givardelen.'
+                                      if missing_sensor else
+                                      'Lägg till en givargrupp när LOPA:n behöver en definierad givardel.')
+            self._sensor_note.setVisible(bool(missing_sensor))
         self._sensor_note.setToolTip(self._sensor_note.text())
         self._loading = old_loading
 
@@ -2348,6 +2412,9 @@ class LopaPanel(QWidget):
             QMessageBox.warning(self, 'Kunde inte lägga till givare', str(exc))
             return
         self._populate_sensor_groups()
+        self._populate_barriers()
+        self._populate_escalation()
+        self._populate_calculation()
         self.changed.emit()
 
     def _on_sensor_member_item_changed(self, item):
@@ -2365,6 +2432,9 @@ class LopaPanel(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, 'Kunde inte ändra givare', str(exc))
         self._populate_sensor_groups()
+        self._populate_barriers()
+        self._populate_escalation()
+        self._populate_calculation()
         self.changed.emit()
 
     # ── Manöverdel ───────────────────────────────────────────────────────

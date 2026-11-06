@@ -1211,6 +1211,32 @@ class Database:
         if source_columns and 'unassessed_exclusions_json' not in source_columns:
             self.conn.execute("ALTER TABLE lopa_source_scenarios ADD COLUMN "
                               "unassessed_exclusions_json TEXT NOT NULL DEFAULT '[]'")
+        if source_columns:
+            needs_origin_snapshot = 'origin_equipment_snapshot_json' not in source_columns
+            if needs_origin_snapshot:
+                self.conn.execute('ALTER TABLE lopa_source_scenarios ADD COLUMN origin_equipment_snapshot_json TEXT')
+            if 'origin_equipment_snapshot_legacy' not in source_columns:
+                self.conn.execute('ALTER TABLE lopa_source_scenarios ADD COLUMN '
+                                  'origin_equipment_snapshot_legacy INTEGER NOT NULL DEFAULT 0')
+            if needs_origin_snapshot:
+                rows = self.conn.execute(
+                    'SELECT id,origin_safeguard_id,equipment_id,trigger_code,trigger_custom '
+                    'FROM lopa_source_scenarios WHERE origin_safeguard_id IS NOT NULL OR source_missing=1 '
+                    "OR (hazop_cause_id IS NOT NULL AND frequency_origin!='manual')").fetchall()
+                for row in rows:
+                    row = dict(row)
+                    safeguard_id = row['origin_safeguard_id']
+                    snapshot = (self._lopa_safeguard_identity_snapshot(safeguard_id)
+                                if safeguard_id and self.get_safeguard(safeguard_id) else None)
+                    # Earlier versions stored the primary object and trigger.
+                    # Preserve that evidence if current HAZOP no longer matches.
+                    primary = self._lopa_identity(row)
+                    if snapshot is not None and primary['equipment_id'] is not None:
+                        if primary not in json.loads(snapshot):
+                            snapshot = json.dumps([primary], ensure_ascii=False, sort_keys=True)
+                    self.conn.execute(
+                        'UPDATE lopa_source_scenarios SET origin_equipment_snapshot_json=?,'
+                        'origin_equipment_snapshot_legacy=1 WHERE id=?', (snapshot, row['id']))
         consequence_columns = {row['name'] for row in self.conn.execute(
             'PRAGMA table_info(lopa_source_consequences)').fetchall()}
         if consequence_columns and 'hazop_consequence_snapshot_id' not in consequence_columns:
@@ -4049,6 +4075,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             if result.get('missing_hazop_sources'):
                 raise ValueError('En aktiv HAZOP-källa, konsekvens eller barriär saknas. '
                                  'Granska eller exkludera underlaget innan revisionen låses.')
+            if result.get('origin_identity_problems'):
+                raise ValueError('En aktiv givarkoppling har ändrats eller saknar aktiv givare. '
+                                 'Granska givardelen innan revisionen låses.')
             if result.get('unreviewed_barriers'):
                 raise ValueError('En aktiv barriärs objektkoppling eller oberoende måste granskas '
                                  'innan revisionen låses.')
@@ -4177,6 +4206,8 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             return {'state': 'missing', 'messages': ['HAZOP-barriären finns inte längre.']}
         live = dict(live)
         changes = []
+        if self.lopa_source_origin_identity_status(source_id)['state'] in ('changed', 'unknown'):
+            changes.append('givarens objektkoppling')
         if (live.get('cause_text') or '') != (source.get('cause_text') or ''):
             changes.append('orsakstext')
         if (live.get('scenario_text') or '') != (source.get('scenario_text') or ''):
@@ -4567,6 +4598,84 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         links.sort(key=lambda row: json.dumps(row, sort_keys=True))
         return json.dumps(links, ensure_ascii=False, sort_keys=True)
 
+    def lopa_source_origin_identity_status(self, source_id):
+        """Compare an editable source's HAZOP sensor links with its saved basis."""
+        source = self.conn.execute(
+            'SELECT ls.*,lr.status AS revision_status FROM lopa_source_scenarios ls '
+            'JOIN lopa_revisions lr ON lr.id=ls.revision_id WHERE ls.id=?', (source_id,)).fetchone()
+        if not source:
+            return {'state': 'missing', 'links': []}
+        source = dict(source)
+        if source['revision_status'] in ('Låst', 'Godkänd', 'Arkiverad'):
+            return {'state': 'historical', 'links': [],
+                    'legacy': bool(source.get('origin_equipment_snapshot_legacy'))}
+        safeguard_id = source.get('origin_safeguard_id')
+        if not safeguard_id or not self.get_safeguard(safeguard_id):
+            return {'state': 'missing', 'links': []}
+        links = self.safeguard_equipment_links(safeguard_id)
+        try:
+            stored = json.loads(source.get('origin_equipment_snapshot_json'))
+            if not isinstance(stored, list) or any(not isinstance(item, dict) for item in stored):
+                raise ValueError('Invalid snapshot')
+            stored = [self._lopa_identity(item) for item in stored]
+            stored.sort(key=lambda item: json.dumps(item, sort_keys=True))
+            stored_json = json.dumps(stored, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {'state': 'unknown', 'links': links}
+        current = self._lopa_safeguard_identity_snapshot(safeguard_id)
+        return {'state': 'current' if stored_json == current else 'changed',
+                'links': links, 'stored_links': stored,
+                'legacy': bool(source.get('origin_equipment_snapshot_legacy'))}
+
+    def refresh_lopa_source_origin_identity(self, source_id):
+        """Accept current HAZOP links after their objects have been added to the SIF."""
+        source = self._lopa_source_revision(source_id)
+        status = self.lopa_source_origin_identity_status(source_id)
+        if status['state'] not in ('changed', 'unknown') and not (
+                status['state'] == 'current' and status.get('legacy')):
+            raise ValueError('Givarkopplingen har inte ändrats eller HAZOP-källan saknas.')
+        links = status['links']
+        if not links or any(link.get('equipment_id') is None for link in links):
+            raise ValueError('HAZOP-barriären saknar giltiga objekt. Komplettera HAZOP eller exkludera källan.')
+        sensors = [self._lopa_identity(member)
+                   for group in self.lopa_sensor_groups(source['revision_id'])
+                   for member in self.lopa_sensor_members(group['id']) if member['active']]
+        missing = [link for link in links if self._lopa_identity(link) not in sensors]
+        if missing:
+            labels = [f"{link.get('tag') or 'Objekt'} "
+                      f"{link.get('trigger_code') or link.get('trigger_custom') or '(utan utlösare)'}"
+                      for link in missing]
+            raise ValueError('Lägg först till följande aktiva givare i LOPA:s givardel och granska voting: '
+                             + ', '.join(labels))
+        primary = links[0]
+        snapshot = self._lopa_safeguard_identity_snapshot(source['origin_safeguard_id'])
+        self.conn.execute(
+            'UPDATE lopa_source_scenarios SET origin_equipment_snapshot_json=?,'
+            'origin_equipment_snapshot_legacy=0,equipment_id=?,equipment_tag_snapshot=?,'
+            'trigger_code=?,trigger_custom=? WHERE id=?',
+            (snapshot, primary['equipment_id'], primary.get('tag') or '',
+             primary.get('trigger_code') or '', primary.get('trigger_custom') or '', source_id))
+        self._log_lopa(source['lopa_id'], source['revision_id'], 'source-sensor-links-reviewed',
+                       f"Källscenario {source_id}: givarkoppling granskad från HAZOP. "
+                       f"Före: {source.get('origin_equipment_snapshot_json') or 'okänd'}; efter: {snapshot}")
+        self.commit()
+
+    def lopa_source_sensor_membership_issue(self, source_id):
+        """A structured SIF source must retain its primary sensor as active."""
+        row = self.conn.execute('SELECT * FROM lopa_source_scenarios WHERE id=?', (source_id,)).fetchone()
+        if not row:
+            return ''
+        source = dict(row)
+        primary = self._lopa_identity(source)
+        if primary['equipment_id'] is None:
+            return ''
+        sensors = [self._lopa_identity(member)
+                   for group in self.lopa_sensor_groups(source['revision_id'])
+                   for member in self.lopa_sensor_members(group['id']) if member['active']]
+        if primary not in sensors:
+            return 'Källans primära SIF-objekt saknar aktiv givare i LOPA'
+        return ''
+
     def lopa_barrier_identity_status(self, barrier):
         """Compare a barrier with the SIF; never infer identity from text or tag."""
         if barrier.get('manual'):
@@ -4590,6 +4699,24 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         sensors = [self._lopa_identity(member)
                    for group in self.lopa_sensor_groups(barrier['revision_id'])
                    for member in self.lopa_sensor_members(group['id']) if member['active']]
+        # A disabled/missing SIF member must not make the originating SIF
+        # eligible as its own independent barrier. Keep the source identity
+        # in the comparison even before the analyst resolves membership.
+        source = self.conn.execute('SELECT * FROM lopa_source_scenarios WHERE id=?',
+                                   (barrier.get('source_id'),)).fetchone()
+        if source:
+            source = dict(source)
+            try:
+                original = json.loads(source.get('origin_equipment_snapshot_json') or '[]')
+                if not isinstance(original, list):
+                    original = []
+            except (TypeError, ValueError, json.JSONDecodeError):
+                original = []
+            original = [self._lopa_identity(item) for item in original if isinstance(item, dict)]
+            original.append(self._lopa_identity(source))
+            for identity in original:
+                if identity['equipment_id'] is not None and identity not in sensors:
+                    sensors.append(identity)
         if any(row['equipment_id'] is None for row in links + sensors):
             return {'state': 'unknown', 'label': 'Objektkoppling kan inte fastställas'}
         if not links:
@@ -5094,15 +5221,16 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         equipment = self.get_equipment_by_id(equipment_id)
         if not equipment:
             raise ValueError('Objektet finns inte längre i objektdatabasen.')
-        if group_id is None:
-            group_id = self._ensure_lopa_sensor_group(revision_id)
-        group = self.conn.execute(
-            "SELECT id FROM lopa_sensor_groups WHERE id=? AND revision_id=?", (group_id, revision_id)).fetchone()
-        if not group:
-            raise ValueError('Givargruppen hör inte till den här LOPA-revisionen.')
         with self.history_group():
             try:
                 self.conn.execute('BEGIN')
+                if group_id is None:
+                    group_id = self._ensure_lopa_sensor_group(revision_id)
+                group = self.conn.execute(
+                    "SELECT id FROM lopa_sensor_groups WHERE id=? AND revision_id=?",
+                    (group_id, revision_id)).fetchone()
+                if not group:
+                    raise ValueError('Givargruppen hör inte till den här LOPA-revisionen.')
                 member_id = self._add_lopa_sensor_member(
                     revision_id, equipment_id, origin_safeguard_id,
                     trigger_code, trigger_custom, equipment.get('tag') or '', group_id=group_id)
@@ -5376,8 +5504,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 source_id = self.conn.execute(
                     "INSERT INTO lopa_source_scenarios(revision_id,hazop_node_id,hazop_deviation_id,"
                     "hazop_cause_id,origin_safeguard_id,equipment_id,trigger_code,trigger_custom,"
-                    "cause_text,scenario_text,base_frequency,frequency_origin,assumption_percent,equipment_tag_snapshot) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "cause_text,scenario_text,base_frequency,frequency_origin,assumption_percent,"
+                    "equipment_tag_snapshot,origin_equipment_snapshot_json) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (revision['id'], source_row['node_id'], source_row['deviation_id'],
                      source_row['cause_id'], safeguard_id, chosen_equipment_id,
                      str(primary_link.get('trigger_code') or trigger_code or '').upper(),
@@ -5385,7 +5514,8 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                      source_row.get('cause_text') or '', source_row.get('scenario_text') or '',
                      numeric_frequency, origin,
                      (matrix.get('lopa') or {}).get('default_assumption_percent', 100.0),
-                     primary_link.get('tag') or '')).lastrowid
+                     primary_link.get('tag') or '',
+                     self._lopa_safeguard_identity_snapshot(safeguard_id))).lastrowid
 
                 # A cause can produce several HAZOP consequences. Import each
                 # assessed category, not just the consequence where the user
@@ -5631,8 +5761,15 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             if source.get('active') and group.get('hazop_consequence_id') is not None
             and not group.get('assessments') and not group.get('unassessed_exclusion')
         ]
+        origin_status = self.lopa_source_origin_identity_status(source_id)
+        result['origin_identity_problems'] = (
+            ['HAZOP-givarens objektkoppling har ändrats eller saknar underlag']
+            if source.get('active') and origin_status['state'] in ('changed', 'unknown') else [])
+        membership_issue = self.lopa_source_sensor_membership_issue(source_id) if source.get('active') else ''
+        if membership_issue:
+            result['origin_identity_problems'].append(membership_issue)
         problems = (result['missing_hazop_sources'] + result['unreviewed_barriers']
-                    + result['unassessed_consequences'])
+                    + result['unassessed_consequences'] + result['origin_identity_problems'])
         if problems:
             # Draft calculations must not present a conclusion as current
             # after the HAZOP source disappears. Locked revisions retain the

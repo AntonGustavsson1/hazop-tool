@@ -269,6 +269,156 @@ class LopaDatabaseTests(unittest.TestCase):
         self.assertTrue(self.db.redo())
         self.assertEqual('current', self.db.lopa_source_sync_state(source)['state'])
 
+    def test_changed_origin_safeguard_identity_requires_review(self):
+        _cause, sensor, _barrier, equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.db.add_safeguard_equipment_link(sensor, equipment, 'LL')
+        state = self.db.lopa_source_sync_state(source)
+        result = self.db.lopa_source_calculation(source)
+        self.assertEqual('changed', state['state'])
+        self.assertIn('givarens objektkoppling', state['messages'])
+        self.assertFalse(result['complete'])
+        self.assertIsNone(result['sil'])
+        with self.assertRaisesRegex(ValueError, 'givarkoppling'):
+            self.db.lock_lopa_revision(created['revision_id'])
+        with self.assertRaisesRegex(ValueError, 'Lägg först till'):
+            self.db.refresh_lopa_source_origin_identity(source)
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.db.add_lopa_sensor_member(created['revision_id'], equipment, trigger_code='LL')
+        group = self.db.lopa_sensor_groups(created['revision_id'])[0]
+        self.db.set_lopa_sensor_group_voting(group['id'], '1oo2')
+        self.db.refresh_lopa_source_origin_identity(source)
+        self.assertEqual('current', self.db.lopa_source_origin_identity_status(source)['state'])
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(self.db.undo())
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.assertTrue(self.db.redo())
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+
+    def test_changed_origin_identity_does_not_rewrite_locked_revision(self):
+        _cause, sensor, _barrier, equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.lock_lopa_revision(created['revision_id'])
+        before = self.db.lopa_source_calculation(source)
+        self.db.add_safeguard_equipment_link(sensor, equipment, 'LL')
+        self.assertEqual(before, self.db.lopa_source_calculation(source))
+        self.assertEqual('historical', self.db.lopa_source_origin_identity_status(source)['state'])
+        with self.assertRaises(PermissionError):
+            self.db.refresh_lopa_source_origin_identity(source)
+        draft = self.db.create_lopa_revision(created['lopa_id'], created['revision_id'])
+        draft_source = self.db.lopa_sources(draft)[0]['id']
+        self.assertFalse(self.db.lopa_source_calculation(draft_source)['complete'])
+        self.db.set_lopa_source_active(draft_source, False)
+        self.assertEqual([], self.db.lopa_source_calculation(draft_source)['origin_identity_problems'])
+
+    def test_first_sensor_creates_group_in_one_undoable_transaction(self):
+        created = self.db.create_lopa()
+        equipment = self.db.add_equipment_item('LT-201', 'LT-201', 'LT', 0, 'Givare', '', 0)
+        before = self.db.undo_count
+        member_id = self.db.add_lopa_sensor_member(created['revision_id'], equipment, trigger_code='HH')
+        groups = self.db.lopa_sensor_groups(created['revision_id'])
+        self.assertEqual(1, len(groups))
+        self.assertEqual(member_id, self.db.lopa_sensor_members(groups[0]['id'])[0]['id'])
+        self.assertEqual(before + 1, self.db.undo_count)
+        self.assertTrue(self.db.undo())
+        self.assertEqual([], self.db.lopa_sensor_groups(created['revision_id']))
+        self.assertTrue(self.db.redo())
+        self.assertEqual(1, len(self.db.lopa_sensor_groups(created['revision_id'])))
+
+    def test_origin_review_updates_source_identity_only_after_matching_sensor_exists(self):
+        _cause, sensor, _barrier, equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.conn.execute('DELETE FROM safeguard_equipment_links WHERE safeguard_id=?', (sensor,))
+        self.db.commit()
+        self.db.add_safeguard_equipment_link(sensor, equipment, 'LL')
+        with self.assertRaisesRegex(ValueError, 'Lägg först till'):
+            self.db.refresh_lopa_source_origin_identity(source)
+        self.assertEqual('HH', self.db.lopa_sources(created['revision_id'])[0]['trigger_code'])
+        self.db.add_lopa_sensor_member(created['revision_id'], equipment, trigger_code='LL')
+        group = self.db.lopa_sensor_groups(created['revision_id'])[0]
+        old_member = next(member for member in self.db.lopa_sensor_members(group['id'])
+                          if member['trigger_code'] == 'HH')
+        self.db.set_lopa_sensor_member_active(old_member['id'], False)
+        self.db.set_lopa_sensor_group_voting(group['id'], '1oo1')
+        self.db.refresh_lopa_source_origin_identity(source)
+        updated = self.db.lopa_sources(created['revision_id'])[0]
+        self.assertEqual('LL', updated['trigger_code'])
+        self.assertEqual(equipment, updated['equipment_id'])
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+
+    def test_disabling_primary_sensor_cannot_make_same_sif_a_credited_barrier(self):
+        created, source, imported, _equipment, _barrier, consequence = self._lopa_with_shared_object('HH')
+        group = self.db.lopa_sensor_groups(created['revision_id'])[0]
+        member = self.db.lopa_sensor_members(group['id'])[0]
+        self.db.set_lopa_sensor_member_active(member['id'], False)
+        result = self.db.lopa_source_calculation(source)
+        self.assertFalse(result['complete'])
+        self.assertIsNone(result['sil'])
+        self.assertTrue(any('aktiv givare' in message for message in result['messages']))
+        self.assertEqual('same', self.db.lopa_barrier_identity_status(imported)['state'])
+        self.db.set_lopa_sensor_member_active(member['id'], True)
+        result = self.db.lopa_source_calculation(source)
+        self.assertTrue(result['complete'])
+        self.assertEqual(1, next(row for row in result['categories']
+                                 if row['hazop_consequence_id'] == consequence)['barrier_rrf'])
+
+    def test_old_project_preserves_original_primary_sensor_on_migration(self):
+        _cause, sensor, _barrier, equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.conn.execute('DELETE FROM safeguard_equipment_links WHERE safeguard_id=?', (sensor,))
+        self.db.commit()
+        self.db.add_safeguard_equipment_link(sensor, equipment, 'LL')
+        self.db.conn.execute('ALTER TABLE lopa_source_scenarios DROP COLUMN origin_equipment_snapshot_json')
+        self.db.conn.execute('ALTER TABLE lopa_source_scenarios DROP COLUMN origin_equipment_snapshot_legacy')
+        self.db.conn.commit()
+        self.db.conn.close()
+        self.db = Database(path=os.path.join(self._tmpdir, 'project.db'))
+        self.assertEqual('changed', self.db.lopa_source_origin_identity_status(source)['state'])
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+
+    def test_reconstructed_old_origin_identity_can_be_reviewed_and_undone(self):
+        _cause, sensor, _barrier, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.conn.execute('ALTER TABLE lopa_source_scenarios DROP COLUMN origin_equipment_snapshot_json')
+        self.db.conn.execute('ALTER TABLE lopa_source_scenarios DROP COLUMN origin_equipment_snapshot_legacy')
+        self.db.conn.commit()
+        self.db.conn.close()
+        self.db = Database(path=os.path.join(self._tmpdir, 'project.db'))
+        status = self.db.lopa_source_origin_identity_status(source)
+        self.assertEqual('current', status['state'])
+        self.assertTrue(status['legacy'])
+        self.db.refresh_lopa_source_origin_identity(source)
+        self.assertFalse(self.db.lopa_source_origin_identity_status(source)['legacy'])
+        self.assertTrue(self.db.undo())
+        self.assertTrue(self.db.lopa_source_origin_identity_status(source)['legacy'])
+
+    def test_removed_all_hazop_sensor_links_cannot_be_accepted_silently(self):
+        _cause, sensor, _barrier, _equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.conn.execute('DELETE FROM safeguard_equipment_links WHERE safeguard_id=?', (sensor,))
+        self.db.commit()
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        with self.assertRaisesRegex(ValueError, 'saknar giltiga objekt'):
+            self.db.refresh_lopa_source_origin_identity(source)
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+
+    def test_sensor_tag_rename_does_not_mistake_same_object_for_a_new_identity(self):
+        _cause, sensor, _barrier, equipment = self._hazop_chain()
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.db.update_equipment_item(equipment, 'LT-102', 'LT', 'Nivågivare', '')
+        self.assertEqual('current', self.db.lopa_source_origin_identity_status(source)['state'])
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.assertEqual('LT-102', self.db.lopa_sources(created['revision_id'])[0]['equipment_tag'])
+
+
     def test_new_hazop_barrier_is_reported_and_imported_without_changing_existing_rows(self):
         _cause, sensor, original, equipment = self._hazop_chain()
         consequence = self.db.get_safeguard(sensor)['consequence_id']

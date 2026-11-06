@@ -278,6 +278,57 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.assertEqual('Ny mekanisk barriär', self.panel._barriers.item(0, 2).text())
         self.assertEqual('current', self.db.lopa_source_sync_state(source['id'])['state'])
 
+    def test_changed_origin_sensor_can_be_reviewed_after_updating_sensor_group(self):
+        source = self.db.lopa_sources(self.revision_id)[0]
+        equipment = self.db.add_equipment_item('LT-2', 'LT-2', 'LT', 0, 'Givare', '', 0)
+        self.db.add_safeguard_equipment_link(source['origin_safeguard_id'], equipment, 'HH')
+        self.panel._populate_hazop_hierarchy()
+        self.assertIn('HAZOP-givarkoppling har ändrats', self.panel._source_sync_note.text())
+        self.assertFalse(self.panel._review_origin_btn.isHidden())
+        with patch('lopa_panel.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes), \
+                patch('lopa_panel.QMessageBox.warning') as warning:
+            self.panel._review_source_origin_identity()
+        warning.assert_called_once()
+        self.assertFalse(self.db.lopa_source_calculation(source['id'])['complete'])
+        self.db.add_lopa_sensor_member(self.revision_id, equipment, trigger_code='HH')
+        with patch('lopa_panel.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes):
+            self.panel._review_source_origin_identity()
+        self.assertTrue(self.db.lopa_source_calculation(source['id'])['complete'])
+        self.assertTrue(self.panel._review_origin_btn.isHidden())
+
+    def test_sensor_changes_refresh_barrier_identity_and_calculation_immediately(self):
+        original = self.db.lopa_sources(self.revision_id)[0]
+        sensor = original['origin_safeguard_id']
+        consequence = self.db.get_safeguard(sensor)['consequence_id']
+        equipment = self.db.add_equipment_item('LT-5', 'LT-5', 'LT', 0, 'Givare', '', 0)
+        self.db.add_safeguard_equipment_link(sensor, equipment, 'HH')
+        barrier = self.db.add_safeguard(consequence)
+        self.db.update_safeguard(barrier, description='Låg nivå', rrf=10, sg_type='SIS')
+        self.db.add_safeguard_equipment_link(barrier, equipment, 'LL')
+        created = self.db.create_lopa()
+        source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
+        self.panel.activate_lopa(created['lopa_id'], created['revision_id'])
+        self.assertIn('bedöm oberoende', self.panel._barriers.item(0, 5).text())
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.panel._sensor_equipment.setCurrentIndex(self.panel._sensor_equipment.findData(equipment))
+        self.panel._sensor_trigger.setCurrentText('LL')
+        self.panel._add_sensor_member()
+        self.assertIn('Samma SIF', self.panel._barriers.item(0, 5).text())
+        self.assertTrue(self.db.lopa_source_calculation(source)['complete'])
+        self.assertIn('Beräknat behov', self.panel._dimensioning_summary.text())
+        row = next(index for index in range(self.panel._sensor_members.rowCount())
+                   if self.panel._sensor_members.item(index, 2).text() == 'LL')
+        self.panel._confirm_lopa_only = lambda _text: True
+        self.panel._sensor_members.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
+        self.assertIn('bedöm oberoende', self.panel._barriers.item(0, 5).text())
+        self.assertFalse(self.db.lopa_source_calculation(source)['complete'])
+        self.assertIn('ofullständigt underlag', self.panel._dimensioning_summary.text())
+        primary = next(index for index in range(self.panel._sensor_members.rowCount())
+                       if self.panel._sensor_members.item(index, 2).text() == 'HH')
+        self.panel._sensor_members.item(primary, 0).setCheckState(Qt.CheckState.Unchecked)
+        self.assertFalse(self.panel._sensor_note.isHidden())
+        self.assertIn('primära givare är inte aktiv', self.panel._sensor_note.text())
+
     def test_source_status_reports_missing_hazop_and_local_source(self):
         source = self.db.lopa_sources(self.revision_id)[0]
         self.db.delete_safeguard(source['origin_safeguard_id'])
