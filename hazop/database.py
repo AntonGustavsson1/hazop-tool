@@ -7253,6 +7253,48 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 "(severity_id, safeguard_id) VALUES (?,?)", (severity_id, sg_id))
         self.commit()
 
+    def save_safeguard_rrf_applicability(self, sg_id, rrf, sg_type, applicability):
+        """Save one barrier edit as a single, undoable SQLite transaction.
+
+        Category changes affect this barrier alone.  Validate the category
+        ownership again at save time because an open popup may be stale.
+        """
+        if isinstance(rrf, bool) or not isinstance(rrf, int) or not 1 <= rrf <= 9_223_372_036_854_775_807:
+            raise ValueError('RRF måste vara ett giltigt positivt heltal.')
+        if self.conn.in_transaction:
+            raise RuntimeError('En annan databasändring är inte färdigsparad.')
+        try:
+            self.conn.execute('BEGIN')
+            safeguard = self.conn.execute(
+                'SELECT consequence_id FROM safeguards WHERE id=?', (sg_id,)).fetchone()
+            if safeguard is None:
+                raise ValueError('Barriären finns inte längre. Stäng och öppna fönstret igen.')
+            for severity_id in applicability:
+                severity = self.conn.execute(
+                    'SELECT consequence_id FROM consequence_severities WHERE id=?',
+                    (severity_id,)).fetchone()
+                if severity is None or severity[0] != safeguard[0]:
+                    raise ValueError('Konsekvenskategorierna har ändrats. Stäng och öppna fönstret igen.')
+            self.conn.execute('UPDATE safeguards SET rrf=?, sg_type=? WHERE id=?',
+                              (rrf, sg_type, sg_id))
+            for severity_id, applies in applicability.items():
+                if applies:
+                    self.conn.execute(
+                        'DELETE FROM consequence_severity_exclusions '
+                        'WHERE severity_id=? AND safeguard_id=?', (severity_id, sg_id))
+                else:
+                    self.conn.execute(
+                        'INSERT OR IGNORE INTO consequence_severity_exclusions '
+                        '(severity_id, safeguard_id) VALUES (?,?)', (severity_id, sg_id))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        # Match ordinary write-through commits while keeping actual commit
+        # errors visible to the popup instead of swallowing them.
+        self._record_committed_state()
+        self._write_backup()
+
     def get_severity_excluded_reduction_factors(self, severity_id):
         """Return enabler ids that do not apply to one category assessment."""
         rows = self.conn.execute(

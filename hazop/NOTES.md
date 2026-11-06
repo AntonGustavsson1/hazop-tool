@@ -1,5 +1,19 @@
 # NOTES.md — Beslut och kontext
 
+## HAZOP: sammanhållen sparning av barriärens kategorival (2026-11-06)
+
+Den utökade RRF-popupen sparar nu RRF, typ och konsekvenskategorier i en
+databastransaktion och ett ångra-steg. Ett sparfel återställer hela ändringen
+och visas i popupen. Om kategorierna ändrats medan popupen var öppen stoppas
+sparningen med besked om att öppna den igen. Om kategoriinställningarna inte
+kan läsas stängs sparningen av i stället för att anta att barriären gäller
+överallt. Ändringar i andra barriärers kategoriundantag bevaras.
+
+Syntaxkontroll, 149 databastester, 99 träd-/smoketester och 43 P&ID-/
+barriärpopuptester passerade headless. Testerna omfattar simulerat databasfel,
+inaktuella kategorier, samtidiga andra ändringar och ångra/gör om. Feltexten
+granskades som renderad widget; fullständigt manuellt GUI-flöde återstår.
+
 ## HAZOP: exakt RRF-inmatning (2026-11-06)
 
 RRF-popupens tidigare numeriska ruta begränsade värden till 1 000 000 och

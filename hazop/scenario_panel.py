@@ -3930,6 +3930,7 @@ class SgRRFCategoryPopup(QDialog):
         self._current_type   = current_sg_type or 'Övrigt'
         self._sev_cat_list   = list(sev_cat_list or [])  # [(severity_id, category_name), ...]
         self._cat_checks: dict[int, QCheckBox] = {}
+        self._category_load_failed = False
         self.setWindowTitle("Barriär — RRF & tillämpning")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -4000,7 +4001,8 @@ class SgRRFCategoryPopup(QDialog):
         self._rrf_error.setStyleSheet('border:none;color:#A11A1A;font-size:10px;')
         self._rrf_error.hide()
         outer.addWidget(self._rrf_error)
-        self._rrf_edit.textChanged.connect(self._rrf_error.hide)
+        self._rrf_edit.textChanged.connect(
+            lambda: self._rrf_error.hide() if not self._category_load_failed else None)
 
         # Keep category applicability separate from the retired per-cause
         # selection.  Each category assessment owns its own exclusion set,
@@ -4018,21 +4020,36 @@ class SgRRFCategoryPopup(QDialog):
                 try:
                     excluded = self.db.get_severity_excluded_sgs(severity_id) or set()
                 except Exception:
+                    logging.warning('Could not load barrier category exclusions', exc_info=True)
+                    self._category_load_failed = True
                     excluded = set()
                 check = QCheckBox(str(category_name))
                 check.setStyleSheet("border:none;font-size:10px;color:#17191C;")
                 check.setChecked(self._sg_id not in excluded)
                 self._cat_checks[severity_id] = check
                 outer.addWidget(check)
+            if self._category_load_failed:
+                for check in self._cat_checks.values():
+                    check.setEnabled(False)
+                self._show_category_load_error()
 
         ok = QPushButton("OK")
         ok.setAutoDefault(False)
         ok.setStyleSheet(popup_primary_button_stylesheet())
         ok.clicked.connect(self._ok)
         self._rrf_edit.returnPressed.connect(self._ok)
+        ok.setEnabled(not self._category_load_failed)
         outer.addWidget(ok, alignment=Qt.AlignmentFlag.AlignRight)
 
+    def _show_category_load_error(self):
+        self._rrf_error.setText(
+            'Kunde inte läsa kategoriinställningarna. Stäng och öppna fönstret igen.')
+        self._rrf_error.show()
+
     def _ok(self):
+        if self._category_load_failed:
+            self._show_category_load_error()
+            return
         try:
             new_rrf = parse_rrf_integer(self._rrf_edit.text())
         except ValueError as exc:
@@ -4041,25 +4058,21 @@ class SgRRFCategoryPopup(QDialog):
             self._rrf_edit.setFocus()
             self._rrf_edit.selectAll()
             return
-        with self.db.history_group():
-            return self._ok_inner(new_rrf)
-
-    def _ok_inner(self, new_rrf):
         new_type = self._type_combo.currentText()
-        if new_rrf != self._current_rrf or new_type != self._current_type:
-            self.db.update_safeguard(self._sg_id, rrf=new_rrf, sg_type=new_type)
-
-        # Persist only this safeguard's membership in each category.  Do
-        # not touch safeguard_cause_exclusions: the per-cause feature was
-        # intentionally removed and old stored values remain undisturbed.
-        for severity_id, check in self._cat_checks.items():
-            excluded = set(self.db.get_severity_excluded_sgs(severity_id) or ())
-            if check.isChecked():
-                excluded.discard(self._sg_id)
-            else:
-                excluded.add(self._sg_id)
-            self.db.set_severity_excluded_sgs(severity_id, excluded)
-
+        applicability = {severity_id: check.isChecked()
+                         for severity_id, check in self._cat_checks.items()}
+        try:
+            self.db.save_safeguard_rrf_applicability(
+                self._sg_id, new_rrf, new_type, applicability)
+        except ValueError as exc:
+            self._rrf_error.setText(str(exc))
+            self._rrf_error.show()
+            return
+        except Exception:
+            logging.warning('Could not save barrier RRF and applicability', exc_info=True)
+            self._rrf_error.setText('Kunde inte spara. Försök igen; inga ändringar sparades.')
+            self._rrf_error.show()
+            return
         self.accept()
 
 

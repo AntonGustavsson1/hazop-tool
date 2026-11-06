@@ -3237,15 +3237,17 @@ class SgRRFPopupTests(unittest.TestCase):
         try:
             self.assertEqual('3000000000', popup._rrf_edit.text())
             popup._ok()
-            db.update_safeguard.assert_not_called()
+            db.save_safeguard_rrf_applicability.assert_called_once_with(
+                1, 3_000_000_000, 'SIS', {})
         finally:
             popup.close()
             popup.deleteLater()
 
+        db.reset_mock()
         popup = SgRRFCategoryPopup(db, 1, 1.5, 'SIS', [])
         try:
             popup._ok()
-            db.update_safeguard.assert_not_called()
+            db.save_safeguard_rrf_applicability.assert_not_called()
             self.assertTrue(popup._rrf_error.text())
         finally:
             popup.close()
@@ -3260,7 +3262,8 @@ class SgRRFPopupTests(unittest.TestCase):
         try:
             self.assertEqual('Tidigare typ', popup._type_combo.currentText())
             popup._ok()
-            db.update_safeguard.assert_not_called()
+            db.save_safeguard_rrf_applicability.assert_called_once_with(
+                1, 10, 'Tidigare typ', {})
         finally:
             popup.close()
             popup.deleteLater()
@@ -3324,12 +3327,25 @@ class SgRRFPopupTests(unittest.TestCase):
             popup.close()
             popup.deleteLater()
 
+    def test_category_read_failure_does_not_assume_every_barrier_applies(self):
+        from scenario_panel import SgRRFCategoryPopup
+
+        db = unittest.mock.MagicMock()
+        db.safeguard_types.return_value = ['SIS']
+        db.get_severity_excluded_sgs.side_effect = OSError('testfel')
+        popup = SgRRFCategoryPopup(db, 1, 10, 'SIS', [(1, 'Människa')])
+        try:
+            self.assertTrue(popup._rrf_error.text())
+            self.assertFalse(popup._cat_checks[1].isEnabled())
+            popup._ok()
+            db.save_safeguard_rrf_applicability.assert_not_called()
+        finally:
+            popup.close()
+            popup.deleteLater()
+
     def test_category_changes_preserve_other_exclusions_and_never_touch_causes(self):
         from scenario_panel import SgRRFCategoryPopup
 
-        # MagicMock, not Mock: _ok() wraps its save in `with
-        # self.db.history_group():`, which needs a context-manager-capable
-        # mock (2026-09-01, see NOTES.md Ctrl+Z/Ctrl+Y history rule).
         db = unittest.mock.MagicMock()
         db.safeguard_types.return_value = ['BPCS', 'SIS', 'Mekanisk', 'Administrativ', 'Övrigt']
         # SG 9 currently applies to Människa, but not to Miljö. Other
@@ -3343,11 +3359,120 @@ class SgRRFPopupTests(unittest.TestCase):
             popup._cat_checks[1].setChecked(False)
             popup._cat_checks[2].setChecked(True)
             popup._ok()
-            self.assertEqual(
-                db.set_severity_excluded_sgs.call_args_list,
-                [unittest.mock.call(1, {8, 9}),
-                 unittest.mock.call(2, {10})])
+            db.save_safeguard_rrf_applicability.assert_called_once_with(
+                9, 10, 'Övrigt', {1: False, 2: True})
             db.set_safeguard_excluded_causes.assert_not_called()
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+
+class SgRRFPopupPersistenceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='hazop_rrf_persistence_')
+        self.db = Database(path=os.path.join(self.tmpdir, 'test.db'))
+        node = self.db.add_node()
+        self.cause = self.db.add_cause(self.db.deviations(node)[0]['id'])
+        self.cons = self.db.add_consequence(self.cause)
+        self.sg = self.db.add_safeguard(self.cons)
+        self.other1 = self.db.add_safeguard(self.cons)
+        self.other2 = self.db.add_safeguard(self.cons)
+        self.db.update_safeguard(self.sg, rrf=10, sg_type='Övrigt')
+        self.db.set_consequence_severity(self.cons, self.db.add_category('Test A'), 2)
+        self.db.set_consequence_severity(self.cons, self.db.add_category('Test B'), 2)
+        self.categories = [(row['id'], row['name'])
+                           for row in self.db.get_consequence_severities(self.cons)]
+        self.first, self.second = [row[0] for row in self.categories]
+        self.db.set_severity_excluded_sgs(self.first, {self.other1})
+        self.db.set_severity_excluded_sgs(self.second, {self.sg, self.other2})
+        self.db.set_safeguard_excluded_causes(self.sg, {self.cause})
+        self.db.clear_undo_history()
+
+    def tearDown(self):
+        self.db.conn.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def popup(self):
+        from scenario_panel import SgRRFCategoryPopup
+        return SgRRFCategoryPopup(self.db, self.sg, 10, 'Övrigt', self.categories)
+
+    def test_saving_multiple_changes_preserves_other_data_and_is_one_undo(self):
+        popup = self.popup()
+        try:
+            popup._rrf_edit.setText('3000000000')
+            popup._type_combo.setCurrentText('SIS')
+            popup._cat_checks[self.first].setChecked(False)
+            popup._cat_checks[self.second].setChecked(True)
+            popup._ok()
+            self.assertEqual(3_000_000_000, self.db.get_safeguard(self.sg)['rrf'])
+            self.assertEqual('SIS', self.db.get_safeguard(self.sg)['sg_type'])
+            self.assertEqual({self.other1, self.sg}, self.db.get_severity_excluded_sgs(self.first))
+            self.assertEqual({self.other2}, self.db.get_severity_excluded_sgs(self.second))
+            self.assertEqual({self.cause}, self.db.get_safeguard_excluded_causes(self.sg))
+            self.assertEqual(1, self.db.undo_count)
+            self.assertTrue(self.db.undo())
+            self.assertEqual(10, self.db.get_safeguard(self.sg)['rrf'])
+            self.assertEqual({self.other1}, self.db.get_severity_excluded_sgs(self.first))
+            self.assertEqual({self.sg, self.other2}, self.db.get_severity_excluded_sgs(self.second))
+            self.assertTrue(self.db.redo())
+            self.assertEqual(3_000_000_000, self.db.get_safeguard(self.sg)['rrf'])
+            self.assertEqual({self.other1, self.sg}, self.db.get_severity_excluded_sgs(self.first))
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+    def test_failed_category_write_rolls_back_the_entire_edit(self):
+        self.db.set_severity_excluded_sgs(self.second, {self.other2})
+        self.db.conn.execute(
+            f'CREATE TRIGGER reject_second BEFORE INSERT ON consequence_severity_exclusions '
+            f'WHEN NEW.severity_id={int(self.second)} BEGIN SELECT RAISE(ABORT, "testfel"); END')
+        self.db.commit()
+        self.db.clear_undo_history()
+        popup = self.popup()
+        try:
+            popup.setWindowFlags(Qt.WindowType.Tool)
+            popup.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+            popup.show()
+            self.app.processEvents()
+            popup._rrf_edit.setText('100')
+            popup._cat_checks[self.first].setChecked(False)
+            popup._cat_checks[self.second].setChecked(False)
+            popup._ok()
+            self.assertTrue(popup.isVisible())
+            self.assertTrue(popup._rrf_error.text())
+            self.assertEqual(10, self.db.get_safeguard(self.sg)['rrf'])
+            self.assertEqual({self.other1}, self.db.get_severity_excluded_sgs(self.first))
+            self.assertEqual({self.other2}, self.db.get_severity_excluded_sgs(self.second))
+            self.assertEqual(0, self.db.undo_count)
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+    def test_removed_category_rejects_stale_popup_without_saving_other_fields(self):
+        popup = self.popup()
+        try:
+            self.db.conn.execute('DELETE FROM consequence_severities WHERE id=?', (self.second,))
+            self.db.commit()
+            popup._rrf_edit.setText('100')
+            popup._ok()
+            self.assertTrue(popup._rrf_error.text())
+            self.assertEqual(10, self.db.get_safeguard(self.sg)['rrf'])
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+    def test_other_barrier_changes_made_while_popup_is_open_are_preserved(self):
+        popup = self.popup()
+        try:
+            self.db.set_severity_excluded_sgs(self.first, {self.other1, self.other2})
+            popup._cat_checks[self.first].setChecked(False)
+            popup._ok()
+            self.assertEqual({self.sg, self.other1, self.other2},
+                             self.db.get_severity_excluded_sgs(self.first))
         finally:
             popup.close()
             popup.deleteLater()
