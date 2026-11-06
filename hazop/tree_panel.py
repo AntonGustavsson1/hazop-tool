@@ -2246,7 +2246,8 @@ class RRFPopup(QDialog):
     """
     rrf_selected = pyqtSignal(int, str)   # (rrf_value, sg_type)
 
-    def __init__(self, current_rrf: int, current_sg_type: str = 'Övrigt', parent=None):
+    def __init__(self, current_rrf: int, current_sg_type: str = 'Övrigt', parent=None,
+                 *, safeguard_types=None):
         super().__init__(parent)
         self.setWindowTitle("Ändra RRF")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -2268,8 +2269,11 @@ class RRFPopup(QDialog):
         type_row = QHBoxLayout()
         type_row.addWidget(QLabel("Typ:"))
         self._type_combo = QComboBox()
-        self._type_combo.addItems(SG_TYPES)
+        self._type_combo.addItems(list(safeguard_types or SG_TYPES))
         idx = self._type_combo.findText(current_sg_type)
+        if idx < 0 and current_sg_type:
+            self._type_combo.addItem(current_sg_type)
+            idx = self._type_combo.count() - 1
         if idx >= 0:
             self._type_combo.setCurrentIndex(idx)
         self._type_combo.setStyleSheet(popup_input_stylesheet())

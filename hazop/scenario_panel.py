@@ -3958,6 +3958,9 @@ class SgRRFCategoryPopup(QDialog):
         # settings, so a category added for LOPA is available in HAZOP too.
         self._type_combo.addItems(self.db.safeguard_types())
         idx = self._type_combo.findText(self._current_type)
+        if idx < 0 and self._current_type:
+            self._type_combo.addItem(self._current_type)
+            idx = self._type_combo.count() - 1
         if idx >= 0:
             self._type_combo.setCurrentIndex(idx)
         self._type_combo.setStyleSheet(popup_input_stylesheet() +
@@ -3969,7 +3972,7 @@ class SgRRFCategoryPopup(QDialog):
         presets = QListWidget()
         presets.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         presets.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        presets.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        presets.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         presets.setMinimumWidth(150)
         presets.setMaximumHeight(120)
         self._preset_items = {}
@@ -3979,7 +3982,7 @@ class SgRRFCategoryPopup(QDialog):
             presets.addItem(item)
             self._preset_items[v] = item
             if v == self._current_rrf:
-                item.setSelected(True)
+                presets.setCurrentItem(item)
         presets.itemClicked.connect(
             lambda item: self._spin.setValue(item.data(Qt.ItemDataRole.UserRole)))
         outer.addWidget(presets)
@@ -7310,7 +7313,8 @@ class ScenarioTablePanel(QWidget):
                 self.db, sg_id, current_rrf, current_sg_type,
                 sev_cat_list, parent=self)
         else:
-            popup = RRFPopup(current_rrf, current_sg_type, self)
+            popup = RRFPopup(current_rrf, current_sg_type, self,
+                             safeguard_types=self.db.safeguard_types())
             popup.rrf_selected.connect(
                 lambda v, t, r=row, sid=sg_id: self._update_sg_rrf(r, sid, v, t))
 

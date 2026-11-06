@@ -3228,6 +3228,51 @@ class SgRRFPopupTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
+    def test_popup_retains_type_no_longer_in_project_list(self):
+        from scenario_panel import SgRRFCategoryPopup
+
+        db = unittest.mock.MagicMock()
+        db.safeguard_types.return_value = ['SIS', 'Mekanisk']
+        popup = SgRRFCategoryPopup(db, 1, 10, 'Tidigare typ', [])
+        try:
+            self.assertEqual('Tidigare typ', popup._type_combo.currentText())
+            popup._ok()
+            db.update_safeguard.assert_not_called()
+        finally:
+            popup.close()
+            popup.deleteLater()
+
+    def test_rrf_list_in_extended_popup_can_scroll_to_last_choice(self):
+        from PyQt6.QtTest import QTest
+        from PyQt6.QtWidgets import QListWidget
+        from scenario_panel import SgRRFCategoryPopup
+
+        db = unittest.mock.MagicMock()
+        db.safeguard_types.return_value = ['SIS', 'Övrigt']
+        popup = SgRRFCategoryPopup(db, 1, 10, 'SIS', [])
+        try:
+            # Other offscreen tests may leave focus events queued.  Use a
+            # non-transient window here so they cannot dismiss this popup
+            # while the list's scrolling and mouse interaction are tested.
+            popup.setWindowFlags(Qt.WindowType.Tool)
+            popup.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+            popup.show()
+            self.app.processEvents()
+            choices = popup.findChild(QListWidget)
+            choices.setFixedHeight(55)
+            self.app.processEvents()
+            self.assertGreater(choices.verticalScrollBar().maximum(), 0)
+            self.assertTrue(choices.verticalScrollBar().isVisible())
+            last = choices.item(choices.count() - 1)
+            choices.scrollToItem(last)
+            self.app.processEvents()
+            QTest.mouseClick(choices.viewport(), Qt.MouseButton.LeftButton,
+                             pos=choices.visualItemRect(last).center())
+            self.assertEqual(10000, popup._spin.value())
+        finally:
+            popup.close()
+            popup.deleteLater()
+
     def test_popup_keeps_category_controls_but_not_per_cause_controls(self):
         from scenario_panel import SgRRFCategoryPopup
         from PyQt6.QtWidgets import QCheckBox, QListWidget, QLabel

@@ -1565,6 +1565,22 @@ class RRFPopupStyleTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
+    def test_rrf_popup_retains_saved_type_and_offers_project_types(self):
+        from tree_panel import RRFPopup
+
+        popup = RRFPopup(current_rrf=10, current_sg_type='Tidigare typ',
+                         safeguard_types=['SIS', 'Lokal barriär'])
+        try:
+            self.assertEqual('Tidigare typ', popup._type_combo.currentText())
+            self.assertGreaterEqual(popup._type_combo.findText('Lokal barriär'), 0)
+            selected = []
+            popup.rrf_selected.connect(lambda value, kind: selected.append((value, kind)))
+            popup._pick(10)
+            self.assertEqual([(10, 'Tidigare typ')], selected)
+        finally:
+            popup.close()
+            popup.deleteLater()
+
     def test_rrf_choices_can_be_scrolled_and_selected(self):
         from PyQt6.QtTest import QTest
         from tree_panel import RRFPopup

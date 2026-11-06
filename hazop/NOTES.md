@@ -1,5 +1,17 @@
 # NOTES.md — Beslut och kontext
 
+## HAZOP: konsekventa barriärtyper och åtkomliga RRF-val (2026-11-06)
+
+RRF-popupen i scenariotabellen och P&ID-vyn använder nu samma projektspecifika
+barriärtyper som popupen för konsekvenskategorier. Om en tidigare sparad typ
+inte längre finns i projektlistan visas och bevaras den ändå, så att OK inte
+oavsiktligt byter typ. Även listan i den utökade popupen kan rullas när den
+inte får plats och det aktuella standardvärdet markeras på samma sätt.
+
+Syntaxkontroll, 96 träd-/smoketester och 37 P&ID-/barriärpopuptester passerade
+headless. Båda popupvarianterna har granskats som renderade widgets; ett
+fullständigt manuellt arbetsflöde i programmet är inte genomfört.
+
 ## HAZOP: säker numerisk frekvens i popupen (2026-11-06)
 
 Frekvenspopupens tidigare sex decimaler avrundade exempelvis 1e-10/år till

@@ -924,7 +924,8 @@ class PropertiesRibbon(QWidget):
         if not sg: return
         sgd = dict(sg)
         sg_id = self._id   # capture by value for the signal lambda
-        popup = RRFPopup(int(sgd.get('rrf', 1)), sgd.get('sg_type', 'Övrigt'), self)
+        popup = RRFPopup(int(sgd.get('rrf', 1)), sgd.get('sg_type', 'Övrigt'), self,
+                         safeguard_types=self.db.safeguard_types())
         popup.rrf_selected.connect(
             lambda v, t, sid=sg_id: (self.db.update_safeguard(sid, rrf=v, sg_type=t),
                                      self.item_changed.emit()))
