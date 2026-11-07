@@ -186,6 +186,69 @@ class LopaHierarchyTableTests(unittest.TestCase):
     def test_add_scenario_button_removed(self):
         self.assertFalse(hasattr(self.panel, '_add_scenario_btn'))
 
+    def test_escalation_factors_fit_and_can_still_be_edited(self):
+        import json
+        from PyQt6.QtWidgets import QLabel, QLineEdit
+
+        self.panel.resize(800, 1000)
+        self.panel.show()
+        for _ in range(5):
+            self.app.processEvents()
+        table = self.panel._escalation
+        self.assertEqual(0, table.horizontalScrollBar().maximum())
+        self.assertEqual(['Kategori', 'Konsekvens', 'TEL (/år)', 'Faktorer (%)', 'Beräknat'],
+                         [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())])
+        self.assertEqual('UI-konsekvens', table.item(0, 1).text())
+        result = table.item(0, 4).text()
+        self.assertIn('RRF:', result)
+        self.assertIn('Olycksfrekvens:', result)
+
+        factor_group = table.cellWidget(0, 3)
+        editors = factor_group.findChildren(QLineEdit)
+        self.assertGreaterEqual(len(editors), 1)
+        for label in factor_group.findChildren(QLabel):
+            self.assertGreaterEqual(label.width(), label.fontMetrics().horizontalAdvance(label.text()))
+        editor = editors[0]
+        key = editor.property('lopa_factor_key')
+        category_key = editor.property('lopa_category_key')
+        source_id = self.panel._source_id
+        editor.setText('25,5')
+        self.panel.resize(600, 1000)
+        for _ in range(5):
+            self.app.processEvents()
+        self.assertEqual('25,5', editor.text(), 'resizing must preserve an unfinished edit')
+        self.assertEqual(0, table.horizontalScrollBar().maximum())
+        editor.editingFinished.emit()
+        self.app.processEvents()
+        stored = next(row for row in self.db.lopa_escalation_rows(source_id)
+                      if row['category_key'] == category_key)
+        self.assertEqual(25.5, json.loads(stored['factor_values_json'])[key])
+        self.assertEqual(0, table.horizontalScrollBar().maximum())
+        current_editors = {box for row in range(table.rowCount())
+                           for box in table.cellWidget(row, 3).findChildren(QLineEdit)}
+        visible_editors = {box for box in table.viewport().findChildren(QLineEdit)
+                           if box.property('lopa_factor_key') and box.isVisibleTo(table.viewport())}
+        self.assertEqual(current_editors, visible_editors,
+                         'refresh must not leave old factor fields visible')
+
+        active = table.item(0, 0)
+        active.setCheckState(Qt.CheckState.Unchecked)
+        self.app.processEvents()
+        stored = next(row for row in self.db.lopa_escalation_rows(source_id)
+                      if row['category_key'] == category_key)
+        self.assertFalse(stored['active'])
+        self.assertEqual(25.5, json.loads(stored['factor_values_json'])[key])
+
+        editor = next(box for box in table.cellWidget(0, 3).findChildren(QLineEdit)
+                      if box.property('lopa_factor_key') == key)
+        editor.setText('-1')
+        with patch('lopa_panel.QMessageBox.warning') as warning:
+            editor.editingFinished.emit()
+        warning.assert_called_once()
+        stored = next(row for row in self.db.lopa_escalation_rows(source_id)
+                      if row['category_key'] == category_key)
+        self.assertEqual(25.5, json.loads(stored['factor_values_json'])[key])
+
     def test_narrow_hazop_table_keeps_descriptions_readable_and_scrolls_locally(self):
         self.panel.resize(600, 1000)
         self.panel.show()

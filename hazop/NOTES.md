@@ -1,5 +1,20 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: eskalering inom fönsterbredden (2026-11-07)
+
+Eskalering visar varje konsekvens och kategori med TEL, dess redigerbara
+procentfaktorer och beräknade värden på samma rad. Faktorerna radbryts inom
+cellen när fönstret krymper; standardfaktorernas korta etiketter har sina
+fullständiga namn som verktygstips och tillgängliga namn. Ändringarna använder
+befintlig validering, kategorikoppling och beräkningsväg. Pågående inmatning
+behålls vid storleksändring och ersatta fält döljs innan Qt tar bort dem, så
+gamla inmatningsrutor inte blir kvar visuellt.
+
+Syntaxkontroll, 47 LOPA-/smoketester och 16 designtester passerade. Riktade
+tester kontrollerade sparande med decimaltecken, avaktivering, ogiltig
+inmatning och breddändring. Renderade tabeller har granskats vid 1200 och
+800 px; fullständigt manuellt GUI-flöde och en ny installationsfil återstår.
+
 ## LOPA: barriäröversikt utan sidledsbläddring (2026-11-07)
 
 På Antons önskemål visas aktiva, oberoende barriärer nu tillsammans per

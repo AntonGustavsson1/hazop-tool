@@ -58,6 +58,8 @@ from design import (
     LOPA_BREAKPOINT_SIDEBAR,
     LOPA_BREAKPOINT_TWO_COLUMN,
     LOPA_CARD_PADDING,
+    LOPA_FACTOR_EDITOR_WIDTH,
+    LOPA_FACTOR_MIN_WIDTH,
     LOPA_MAIN_MAX_WIDTH,
     LOPA_SIDEBAR_MAX_WIDTH,
     LOPA_SIDEBAR_MIN_WIDTH,
@@ -901,7 +903,9 @@ class LopaPanel(QWidget):
         self._escalation_note.setStyleSheet(lopa_note_stylesheet())
         self._escalation_note.setToolTip(self._escalation_note.text())
         self._escalation_note.hide()
-        self._escalation = QTableWidget(0, 0)
+        self._escalation = QTableWidget(0, 5)
+        self._escalation.setHorizontalHeaderLabels(
+            ['Kategori', 'Konsekvens', 'TEL (/år)', 'Faktorer (%)', 'Beräknat'])
         self._escalation.verticalHeader().setVisible(False)
         self._escalation.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._escalation.setWordWrap(True)
@@ -909,7 +913,24 @@ class LopaPanel(QWidget):
         self._escalation.setSizePolicy(QSizePolicy.Policy.Expanding,
                                        QSizePolicy.Policy.Preferred)
         self._escalation.itemChanged.connect(self._on_escalation_item_changed)
-        self._configure_compact_table(self._escalation, 48, 112)
+        self._configure_compact_table(self._escalation, 48, 200)
+        escalation_header = self._escalation.horizontalHeader()
+        escalation_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        escalation_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        escalation_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        escalation_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        escalation_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self._escalation.setColumnWidth(0, 110)
+        self._escalation.setColumnWidth(2, 75)
+        self._escalation.horizontalHeaderItem(0).setToolTip(
+            'Aktivera eller avaktivera eskaleringen för kategorin. C anger konsekvensnivå.')
+        self._escalation.horizontalHeaderItem(4).setToolTip(
+            'Eskaleringsfaktor, olycksfrekvens och erforderlig RRF.')
+        self._escalation_layout_timer = QTimer(self)
+        self._escalation_layout_timer.setSingleShot(True)
+        self._escalation_layout_timer.timeout.connect(self._fit_escalation_geometry)
+        escalation_header.sectionResized.connect(
+            lambda *_args: self._escalation_layout_timer.start(0))
         escalation_layout.addWidget(self._escalation)
         detail_layout.addWidget(escalation_card)
 
@@ -1107,6 +1128,7 @@ class LopaPanel(QWidget):
         self._final_equipment.clear()
         self._barriers.setRowCount(0)
         self._barrier_matrix.setRowCount(0)
+        self._clear_escalation_factor_widgets()
         self._escalation.setRowCount(0)
         self._calculation.setRowCount(0)
         self._dimensioning_summary.clear()
@@ -2035,6 +2057,7 @@ class LopaPanel(QWidget):
             self._scenario_note.setText('Välj ett källscenario för att beskriva vad som händer i processen.')
             self._barriers.setRowCount(0)
             self._barrier_matrix.setRowCount(0)
+            self._clear_escalation_factor_widgets()
             self._escalation.setRowCount(0)
             self._edit_consequence_btn.setEnabled(False)
             self._add_consequence_btn.setEnabled(bool(self._revision_id) and editable)
@@ -2858,8 +2881,8 @@ class LopaPanel(QWidget):
 
     def _populate_escalation(self):
         if not self._source_id:
+            self._clear_escalation_factor_widgets()
             self._escalation.setRowCount(0)
-            self._escalation.setColumnCount(0)
             return
         matrix = self.db.lopa_revision_matrix(self._revision_id)
         config = matrix.get('lopa') or {}
@@ -2868,28 +2891,9 @@ class LopaPanel(QWidget):
                            for row in self.db.lopa_escalation_rows(self._source_id)}
         calculation = self.db.lopa_source_calculation(self._source_id)
         assessments = calculation['categories']
-        factor_defs = []
-        seen_factors = set()
-        for key in dict.fromkeys(row['category_key'] for row in assessments):
-            for factor in settings.get(key, {}).get('escalation_factors') or []:
-                factor_key = factor.get('key')
-                if factor_key and factor_key not in seen_factors:
-                    factor_defs.append(factor)
-                    seen_factors.add(factor_key)
-        headers = (['Eskalering aktiv', 'Konsekvens', 'Kategori', 'Nivå', 'TEL (/år)'] +
-                   [f"{factor['label']} (%)" for factor in factor_defs] +
-                   ['Eskaleringsfaktor', 'Olycksfrekvens', 'RRF'])
         old_loading = self._loading
         self._loading = True
-        self._escalation.setColumnCount(len(headers))
-        self._escalation.setHorizontalHeaderLabels(headers)
-        escalation_header = self._escalation.horizontalHeader()
-        for column in range(len(headers)):
-            escalation_header.setSectionResizeMode(
-                column, QHeaderView.ResizeMode.ResizeToContents)
-        # The consequence is the only descriptive column.  Let it absorb
-        # remaining space so the escalation table reads as a full-width row.
-        escalation_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._clear_escalation_factor_widgets()
         self._escalation.setRowCount(len(assessments))
         editable = self._revision_is_editable()
         raw_assessments = {
@@ -2907,6 +2911,7 @@ class LopaPanel(QWidget):
             active_item = self._check_cell(
                 bool(escalation.get('active', 1)), enabled=editable, entity_id=key)
             active_item.setData(self._ROLE_SOURCE_ID, self._source_id)
+            active_item.setText(f"{calculated['category_name']} · C{calculated['severity']}")
             active_item.setToolTip(
                 'Styr eskaleringsfaktorerna för alla bedömningar i denna kategori. '
                 'Inkludering av en enskild bedömning styrs i HAZOP-hierarkin ovan.')
@@ -2914,42 +2919,130 @@ class LopaPanel(QWidget):
             self._escalation.setItem(
                 row_index, 1, self._readonly_cell(
                     calculated.get('description') or raw_assessment.get('description') or '—'))
-            self._escalation.setCellWidget(
-                row_index, 2, self._category_badge_widget(calculated['category_name']))
-            self._escalation.setItem(row_index, 3, self._readonly_cell(calculated['severity']))
             tel = calculated.get('tel')
             self._escalation.setItem(
-                row_index, 4, self._readonly_cell('—' if tel is None else f'{tel:.6g}'))
-            supported = {factor.get('key'): factor for factor in setting.get('escalation_factors') or []}
-            for column, factor in enumerate(factor_defs, start=5):
-                definition = supported.get(factor['key'])
-                if definition is None:
-                    self._escalation.setItem(row_index, column, self._readonly_cell('—'))
+                row_index, 2, self._readonly_cell('—' if tel is None else f'{tel:.6g}'))
+            factors = QWidget()
+            factors.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            factor_layout = QGridLayout(factors)
+            factor_layout.setContentsMargins(3, 2, 3, 2)
+            factor_layout.setHorizontalSpacing(4)
+            factor_layout.setVerticalSpacing(2)
+            factors._factor_controls = []
+            factors._factor_columns = 0
+            definitions = setting.get('escalation_factors') or []
+            for definition in definitions:
+                factor_key = definition.get('key')
+                if not factor_key:
                     continue
-                percent = values.get(factor['key'], definition.get('default_percent', 100.0))
-                item = QTableWidgetItem(f'{float(percent):.6g}')
-                item.setData(self._ROLE_ENTITY_ID, key)
-                item.setData(self._ROLE_FACTOR_KEY, factor['key'])
-                if not editable:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self._escalation.setItem(row_index, column, item)
-            computed_column = 5 + len(factor_defs)
+                full_label = definition.get('label') or factor_key
+                short_labels = {
+                    ('antandning', 'Antändning / farlig atmosfär'): 'Ant.',
+                    ('narvaro', 'Närvaro'): 'Närv.',
+                    ('skada', 'Sannolikhet att skadas'): 'Skada',
+                }
+                label = QLabel(short_labels.get((factor_key, full_label), full_label))
+                label.setWordWrap(True)
+                label.setToolTip(full_label)
+                label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                label.setMinimumWidth(min(30, label.fontMetrics().horizontalAdvance(label.text()) + 2))
+                percent = values.get(factor_key, definition.get('default_percent', 100.0))
+                editor = QLineEdit(f'{float(percent):.6g}')
+                editor.setFixedWidth(LOPA_FACTOR_EDITOR_WIDTH)
+                editor.setEnabled(editable)
+                editor.setAccessibleName(f"{full_label} (%)")
+                editor.setProperty('lopa_factor_key', factor_key)
+                editor.setProperty('lopa_category_key', key)
+                editor.setProperty('lopa_saved_value', editor.text())
+                editor.editingFinished.connect(
+                    lambda box=editor, sid=self._source_id, category=key, factor=factor_key:
+                    self._save_escalation_factor(box, sid, category, factor))
+                control = QWidget()
+                control.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                control_layout = QHBoxLayout(control)
+                control_layout.setContentsMargins(0, 0, 0, 0)
+                control_layout.setSpacing(2)
+                control_layout.addWidget(label)
+                control_layout.addWidget(editor, 1)
+                factors._factor_controls.append(control)
+            if not factors._factor_controls:
+                factors._factor_controls.append(QLabel('—'))
+            self._arrange_escalation_factors(factors, self._escalation.columnWidth(3))
+            self._escalation.setCellWidget(row_index, 3, factors)
             factor = calculated.get('escalation_factor')
             accident = calculated.get('accident_frequency')
             rrf = calculated.get('required_rrf')
-            self._escalation.setItem(
-                row_index, computed_column,
-                self._readonly_cell('—' if factor is None else f'{factor:.6g}'))
-            self._escalation.setItem(
-                row_index, computed_column + 1,
-                self._readonly_cell('—' if accident is None else f'{accident:.6g} /år'))
-            self._escalation.setItem(
-                row_index, computed_column + 2,
-                self._readonly_cell('—' if rrf is None else f'{rrf:.6g}'))
-        self._escalation.resizeRowsToContents()
-        self._escalation.resizeColumnsToContents()
-        self._fit_table_height(self._escalation, 48, 160)
+            factor_text = '—' if factor is None else f'{factor:.6g}'
+            accident_text = '—' if accident is None else f'{accident:.6g} /år'
+            rrf_text = '—' if rrf is None else f'{rrf:.6g}'
+            output = self._readonly_cell(
+                f"Faktor: {factor_text} · Olycksfrekvens: {accident_text}\nRRF: {rrf_text}")
+            output.setToolTip(output.text())
+            self._escalation.setItem(row_index, 4, output)
+        self._fit_escalation_geometry()
         self._loading = old_loading
+
+    def _clear_escalation_factor_widgets(self):
+        # QTableWidget defers deletion of replaced cell widgets. Hide the old
+        # editors first so they cannot be painted at the viewport origin.
+        for row in range(self._escalation.rowCount()):
+            previous = self._escalation.cellWidget(row, 3)
+            if previous is not None:
+                previous.hide()
+                self._escalation.removeCellWidget(row, 3)
+
+    def _fit_escalation_geometry(self):
+        """Keep all factor editors and wrapped results visible on each row."""
+        width = self._escalation.columnWidth(3)
+        metrics = self._escalation.fontMetrics()
+        for row in range(self._escalation.rowCount()):
+            group = self._escalation.cellWidget(row, 3)
+            if group is None:
+                continue
+            self._arrange_escalation_factors(group, width)
+            layout = group.layout()
+            height = layout.heightForWidth(max(1, width - 2))
+            if height < 0:
+                height = layout.sizeHint().height()
+            for column in (0, 1, 2, 4):
+                item = self._escalation.item(row, column)
+                if item is None:
+                    continue
+                text_width = max(1, self._escalation.columnWidth(column) -
+                                 (24 if column == 0 else 8))
+                text_height = metrics.boundingRect(
+                    0, 0, text_width, 10000, Qt.TextFlag.TextWordWrap,
+                    item.text()).height() + 8
+                height = max(height, text_height)
+            self._escalation.setRowHeight(row, max(24, height + 4))
+        self._fit_table_height(self._escalation, 48, 200)
+
+    @staticmethod
+    def _arrange_escalation_factors(group, width):
+        """Wrap factor controls without rebuilding editors or losing edits."""
+        controls = group._factor_controls
+        columns = max(1, min(len(controls), max(1, width - 6) // LOPA_FACTOR_MIN_WIDTH))
+        if group._factor_columns == columns:
+            return
+        layout = group.layout()
+        while layout.count():
+            layout.takeAt(0)
+        for index, control in enumerate(controls):
+            layout.addWidget(control, index // columns, index % columns)
+        group._factor_columns = columns
+
+    def _save_escalation_factor(self, editor, source_id, category_key, factor_key):
+        """Reuse the existing validation and persistence for an inline factor."""
+        if self._loading or source_id != self._source_id:
+            return
+        text = editor.text().strip()
+        if text == editor.property('lopa_saved_value'):
+            return
+        editor.setProperty('lopa_saved_value', text)
+        item = QTableWidgetItem(text)
+        item.setData(self._ROLE_ENTITY_ID, category_key)
+        item.setData(self._ROLE_FACTOR_KEY, factor_key)
+        self._on_escalation_item_changed(item)
 
     def _on_escalation_item_changed(self, item):
         if self._loading or not self._source_id:
