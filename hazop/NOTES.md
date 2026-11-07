@@ -1,5 +1,23 @@
 # NOTES.md — Beslut och kontext
 
+## HAZOP: läsbara trädknappar och tydligare navigering (2026-11-07)
+
+Trädets lager- och åtgärdsknappar fördelas nu över flera rader beroende på
+tillgänglig bredd och verklig textstorlek. Etiketterna är kortare, svenska och
+kompletteras av tydliga verktygstips. Lagrets textfärg väljs efter faktisk
+kontrast mot den konfigurerade markeringsfärgen. Att ändra panelbredd varken
+ändrar lagrens tillstånd eller skickar nya synlighetssignaler.
+
+Navigeringsknapparna har tillgängliga namn och beskrivningar; betavyn har en
+egen ikon i stället för samma ikon som utrustningsregistret. Ett äldre
+navigeringstest har uppdaterats så att det även omfattar den senare tillagda
+LOPA-sidan.
+
+Syntaxkontroll, 116 träd-/design-/smoketester och 23 huvudfönster-/
+rekommendationstester passerade headless; riktade trädtester kördes efter sista
+testtillägget. Trädpanelen granskades som renderad widget vid 260 och 140 px
+bredd. Fullständigt manuellt arbetsflöde i vanligt programfönster återstår.
+
 ## HAZOP: tillförlitliga inställningar vid öppning och projektbyte (2026-11-07)
 
 Inställningssidan laddar nu sparad söktid, OCR-motor och orientering direkt.

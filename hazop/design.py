@@ -774,14 +774,29 @@ def visibility_toggle_stylesheet() -> str:
 
 def visibility_layer_button_stylesheet(
         color: str, foreground: str, *, off_background: str = '#e4e7e9',
-        off_foreground: str = '#7a7f83') -> str:
+        off_foreground: str = '#59616a') -> str:
     """Return the tree layer-toggle style while keeping its color dynamic."""
     return (
         f'QPushButton{{background:{color};color:{foreground};border:none;'
-        'border-radius:3px;font-size:10px;font-weight:bold;padding:0 4px;}'
+        'border-radius:3px;font-size:11px;font-weight:bold;padding:0 4px;}'
         f'QPushButton:!checked{{background:{off_background};'
         f'color:{off_foreground};}}'
     )
+
+
+def readable_text_color(background: str) -> str:
+    """Choose the better contrasting standard text color for a layer color."""
+    def luminance(color):
+        values = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+                  for v in values]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    bg = luminance(background)
+    def contrast(foreground):
+        fg = luminance(foreground)
+        return (max(bg, fg) + 0.05) / (min(bg, fg) + 0.05)
+    return max((TEXT, SURFACE), key=contrast)
 
 
 def symbol_selector_stylesheet() -> str:

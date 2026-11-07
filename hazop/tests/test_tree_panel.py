@@ -128,6 +128,44 @@ class TreePanelLayerToggleTests(unittest.TestCase):
         self.assertEqual(button.text(), 'Rekommendation')
         self.assertEqual(self.panel._vis_colors['recommendation'].lower(), '#8e44ad')
 
+    def test_tree_controls_remain_readable_at_normal_and_narrow_width(self):
+        from design import app_stylesheet
+
+        self.panel.setStyleSheet(app_stylesheet())
+        self.panel.show()
+        for width in (260, 210):
+            with self.subTest(width=width):
+                self.panel.resize(width, 750)
+                self.app.processEvents()
+                self.assertLessEqual(self.panel.width(), width)
+                actions = [button for button in self.panel.findChildren(QPushButton)
+                           if button.text() in ('+ System', '+ Nod', '+ Avvikelse', '+ Orsak', 'Ta bort')]
+                self.assertEqual(5, len(actions))
+                for button in list(self.panel._vis_btns.values()) + actions:
+                    with self.subTest(width=width, text=button.text()):
+                        needed = button.fontMetrics().horizontalAdvance(button.text())
+                        if not button.icon().isNull():
+                            needed += button.iconSize().width() + 4
+                        self.assertGreaterEqual(button.width() - 8, needed)
+                        self.assertTrue(button.toolTip())
+
+    def test_layer_text_contrasts_with_configured_bright_background(self):
+        button = self.panel._vis_btns['cause']
+        self.assertEqual('#00c800', self.panel._vis_colors['cause'].lower())
+        self.assertIn('color:#17191C', button.styleSheet())
+
+    def test_resizing_does_not_change_visibility_or_emit_layer_signals(self):
+        button = self.panel._vis_btns['cause']
+        button.setChecked(False)
+        emitted = []
+        self.panel.visibility_changed.connect(lambda *args: emitted.append(args))
+        self.panel.show()
+        for width in (260, 210, 400):
+            self.panel.resize(width, 750)
+            self.app.processEvents()
+            self.assertFalse(button.isChecked())
+        self.assertEqual([], emitted)
+
     def test_click_only_changes_pid_layer_signal_not_tree_rows(self):
         cases = (
             ('cause', CAUSE_T, self.cause_id),
@@ -157,6 +195,7 @@ class TreePanelLayerToggleTests(unittest.TestCase):
         self.assertEqual(self.db.get_config('tree_color_cause'), '#2457a6')
         self.assertEqual(resolve_tree_context_color({'cause'}).name(), '#2457a6')
         self.assertIn('#2457a6', self.panel._vis_btns['cause'].styleSheet())
+        self.assertIn('color:#FFFFFF', self.panel._vis_btns['cause'].styleSheet())
 
     def test_unchecked_role_is_grey_but_checked_role_stays_coloured(self):
         from pid_viewer import (resolve_tree_context_color,

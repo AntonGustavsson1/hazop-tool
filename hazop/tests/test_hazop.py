@@ -391,6 +391,19 @@ class MainWindowUndoRedoTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
+    def test_navigation_has_accessible_names_and_distinct_beta_icon(self):
+        with _TempDbMainWindow() as win:
+            buttons = (win.btn_prep, win.btn_pid, win.btn_sheet, win.btn_lopa,
+                       win.btn_recommendations, win.btn_equip, win.btn_admin,
+                       win.btn_settings, win.btn_beta)
+            self.assertEqual(len(buttons), len({button.accessibleName() for button in buttons}))
+            for button in buttons:
+                self.assertTrue(button.accessibleName())
+                self.assertEqual(button.toolTip(), button.accessibleName())
+            equipment = win.btn_equip.icon().pixmap(18, 18).toImage()
+            beta = win.btn_beta.icon().pixmap(18, 18).toImage()
+            self.assertNotEqual(equipment, beta)
+
     def test_main_window_undo_redo_restores_change_and_refreshes_views(self):
         with _TempDbMainWindow() as win:
             deviation_id = win.db.deviations(win.db.nodes()[0]['id'])[0]['id']

@@ -1288,7 +1288,7 @@ class MainWindow(QMainWindow):
         self.btn_beta      = QPushButton()
 
         _nav_labels = {
-            self.btn_prep:     "HAZOP preparation",
+            self.btn_prep:     "HAZOP-förberedelser",
             self.btn_pid:      "P&ID-vy",
             self.btn_sheet:    "Worksheet",
             self.btn_lopa:     "LOPA",
@@ -1308,7 +1308,7 @@ class MainWindow(QMainWindow):
             self.btn_admin:    'document',
             self.btn_settings: 'settings',
         }
-        _nav_icons[self.btn_beta] = 'bolt-nut'
+        _nav_icons[self.btn_beta] = 'flask'
 
         for btn in (self.btn_prep, self.btn_pid, self.btn_sheet, self.btn_lopa,
                     self.btn_recommendations,
@@ -1316,6 +1316,8 @@ class MainWindow(QMainWindow):
             btn.setCheckable(True)
             btn.setFixedSize(40, 40)
             btn.setToolTip(_nav_labels[btn])
+            btn.setAccessibleName(_nav_labels[btn])
+            btn.setAccessibleDescription(f'Öppna {_nav_labels[btn]}')
             btn.setIcon(_rail_icon(_nav_icons[btn]))
             btn.setIconSize(QSize(18, 18))
             btn.setStyleSheet(

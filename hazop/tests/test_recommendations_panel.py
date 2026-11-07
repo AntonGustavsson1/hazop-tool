@@ -443,7 +443,7 @@ class MainWindowNavRailRenumberingTests(unittest.TestCase):
 
     def test_view_stack_has_beta_page_after_settings(self):
         with _TempDbMainWindow() as win:
-            self.assertEqual(win.view_stack.count(), 8)
+            self.assertEqual(win.view_stack.count(), 9)
             self.assertIs(win.view_stack.widget(0), win.hazop_prep_panel)
             self.assertIs(win.view_stack.widget(1), win._h_splitter)
             self.assertIs(win.view_stack.widget(2), win.worksheet)
@@ -452,6 +452,7 @@ class MainWindowNavRailRenumberingTests(unittest.TestCase):
             self.assertIs(win.view_stack.widget(5), win.admin_panel)
             self.assertIs(win.view_stack.widget(6), win.settings_panel)
             self.assertIs(win.view_stack.widget(7), win.beta_panel)
+            self.assertIs(win.view_stack.widget(8), win.lopa_panel)
 
     def test_btn_recommendations_switches_to_index_3_and_calls_refresh(self):
         with _TempDbMainWindow() as win:
@@ -474,6 +475,7 @@ class MainWindowNavRailRenumberingTests(unittest.TestCase):
                 'btn_admin': 5,
                 'btn_settings': 6,
                 'btn_beta': 7,
+                'btn_lopa': 8,
             }
             for attr, idx in expected.items():
                 getattr(win, attr).click()

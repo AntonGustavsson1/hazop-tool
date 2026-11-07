@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QMessageBox, QGroupBox, QMenu, QSpinBox,
     QFrame, QListWidget, QListWidgetItem, QInputDialog,
     QCheckBox, QButtonGroup, QRadioButton, QSplitter, QColorDialog,
-    QAbstractItemView,
+    QAbstractItemView, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF, QRect, QMimeData, QEvent
 from PyQt6.QtGui import (
@@ -45,6 +45,7 @@ from design import (
     popup_muted_label_stylesheet, popup_primary_button_stylesheet,
     popup_separator_stylesheet, compact_control_stylesheet,
     popup_shell_stylesheet, visibility_layer_button_stylesheet,
+    readable_text_color,
     SUMMARY_BADGE_HEIGHT, summary_badge_override_stylesheet,
     summary_badge_stylesheet,
 )
@@ -131,19 +132,23 @@ class TreePanel(QWidget):
         layout.addWidget(lbl)
 
         # ── Visibility toggle buttons at TOP (before tree) ──────────────────────
-        vis_row = QHBoxLayout()
-        vis_row.setSpacing(4)
+        visibility_heading = QLabel('Visa på P&ID')
+        visibility_heading.setStyleSheet(popup_muted_label_stylesheet('10px'))
+        layout.addWidget(visibility_heading)
+        self._vis_grid = QGridLayout()
+        self._vis_grid.setSpacing(4)
 
         _VIS_BTNS = [
-            ('cause',        '⚙️ Orsaker',       '#e74c3c', '#fde8e8'),
-            ('consequence',  '⚠️ Konsekvenser',  '#e67e22', '#fef0e0'),
-            ('safeguard',    '🛡️ Safeguards',    '#27ae60', '#e8f8e8'),
-            ('equipment',    '🔧 Utrustning',    '#7f8c8d', '#ecf0f1'),
+            ('cause',        'Orsak',        '#e74c3c', '#fde8e8'),
+            ('consequence',  'Konsekvens',   '#e67e22', '#fef0e0'),
+            ('safeguard',    'Barriär',      '#27ae60', '#e8f8e8'),
+            ('equipment',    'Utrustning',    '#7f8c8d', '#ecf0f1'),
         ]
         _VIS_BTNS.insert(3, ('recommendation', 'Rekommendation',
                              '#8e44ad', '#f3e8ff'))
         self._vis_btns = {}
         self._vis_colors = {}
+        self._vis_button_order = []
         for type_key, label, _old_color_on, _old_color_off in _VIS_BTNS:
             btn = QPushButton(label)
             btn.setCheckable(True)
@@ -163,16 +168,21 @@ class TreePanel(QWidget):
                 btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 btn.customContextMenuRequested.connect(
                     lambda _pos, t=type_key: self._choose_visibility_color(t))
-                btn.setToolTip("Vänsterklick: visa/dölj. Högerklick: välj färg.")
+            tip = f'{label}: visa eller dölj på P&ID.'
+            if configurable:
+                tip += ' Högerklicka för att välja färg.'
+            btn.setToolTip(tip)
+            btn.setAccessibleName(f'Visa eller dölj {label.lower()} på P&ID')
             btn.setChecked(config_visible)
             btn.setFixedHeight(CONFIG['H_CTRL_STD'])
+            btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             self._style_visibility_button(btn, color_on)
             btn.toggled.connect(
                 lambda checked, t=type_key: self._on_visibility_toggled(t, checked))
-            vis_row.addWidget(btn)
+            self._vis_button_order.append(btn)
             self._vis_btns[type_key] = btn
 
-        layout.addLayout(vis_row)
+        layout.addLayout(self._vis_grid)
 
         # ── Tree action buttons (2nd row) — Nod/Avvikelse have no natural
         # right-click target of their own (they act on the whole tree or
@@ -181,8 +191,9 @@ class TreePanel(QWidget):
         # Orsak/Konsekvens/Safeguard stay right-click-only (add_deviation on
         # a NODE_T item, add_cause on DEV_T, etc.) since those already have
         # an obvious parent item to right-click.
-        action_row = QHBoxLayout()
-        action_row.setSpacing(4)
+        self._action_grid = QGridLayout()
+        self._action_grid.setSpacing(4)
+        self._action_buttons = []
         for label, icon_name, tip, slot in (
             ("+ System",    None,     "Lägg till nytt system",  self.add_system),
             ("+ Nod",       None,     "Lägg till ny nod",       self.add_node),
@@ -194,10 +205,15 @@ class TreePanel(QWidget):
             if icon_name:
                 btn.setIcon(_icon(icon_name))
             btn.setToolTip(tip)
+            btn.setAccessibleName(tip)
             btn.setFixedHeight(CONFIG['H_CTRL_STD'])
+            btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            btn.setStyleSheet('padding:0px 4px;')
             btn.clicked.connect(slot)
-            action_row.addWidget(btn)
-        layout.addLayout(action_row)
+            self._action_buttons.append(btn)
+        layout.addLayout(self._action_grid)
+        self._tree_control_columns = None
+        self._layout_tree_controls(self.width())
 
         # ── Tree widget ──────────────────────────────────────────────────────────
         self.tree = QTreeWidget()
@@ -289,7 +305,7 @@ class TreePanel(QWidget):
         # set_config — this codebase has no QSettings usage anywhere), so
         # both are remembered per-project rather than resetting every
         # session.
-        self._auto_collapse_nodes_chk = QCheckBox("Auto-collapse nodes")
+        self._auto_collapse_nodes_chk = QCheckBox("Fäll ihop noder")
         self._auto_collapse_nodes_chk.setToolTip(
             "Fäll automatiskt ihop alla noder utom den aktiva")
         self._auto_collapse_nodes_chk.setChecked(
@@ -298,7 +314,7 @@ class TreePanel(QWidget):
             lambda checked: self._on_auto_collapse_toggled('tree_auto_collapse_nodes', checked))
         layout.addWidget(self._auto_collapse_nodes_chk)
 
-        self._auto_collapse_deviations_chk = QCheckBox("Auto-collapse avvikelser")
+        self._auto_collapse_deviations_chk = QCheckBox("Dölj avvikelser")
         self._auto_collapse_deviations_chk.setToolTip(
             "Dölj automatiskt alla avvikelser utom den man arbetar med")
         self._auto_collapse_deviations_chk.setChecked(
@@ -307,12 +323,42 @@ class TreePanel(QWidget):
             lambda checked: self._on_auto_collapse_toggled('tree_auto_collapse_deviations', checked))
         layout.addWidget(self._auto_collapse_deviations_chk)
 
+    def _layout_tree_controls(self, width):
+        # Font scaling and translations affect the space each label needs.
+        # Use the actual size hints rather than a fixed pixel breakpoint.
+        groups = (self._vis_button_order, self._action_buttons)
+        spacing = self._vis_grid.horizontalSpacing()
+        available = width - self.layout().contentsMargins().left() - self.layout().contentsMargins().right()
+        three_column_width = max(
+            max(3 * max(button.sizeHint().width() for button in buttons[:3]) + 2 * spacing,
+                2 * max(button.sizeHint().width() for button in buttons[3:]) + spacing)
+            for buttons in groups)
+        two_column_width = max(2 * max(button.sizeHint().width() for button in buttons) + spacing
+                               for buttons in groups)
+        columns = 3 if available >= three_column_width else 2 if available >= two_column_width else 1
+        if columns == self._tree_control_columns:
+            return
+        self._tree_control_columns = columns
+        for grid, buttons in zip((self._vis_grid, self._action_grid), groups):
+            for index, button in enumerate(buttons):
+                if columns == 3:
+                    row, column, span = ((0, index * 2, 2) if index < 3
+                                         else (1, (index - 3) * 3, 3))
+                else:
+                    row, column, span = index // columns, (index % columns) * (6 // columns), 6 // columns
+                grid.addWidget(button, row, column, 1, span)
+            for column in range(6):
+                grid.setColumnStretch(column, 1)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_tree_control_columns'):
+            self._layout_tree_controls(event.size().width())
+
     @staticmethod
     def _style_visibility_button(btn, color):
         qcolor = QColor(color)
-        luminance = (0.299 * qcolor.red() + 0.587 * qcolor.green()
-                     + 0.114 * qcolor.blue())
-        foreground = '#111111' if luminance > 155 else '#ffffff'
+        foreground = readable_text_color(qcolor.name())
         btn.setStyleSheet(
             visibility_layer_button_stylesheet(qcolor.name(), foreground)
         )
