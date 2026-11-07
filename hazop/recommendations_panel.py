@@ -24,14 +24,16 @@ database.py, nothing defined in hazop.py itself."""
 
 import re
 
-from PyQt6.QtCore import Qt, QDate, pyqtSignal
+from PyQt6.QtCore import Qt, QDate, pyqtSignal, QSignalBlocker
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView,
+    QWidget, QVBoxLayout, QHBoxLayout, QBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QComboBox, QDateEdit, QPushButton, QMessageBox, QLabel,
     QLineEdit, QSpinBox,
 )
 
 from database import Database
+from design import SECONDARY_TEXT
 
 _STATUS_ALL = 'Alla statusar'
 _STATUS_VALUES = ('Öppen', 'Pågår', 'Klar', 'Försenad')
@@ -156,35 +158,68 @@ class RecommendationsPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        filters = QHBoxLayout()
+        heading = QHBoxLayout()
+        title = QLabel('Rekommendationer')
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(14)
+        title.setFont(title_font)
+        heading.addWidget(title)
+        heading.addStretch()
+        self._add_btn = QPushButton('+ Ny rekommendation')
+        self._add_btn.setToolTip(
+            'Skapa en fristående rekommendation som kan kopplas till en konsekvens '
+            'i HAZOP Scenario. Aktiva filter rensas så att den nya raden syns.')
+        self._add_btn.clicked.connect(self._add_new_recommendation)
+        heading.addWidget(self._add_btn)
+        layout.addLayout(heading)
+
+        filters = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self._filter_layout = filters
         filters.setSpacing(6)
-        filters.addWidget(QLabel('Sök:'))
+        search_row = QHBoxLayout()
+        search_row.setSpacing(6)
+        search_row.addWidget(QLabel('Sök:'))
         self._search = QLineEdit()
         self._search.setPlaceholderText('Rekommendation, ansvarig, status eller referens…')
         self._search.setClearButtonEnabled(True)
         self._search.textChanged.connect(self._apply_filters)
-        filters.addWidget(self._search, 1)
-        filters.addWidget(QLabel('Status:'))
+        search_row.addWidget(self._search, 1)
+        filters.addLayout(search_row, 1)
+        options_row = QHBoxLayout()
+        self._filter_options = options_row
+        options_row.setSpacing(6)
+        options_row.addWidget(QLabel('Status:'))
         self._status_filter = QComboBox()
         self._status_filter.addItem(_STATUS_ALL)
         self._status_filter.addItems(_STATUS_VALUES)
         self._status_filter.currentTextChanged.connect(self._apply_filters)
-        filters.addWidget(self._status_filter)
-        filters.addWidget(QLabel('Textstorlek:'))
+        options_row.addWidget(self._status_filter)
+        options_row.addWidget(QLabel('Textstorlek:'))
         self._font_size_control = QSpinBox()
         self._font_size_control.setRange(_MIN_FONT_SIZE, _MAX_FONT_SIZE)
         self._font_size_control.setSuffix(' pt')
         self._font_size_control.setToolTip(
             'Ändra textstorleken i rekommendationslistan.')
-        filters.addWidget(self._font_size_control)
+        options_row.addWidget(self._font_size_control)
         self._count_label = QLabel('Visar 0 av 0')
-        filters.addWidget(self._count_label)
+        options_row.addWidget(self._count_label)
+        options_row.addStretch()
+        filters.addLayout(options_row)
         layout.addLayout(filters)
 
+        self._empty_hint = QLabel()
+        self._empty_hint.setWordWrap(True)
+        self._empty_hint.setStyleSheet(f'color:{SECONDARY_TEXT};padding:4px;')
+        self._empty_hint.hide()
+        layout.addWidget(self._empty_hint)
+
         self._table = _RecommendationsTable(0, 6)
-        self._table.setHorizontalHeaderLabels(
-            ["Nr", "Rekommendation", "Ansvarig", "Ska vara åtgärdat",
-             "Referens (studie.nod.avvikelse.orsak.konsekvens)", "Status"])
+        labels = ["Nr", "Rekommendation", "Ansvarig", "Ska vara åtgärdat",
+                  "Referens (studie.nod.avvikelse.orsak.konsekvens)", "Status"]
+        self._table.setHorizontalHeaderLabels(labels)
+        for column, label in enumerate(labels):
+            self._table.horizontalHeaderItem(column).setToolTip(label)
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked |
                                     QAbstractItemView.EditTrigger.EditKeyPressed |
@@ -236,7 +271,18 @@ class RecommendationsPanel(QWidget):
         self._delete_btn = QPushButton("Ta bort markerad rekommendation")
         self._delete_btn.setEnabled(False)
         self._delete_btn.clicked.connect(self._delete_selected)
-        layout.addWidget(self._delete_btn)
+        layout.addWidget(self._delete_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_filter_options'):
+            required = self._filter_options.sizeHint().width() + 240 + 16
+            direction = (QBoxLayout.Direction.LeftToRight if event.size().width() >= required
+                         else QBoxLayout.Direction.TopToBottom)
+            if self._filter_layout.direction() != direction:
+                self._filter_layout.setDirection(direction)
+                self._filter_layout.setStretch(
+                    0, 1 if direction == QBoxLayout.Direction.LeftToRight else 0)
 
     def _stored_font_size(self, default_size):
         """Return a safe persisted list font size without requiring a migration."""
@@ -269,6 +315,8 @@ class RecommendationsPanel(QWidget):
     def _selected_recommendation_ids(self):
         ids = []
         for row in sorted({index.row() for index in self._table.selectedIndexes()}):
+            if self._table.isRowHidden(row):
+                continue
             item = self._table.item(row, self._COL_REC)
             rec_id = item.data(Qt.ItemDataRole.UserRole) if item else None
             if rec_id is not None:
@@ -305,12 +353,18 @@ class RecommendationsPanel(QWidget):
         through HAZOP Scenario/Worksheet or another catalog path.
         """
         rec_id = self.db.add_recommendation(description='')
+        # A new blank row cannot match an arbitrary search/status filter.
+        # Clear both together so it is visible and ready for the user.
+        with QSignalBlocker(self._search), QSignalBlocker(self._status_filter):
+            self._search.clear()
+            self._status_filter.setCurrentIndex(0)
         self.load()
         for row in range(self._table.rowCount()):
             item = self._table.item(row, self._COL_REC)
             if item is not None and item.data(Qt.ItemDataRole.UserRole) == rec_id:
                 self._table.setCurrentCell(row, self._COL_REC)
                 self._table.scrollToItem(item)
+                self._table.setFocus()
                 break
         self.recommendations_changed.emit()
 
@@ -460,3 +514,12 @@ class RecommendationsPanel(QWidget):
             self._table.setRowHidden(row, not matches)
             visible += int(matches)
         self._count_label.setText(f'Visar {visible} av {total}')
+        if total == 0:
+            self._empty_hint.setText(
+                'Det finns inga rekommendationer ännu. Välj ”Ny rekommendation” för att börja.')
+        elif visible == 0:
+            self._empty_hint.setText(
+                'Inga rekommendationer matchar filtren. Ändra sökning eller status för att se fler.')
+        self._empty_hint.setVisible(visible == 0)
+        if hasattr(self, '_delete_btn'):
+            self._update_delete_button()

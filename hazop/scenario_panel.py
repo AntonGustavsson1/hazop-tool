@@ -4448,6 +4448,8 @@ class ScenarioTablePanel(QWidget):
 
         self._table = QTableWidget(0, len(self._COLS))
         self._table.setHorizontalHeaderLabels(self._COLS)
+        for column, label in enumerate(self._COLS):
+            self._table.horizontalHeaderItem(column).setToolTip(label)
         h = self._table.horizontalHeader()
         # NOD, UTR and DEV are hidden — context is shown in the header label instead
         self._table.setColumnHidden(self._C_NOD, True)

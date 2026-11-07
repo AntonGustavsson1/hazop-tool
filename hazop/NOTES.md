@@ -1,5 +1,24 @@
 # NOTES.md — Beslut och kontext
 
+## HAZOP: rekommendationsvy och läsbara tabellrubriker (2026-11-07)
+
+Rekommendationssidan har nu en rubrik, en synlig knapp för att skapa den
+första rekommendationen och hjälptexter för tom katalog respektive tomt
+filterresultat. En ny fristående post visas och markeras direkt; aktiva
+filter rensas så att den inte döljs. Knappens verktygstips förklarar hur
+posten kan kopplas till en konsekvens. På smala fönster flyttas sökningen
+till en egen rad. En markerad rad som döljs av filter kan inte längre tas
+bort av misstag; borttagningsknappen speglar den synliga markeringen.
+
+Tabellrubriker har högre textkontrast och långa rubriker i Scenario och
+rekommendationslistan visas i verktygstips. Inaktiva knappar skiljs visuellt
+från aktiva i den gemensamma stilen.
+
+Syntaxkontroll, 54 rekommendations-/design-/smoketester, 37 Scenario-/
+worksheettester och 31 LOPA-paneltester passerade headless. Vyn granskades som
+renderad widget med tomt, filtrerat och ifyllt innehåll samt vid 500 px bredd;
+ett fullständigt manuellt GUI-flöde är inte genomfört.
+
 ## HAZOP: läsbara trädknappar och tydligare navigering (2026-11-07)
 
 Trädets lager- och åtgärdsknappar fördelas nu över flera rader beroende på

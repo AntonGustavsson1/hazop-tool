@@ -4600,6 +4600,20 @@ class SafeguardRRFBadgeHeaderTests(unittest.TestCase):
         self.assertIn('RRF', ScenarioTablePanel._COLS[ScenarioTablePanel._C_SG],
             "since the cell badge no longer spells out 'RRF', the column header must")
 
+    def test_column_headers_expose_the_full_label_when_width_is_limited(self):
+        from scenario_panel import ScenarioTablePanel
+
+        app = _ensure_qapp()
+        with tempfile.TemporaryDirectory(prefix='hazop_header_tooltips_') as directory:
+            db = Database(path=os.path.join(directory, 'test.db'))
+            panel = ScenarioTablePanel(db)
+            try:
+                for index, label in enumerate(panel._COLS):
+                    self.assertEqual(label, panel._table.horizontalHeaderItem(index).toolTip())
+            finally:
+                panel.deleteLater()
+                db.conn.close()
+
 
 class SafeguardObjectFeatureRemovedTests(unittest.TestCase):
     """The safeguard emoji/object-picker was removed and archived 2026-08-27."""

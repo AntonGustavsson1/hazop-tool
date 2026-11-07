@@ -23,6 +23,7 @@ PRESSED_SURFACE = '#E8E9E6'
 TEXT = '#17191C'
 MUTED_TEXT = '#8D9299'
 SECONDARY_TEXT = '#6B7280'
+TABLE_HEADER_TEXT = '#59616A'
 FIELD_BORDER = '#CFD1CE'
 SEPARATOR = '#E2E3E1'
 GRIDLINE = '#EEEFEC'
@@ -128,6 +129,11 @@ def app_stylesheet() -> str:
         background-color: {ACCENT};
         color: {SURFACE};
         border-color: {ACCENT};
+    }}
+    QPushButton:disabled {{
+        background-color: {SUBTLE_SURFACE};
+        color: {SECONDARY_TEXT};
+        border-color: {SEPARATOR};
     }}
     QPushButton:focus {{
         outline: 2px solid {ACCENT};
@@ -246,7 +252,7 @@ def app_stylesheet() -> str:
     }}
     QHeaderView::section {{
         background-color: {SUBTLE_SURFACE};
-        color: {MUTED_TEXT};
+        color: {TABLE_HEADER_TEXT};
         padding: 4px;
         border: none;
         border-bottom: 1px solid {SEPARATOR};
@@ -275,7 +281,7 @@ def app_stylesheet() -> str:
         margin-top: 8px;
         padding-top: 8px;
     }}
-    QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 3px; color: {MUTED_TEXT}; }}
+    QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 3px; color: {TABLE_HEADER_TEXT}; }}
 
     QScrollBar:vertical {{ background-color: {SUBTLE_SURFACE}; border: none; width: 12px; }}
     QScrollBar::handle:vertical {{ background-color: {SCROLL_HANDLE}; border-radius: 6px; margin: 2px; min-height: 20px; }}
@@ -313,7 +319,7 @@ def scenario_table_stylesheet() -> str:
         f'color:{SCENARIO_SELECTION_FG};border:none;outline:none;}}'
         'QTableWidget::item:focus{border:none;outline:none;}'
         f'QHeaderView::section{{background:{SUBTLE_SURFACE};'
-        f'color:{MUTED_TEXT};font-weight:600;padding:3px;border-radius:0px;}}'
+        f'color:{TABLE_HEADER_TEXT};font-weight:600;padding:3px;border-radius:0px;}}'
     )
 
 

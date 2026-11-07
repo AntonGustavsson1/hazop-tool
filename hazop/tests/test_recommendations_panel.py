@@ -74,6 +74,82 @@ class RecommendationsPanelConstructionTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_empty_catalog_explains_how_to_add_the_first_recommendation(self):
+        panel = RecommendationsPanel(self.db)
+        try:
+            panel.load()
+            self.assertIn('inga rekommendationer', panel._empty_hint.text().lower())
+            self.assertFalse(panel._empty_hint.isHidden())
+            self.assertTrue(panel._add_btn.isEnabled())
+            panel._add_btn.click()
+            self.assertEqual(1, len(self.db.all_recommendations()))
+            self.assertEqual(0, panel._table.currentRow())
+            self.assertFalse(panel._table.isRowHidden(0))
+            self.assertTrue(panel._empty_hint.isHidden())
+        finally:
+            panel.deleteLater()
+
+    def test_adding_with_active_filters_makes_the_new_row_visible(self):
+        self.db.add_recommendation(description='Befintlig', status='Klar')
+        panel = RecommendationsPanel(self.db)
+        try:
+            panel.load()
+            panel._search.setText('saknas')
+            panel._status_filter.setCurrentText('Klar')
+            self.assertIn('matchar', panel._empty_hint.text().lower())
+            panel._add_btn.click()
+            self.assertEqual('', panel._search.text())
+            self.assertEqual('Alla statusar', panel._status_filter.currentText())
+            row = panel._table.currentRow()
+            self.assertGreaterEqual(row, 0)
+            self.assertFalse(panel._table.isRowHidden(row))
+            new_id = panel._table.item(row, panel._COL_REC).data(Qt.ItemDataRole.UserRole)
+            self.assertEqual('', self.db.get_recommendation(new_id)['description'])
+        finally:
+            panel.deleteLater()
+
+    def test_hidden_selection_cannot_be_deleted_from_filtered_view(self):
+        rec_id = self.db.add_recommendation(description='Befintlig')
+        panel = RecommendationsPanel(self.db)
+        try:
+            panel.load()
+            panel._table.selectRow(0)
+            self.assertTrue(panel._delete_btn.isEnabled())
+            panel._search.setText('saknas')
+            self.assertTrue(panel._table.isRowHidden(0))
+            self.assertFalse(panel._delete_btn.isEnabled())
+            with unittest.mock.patch.object(QMessageBox, 'question') as question:
+                panel._delete_selected()
+            question.assert_not_called()
+            self.assertIsNotNone(self.db.get_recommendation(rec_id))
+        finally:
+            panel.deleteLater()
+
+    def test_search_remains_usable_in_a_narrow_window(self):
+        panel = RecommendationsPanel(self.db)
+        try:
+            panel.resize(500, 650)
+            panel.show()
+            self.app.processEvents()
+            self.assertGreaterEqual(panel._search.width(), 200)
+            self.assertLess(panel._table.y(), 200)
+            panel.resize(1000, 650)
+            self.app.processEvents()
+            from PyQt6.QtWidgets import QBoxLayout
+            self.assertEqual(QBoxLayout.Direction.LeftToRight, panel._filter_layout.direction())
+        finally:
+            panel.close()
+            panel.deleteLater()
+
+    def test_column_headers_expose_full_labels_as_tooltips(self):
+        panel = RecommendationsPanel(self.db)
+        try:
+            for column in range(panel._table.columnCount()):
+                header = panel._table.horizontalHeaderItem(column)
+                self.assertEqual(header.text(), header.toolTip())
+        finally:
+            panel.deleteLater()
+
     def test_responsible_column_is_wide_and_columns_are_draggable(self):
         panel = RecommendationsPanel(self.db)
         try:

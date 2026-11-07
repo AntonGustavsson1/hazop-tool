@@ -15,6 +15,17 @@ for _p in (_HAZOP_DIR, _TEST_DIR):
 
 
 class DesignSystemTests(unittest.TestCase):
+    def test_table_header_text_has_readable_contrast(self):
+        from design import TABLE_HEADER_TEXT, SUBTLE_SURFACE
+
+        def luminance(color):
+            values = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+            values = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+                      for v in values]
+            return 0.2126 * values[0] + 0.7152 * values[1] + 0.0722 * values[2]
+        ratio = (luminance(SUBTLE_SURFACE) + 0.05) / (luminance(TABLE_HEADER_TEXT) + 0.05)
+        self.assertGreaterEqual(ratio, 4.5)
+
     def test_app_stylesheet_is_the_hazop_runtime_source(self):
         from design import app_stylesheet
         from hazop import _get_windows11_stylesheet
@@ -284,6 +295,21 @@ class CommonControlRenderingTests(unittest.TestCase):
         finally:
             checkbox.close()
             checkbox.deleteLater()
+
+    def test_disabled_button_is_visually_distinct_from_enabled(self):
+        from PyQt6.QtWidgets import QPushButton
+
+        button = QPushButton('Spara')
+        button.resize(120, 34)
+        try:
+            enabled = self._render(button).pixelColor(8, 17)
+            button.setEnabled(False)
+            self.app.processEvents()
+            disabled = button.grab().toImage().pixelColor(8, 17)
+            self.assertNotEqual(enabled, disabled)
+        finally:
+            button.close()
+            button.deleteLater()
 
 
 if __name__ == '__main__':
