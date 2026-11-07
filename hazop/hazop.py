@@ -3982,6 +3982,9 @@ class MainWindow(QMainWindow):
                     sub.db = db
             except Exception:
                 pass
+        # Settings controls contain project data as well as a database
+        # reference. Reload them without emitting their write signals.
+        sp._load_all()
 
         # Same nested-sub-panel-with-its-own-db-reference pattern, for the
         # sub-panels that moved from SettingsPanel to HAZOPPreparationPanel
@@ -4013,6 +4016,8 @@ class MainWindow(QMainWindow):
             self.worksheet._table_panel.db = db
         except Exception:
             pass
+        self.scenario_panel.refresh_visual_settings()
+        self.worksheet._table_panel.refresh_visual_settings()
 
         # LopaPanel is a top-level page with its own Database reference.
         # Rebind it before the page can be opened after a project reload.

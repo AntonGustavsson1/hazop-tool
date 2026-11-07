@@ -901,6 +901,15 @@ class EquipmentPlacementAsyncSearchTests(unittest.TestCase):
         self.assertFalse(popup._searching_lbl.isVisible())
         self.assertEqual(popup._tag_edit.text(), "")
 
+    def test_invalid_timeout_uses_same_safe_default_as_settings(self):
+        from PyQt6.QtCore import QPointF
+
+        self.db.set_config('equipment_tag_search_timeout_ms', 'ogiltigt')
+        with unittest.mock.patch('pid_panel_mod.QTimer.singleShot') as mock_singleshot:
+            self.panel.place_equipment_marker('', 'Ventil', QPointF(60, 60), 0)
+            mock_singleshot.assert_called_once()
+            self.assertEqual(2000, mock_singleshot.call_args[0][0])
+
     def test_reassign_to_existing_merges_typed_tag_without_creating_duplicate(self):
         """A tag typed after placement can turn out to already belong to
         a different, real catalog row — must reuse it, not leave a

@@ -16,6 +16,7 @@ from functools import partial
 
 import symbol_geometry
 import equipment_detection
+from constants import TAG_SEARCH_TIMEOUT_DEFAULT_MS, normalize_tag_search_timeout_ms
 
 from PyQt6.QtWidgets import (
     QAbstractSpinBox, QApplication, QCheckBox, QColorDialog, QComboBox,
@@ -3855,7 +3856,8 @@ class PIDPanel(QWidget):
 
         worker.finished_search.connect(on_result)
         worker.start()
-        timeout_ms = int(self.db.get_config('equipment_tag_search_timeout_ms', '2000') or '2000')
+        timeout_ms = normalize_tag_search_timeout_ms(
+            self.db.get_config('equipment_tag_search_timeout_ms', TAG_SEARCH_TIMEOUT_DEFAULT_MS))
         QTimer.singleShot(timeout_ms, on_timeout)
 
     def _on_equipment_deviation_added(self, deviation_id, equipment_id):

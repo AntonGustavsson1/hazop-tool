@@ -8,6 +8,7 @@ needed zero changes (same layer + re-export pattern used throughout
 this codebase)."""
 
 import re
+from contextlib import ExitStack
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -15,9 +16,11 @@ from PyQt6.QtWidgets import (
     QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
     QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSignalBlocker
 from PyQt6.QtGui import QBrush, QColor, QFont
 
+from constants import (TAG_SEARCH_TIMEOUT_MIN_MS, TAG_SEARCH_TIMEOUT_MAX_MS,
+                       TAG_SEARCH_TIMEOUT_DEFAULT_MS, normalize_tag_search_timeout_ms)
 from database import Database, risk_info
 from pid_viewer import _icon, FREQ_LABELS, ocr_status
 from ui_helpers import freq_axis_label
@@ -123,7 +126,8 @@ class SettingsPanel(QWidget):
         search_gl.addWidget(search_lbl)
         search_row = QHBoxLayout()
         self._tag_search_timeout_spin = QDoubleSpinBox()
-        self._tag_search_timeout_spin.setRange(0.5, 10.0)
+        self._tag_search_timeout_spin.setRange(
+            TAG_SEARCH_TIMEOUT_MIN_MS / 1000, TAG_SEARCH_TIMEOUT_MAX_MS / 1000)
         self._tag_search_timeout_spin.setSingleStep(0.5)
         self._tag_search_timeout_spin.setDecimals(1)
         self._tag_search_timeout_spin.setSuffix(" s")
@@ -356,31 +360,47 @@ class SettingsPanel(QWidget):
         self._load_all()
 
     def _load_all(self):
-        self._strip_spaces_chk.setChecked(
-            self.db.get_config('tag_strip_spaces', '1') == '1')
-        self._load_replacement_rows(
-            self.db.get_config('tag_identifier_replacements', '') or '')
-        self._min_pid_lines_chk.setChecked(
-            self.db.get_config('pid_min_line_width_enabled', '1') == '1')
-        try:
-            width = int(self.db.get_config('pid_min_line_width', '2') or '2')
-        except (TypeError, ValueError):
-            width = 1
-        self._min_pid_lines_spin.setValue(max(1, min(4, width)))
-        self._min_pid_lines_spin.setEnabled(self._min_pid_lines_chk.isChecked())
-        self._risk_bars_chk.setChecked(
-            self.db.get_config('scenario_risk_bars_enabled', '1') == '1')
-        idx = self._frequency_display_combo.findData(
-            self.db.get_config('scenario_frequency_display_mode', 'category'))
-        if idx < 0:
-            idx = 0
-        self._frequency_display_combo.setCurrentIndex(idx)
-        self._markup_hover_cursor_chk.setChecked(
-            self.db.get_config('pid_markup_hover_cursor_enabled', '1') == '1')
-        idx = self._spellcheck_language_combo.findData(
-            self.db.get_config('spellcheck_language', 'sv'))
-        if idx >= 0:
-            self._spellcheck_language_combo.setCurrentIndex(idx)
+        # Loading a project must not trigger the same write slots as a user
+        # changing a control. In particular, the line-width checkbox's slot
+        # otherwise saves the spinbox's old value before that value is read.
+        controls = (self._strip_spaces_chk, self._tag_search_timeout_spin,
+                    self._ocr_default_combo, self._page_orientation_combo,
+                    self._min_pid_lines_chk, self._min_pid_lines_spin,
+                    self._risk_bars_chk, self._frequency_display_combo,
+                    self._markup_hover_cursor_chk, self._spellcheck_language_combo)
+        with ExitStack() as stack:
+            for control in controls:
+                stack.enter_context(QSignalBlocker(control))
+            self._strip_spaces_chk.setChecked(
+                self.db.get_config('tag_strip_spaces', '1') == '1')
+            self._load_replacement_rows(
+                self.db.get_config('tag_identifier_replacements', '') or '')
+            timeout_ms = normalize_tag_search_timeout_ms(
+                self.db.get_config('equipment_tag_search_timeout_ms', TAG_SEARCH_TIMEOUT_DEFAULT_MS))
+            self._tag_search_timeout_spin.setValue(timeout_ms / 1000)
+            for combo, key, default in (
+                    (self._ocr_default_combo, 'ocr_default_engine', 'ask'),
+                    (self._page_orientation_combo, 'pid_page_orientation_hint', 'auto')):
+                idx = combo.findData(self.db.get_config(key, default))
+                combo.setCurrentIndex(idx if idx >= 0 else 0)
+            self._min_pid_lines_chk.setChecked(
+                self.db.get_config('pid_min_line_width_enabled', '1') == '1')
+            try:
+                width = int(self.db.get_config('pid_min_line_width', '2') or '2')
+            except (TypeError, ValueError):
+                width = 1
+            self._min_pid_lines_spin.setValue(max(1, min(4, width)))
+            self._min_pid_lines_spin.setEnabled(self._min_pid_lines_chk.isChecked())
+            self._risk_bars_chk.setChecked(
+                self.db.get_config('scenario_risk_bars_enabled', '1') == '1')
+            idx = self._frequency_display_combo.findData(
+                self.db.get_config('scenario_frequency_display_mode', 'category'))
+            self._frequency_display_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            self._markup_hover_cursor_chk.setChecked(
+                self.db.get_config('pid_markup_hover_cursor_enabled', '1') == '1')
+            idx = self._spellcheck_language_combo.findData(
+                self.db.get_config('spellcheck_language', 'sv'))
+            self._spellcheck_language_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
     def _add_replacement_row(self, source='', target=''):
         row = QWidget()
@@ -465,6 +485,11 @@ class SettingsPanel(QWidget):
 
     def _load_replacement_rows(self, raw):
         for entry in list(self._replacement_rows):
+            # A previously focused editor may receive a delayed focus-out
+            # after switching projects; it must not save into the new DB.
+            entry[1].blockSignals(True)
+            entry[2].blockSignals(True)
+            entry[0].setParent(None)
             entry[0].deleteLater()
         self._replacement_rows.clear()
         for rule in str(raw or '').split(';'):
@@ -489,16 +514,6 @@ class SettingsPanel(QWidget):
                 rules.append(f'{source}:{target}')
         self.db.set_config('tag_identifier_replacements', '; '.join(rules))
 
-        timeout_ms = int(self.db.get_config('equipment_tag_search_timeout_ms', '2000') or '2000')
-        self._tag_search_timeout_spin.setValue(timeout_ms / 1000)
-
-        idx = self._ocr_default_combo.findData(self.db.get_config('ocr_default_engine', 'ask'))
-        if idx >= 0:
-            self._ocr_default_combo.setCurrentIndex(idx)
-        idx = self._page_orientation_combo.findData(
-            self.db.get_config('pid_page_orientation_hint', 'auto'))
-        if idx >= 0:
-            self._page_orientation_combo.setCurrentIndex(idx)
     def _on_pid_line_setting_changed(self, *_args):
         enabled = self._min_pid_lines_chk.isChecked()
         self._min_pid_lines_spin.setEnabled(enabled)

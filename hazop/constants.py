@@ -43,6 +43,20 @@ def _bundle_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+TAG_SEARCH_TIMEOUT_MIN_MS = 500
+TAG_SEARCH_TIMEOUT_MAX_MS = 10_000
+TAG_SEARCH_TIMEOUT_DEFAULT_MS = 2_000
+
+
+def normalize_tag_search_timeout_ms(value):
+    """Return the search timeout in the same safe range shown in Settings."""
+    try:
+        result = int(value)
+    except (TypeError, ValueError, OverflowError):
+        result = TAG_SEARCH_TIMEOUT_DEFAULT_MS
+    return max(TAG_SEARCH_TIMEOUT_MIN_MS, min(TAG_SEARCH_TIMEOUT_MAX_MS, result))
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION & MAGIC NUMBER CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════

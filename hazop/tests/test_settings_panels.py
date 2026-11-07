@@ -2426,6 +2426,63 @@ class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
             pass
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
+    def test_opening_settings_displays_saved_values_without_modifying_them(self):
+        from hazop import SettingsPanel
+
+        saved = {
+            'equipment_tag_search_timeout_ms': '3500',
+            'ocr_default_engine': 'auto',
+            'pid_page_orientation_hint': 'landscape',
+            'pid_min_line_width_enabled': '1',
+            'pid_min_line_width': '4',
+        }
+        for key, value in saved.items():
+            self.db.set_config(key, value)
+        self.db.clear_undo_history()
+        panel = SettingsPanel(self.db)
+        try:
+            self.assertEqual(3.5, panel._tag_search_timeout_spin.value())
+            self.assertEqual('auto', panel._ocr_default_combo.currentData())
+            self.assertEqual('landscape', panel._page_orientation_combo.currentData())
+            self.assertEqual(4, panel._min_pid_lines_spin.value())
+            self.assertEqual(saved, {key: self.db.get_config(key) for key in saved})
+            self.assertEqual(0, self.db.undo_count)
+        finally:
+            panel.deleteLater()
+
+    def test_invalid_saved_search_timeout_does_not_crash_settings(self):
+        from hazop import SettingsPanel
+
+        self.db.set_config('equipment_tag_search_timeout_ms', 'ogiltigt')
+        panel = SettingsPanel(self.db)
+        try:
+            self.assertEqual(2.0, panel._tag_search_timeout_spin.value())
+            self.assertEqual('ogiltigt', self.db.get_config('equipment_tag_search_timeout_ms'))
+        finally:
+            panel.deleteLater()
+
+    def test_old_replacement_edit_cannot_write_into_switched_project(self):
+        from hazop import SettingsPanel
+
+        self.db.set_config('tag_identifier_replacements', 'A:B')
+        second = Database(path=os.path.join(self._tmpdir, 'second.db'))
+        second.set_config('tag_identifier_replacements', 'C:D')
+        panel = SettingsPanel(self.db)
+        try:
+            old_source = panel._replacement_rows[0][1]
+            old_source.setText('Osparat')
+            panel.db = second
+            panel._load_all()
+            with unittest.mock.patch.object(second, 'set_config', wraps=second.set_config) as save:
+                old_source.editingFinished.emit()
+            save.assert_not_called()
+            self.assertEqual('C:D', second.get_config('tag_identifier_replacements'))
+            self.assertEqual('C', panel._replacement_rows[0][1].text())
+            self.assertEqual('A:B', self.db.get_config('tag_identifier_replacements'))
+        finally:
+            panel.deleteLater()
+            second.conn.close()
+
     def test_tab_renamed(self):
         from hazop import SettingsPanel
         panel = SettingsPanel(self.db)
@@ -2442,6 +2499,8 @@ class SettingsPanelPidTabRenameAndNewSettingsTests(unittest.TestCase):
         try:
             self.assertTrue(panel._min_pid_lines_chk.isChecked())
             self.assertEqual(panel._min_pid_lines_spin.value(), 2)
+            panel._min_pid_lines_spin.setValue(3)
+            self.assertEqual(self.db.get_config('pid_min_line_width'), '3')
             panel._min_pid_lines_spin.setValue(2)
             self.assertEqual(self.db.get_config('pid_min_line_width'), '2')
             panel._min_pid_lines_chk.setChecked(False)

@@ -70,5 +70,13 @@ class AppDirBundleDirTests(unittest.TestCase):
             self.assertEqual(constants._bundle_dir(), Path(fake_exe).resolve().parent)
 
 
+class TagSearchTimeoutTests(unittest.TestCase):
+    def test_timeout_matches_the_settings_range_and_has_a_safe_default(self):
+        for value, expected in ((None, 2000), ('ogiltigt', 2000), ('', 2000),
+                                ('3500', 3500), ('-1', 500), ('999999999999999999', 10000)):
+            with self.subTest(value=value):
+                self.assertEqual(expected, constants.normalize_tag_search_timeout_ms(value))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1301,6 +1301,34 @@ class ReloadAllPanelsDbSwapTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = _ensure_qapp()
 
+    def test_project_switch_refreshes_visible_settings_without_overwriting_them(self):
+        with _TempDbMainWindow() as win, tempfile.TemporaryDirectory(prefix='hazop_settings_switch_') as directory:
+            old_db = win.db
+            new_db = hazop.Database(path=os.path.join(directory, 'second.db'))
+            try:
+                new_db.set_config('equipment_tag_search_timeout_ms', '3500')
+                new_db.set_config('ocr_default_engine', 'auto')
+                new_db.set_config('pid_min_line_width', '4')
+                new_db.set_config('pid_min_line_width_enabled', '1')
+                new_db.set_config('scenario_risk_bars_enabled', '0')
+                new_db.set_config('scenario_frequency_display_mode', 'numeric')
+                win.db = new_db
+                win._reload_all_panels()
+                panel = win.settings_panel
+                self.assertEqual(3.5, panel._tag_search_timeout_spin.value())
+                self.assertEqual('auto', panel._ocr_default_combo.currentData())
+                self.assertEqual(4, panel._min_pid_lines_spin.value())
+                self.assertEqual('4', new_db.get_config('pid_min_line_width'))
+                for table in (win.scenario_panel, win.worksheet._table_panel):
+                    self.assertFalse(table._risk_bars_enabled)
+                    self.assertEqual('numeric', table._frequency_display_mode)
+                panel._tag_search_timeout_spin.setValue(4.0)
+                self.assertEqual('4000', new_db.get_config('equipment_tag_search_timeout_ms'))
+            finally:
+                win.db = old_db
+                win._reload_all_panels()
+                new_db.conn.close()
+
     def test_worksheet_and_its_embedded_table_panel_get_new_db(self):
         with _TempDbMainWindow() as win:
             old_db = win.db

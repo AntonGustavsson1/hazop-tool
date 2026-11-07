@@ -1,5 +1,23 @@
 # NOTES.md — Beslut och kontext
 
+## HAZOP: tillförlitliga inställningar vid öppning och projektbyte (2026-11-07)
+
+Inställningssidan laddar nu sparad söktid, OCR-motor och orientering direkt.
+Vid inläsning blockeras kontrollernas sparsignaler, så öppning och projektbyte
+inte skriver över exempelvis P&ID-linjebredden eller skapar ångrahistorik.
+Scenario och Worksheet läser samtidigt det nya projektets inställningar för
+riskfält och frekvensvisning. Gamla ersättningsfält kopplas bort före ett
+projektbyte, så fördröjda redigeringssignaler inte skriver i fel projekt.
+
+Söktidens gränser 0,5–10 sekunder och standard 2 sekunder delas av vyn och
+själva P&ID-sökningen. Ogiltiga lagrade värden leder till standardvärdet och
+förändras inte i databasen förrän användaren väljer ett nytt värde.
+
+Syntaxkontroll, 51 inställnings-/P&ID-/konstant-/smoketester och 15
+projektbytesintegrationstester passerade headless. Två äldre tester för
+Blad/Noder i den breda settings-sviten återstår som tidigare identifierade
+baslinjefel; en annan interaktiv testdialog blockerar headless-körningen.
+
 ## HAZOP: tydligare gemensamma kontrolltillstånd (2026-11-07)
 
 Den gemensamma stilen visar nu en bock i markerade kryssrutor, ett streck
