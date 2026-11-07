@@ -198,6 +198,62 @@ class CommonControlRenderingTests(unittest.TestCase):
         self.app.processEvents()
         return widget.grab().toImage()
 
+    def test_table_respects_item_colors_under_application_theme(self):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QColor
+        from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem
+        from design import ACCENT_SELECTION, app_stylesheet
+
+        table = QTableWidget(1, 1)
+        item = QTableWidgetItem('Risk')
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        item.setBackground(QColor('#27ae60'))
+        item.setForeground(QColor('#ffffff'))
+        table.setItem(0, 0, item)
+        table.setColumnWidth(0, 110)
+        table.setRowHeight(0, 50)
+        table.resize(180, 120)
+        previous_stylesheet = self.app.styleSheet()
+        previous_style = self.app.style().objectName()
+        try:
+            self.app.setStyle('Fusion')
+            self.app.setStyleSheet(app_stylesheet())
+            table.show()
+            self.app.processEvents()
+            table.clearSelection()
+            self.app.processEvents()
+            rect = table.visualItemRect(item)
+
+            def pixels():
+                image = table.viewport().grab().toImage()
+                scale = image.devicePixelRatio()
+                return [image.pixelColor(int(x * scale), int(y * scale))
+                        for y in range(rect.top() + 3, rect.bottom() - 2)
+                        for x in range(rect.left() + 3, rect.right() - 2)]
+
+            def green_count(colors):
+                # Fusion can tint the focused cell slightly; its configured
+                # green must still cover the background, regardless of tint.
+                return sum(c.green() > c.red() * 2 and c.green() > c.blue() + 40
+                           for c in colors)
+
+            unselected = pixels()
+            self.assertGreater(green_count(unselected), 100)
+            self.assertGreater(sum(min(c.red(), c.green(), c.blue()) > 200
+                                   for c in unselected), 3, 'the cell text should be visible')
+            table.setCurrentCell(0, 0)
+            self.app.processEvents()
+            selected = pixels()
+            self.assertGreater(sum(c.name() == ACCENT_SELECTION.lower() for c in selected), 100)
+            table.clearSelection()
+            self.app.processEvents()
+            self.assertGreater(green_count(pixels()), 100)
+        finally:
+            table.close()
+            table.deleteLater()
+            self.app.setStyleSheet(previous_stylesheet)
+            self.app.setStyle(previous_style)
+
     @staticmethod
     def _white_pixels(image, rect):
         count = 0

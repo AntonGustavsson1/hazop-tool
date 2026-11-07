@@ -126,6 +126,98 @@ class ManualBackupButtonTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_study_overview_has_consistent_labels_and_readable_rows(self):
+        from hazop import StudyManagementPanel
+
+        node = self.db.add_node()
+        cause = self.db.add_cause(self.db.deviations(node)[0]['id'])
+        self.db.update_cause(cause, description='Pumpen stannar', base_frequency=0.01,
+                             frequency_cleared=False)
+        consequence = self.db.add_consequence(cause)
+        description = 'Trycket stiger och påverkar utrustning nedströms'
+        self.db.update_consequence(consequence, description=description, severity=2)
+        categories = self.db.consequence_categories()[:2]
+        self.db.set_consequence_severity(consequence, categories[0]['id'], 2)
+        self.db.set_consequence_severity(consequence, categories[1]['id'], 4)
+        safeguard = self.db.add_safeguard(consequence)
+        self.db.update_safeguard(safeguard, description='Oberoende högtryckslarm', rrf=10)
+        second_assessment = next(s for s in self.db.get_consequence_severities(consequence)
+                                 if s['category_id'] == categories[1]['id'])
+        self.db.set_severity_excluded_sgs(second_assessment['id'], {safeguard})
+        panel = StudyManagementPanel(self.db)
+        try:
+            self.assertIn('Barriärer:', panel._stats_lbl.text())
+            self.assertEqual('Barriärer', panel._table.horizontalHeaderItem(7).text())
+            self.assertEqual('F', panel._table.horizontalHeaderItem(2).text())
+            self.assertEqual('C', panel._table.horizontalHeaderItem(4).text())
+            self.assertGreaterEqual(panel._table.columnWidth(3), 200)
+            self.assertEqual(description, panel._table.item(0, 3).toolTip())
+            self.assertGreaterEqual(panel._table.rowHeight(0),
+                                    2 * panel._table.fontMetrics().lineSpacing() + 6)
+            self.assertEqual(panel._table.rowCount(), 2)
+            self.assertEqual([panel._table.item(r, 6).text() for r in range(2)],
+                             [category['name'] for category in categories])
+            self.assertEqual([panel._table.item(r, 4).text() for r in range(2)], ['2', '4'])
+            self.assertTrue(all('F=3' in panel._table.item(r, 5).text() for r in range(2)))
+            self.assertNotIn('gäller ej', panel._table.item(0, 7).text())
+            self.assertIn('gäller ej', panel._table.item(1, 7).text())
+
+            self.db.set_safeguard_excluded_causes(safeguard, {cause})
+            panel.refresh()
+            self.assertIn('gäller ej', panel._table.item(0, 7).text())
+        finally:
+            panel.deleteLater()
+
+    def test_study_overview_does_not_invent_missing_risk_inputs(self):
+        from hazop import StudyManagementPanel
+
+        node = self.db.add_node()
+        cause = self.db.add_cause(self.db.deviations(node)[0]['id'])
+        consequence = self.db.add_consequence(cause)
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(consequence, category['id'], 3)
+        panel = StudyManagementPanel(self.db)
+        try:
+            self.assertEqual('—', panel._table.item(0, 2).text())
+            self.assertEqual('3', panel._table.item(0, 4).text())
+            self.assertEqual('Ej bedömd', panel._table.item(0, 5).text())
+            self.assertIn('frekvens', panel._table.item(0, 5).toolTip().lower())
+
+            self.db.update_cause(cause, likelihood=0, frequency_cleared=False)
+            panel.refresh()
+            self.assertEqual('0', panel._table.item(0, 2).text())
+            self.assertIn('F=0 C=3', panel._table.item(0, 5).text())
+
+            self.db.set_consequence_severity(consequence, category['id'], 0)
+            panel.refresh()
+            self.assertEqual('0', panel._table.item(0, 2).text())
+            self.assertEqual('—', panel._table.item(0, 4).text())
+            self.assertEqual('Ej bedömd', panel._table.item(0, 5).text())
+            self.assertIn('konsekvens', panel._table.item(0, 5).toolTip().lower())
+
+            self.db.update_consequence(consequence, '', 1, category='Äldre kategori')
+            panel.refresh()
+            self.assertEqual('Äldre kategori (äldre)', panel._table.item(0, 6).text())
+            self.assertEqual('Ej bedömd', panel._table.item(0, 5).text())
+        finally:
+            panel.deleteLater()
+
+    def test_barrier_picker_and_project_settings_use_the_same_term(self):
+        from PyQt6.QtWidgets import QGroupBox
+        from hazop import HAZOPPreparationPanel
+        from pid_viewer import ExistingSafeguardPicker
+
+        prep = HAZOPPreparationPanel(self.db)
+        picker = ExistingSafeguardPicker(self.db)
+        try:
+            titles = [box.title() for box in prep.findChildren(QGroupBox)]
+            self.assertIn('Barriärtyper (delas med HAZOP)', titles)
+            self.assertEqual('Länka till befintlig barriär', picker.windowTitle())
+            self.assertEqual('Barriär', picker._table.horizontalHeaderItem(1).text())
+        finally:
+            prep.deleteLater()
+            picker.deleteLater()
+
 
 class StandardCausesObjectCrudTests(unittest.TestCase):
     """"implementera de funktioner som finns i standardobjekt även i
@@ -385,11 +477,15 @@ class StandardCausesExcelExportTests(unittest.TestCase):
         self.assertEqual(header, ['Objekttyp', 'Avvikelse', 'Orsak', 'Frekvens (/år)'])
 
         rows = list(ws.iter_rows(min_row=2, values_only=True))
-        expected_causes = self.db.conn.execute(
-            "SELECT COUNT(*) FROM standard_causes").fetchone()[0]
-        self.assertEqual(len(rows), expected_causes,
-            "every real standard_causes row (the DB's own default seed "
-            "data) must appear exactly once, no merged/grouped duplicates")
+        from collections import Counter
+        expected = self.db.conn.execute(
+            "SELECT so.name, sd.description, sc.description, sc.frequency "
+            "FROM standard_causes sc "
+            "JOIN standard_objects so ON so.id=sc.object_id "
+            "JOIN standard_deviations sd ON sd.id=sc.deviation_id "
+            "WHERE sc.active=1 AND sd.active=1").fetchall()
+        self.assertEqual(Counter(rows), Counter(tuple(row) for row in expected),
+                         'each active object/deviation/cause must be exported with its frequency')
 
         # No merged cells anywhere -- every row must be fully self-contained
         # (that's what makes the file re-importable later).
@@ -415,11 +511,18 @@ class StandardCausesExcelExportTests(unittest.TestCase):
         wb = load_workbook(self.out_path)
         ws = wb['Standardavvikelser']
         rows = list(ws.iter_rows(min_row=2, values_only=True))
-        match = [r for r in rows if r[0] == 'Pump' and r[2] == 'Pump stopp']
+        match = [r for r in rows if r[0] == 'Pump' and r[1] == 'Lågt flöde'
+                 and r[2] == 'Pump stopp']
         self.assertEqual(len(match), 1)
-        self.assertEqual(match[0][1], 'Lågt flöde',
-            "Pump stopp is seeded under the Lågt flöde deviation")
-        self.assertAlmostEqual(match[0][3], 0.02)
+        source_frequency = self.db.conn.execute(
+            "SELECT sc.frequency FROM standard_causes sc "
+            "JOIN standard_objects so ON so.id=sc.object_id "
+            "JOIN standard_deviations sd ON sd.id=sc.deviation_id "
+            "WHERE so.name=? AND sd.description=? AND sc.description=? "
+            "AND sc.active=1 AND sd.active=1",
+            ('Pump', 'Lågt flöde', 'Pump stopp')).fetchone()[0]
+        self.assertIsNotNone(source_frequency)
+        self.assertAlmostEqual(match[0][3], source_frequency)
 
     def test_object_types_with_zero_causes_are_omitted(self):
         empty_obj_id = self.db.add_standard_object('Helt tom objekttyp')
@@ -684,10 +787,10 @@ class HAZOPPreparationBladNoderTests(unittest.TestCase):
         rev_id = self.db.add_revision('A', '', '/x/Fil.pdf', '2026-08-17')
         panel = HAZOPPreparationPanel(self.db)
         try:
-            panel._sheet_list.setCurrentRow(0)
+            panel._sheet_list.setCurrentCell(0, 0)
             idx = panel._sheet_rev_combo.findData(rev_id)
             panel._sheet_rev_combo.setCurrentIndex(idx)
-            sheet_id = panel._sheet_list.item(0).data(Qt.ItemDataRole.UserRole)
+            sheet_id = panel._sheet_list.item(0, 0).data(Qt.ItemDataRole.UserRole)
             self.assertEqual(
                 next(s for s in self.db.get_sheets() if s['id'] == sheet_id)['revision_id'],
                 rev_id)
@@ -711,6 +814,7 @@ class HAZOPPreparationBladNoderTests(unittest.TestCase):
         self.db.conn.execute("UPDATE nodes SET pid_page=0, name=? WHERE id=?",
                               ('Nod Alpha', node_id))
         self.db.commit()
+        self.db.add_node_markup(node_id, 'polygon', [[0, 0], [1, 1]], '', '#000', 0.5, 4, 0)
         panel = HAZOPPreparationPanel(self.db)
         try:
             panel.refresh_nodes()
@@ -1343,7 +1447,7 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         from hazop import HAZOPPreparationPanel
         panel = HAZOPPreparationPanel(self.db)
         try:
-            self.assertEqual(panel._risk_substack.count(), 2)
+            self.assertEqual(panel._risk_substack.count(), 4)
             self.assertEqual(panel._risk_substack.currentIndex(), 0)
             panel._set_risk_subview(1)
             self.assertEqual(panel._risk_substack.currentIndex(), 1)
@@ -1363,7 +1467,8 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
         dev_id = self.db.deviations(node_id)[0]['id']
         cause_id = self.db.add_cause(dev_id)
         cons_id = self.db.add_consequence(cause_id)
-        self.db.update_cause(cause_id, description='P-101 felar', likelihood=0)
+        self.db.update_cause(cause_id, description='P-101 felar', likelihood=0,
+                             frequency_cleared=False)
         self.db.update_consequence(cons_id, 'Trycket ökar', 2)
         source = {'rows': 3, 'cols': 3,
                   'x_labels': ['A', 'B', 'C'], 'y_labels': ['Låg', 'Mellan', 'Hög'],
@@ -2043,37 +2148,41 @@ class ParticipantMatrixTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_panel_add_session_starts_inline_header_edit(self):
-        """The new column drops straight into inline header editing so the
-        user can adjust the date/label without a popup (2026-08-18)."""
+    def test_panel_add_session_does_not_open_a_dialog(self):
+        """A new session is added directly; its details can be edited later."""
+        from PyQt6.QtWidgets import QDialog
         from hazop import ParticipantMatrixPanel
         panel = ParticipantMatrixPanel(self.db)
         try:
-            panel._add_session()
-            col = len(panel._FIXED_COLS)
-            header = panel._table.horizontalHeader()
-            editors = [c for c in header.findChildren(QLineEdit)]
-            self.assertEqual(len(editors), 1)
-            self.assertFalse(editors[0].isHidden())
+            with unittest.mock.patch.object(QDialog, 'exec') as exec_dialog:
+                panel._add_session()
+            exec_dialog.assert_not_called()
+            self.assertEqual(len(self.db.list_analysis_sessions()), 1)
         finally:
             panel.deleteLater()
 
-    def test_inline_header_edit_renames_session(self):
+    def test_session_header_opens_details_and_saves_changes(self):
+        from PyQt6.QtWidgets import QDateEdit, QDialog
         from hazop import ParticipantMatrixPanel
         panel = ParticipantMatrixPanel(self.db)
         try:
             panel._add_session()
             col = len(panel._FIXED_COLS)
-            sid = self.db.list_analysis_sessions()[0]['id']
-            panel._edit_header_label(col)
-            header = panel._table.horizontalHeader()
-            editor = header.findChildren(QLineEdit)[0]
-            editor.setText("Kickoff 2026-09-01")
-            editor.editingFinished.emit()
-            self.assertEqual(
-                self.db.list_analysis_sessions()[0]['label'], "Kickoff 2026-09-01")
-            self.assertEqual(
-                panel._table.horizontalHeaderItem(col).text(), "Kickoff 2026-09-01")
+
+            def edit_details(dialog):
+                dialog.findChild(QDateEdit).setDate(QDate(2026, 9, 1))
+                location = next(field for field in dialog.findChildren(QLineEdit)
+                                if field.placeholderText() == 'Plats')
+                location.setText('Sal A')
+                return QDialog.DialogCode.Accepted
+
+            with unittest.mock.patch.object(QDialog, 'exec', edit_details):
+                panel._edit_header_label(col)
+            session = self.db.list_analysis_sessions()[0]
+            self.assertEqual(session['date'], '2026-09-01')
+            self.assertEqual(session['location'], 'Sal A')
+            self.assertIn('2026-09-01', panel._table.horizontalHeaderItem(col).text())
+            self.assertIn('Sal A', panel._table.horizontalHeaderItem(col).text())
         finally:
             panel.deleteLater()
 

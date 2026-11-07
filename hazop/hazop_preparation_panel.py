@@ -23,6 +23,7 @@ from PyQt6.QtGui import (
 )
 
 from constants import CONFIG, SEV_LABELS
+from design import readable_text_color
 from database import (
     Database, DEFAULT_MATRIX, DEFAULT_FREQ_BOUNDARIES, DEFAULT_RISK_LEVEL_DEFINITIONS,
     _STD_OBJECTS,
@@ -2507,7 +2508,7 @@ class HAZOPPreparationPanel(QWidget):
             if obj.get('consequences'):
                 parts.append(f"{obj['consequences']} konsekvens{'er' if obj['consequences'] != 1 else ''}")
             if obj.get('safeguards'):
-                parts.append(f"{obj['safeguards']} safeguard{'s' if obj['safeguards'] != 1 else ''}")
+                parts.append(f"{obj['safeguards']} barriär{'er' if obj['safeguards'] != 1 else ''}")
             if parts:
                 affected_lines.append(f"• {name}: {', '.join(parts)}")
 
@@ -2907,7 +2908,7 @@ class HAZOPPreparationPanel(QWidget):
         layout.addWidget(tel_box, 2)
 
         lower = QHBoxLayout()
-        types_box = QGroupBox('Safeguard-typer (delas med HAZOP)')
+        types_box = QGroupBox('Barriärtyper (delas med HAZOP)')
         types_layout = QVBoxLayout(types_box)
         self._lopa_safeguard_types = QTableWidget(0, 1)
         self._lopa_safeguard_types.setHorizontalHeaderLabels(['Typ'])
@@ -2917,8 +2918,8 @@ class HAZOPPreparationPanel(QWidget):
         type_buttons = QHBoxLayout()
         add_type = QPushButton('+')
         remove_type = QPushButton('−')
-        add_type.setToolTip('Lägg till safeguard-typ')
-        remove_type.setToolTip('Ta bort vald safeguard-typ')
+        add_type.setToolTip('Lägg till barriärtyp')
+        remove_type.setToolTip('Ta bort vald barriärtyp')
         add_type.clicked.connect(self._add_lopa_safeguard_type)
         remove_type.clicked.connect(self._remove_lopa_safeguard_type)
         type_buttons.addWidget(add_type); type_buttons.addWidget(remove_type); type_buttons.addStretch()
@@ -2999,8 +3000,10 @@ class HAZOPPreparationPanel(QWidget):
                     row, 3, QTableWidgetItem('' if tel is None else f'{float(tel):.6g}'))
                 color = str(category.get('color') or '#64748b')
                 color_item = self._lopa_static_item(color)
-                color_item.setBackground(QBrush(QColor(color)))
-                color_item.setForeground(QBrush(QColor('#ffffff')))
+                qcolor = QColor(color)
+                if qcolor.isValid():
+                    color_item.setBackground(QBrush(qcolor))
+                    color_item.setForeground(QBrush(QColor(readable_text_color(qcolor.name()))))
                 self._lopa_tel_table.setItem(row, 4, color_item)
                 row += 1
         self._lopa_tel_table.resizeRowsToContents()
@@ -3584,7 +3587,7 @@ class HAZOPPreparationPanel(QWidget):
                     color = QColor(str(item['color']))
                     if color.isValid():
                         table_item.setBackground(QBrush(color))
-                        fg = QColor('#000000' if color.lightness() > 160 else '#ffffff')
+                        fg = QColor(readable_text_color(color.name()))
                         table_item.setForeground(QBrush(fg))
                 if col == 1:
                     table_item.setData(Qt.ItemDataRole.UserRole, str(item.get('label', '') or ''))

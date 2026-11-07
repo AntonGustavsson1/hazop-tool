@@ -664,6 +664,7 @@ class StudyManagementPanel(QWidget):
         stats_layout.setSpacing(8)
 
         self._stats_lbl = QLabel()
+        self._stats_lbl.setWordWrap(True)
         self._stats_lbl.setStyleSheet(
             "background:#f0f4f8; border:1px solid #ccc; border-radius:6px; padding:10px;")
         stats_layout.addWidget(self._stats_lbl)
@@ -685,7 +686,10 @@ class StudyManagementPanel(QWidget):
 
         self._table = QTableWidget(0, 8)
         self._table.setHorizontalHeaderLabels(
-            ['Nod', 'Orsak', 'L', 'Konsekvens', 'S', 'Risknivå', 'Kategori', 'Safeguards'])
+            ['Nod', 'Orsak', 'F', 'Konsekvens', 'C', 'Risknivå', 'Kategori', 'Barriärer'])
+        for i, tooltip in enumerate(('Nod', 'Orsak', 'Frekvensnivå', 'Konsekvens',
+                                     'Konsekvensnivå', 'Risknivå före barriärer', 'Kategori', 'Barriärer')):
+            self._table.horizontalHeaderItem(i).setToolTip(tooltip)
         hdr = self._table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -693,6 +697,7 @@ class StudyManagementPanel(QWidget):
             hdr.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
         self._table.setColumnWidth(0, 100)
         self._table.setColumnWidth(2, 28)
+        self._table.setColumnWidth(3, 260)
         self._table.setColumnWidth(4, 28)
         self._table.setColumnWidth(5, 80)
         self._table.setColumnWidth(6, 80)
@@ -701,8 +706,6 @@ class StudyManagementPanel(QWidget):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
-        self._table.setStyleSheet(
-            "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:4px;}")
         stats_layout.addWidget(self._table)
         tabs.addTab(stats_widget, "Statistik")
 
@@ -726,38 +729,76 @@ class StudyManagementPanel(QWidget):
         s = self.db.stats()
         self._stats_lbl.setText(
             f"  Noder: <b>{s['nodes']}</b>   |   Orsaker: <b>{s['causes']}</b>   |   "
-            f"Konsekvenser: <b>{s['consequences']}</b>   |   Safeguards: <b>{s['safeguards']}</b>   |   "
+            f"Konsekvenser: <b>{s['consequences']}</b>   |   Barriärer: <b>{s['safeguards']}</b>   |   "
             f"Öppna rekommendationer: <b>{s['open_recommendations']}</b>")
         self._stats_lbl.setTextFormat(Qt.TextFormat.RichText)
 
+        def _c(t, center=False):
+            item = QTableWidgetItem(str(t))
+            item.setToolTip(str(t))
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter if center else
+                                  Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            return item
+
+        rows = self.db.all_data()
+        severities = self.db.get_consequence_severities_for_consequences(
+            {row['consequence_id'] for row in rows})
+        excluded_by_severity = self.db.get_severity_excluded_sgs_for_severities(
+            {assessment['id'] for group in severities.values() for assessment in group})
+        excluded_causes_by_sg = self.db.get_safeguard_excluded_causes_for_safeguards(
+            {s['id'] for row in rows for s in row['safeguards']})
         self._table.setRowCount(0)
-        for row in self.db.all_data():
-            level, bg, fg = risk_info(row['likelihood'], row['severity'])
-            r = self._table.rowCount()
-            self._table.insertRow(r)
+        for row in rows:
+            frequency = None if row['frequency_unset'] else row['likelihood']
+            assessments = severities.get(row['consequence_id']) or [None]
+            for assessment in assessments:
+                severity = assessment['severity'] if assessment is not None else None
+                r = self._table.rowCount()
+                self._table.insertRow(r)
+                self._table.setItem(r, 0, _c(row['node_name']))
+                self._table.setItem(r, 1, _c(row['cause']))
+                self._table.setItem(r, 2, _c(frequency if frequency is not None else '—', True))
+                self._table.setItem(r, 3, _c(row['consequence']))
+                self._table.setItem(r, 4, _c(severity if severity is not None else '—', True))
 
-            def _c(t, center=False):
-                item = QTableWidgetItem(str(t))
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter if center else
-                                      Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-                return item
-
-            self._table.setItem(r, 0, _c(row['node_name']))
-            self._table.setItem(r, 1, _c(row['cause']))
-            self._table.setItem(r, 2, _c(row['likelihood'], True))
-            self._table.setItem(r, 3, _c(row['consequence']))
-            self._table.setItem(r, 4, _c(row['severity'], True))
-            risk_item = QTableWidgetItem(f"{level}\nF={row['likelihood']} C={row['severity']}")
-            risk_item.setBackground(QBrush(QColor(bg)))
-            risk_item.setForeground(QBrush(QColor(fg)))
-            risk_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setItem(r, 5, risk_item)
-            self._table.setItem(r, 6, _c(row['category']))
-            sg_text = '; '.join(
-                f"{s['description']}{'(RRF' + str(s['rrf']) + ')' if s['rrf'] > 1 else ''}"
-                for s in row['safeguards']) or '—'
-            self._table.setItem(r, 7, _c(sg_text))
-            self._table.setRowHeight(r, 28)
+                if frequency is None or severity is None:
+                    missing = []
+                    if frequency is None:
+                        missing.append('frekvens')
+                    if severity is None:
+                        missing.append('konsekvensnivå för en kategori')
+                    risk_item = _c('Ej bedömd', True)
+                    risk_item.setToolTip(f"Ange {' och '.join(missing)} i HAZOP Scenario.")
+                else:
+                    level, bg, fg = risk_info(frequency, severity)
+                    risk_item = _c(f"{level}\nF={frequency} C={severity}", True)
+                    risk_item.setBackground(QBrush(QColor(bg)))
+                    risk_item.setForeground(QBrush(QColor(fg)))
+                self._table.setItem(r, 5, risk_item)
+                if assessment is not None:
+                    category_item = _c(assessment['name'])
+                else:
+                    legacy_category = row['category']
+                    category_item = _c(f"{legacy_category} (äldre)" if legacy_category else '—')
+                    if legacy_category:
+                        category_item.setToolTip(
+                            f"Äldre kategorifält: {legacy_category}. Ange en kategoribedömning "
+                            "i HAZOP Scenario för att beräkna risknivån.")
+                self._table.setItem(r, 6, category_item)
+                excluded_sgs = (excluded_by_severity.get(assessment['id'], set())
+                                if assessment is not None else set())
+                sg_labels = []
+                for safeguard in row['safeguards']:
+                    label = safeguard['description']
+                    if safeguard['rrf'] > 1:
+                        label += f" (RRF {safeguard['rrf']})"
+                    if (safeguard['id'] in excluded_sgs or
+                            row['cause_id'] in excluded_causes_by_sg.get(safeguard['id'], set())):
+                        label += ' (gäller ej)'
+                    sg_labels.append(label)
+                sg_text = '; '.join(sg_labels) or '—'
+                self._table.setItem(r, 7, _c(sg_text))
+                self._table.setRowHeight(r, max(44, 2 * self._table.fontMetrics().lineSpacing() + 8))
 
     def refresh_pid(self):
         self._pid_mgmt.refresh()

@@ -2673,11 +2673,11 @@ class ExistingSafeguardPicker(QDialog):
         super().__init__(parent)
         self.db = db
         self.selected_id = None
-        self.setWindowTitle("Länka till befintlig safeguard")
+        self.setWindowTitle("Länka till befintlig barriär")
         self.setMinimumSize(600, 340)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Välj en befintlig safeguard att länka till denna konsekvens:"))
+        layout.addWidget(QLabel("Välj en befintlig barriär att länka till denna konsekvens:"))
 
         self._filter = QLineEdit()
         self._filter.setPlaceholderText("Filtrera…")
@@ -2685,7 +2685,7 @@ class ExistingSafeguardPicker(QDialog):
         layout.addWidget(self._filter)
 
         self._table = QTableWidget(0, 3)
-        self._table.setHorizontalHeaderLabels(['Konsekvens', 'Safeguard', 'RRF'])
+        self._table.setHorizontalHeaderLabels(['Konsekvens', 'Barriär', 'RRF'])
         h = self._table.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -2695,8 +2695,6 @@ class ExistingSafeguardPicker(QDialog):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.doubleClicked.connect(self._accept)
-        self._table.setStyleSheet(
-            "QHeaderView::section{background:#1F4E79;color:#fff;font-weight:bold;padding:3px;}")
         layout.addWidget(self._table)
 
         btns = QHBoxLayout()

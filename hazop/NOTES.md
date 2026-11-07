@@ -1,5 +1,33 @@
 # NOTES.md — Beslut och kontext
 
+## HAZOP: korrekt och läsbar studieöversikt (2026-11-07)
+
+Studieöversikten visar nu en rad per bedömd konsekvenskategori och använder
+dess faktiska konsekvensnivå tillsammans med orsakens frekvensnivå för risk
+före barriärer. Saknas frekvens eller kategoribedömning visas `Ej bedömd`
+med information om vad som saknas. Ett äldre kategorifält visas som sådant,
+utan att dess standardvärde tolkas som en ny bedömning. Barriärer som är
+undantagna för den aktuella orsaken eller kategorin märks `gäller ej`.
+Kontrollen av saknad frekvens delas med Scenario; inga projektdata ändras av
+översikten. Kategorier och undantag hämtas i samlade databasfrågor.
+
+Den gemensamma Qt-stilen hade en regel som dolde tabellcellernas egna
+bakgrundsfärger. Den är borttagen, så bland annat risk- och kategorifärger
+visas igen; ett renderingstest kontrollerar färg, text och markeringsläge.
+Färgrutor i risk- och LOPA-inställningarna får läsbar textfärg även på ljusa
+bakgrunder. Studieöversikten har större rader, bredare konsekvensfält och
+verktygstips, och de berörda vyerna använder ordet `barriär` konsekvent.
+
+Äldre tester för blad, noder, deltagare, riskmatris och standardbibliotekets
+Excel-export har anpassats till dagens datamodell och kontroller; deltagarnas
+dialogtest öppnar inte längre ett blockerande modalfönster. Den tidigare
+begränsningen för den breda settings-sviten ovan är därmed åtgärdad.
+Syntaxkontroll, 117 settings-tester, 41 Scenario-/worksheettester och 31
+LOPA-paneltester passerade headless. Efter sista justeringen av undantagna
+barriärer kördes de riktade översikts- och smoketesterna igen. Översikten
+granskades som renderad widget med bedömt och saknat underlag; fullständigt
+manuellt GUI-flöde och en ny installationsfil har inte verifierats.
+
 ## HAZOP: rekommendationsvy och läsbara tabellrubriker (2026-11-07)
 
 Rekommendationssidan har nu en rubrik, en synlig knapp för att skapa den

@@ -90,6 +90,10 @@ def app_stylesheet() -> str:
     Deliberately no ``font-size`` is attached to the universal selector.
     Scenario/Worksheet owns a user-adjustable text size and a universal QSS
     font-size silently overrides a widget's own ``setFont()`` call.
+
+    Avoid an unconditional QTableWidget/QTableView ``::item`` rule: Qt's
+    stylesheet painting would then ignore each item's background and text
+    colors, hiding risk and category colors. The selected-only rule is safe.
     """
     # Qt stylesheets need file URLs; the read-only bundle directory also
     # works in packaged builds. Forward slashes and quotes handle Windows
@@ -245,7 +249,6 @@ def app_stylesheet() -> str:
         border: 1px solid {SEPARATOR};
         border-radius: 4px;
     }}
-    QTableWidget::item, QTableView::item {{ padding: 4px; border: none; }}
     QTableWidget::item:selected, QTableView::item:selected {{
         background-color: {ACCENT_SELECTION};
         color: {TEXT};

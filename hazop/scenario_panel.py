@@ -30,7 +30,7 @@ from PyQt6.QtGui import (
 from constants import CAUSE_T, CONS_T, SG_T, SG_TYPES, CONFIG, MAX_GROUP_OBJECTS
 from database import (
     Database, DEFAULT_MATRIX, get_matrix, risk_info, parse_tag_refs,
-    freq_to_f_level,
+    freq_to_f_level, cause_frequency_is_unset,
 )
 import spellcheck
 from design import (
@@ -2346,8 +2346,7 @@ class _ScenarioDelegate(QStyledItemDelegate):
         """RFORE/SLUT (this base delegate — ORS/KON/SG are handled by
         the _PidDelegate subclass installed for those specific columns,
         see ScenarioTablePanel.__init__) need their own custom paint:
-        the app-wide QSS rule targeting QTableWidget::item (see CONFIG's
-        global stylesheet, applied via app.setStyleSheet() in main())
+        the Scenario table's QSS rule targeting QTableWidget::item
         means Qt's default QStyledItemDelegate.paint() (super().paint(),
         used for every other column here — NOD/UTR/DEV/LOPA) stops
         respecting Qt::BackgroundRole/ForegroundRole once any stylesheet
@@ -5326,12 +5325,7 @@ class ScenarioTablePanel(QWidget):
             # A directly-created blank cause keeps the database's required
             # likelihood value for calculations, but must not show a chosen
             # frequency badge until the user selects one.
-            frequency_unset = (bool(cause_d.get('frequency_cleared')) or
-                               (not (cause_d.get('description') or '').strip()
-                               and not (cause_d.get('comp_tag') or '').strip()
-                               and cause_d.get('base_frequency') is None
-                               and not cause_d.get('standard_cause_id')
-                               and cause_d.get('likelihood') == 0))
+            frequency_unset = cause_frequency_is_unset(cause_d)
             freq = self.db.cause_frequency_level(cause_d)
             database_frequency = None
             if cause_d.get('frequency_override') is not None:

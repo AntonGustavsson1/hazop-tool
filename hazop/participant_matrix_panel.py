@@ -293,11 +293,7 @@ class ParticipantMatrixPanel(QWidget):
         self.refresh()
 
     def _add_session(self):
-        """Adds an analystillfälle directly with today's date as the label —
-        no popup — then drops straight into inline header editing so the
-        user can adjust the date/label without leaving the table
-        (2026-08-18 user request, replacing the old _AnalysisSessionDateDialog
-        popup)."""
+        """Add a session directly; its details can be edited from the header."""
         new_id = self.db.add_analysis_session()
         self.refresh()
 
@@ -363,9 +359,7 @@ class ParticipantMatrixPanel(QWidget):
         return None
 
     def _edit_header_label(self, col):
-        """Opens an inline QLineEdit directly over the header section for
-        renaming a custom column or analystillfälle — no popup dialog
-        (2026-08-18 user request)."""
+        """Edit custom columns inline and session details in their dialog."""
         kind = self._header_kind(col)
         if kind is None:
             return

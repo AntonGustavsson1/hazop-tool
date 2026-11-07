@@ -539,6 +539,17 @@ def get_matrix():
     return _risk_matrix_cache.get()
 
 
+def cause_frequency_is_unset(cause):
+    """Whether a cause has no user-selected frequency, including legacy blanks."""
+    cause = dict(cause or {})
+    return (bool(cause.get('frequency_cleared')) or
+            (not (cause.get('description') or '').strip()
+             and not (cause.get('comp_tag') or '').strip()
+             and cause.get('base_frequency') is None
+             and not cause.get('standard_cause_id')
+             and cause.get('likelihood') == 0))
+
+
 def risk_info(frequency, consequence):
     """Return (label, bg_color, fg_color) from matrix lookup.
 
@@ -10917,6 +10928,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                         'cause_id':       cause['id'],
                         'cause':          cause['description'],
                         'likelihood':     self.cause_frequency_level(cause),
+                        'frequency_unset': cause_frequency_is_unset(cause),
                         'consequence_id': cons['id'],
                         'consequence':    cons['description'],
                         'severity':       cons['severity'],

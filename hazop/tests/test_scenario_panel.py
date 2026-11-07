@@ -2466,7 +2466,7 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
     (item.background()/item.foreground()) — never whether that color
     actually reaches the screen. It didn't, in the real app: main()
     applies app.setStyleSheet(_get_windows11_stylesheet()) globally, and
-    once ANY stylesheet targets QTableWidget::item, Qt's default
+    the Scenario table also has a QTableWidget::item rule. With that rule, Qt's default
     QStyledItemDelegate.paint() stops respecting Qt::BackgroundRole/
     ForegroundRole entirely — a well-known Qt quirk. RFORE/SLUT fell
     through to that default path, so cells stayed white until selected
@@ -2564,7 +2564,7 @@ class RiskCellActualRenderColorTests(unittest.TestCase):
             node_id = self.db.add_node()
             dev_id = self.db.deviations(node_id)[0]['id']
             cause_id = self.db.add_cause(dev_id)
-            self.db.update_cause(cause_id, likelihood=0)
+            self.db.update_cause(cause_id, likelihood=0, frequency_cleared=False)
             cons_id = self.db.add_consequence(cause_id)
             self.db.update_consequence(cons_id, 'Ny konsekvens', 1, '')
             cat = self.db.consequence_categories()[0]
