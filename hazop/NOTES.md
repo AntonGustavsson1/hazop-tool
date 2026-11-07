@@ -1,5 +1,21 @@
 # NOTES.md — Beslut och kontext
 
+## HAZOP: tydligare gemensamma kontrolltillstånd (2026-11-07)
+
+Den gemensamma stilen visar nu en bock i markerade kryssrutor, ett streck
+för delvis markerade rutor, en punkt i valda radioknappar och pilar i
+rullistor och sifferfält. Inaktiva val har egen dämpad färg. Ikonerna ligger
+i den befintliga paketerade ikonmappen; sökvägarna använder samma
+paketeringsfunktion som övriga ikoner. Ändringen behåller kontrollernas
+normala tangentbordsstöd.
+
+Syntaxkontroll, 28 design-/smoketester, 31 LOPA-paneltester och 28
+worksheettester passerade headless. Kontrollerna granskades som renderade
+widgets. Den breda settings-sviten fastnade i en dialog; fem enskilda
+settings-/förberedelsetester gav samma fel med föregående committade design
+(fyra misslyckanden och ett fel) och utreds separat. Fullständig manuell
+GUI-kontroll och kontroll av ny installationsfil är inte genomförda.
+
 ## HAZOP: sparfel och markering i båda RRF-popuperna (2026-11-06)
 
 Den enklare RRF-popupen använder samma transaktionssäkra sparväg som

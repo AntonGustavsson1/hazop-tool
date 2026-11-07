@@ -11,6 +11,8 @@ future design work has one obvious place to start without changing the
 editing, selection, or table-building logic.
 """
 
+from constants import _bundle_dir
+
 # Semantic palette.  Keep names stable and use these names in new styles
 # instead of introducing another hard-coded colour in a panel module.
 APP_BACKGROUND = '#FBFBFA'
@@ -88,6 +90,15 @@ def app_stylesheet() -> str:
     Scenario/Worksheet owns a user-adjustable text size and a universal QSS
     font-size silently overrides a widget's own ``setFont()`` call.
     """
+    # Qt stylesheets need file URLs; the read-only bundle directory also
+    # works in packaged builds. Forward slashes and quotes handle Windows
+    # installation paths containing spaces.
+    icon_dir = _bundle_dir() / 'icons'
+    check_icon = (icon_dir / 'control-check.svg').as_posix()
+    partial_icon = (icon_dir / 'control-partial.svg').as_posix()
+    radio_icon = (icon_dir / 'control-radio.svg').as_posix()
+    down_icon = (icon_dir / 'chevron-down.svg').as_posix()
+    up_icon = (icon_dir / 'chevron-up.svg').as_posix()
     return f"""
     * {{
         font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
@@ -127,6 +138,7 @@ def app_stylesheet() -> str:
     }}
 
     QCheckBox, QRadioButton {{ color: {TEXT}; spacing: 6px; }}
+    QCheckBox:disabled, QRadioButton:disabled {{ color: {SECONDARY_TEXT}; }}
     QCheckBox::indicator, QRadioButton::indicator {{
         width: 14px; height: 14px;
         border: 1px solid {FIELD_BORDER};
@@ -139,6 +151,19 @@ def app_stylesheet() -> str:
         background-color: {ACCENT};
         border-color: {ACCENT};
     }}
+    QCheckBox::indicator:checked {{ image: url("{check_icon}"); }}
+    QCheckBox::indicator:indeterminate {{
+        background-color: {ACCENT}; border-color: {ACCENT};
+        image: url("{partial_icon}");
+    }}
+    QRadioButton::indicator:checked {{ image: url("{radio_icon}"); }}
+    QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+        background-color: {SUBTLE_SURFACE}; border-color: {FIELD_BORDER};
+    }}
+    QCheckBox::indicator:checked:disabled, QCheckBox::indicator:indeterminate:disabled,
+    QRadioButton::indicator:checked:disabled {{
+        background-color: #929AA5; border-color: #929AA5;
+    }}
 
     QSpinBox, QDoubleSpinBox {{
         background-color: {SURFACE};
@@ -148,6 +173,12 @@ def app_stylesheet() -> str:
         padding: 3px 4px;
     }}
     QSpinBox:focus, QDoubleSpinBox:focus {{ border: 2px solid {ACCENT}; }}
+    QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+        image: url("{up_icon}"); width: 10px; height: 10px;
+    }}
+    QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+        image: url("{down_icon}"); width: 10px; height: 10px;
+    }}
 
     QListWidget, QListView {{
         background-color: {SURFACE};
@@ -199,7 +230,7 @@ def app_stylesheet() -> str:
     }}
     QComboBox:focus {{ border: 2px solid {ACCENT}; }}
     QComboBox::drop-down {{ border: none; width: 20px; }}
-    QComboBox::down-arrow {{ image: none; }}
+    QComboBox::down-arrow {{ image: url("{down_icon}"); width: 12px; height: 12px; }}
 
     QTableWidget, QTableView {{
         background-color: {SURFACE};

@@ -172,5 +172,119 @@ class DesignSystemTests(unittest.TestCase):
             LOPA_BREAKPOINT_TWO_COLUMN, LOPA_BREAKPOINT_HEADER_SINGLE))
 
 
+class CommonControlRenderingTests(unittest.TestCase):
+    """Shared controls need visible state and affordances under the real theme."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt6.QtWidgets import QApplication
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _render(self, widget):
+        from design import app_stylesheet
+        widget.setStyleSheet(app_stylesheet())
+        widget.show()
+        self.app.processEvents()
+        return widget.grab().toImage()
+
+    @staticmethod
+    def _white_pixels(image, rect):
+        count = 0
+        scale = image.devicePixelRatio()
+        for y in range(rect.top() + 2, rect.bottom() - 1):
+            for x in range(rect.left() + 2, rect.right() - 1):
+                color = image.pixelColor(int(x * scale), int(y * scale))
+                if color.red() > 220 and color.green() > 220 and color.blue() > 220:
+                    count += 1
+        return count
+
+    @staticmethod
+    def _blue_pixels(image, rect):
+        scale = image.devicePixelRatio()
+        return sum(
+            1 for y in range(rect.top() + 2, rect.bottom() - 1)
+            for x in range(rect.left() + 2, rect.right() - 1)
+            if (color := image.pixelColor(int(x * scale), int(y * scale))).blue() > color.red() + 50)
+
+    def test_checked_and_partial_checkboxes_show_a_white_symbol(self):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QCheckBox, QStyle, QStyleOptionButton
+
+        for state in (Qt.CheckState.Checked, Qt.CheckState.PartiallyChecked):
+            with self.subTest(state=state):
+                checkbox = QCheckBox('Tillämplig')
+                checkbox.setTristate(True)
+                checkbox.setCheckState(state)
+                try:
+                    image = self._render(checkbox)
+                    option = QStyleOptionButton()
+                    checkbox.initStyleOption(option)
+                    rect = checkbox.style().subElementRect(
+                        QStyle.SubElement.SE_CheckBoxIndicator, option, checkbox)
+                    self.assertGreater(self._blue_pixels(image, rect), 20)
+                    self.assertGreater(self._white_pixels(image, rect), 2,
+                                       'checked state needs a visible symbol')
+                finally:
+                    checkbox.close()
+                    checkbox.deleteLater()
+
+    def test_checked_radio_button_has_visible_dot(self):
+        from PyQt6.QtWidgets import QRadioButton, QStyle, QStyleOptionButton
+
+        radio = QRadioButton('Alternativ')
+        radio.setChecked(True)
+        try:
+            image = self._render(radio)
+            option = QStyleOptionButton()
+            radio.initStyleOption(option)
+            rect = radio.style().subElementRect(
+                QStyle.SubElement.SE_RadioButtonIndicator, option, radio)
+            self.assertGreater(self._blue_pixels(image, rect), 15)
+            self.assertGreater(self._white_pixels(image, rect), 2)
+        finally:
+            radio.close()
+            radio.deleteLater()
+
+    def test_combobox_has_a_visible_dropdown_indicator(self):
+        from PyQt6.QtWidgets import QComboBox, QStyle, QStyleOptionComboBox
+
+        combo = QComboBox()
+        combo.addItems(['Första', 'Andra'])
+        combo.resize(200, 30)
+        try:
+            image = self._render(combo)
+            option = QStyleOptionComboBox()
+            combo.initStyleOption(option)
+            rect = combo.style().subControlRect(
+                QStyle.ComplexControl.CC_ComboBox, option,
+                QStyle.SubControl.SC_ComboBoxArrow, combo)
+            scale = image.devicePixelRatio()
+            dark_pixels = sum(
+                1 for y in range(rect.top() + 4, rect.bottom() - 3)
+                for x in range(rect.left() + 3, rect.right() - 2)
+                if max(image.pixelColor(int(x * scale), int(y * scale)).getRgb()[:3]) < 180)
+            self.assertGreater(dark_pixels, 2, 'dropdown needs a visible arrow')
+        finally:
+            combo.close()
+            combo.deleteLater()
+
+    def test_checkbox_can_still_be_toggled_with_keyboard(self):
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        from PyQt6.QtWidgets import QCheckBox
+
+        checkbox = QCheckBox('Tillämplig')
+        try:
+            self._render(checkbox)
+            checkbox.setFocus()
+            QTest.keyClick(checkbox, Qt.Key.Key_Space)
+            self.assertTrue(checkbox.isChecked())
+            QTest.keyClick(checkbox, Qt.Key.Key_Space)
+            self.assertFalse(checkbox.isChecked())
+        finally:
+            checkbox.close()
+            checkbox.deleteLater()
+
+
 if __name__ == '__main__':
     unittest.main()
