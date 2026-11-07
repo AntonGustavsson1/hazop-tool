@@ -64,7 +64,6 @@ from design import (
     MUTED_TEXT,
     SECONDARY_TEXT,
     TEXT,
-    lopa_barrier_matrix_header_stylesheet,
     lopa_card_stylesheet,
     lopa_category_badge_stylesheet,
     lopa_ghost_button_stylesheet,
@@ -75,81 +74,6 @@ from design import (
     lopa_table_stylesheet,
     lopa_title_stylesheet,
 )
-
-
-class _BarrierMatrixHeaderWidget(QWidget):
-    """Custom hierarchical header for barrier matrix: type → (Barriär, RRF)."""
-
-    def __init__(self, barrier_types: list, column_widths=None, parent=None):
-        super().__init__(parent)
-        self.barrier_types = barrier_types
-        self.column_widths = column_widths or []
-        self._build()
-
-    def _build(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        col_idx = 0
-        # Fixed columns
-        for label_text in ['Källscenario', 'Grundfrekvens']:
-            label = QLabel(label_text)
-            label.setStyleSheet(lopa_barrier_matrix_header_stylesheet())
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            if col_idx < len(self.column_widths):
-                label.setFixedWidth(self.column_widths[col_idx])
-            layout.addWidget(label, 0)
-            col_idx += 1
-
-        # Barrier types with sub-headers
-        for barrier_type in self.barrier_types:
-            type_width = sum(self.column_widths[col_idx:col_idx+2]) if col_idx+1 < len(self.column_widths) else 0
-            type_container = QWidget()
-            if type_width > 0:
-                type_container.setFixedWidth(type_width)
-            type_layout = QVBoxLayout(type_container)
-            type_layout.setContentsMargins(0, 0, 0, 0)
-            type_layout.setSpacing(0)
-
-            # Top: Barrier type
-            type_label = QLabel(barrier_type)
-            type_label.setStyleSheet(
-                lopa_barrier_matrix_header_stylesheet(border_bottom=True))
-            type_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            type_layout.addWidget(type_label)
-
-            # Bottom: Barriär + RRF
-            sub_layout = QHBoxLayout()
-            sub_layout.setContentsMargins(0, 0, 0, 0)
-            sub_layout.setSpacing(0)
-
-            for sub_label_text in ['Barriär', 'RRF']:
-                sub_label = QLabel(sub_label_text)
-                sub_label.setStyleSheet(
-                    lopa_barrier_matrix_header_stylesheet(sub_label=True))
-                sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                if col_idx < len(self.column_widths):
-                    sub_label.setFixedWidth(self.column_widths[col_idx])
-                sub_layout.addWidget(sub_label, 0)
-                col_idx += 1
-
-            type_layout.addLayout(sub_layout)
-            layout.addWidget(type_container, 0)
-
-        # Fixed column: Återstående frekvens
-        remaining_label = QLabel('Återstående\nfrekvens')
-        remaining_label.setStyleSheet(
-            lopa_barrier_matrix_header_stylesheet(border_right=False))
-        remaining_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        remaining_label.setWordWrap(True)
-        if col_idx < len(self.column_widths):
-            remaining_label.setFixedWidth(self.column_widths[col_idx])
-        layout.addWidget(remaining_label, 0)
-
-        self.setFixedHeight(50)
-        if self.column_widths:
-            self.setFixedWidth(sum(self.column_widths))
 
 
 class _LopaHierarchyDelegate(QStyledItemDelegate):
@@ -868,33 +792,32 @@ class LopaPanel(QWidget):
         self._barrier_container_layout = QVBoxLayout(self._barrier_matrix_container)
         self._barrier_container_layout.setContentsMargins(0, 0, 0, 0)
         self._barrier_container_layout.setSpacing(0)
-        self._barrier_matrix_header = None
-        self._barrier_matrix_header_view = QScrollArea()
-        self._barrier_matrix_header_view.setFrameShape(QFrame.Shape.NoFrame)
-        self._barrier_matrix_header_view.setWidgetResizable(False)
-        self._barrier_matrix_header_view.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._barrier_matrix_header_view.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._barrier_matrix_header_view.setFixedHeight(50)
-        self._barrier_matrix_header_view.setStyleSheet('QScrollArea { border: none; }')
-        self._barrier_container_layout.addWidget(self._barrier_matrix_header_view)
         barrier_layout.addWidget(self._barrier_matrix_container)
-        self._barrier_matrix = QTableWidget(0, 0)
+        self._barrier_matrix = QTableWidget(0, 4)
+        self._barrier_matrix.setHorizontalHeaderLabels(
+            ['Källscenario', 'Grundfrekvens', 'Barriärer och RRF', 'Återstående frekvens'])
         self._barrier_matrix.verticalHeader().setVisible(False)
-        self._barrier_matrix.horizontalHeader().setVisible(False)
+        matrix_header = self._barrier_matrix.horizontalHeader()
+        matrix_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        matrix_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        matrix_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        matrix_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self._barrier_matrix.setColumnWidth(1, 100)
+        self._barrier_matrix.setColumnWidth(3, 130)
+        self._barrier_matrix.horizontalHeaderItem(3).setToolTip(
+            'Största återstående frekvens för källscenariots aktiva konsekvenser')
         self._barrier_matrix.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._barrier_matrix.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._barrier_matrix.setWordWrap(True)
         self._barrier_matrix.setStyleSheet(lopa_table_stylesheet())
-        self._configure_compact_table(self._barrier_matrix, 48, 104)
+        self._configure_compact_table(self._barrier_matrix, 48, 320)
+        self._barrier_layout_timer = QTimer(self)
+        self._barrier_layout_timer.setSingleShot(True)
+        self._barrier_layout_timer.timeout.connect(self._fit_barrier_matrix_geometry)
+        matrix_header.sectionResized.connect(
+            lambda *_args: self._barrier_layout_timer.start(0))
         self._barrier_matrix.verticalHeader().setDefaultSectionSize(34)
         self._barrier_matrix.verticalHeader().setMinimumSectionSize(34)
-        self._barrier_matrix.horizontalScrollBar().valueChanged.connect(
-            self._sync_barrier_matrix_header_scroll)
-        self._barrier_matrix.verticalScrollBar().rangeChanged.connect(
-            lambda _minimum, _maximum: QTimer.singleShot(
-                0, self._sync_barrier_matrix_header_viewport))
         self._barrier_container_layout.addWidget(self._barrier_matrix)
         self._barrier_detail_area = QWidget()
         barrier_detail_layout = QVBoxLayout(self._barrier_detail_area)
@@ -1184,7 +1107,6 @@ class LopaPanel(QWidget):
         self._final_equipment.clear()
         self._barriers.setRowCount(0)
         self._barrier_matrix.setRowCount(0)
-        self._barrier_matrix.setColumnCount(0)
         self._escalation.setRowCount(0)
         self._calculation.setRowCount(0)
         self._dimensioning_summary.clear()
@@ -2113,7 +2035,6 @@ class LopaPanel(QWidget):
             self._scenario_note.setText('Välj ett källscenario för att beskriva vad som händer i processen.')
             self._barriers.setRowCount(0)
             self._barrier_matrix.setRowCount(0)
-            self._barrier_matrix.setColumnCount(0)
             self._escalation.setRowCount(0)
             self._edit_consequence_btn.setEnabled(False)
             self._add_consequence_btn.setEnabled(bool(self._revision_id) and editable)
@@ -2724,35 +2645,11 @@ class LopaPanel(QWidget):
         self._loading = old_loading
 
     def _populate_barrier_matrix(self):
-        """Show the screen-wide LOPA barrier picture without duplicating HAZOP.
-
-        The editable list below stays scoped to the selected scenario.  This
-        compact matrix mirrors the reference sheet: one source per row and
-        two readable columns per safeguard type (description + RRF).
-        """
+        """Show each source's barriers and result together within the page."""
         sources = self.db.lopa_sources(self._revision_id) if self._revision_id else []
         types = self.db.safeguard_types()
-        headers = ['Källscenario', 'Grundfrekvens']
-        for kind in types:
-            headers.append(kind)
-            headers.append(f'{kind} RRF')
-        headers.append('Största återstående frekvens')
         old_loading = self._loading
         self._loading = True
-        self._barrier_matrix.setColumnCount(len(headers))
-        # The matrix has many two-column barrier groups.  ResizeToContents
-        # turns short numeric values into 30 px columns and lets one long
-        # source dominate the whole sheet.  Stable widths keep every cell
-        # readable and make the grouped header geometrically deterministic.
-        column_widths = [260, 100]
-        for _barrier_type in types:
-            column_widths.extend([220, 64])
-        column_widths.append(124)
-        self._barrier_matrix.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Fixed)
-        for col, width in enumerate(column_widths):
-            self._barrier_matrix.setColumnWidth(col, width)
-
         self._barrier_matrix.setRowCount(len(sources) + 1 if sources else 0)
         total_remaining = 0.0
         any_remaining = False
@@ -2770,27 +2667,19 @@ class LopaPanel(QWidget):
                     continue
                 kind = barrier.get('sg_type') or 'Övrigt'
                 by_type.setdefault(kind, []).append(barrier)
-            for type_offset, kind in enumerate(types):
-                desc_column = 2 + type_offset * 2
-                rrf_column = 2 + type_offset * 2 + 1
-                barriers = by_type.get(kind) or []
-                if barriers:
-                    desc_text = '\n'.join(
-                        f"{barrier.get('description') or 'Namnlös'} — "
-                        f"{self.db.lopa_barrier_scope_label(barrier)} — "
-                        f"{self.db.lopa_barrier_identity_status(barrier)['label']}" for barrier in barriers)
-                    rrf_text = '\n'.join(
-                        (f'{barrier["rrf"]:.6g}' if self.db.lopa_barrier_identity_status(barrier)['state']
-                         not in ('same', 'needs_review', 'unknown', 'changed') else '—') for barrier in barriers)
-                else:
-                    desc_text = '—'
-                    rrf_text = '—'
-                description_item = self._barrier_matrix_cell(desc_text)
-                description_item.setToolTip(desc_text)
-                self._barrier_matrix.setItem(row_index, desc_column, description_item)
-                self._barrier_matrix.setItem(
-                    row_index, rrf_column,
-                    self._barrier_matrix_cell(rrf_text, numeric=True))
+            barrier_lines = []
+            for kind, barriers in by_type.items():
+                for barrier in barriers:
+                    identity = self.db.lopa_barrier_identity_status(barrier)
+                    rrf = (f"{barrier['rrf']:.6g}" if identity['state'] not in
+                           ('same', 'needs_review', 'unknown', 'changed') else '—')
+                    barrier_lines.append(
+                        f"{kind}: {barrier.get('description') or 'Namnlös'} (RRF {rrf}) — "
+                        f"{self.db.lopa_barrier_scope_label(barrier)} — {identity['label']}")
+            barrier_text = '\n'.join(barrier_lines) or '—'
+            description_item = self._barrier_matrix_cell(barrier_text)
+            description_item.setToolTip(barrier_text)
+            self._barrier_matrix.setItem(row_index, 2, description_item)
             result = self.db.lopa_source_calculation(source['id'])
             remaining = [item['remaining_frequency'] for item in result['categories']
                          if item['active'] and item['remaining_frequency'] is not None]
@@ -2805,7 +2694,7 @@ class LopaPanel(QWidget):
                 any_remaining = True
                 text = f'{row_remaining:.6g} /år'
             self._barrier_matrix.setItem(
-                row_index, len(headers) - 1,
+                row_index, 3,
                 self._barrier_matrix_cell(text, numeric=True))
         if sources:
             total_row = len(sources)
@@ -2816,7 +2705,7 @@ class LopaPanel(QWidget):
                                    'programmet kontrollerar inte detta.')
             total_label.setFont(bold_font)
             self._barrier_matrix.setItem(total_row, 0, total_label)
-            for column in range(1, len(headers) - 1):
+            for column in range(1, 3):
                 self._barrier_matrix.setItem(
                     total_row, column, self._barrier_matrix_cell('', empty=True))
             total_text = (f'{total_remaining:.6g} /år'
@@ -2825,57 +2714,15 @@ class LopaPanel(QWidget):
             if incomplete_active_source:
                 total_cell.setToolTip('Summan kan inte visas när ett aktivt källscenario är ofullständigt.')
             total_cell.setFont(bold_font)
-            self._barrier_matrix.setItem(total_row, len(headers) - 1, total_cell)
-        self._barrier_matrix.resizeRowsToContents()
-        self._fit_table_height(self._barrier_matrix, 48, 104,
-                               include_hidden_header=False)
-
-        # Sync header width with table columns
-        self._sync_barrier_matrix_header_width(types)
+            self._barrier_matrix.setItem(total_row, 3, total_cell)
+        self._fit_barrier_matrix_geometry()
 
         self._loading = old_loading
 
-    def _sync_barrier_matrix_header_width(self, barrier_types):
-        """Synchronize custom header widget widths to table column widths."""
-        if self._barrier_matrix.columnCount() == 0:
-            return
-
-        # Collect actual column widths from table
-        column_widths = [self._barrier_matrix.columnWidth(i)
-                        for i in range(self._barrier_matrix.columnCount())]
-
-        # The header lives in a scrollbar-free QScrollArea and follows the
-        # table's horizontal scrollbar.  A plain sibling widget cannot follow
-        # the matrix once all safeguard types exceed the available width.
-        self._barrier_matrix_header = _BarrierMatrixHeaderWidget(
-            barrier_types, column_widths=column_widths,
-            parent=self._barrier_matrix_header_view)
-        self._barrier_matrix_header_view.setWidget(self._barrier_matrix_header)
-        self._sync_barrier_matrix_header_viewport()
-        QTimer.singleShot(0, self._sync_barrier_matrix_header_viewport)
-
-    def _sync_barrier_matrix_header_viewport(self):
-        """Keep the custom header viewport pixel-aligned with table cells."""
-        if not self._barrier_matrix_header:
-            return
-        frame = self._barrier_matrix.frameWidth()
-        vertical_scrollbar = self._barrier_matrix.verticalScrollBar()
-        reserve_right = frame
-        if vertical_scrollbar.isVisible():
-            reserve_right += vertical_scrollbar.width()
-        self._barrier_matrix_header_view.setViewportMargins(
-            frame, 0, reserve_right, 0)
-        self._sync_barrier_matrix_header_scroll()
-
-    def _sync_barrier_matrix_header_scroll(self, _value=None):
-        """Match the header's pixel scroll offset to QTableWidget columns."""
-        if not self._barrier_matrix_header:
-            return
-        # QTableWidget's scrollbar advances by sections in this Fixed-header
-        # configuration, while QScrollArea advances by pixels.  The header
-        # offset is the common pixel coordinate for both widgets.
-        self._barrier_matrix_header_view.horizontalScrollBar().setValue(
-            self._barrier_matrix.horizontalHeader().offset())
+    def _fit_barrier_matrix_geometry(self):
+        """Rewrap descriptions whenever the available table width changes."""
+        self._barrier_matrix.resizeRowsToContents()
+        self._fit_table_height(self._barrier_matrix, 48, 320)
 
     def _on_barrier_item_changed(self, item):
         if self._loading or item.column() != 0:

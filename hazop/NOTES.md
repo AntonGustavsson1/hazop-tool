@@ -1,5 +1,21 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: barriäröversikt utan sidledsbläddring (2026-11-07)
+
+På Antons önskemål visas aktiva, oberoende barriärer nu tillsammans per
+källscenario, med typ, RRF, omfattning och identitetsstatus i samma cell.
+Grundfrekvens och återstående frekvens står intill; summans befintliga
+förutsättningar och hantering av ofullständigt underlag är oförändrade.
+Även en sparad barriärtyp som inte längre finns i typkatalogen visas. Tabellen
+anpassar sig till bredden och radbryter innehållet i stället för att skapa
+två breda kolumner per typ. Den gamla tvånivårubriken och dess separata
+sidledssynkronisering behövs därför inte längre.
+
+Syntaxkontroll och 46 LOPA-/smoketester passerade. Den renderade översikten
+granskades med flera barriärtyper vid 1200 och 800 px; inget fullständigt
+manuellt GUI-flöde eller ny installationsfil har verifierats. Arbetet med de
+andra breda tabellerna i LOPA fortsätter.
+
 ## HAZOP: korrekt och läsbar studieöversikt (2026-11-07)
 
 Studieöversikten visar nu en rad per bedömd konsekvenskategori och använder

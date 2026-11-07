@@ -154,13 +154,8 @@ class SmokeTests(unittest.TestCase):
         finally:
             p.deleteLater()
 
-    def test_lopa_barrier_matrix_keeps_all_cells_and_header_aligned(self):
-        """The two-level barrier header must track every matrix cell.
-
-        This specifically guards against ResizeToContents making numeric
-        columns unreadably narrow and against the custom header losing sync
-        when the user scrolls across the safeguard types.
-        """
+    def test_lopa_barrier_matrix_shows_all_barriers_without_side_scrolling(self):
+        """Keep each barrier, its own RRF and the result visible together."""
         from database import Database
         from lopa_panel import LopaPanel
 
@@ -205,22 +200,11 @@ class SmokeTests(unittest.TestCase):
                 self.app.processEvents()
 
                 matrix = p._barrier_matrix
-                expected_widths = [260, 100]
-                for _barrier_type in db.safeguard_types():
-                    expected_widths.extend([220, 64])
-                expected_widths.append(124)
                 self.assertEqual(
-                    expected_widths,
-                    [matrix.columnWidth(column)
+                    ['Källscenario', 'Grundfrekvens', 'Barriärer och RRF',
+                     'Återstående frekvens'],
+                    [matrix.horizontalHeaderItem(column).text()
                      for column in range(matrix.columnCount())])
-                self.assertTrue(all(
-                    matrix.horizontalHeader().sectionResizeMode(column)
-                    == QHeaderView.ResizeMode.Fixed
-                    for column in range(matrix.columnCount())))
-                self.assertEqual(sum(expected_widths),
-                                 p._barrier_matrix_header.width())
-                self.assertEqual(matrix.viewport().width(),
-                                 p._barrier_matrix_header_view.viewport().width())
 
                 for row in range(matrix.rowCount()):
                     for column in range(matrix.columnCount()):
@@ -236,23 +220,23 @@ class SmokeTests(unittest.TestCase):
                 self.assertEqual('—', matrix.item(0, 1).text())
                 self.assertEqual(center, matrix.item(0, 1).textAlignment())
                 self.assertEqual(left, matrix.item(0, 2).textAlignment())
+                barriers = matrix.item(0, 2).text()
+                for text in ('BPCS: BPCS med lång, läsbar beskrivning (RRF 10)',
+                             'Mekanisk: PSV med utblåsning till säkert område (RRF 100)',
+                             'Administrativ: Dokumenterad operatörsrond enligt instruktion (RRF 3)',
+                             'Övrigt: Lång beskrivning av skyddsbarriär som kräver flera rader (RRF 30)'):
+                    self.assertIn(text, barriers)
                 self.assertEqual(right, matrix.item(0, 3).textAlignment())
-                # SIS has no local barrier in this data set, so both cells
-                # must use the visible, centred no-data marker.
-                self.assertEqual('—', matrix.item(0, 4).text())
-                self.assertEqual(center, matrix.item(0, 4).textAlignment())
-                self.assertEqual('—', matrix.item(0, 5).text())
-                self.assertEqual(center, matrix.item(0, 5).textAlignment())
                 self.assertEqual('Summa (max per aktiv källa)', matrix.item(1, 0).text())
                 self.assertTrue(matrix.item(1, 0).font().bold())
                 self.assertEqual('', matrix.item(1, 1).text())
 
-                self.assertGreater(matrix.horizontalScrollBar().maximum(), 0)
-                matrix.horizontalScrollBar().setValue(
-                    matrix.horizontalScrollBar().maximum())
-                self.app.processEvents()
-                self.assertEqual(matrix.horizontalHeader().offset(),
-                                 p._barrier_matrix_header_view.horizontalScrollBar().value())
+                for width in (1560, 1200, 800, 600):
+                    p.resize(width, 1080)
+                    for _ in range(4):
+                        self.app.processEvents()
+                    self.assertEqual(0, matrix.horizontalScrollBar().maximum(), width)
+                    self.assertEqual(barriers, matrix.item(0, 2).text())
             finally:
                 p.deleteLater()
         finally:
