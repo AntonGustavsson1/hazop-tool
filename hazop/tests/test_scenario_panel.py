@@ -6894,5 +6894,78 @@ class FrequencyRRFBadgeHeightAndHoverTests(unittest.TestCase):
             "border +1 convention")
 
 
+class ScenarioHeaderPresentationTests(unittest.TestCase):
+    """The compact Scenario header keeps counts and context readable."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _ensure_qapp()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix='hazop_scenario_header_')
+        self.db = Database(path=os.path.join(self._tmpdir, 'test.db'))
+
+    def tearDown(self):
+        self.db.conn.close()
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_short_risk_headings_preserve_full_meaning_in_tooltips(self):
+        from scenario_panel import ScenarioTablePanel
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.resize(900, 300)
+            panel.show()
+            self.app.processEvents()
+            for col, short in ((panel._C_RFORE, 'Före'),
+                               (panel._C_SLUT, 'Efter')):
+                item = panel._table.horizontalHeaderItem(col)
+                self.assertEqual(item.text(), short)
+                self.assertEqual(item.toolTip(), panel._COLS[col])
+        finally:
+            panel.deleteLater()
+
+    def test_count_and_plain_text_context_follow_current_data(self):
+        from scenario_panel import ScenarioTablePanel
+
+        node = self.db.add_node()
+        self.db.update_node(node, 'Reaktor <R-101>', '', '')
+        deviation = self.db.get_or_create_deviation(node, 'Högt tryck <gräns>')
+        cause = self.db.add_cause(deviation)
+        self.db.update_cause(cause, description='Blockerat utlopp')
+        self.db.add_consequence(cause)
+
+        panel = ScenarioTablePanel(self.db)
+        try:
+            panel.resize(820, 350)
+            panel.load_node(node)
+            panel.show()
+            self.app.processEvents()
+            self.assertEqual(panel._count_lbl.text(), '1 orsak')
+            self.assertTrue(panel._ctx_bar.isVisible())
+            self.assertEqual(panel._ctx_node_value.textFormat(),
+                             Qt.TextFormat.PlainText)
+            self.assertEqual(panel._ctx_node_value.text(), 'Reaktor <R-101>')
+            self.assertEqual(panel._ctx_dev_value.text(), 'Högt tryck <gräns>')
+
+            second = self.db.add_cause(deviation)
+            self.db.update_cause(second, description='Fel på styrventil')
+            panel.refresh()
+            self.assertEqual(panel._count_lbl.text(), '2 orsaker')
+
+            panel.resize(420, 350)
+            self.app.processEvents()
+            self.assertLessEqual(panel._ctx_bar.width(), panel.width())
+            self.assertEqual(panel._ctx_node_value.toolTip(), 'Reaktor <R-101>')
+            self.assertEqual(panel._ctx_dev_value.toolTip(), 'Högt tryck <gräns>')
+
+            panel.clear()
+            self.assertEqual(panel._count_lbl.text(), '0 orsaker')
+            self.assertFalse(panel._ctx_bar.isVisible())
+        finally:
+            panel.close()
+            panel.deleteLater()
+
+
 if __name__ == "__main__":
     unittest.main()

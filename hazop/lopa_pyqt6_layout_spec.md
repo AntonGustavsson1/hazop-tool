@@ -1,41 +1,39 @@
-# LOPA — Responsiv layoutspecifikation för PyQt6
+# LOPA — responsiv layout för PyQt6
 
-Referens: 1920×1080 desktop. Mål: en normalt ifylld LOPA ska rymmas på en skärm utan global horisontell scroll; endast tabeller får egen intern scroll.
+## Grundprincip
 
-## Globalt
+LOPA är ett sammanhängande arbetsblad. Dokumentets huvudvy är den enda
+vertikala rullytan. Tabeller och flerradiga fritextfält visar hela sitt
+innehåll och växer nedåt; rullhjulet över dem rullar samma sida. Listan över
+LOPA-ark är en separat navigering i sidomenyn.
 
-- Endast huvudytan (main) scrollar vertikalt på sidnivå. Horisontell scroll får aldrig uppstå globalt — bara lokalt inuti en tabell-wrapper vid för många kolumner.
-- Sidomeny (Analyser) är sticky under nav-baren.
-- Tabeller (barriärer, eskalering, kommentarer) har sticky header + egen `overflow-y: auto` inom en maxhöjd.
+Huvudvyn ska inte behöva rulla i sidled. De vanliga tabellerna anpassar sina
+kolumner till tillgänglig bredd och radbryter innehåll. HAZOP-hierarkins
+konsekvenskategorier ligger i separata kolumner när de ryms, och samlas i en
+namngiven kategorikolumn när vyn är smal. Eskaleringsfaktorerna flyttas till
+fler rader inom sin cell utan att pågående inmatning förloras.
 
-## Blocktabell
+## Sidans ordning
 
-| Block | Placering | Bredd % (1920px) | Höjd | Min/Max | Beteende <1400px |
-|---|---|---|---|---|---|
-| Nav (topbar) | Helbredd, fixed top | 100% | 56px fast | min-height 48px | Knappar (Skriv ut/Exportera/Spara) kollapsar till ikoner |
-| Sidomenu (Analyser) | Vänster, sticky | 10–12% (≈200px fast) | auto, sticky top | min-width 160px / max-width 220px | <1024px: kollapsar till hamburger/overlay |
-| Huvudyta (main) | Höger om sidomeny | resterande ≈88% (max-width 1400px, centrerad) | auto, vertikal scroll på sidnivå | — | <1400px: max-width = 100% - sidomeny, mindre padding |
-| Header-kort (LOPA-nr, Rev, Datum, Utförd av) | Helbredd i main | 100% | auto (~180–220px) | min-height 160px | Fält-grid 4 kol → 2 kol <900px → 1 kol <600px |
-| Givardel-block | Sida vid sida med Manöverdel (50/50) | 50% | auto, intern scroll om >4 grupper | min-height 140px / max-height 320px, overflow-y:auto | <900px: staplas 100% var |
-| Manöverdel-block | Sida vid sida med Givardel (50/50) | 50% | samma | samma | samma |
-| Scenario-kort | Helbredd | 100% | auto, konsekvenslista intern scroll | min-height 260px, lista max-height 220px overflow-y:auto | Helbredd på alla skärmstorlekar |
-| Oberoende barriärer (tabell) | Helbredd, hopfällbar | 100% | max-height 420px, sticky header, intern vertikal scroll | min 2 rader synliga utan scroll | Kolumner krymper proportionellt; ev. lokal horisontell scroll i tabell-wrapper om barriärtyper >6 |
-| Eskalering (tabell) | Helbredd, hopfällbar | 100% | max-height 300px, sticky header, intern scroll | min 3 rader synliga | Samma princip som ovan |
-| Kriterium + SIL-resultat | Sida vid sida (66/34) | 66% / 34% | auto (~120px) | min-height 100px | Staplas <900px |
-| Fritext-kort (Åtgärder/Övriga krav + processäkerhetstid) | Sida vid sida (66/34) | 66% / 34% | auto (~150px) | min-height 130px | Staplas <900px |
-| Kommentarer | Helbredd, sist | 100% | lista max-height 240px, intern scroll | min-height 160px | Textarea + knapp staplas alltid |
+| Del | Layout och beteende |
+| --- | --- |
+| LOPA-ark | Sidomeny vid bred vy; öppnas via `LOPA-ark` vid smal vy. |
+| Huvud och revision | Fält i fyra, två eller en kolumn efter fönsterbredd. |
+| Givardel och manöverdel | Sida vid sida på bred skärm; staplade under 900 px. Medlemsrader visas i sin helhet. |
+| Scenario | En rad per konsekvens i HAZOP-hierarkin, redigering på plats och scenariotext som växer med innehållet. |
+| Oberoende barriärer | Fyra kolumner med sammanhållen barriärtext per källa. Detaljredigering kan fällas ut, med rader i samma sidflöde. |
+| Eskalering | Kategori, konsekvens, TEL, redigerbara faktorer och beräknat resultat. Faktorer radbryts vid behov. |
+| Beräkningsöversikt, dokumentuppgifter och kommentarer | Tre staplade avsnitt. Tabellrader och längre dokumenttexter får sin faktiska höjd. |
 
 ## Brytpunkter
 
-- **1400px** — main tappar centrerad max-width, mindre padding.
-- **1200px** — Scenario / Konsekvens-summering staplas vertikalt.
-- **1024px** — sidomeny blir overlay/hamburger.
-- **900px** — Givardel/Manöverdel och Kriterium/SIL staplas.
-- **600px** — header-fält går till 1 kolumn.
+- Under 1024 px döljs sidomenyn tills `LOPA-ark` öppnas.
+- Under 900 px staplas givar- och manöverdel.
+- Under 600 px visas huvudets fält i en kolumn.
+- HAZOP-kategoriernas kompakta läge väljs efter tabellens faktiska
+  tillgängliga bredd och kategoriernas namn, inte en fast fönsterbredd.
 
-## Implementationsnoter för PyQt6
-
-- Använd `QSplitter`/`QHBoxLayout` med stretch-faktorer för 50/50, 60/40, 66/34-delningarna (sätt `setStretch` proportionellt, inte fasta pixlar) så förhållandet håller vid fönsterändring ner till respektive brytpunkt.
-- Byt layout (sida-vid-sida → staplad) genom att lyssna på fönsterbredd (`resizeEvent`) och flytta widgets mellan en `QHBoxLayout` och `QVBoxLayout`, eller använd `QStackedLayout` med två färdiga layouter.
-- Tabeller: `QTableWidget`/`QTableView` med `setMaximumHeight()` satt till angiven max-height, `QHeaderView` sticky via `setSectionResizeMode` + fixed header (headers scrollar inte med `QTableView` by default — bekräfta genom att sätta scroll-area runt endast body).
-- Sidomenyns sticky-beteende: placera i egen `QDockWidget` eller fast vänsterkolumn i `QSplitter` som inte scrollar med huvudytans `QScrollArea`.
+Tabellernas höjd beräknas om när rader eller kolumnbredder ändras. En öppen
+scenarioredigerare behålls vid storleksändring och byter tabelläge först när
+redigeringen avslutas. Testdata har granskats vid 600–1500 px fönsterbredd;
+fler rader innebär mer vertikal sidrullning.

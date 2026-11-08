@@ -47,7 +47,7 @@ from design import (
     popup_muted_label_stylesheet, popup_primary_button_stylesheet,
     popup_secondary_button_stylesheet, popup_separator_stylesheet,
     popup_shell_stylesheet, popup_toggle_button_stylesheet,
-    scenario_table_stylesheet,
+    scenario_header_stylesheet, scenario_table_stylesheet,
     summary_badge_border_color, summary_badge_colors, summary_badge_stylesheet,
 )
 from pid_viewer import _icon, FREQ_LABELS, freq_to_idx, MODE_PICK_REF_TAG
@@ -4343,6 +4343,11 @@ class ScenarioTablePanel(QWidget):
         'Risker efter barriärer',
         'Rekommendation',
     ]
+    # The two narrow risk columns remain fully named in their tooltips and
+    # exports. Their visible labels must fit the same 52 px as the risk bars.
+    _DISPLAY_COLS = list(_COLS)
+    _DISPLAY_COLS[_C_RFORE] = 'Före'
+    _DISPLAY_COLS[_C_SLUT] = 'Efter'
 
     def __init__(self, db: Database):
         super().__init__()
@@ -4414,16 +4419,20 @@ class ScenarioTablePanel(QWidget):
         # Keep the table usable at its smallest size, but let the surrounding
         # splitter decide how much of the window it may use.
         self.setMinimumHeight(110)
+        self.setStyleSheet(scenario_header_stylesheet())
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(3, 1, 3, 1)
-        outer.setSpacing(1)
+        outer.setContentsMargins(4, 3, 4, 3)
+        outer.setSpacing(3)
 
         hdr_row = QHBoxLayout()
+        hdr_row.setSpacing(7)
         self._hdr_lbl = QLabel("HAZOP Scenario")
-        f = QFont(); f.setBold(True); f.setPointSize(8)
-        self._hdr_lbl.setFont(f)
+        self._hdr_lbl.setObjectName('scenarioTitle')
         hdr_row.addWidget(self._hdr_lbl)
+        self._count_lbl = QLabel('0 orsaker')
+        self._count_lbl.setObjectName('scenarioCount')
+        hdr_row.addWidget(self._count_lbl)
         hdr_row.addStretch()
         # Retained as a non-visible compatibility object for older host code;
         # width filling is automatic and this control is never added to the UI.
@@ -4434,7 +4443,9 @@ class ScenarioTablePanel(QWidget):
             "Fördela om Orsak/Konsekvens/Barriärer-kolumnerna så de fyller "
             "hela bredden just nu — kolumnerna går alltid att dra i")
         self._fill_btn.clicked.connect(self._fill_width_once)
-        hdr_row.addWidget(QLabel("Textstorlek:"))
+        text_size_label = QLabel("Textstorlek")
+        text_size_label.setObjectName('scenarioTextSizeLabel')
+        hdr_row.addWidget(text_size_label)
         self._fs_spin = QSpinBox()
         self._fs_spin.setRange(7, 16)
         self._fs_spin.setValue(9)
@@ -4446,7 +4457,7 @@ class ScenarioTablePanel(QWidget):
         outer.addLayout(hdr_row)
 
         self._table = QTableWidget(0, len(self._COLS))
-        self._table.setHorizontalHeaderLabels(self._COLS)
+        self._table.setHorizontalHeaderLabels(self._DISPLAY_COLS)
         for column, label in enumerate(self._COLS):
             self._table.horizontalHeaderItem(column).setToolTip(label)
         h = self._table.horizontalHeader()
@@ -4576,12 +4587,33 @@ class ScenarioTablePanel(QWidget):
         self._auto_fill_pending = True
         QTimer.singleShot(0, self._fill_width_once)
 
-        # ── Sticky context bar — always shows current Nod + Avvikelse ──────────
-        self._ctx_bar = QLabel()
-        self._ctx_bar.setStyleSheet(
-            "QLabel { background:#F5F5F3; color:#17191C; font-size:10px;"
-            " padding:3px 8px; border-bottom:1px solid #E2E3E1; }")
-        self._ctx_bar.setWordWrap(False)
+        # ── Sticky, compact node/deviation context ──────────────────────────
+        self._ctx_bar = QFrame()
+        self._ctx_bar.setObjectName('scenarioContextBar')
+        ctx_row = QHBoxLayout(self._ctx_bar)
+        ctx_row.setContentsMargins(8, 3, 8, 3)
+        ctx_row.setSpacing(6)
+        self._ctx_node_caption = QLabel('NOD')
+        self._ctx_dev_caption = QLabel('AVVIKELSE')
+        self._ctx_node_value = QLabel()
+        self._ctx_dev_value = QLabel()
+        self._ctx_divider = QLabel('│')
+        for caption in (self._ctx_node_caption, self._ctx_dev_caption):
+            caption.setObjectName('scenarioContextCaption')
+        for value in (self._ctx_node_value, self._ctx_dev_value):
+            value.setObjectName('scenarioContextValue')
+            value.setTextFormat(Qt.TextFormat.PlainText)
+            value.setMinimumWidth(0)
+            value.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                QSizePolicy.Policy.Preferred)
+        self._ctx_divider.setObjectName('scenarioContextDivider')
+        for widget in (self._ctx_node_caption, self._ctx_node_value,
+                       self._ctx_divider, self._ctx_dev_caption,
+                       self._ctx_dev_value):
+            ctx_row.addWidget(widget)
+        ctx_row.addStretch(1)
+        self._ctx_node_full = ''
+        self._ctx_dev_full = ''
         self._ctx_bar.hide()   # hidden until content is loaded
         outer.addWidget(self._ctx_bar)
         outer.addWidget(self._table)
@@ -4611,6 +4643,7 @@ class ScenarioTablePanel(QWidget):
         super().resizeEvent(event)
         # Keep the former "Fyll bredd" behavior active continuously.
         QTimer.singleShot(0, self._fill_width_once)
+        self._render_ctx_values()
 
     def allow_full_height(self):
         """Lift the 380px cap so this panel fills whatever container it's
@@ -4722,6 +4755,9 @@ class ScenarioTablePanel(QWidget):
         self._set_all_nodes_columns_visible(False)
         self._table.setRowCount(0)
         self._hdr_lbl.setText("HAZOP Scenario")
+        self._hdr_lbl.setToolTip('')
+        self._count_lbl.setText('0 orsaker')
+        self._ctx_bar.hide()
 
     def _set_all_nodes_columns_visible(self, visible: bool):
         """NOD/UTR/DEV columns are normally hidden (context shown in the
@@ -4926,6 +4962,10 @@ class ScenarioTablePanel(QWidget):
                 self._row_cat_info = []
                 # Build rows with signals blocked
                 self._build_rows()
+                cause_count = len({cause_id for _, cause_id, _, _ in
+                                   self._row_meta if cause_id is not None})
+                self._count_lbl.setText(
+                    f'{cause_count} {"orsak" if cause_count == 1 else "orsaker"}')
                 logging.info('_rebuild: F — _build_rows() done (rowCount=%d)',
                              self._table.rowCount())
 
@@ -6513,6 +6553,30 @@ class ScenarioTablePanel(QWidget):
 
     # ── P&ID placement helpers ─────────────────────────────────────────────────
 
+    def _render_ctx_values(self):
+        """Elide long context names without widening the whole Scenario page."""
+        if not hasattr(self, '_ctx_node_value'):
+            return
+        node, dev = self._ctx_node_full, self._ctx_dev_full
+        row = self._ctx_bar.layout()
+        margins = row.contentsMargins()
+        chrome = (margins.left() + margins.right()
+                  + row.spacing() * (4 if node and dev else 1) + 8)
+        if node:
+            chrome += self._ctx_node_caption.sizeHint().width()
+        if dev:
+            chrome += self._ctx_dev_caption.sizeHint().width()
+        if node and dev:
+            chrome += self._ctx_divider.sizeHint().width()
+        available = max(0, self.width() - chrome)
+        node_width = available if not dev else available * 2 // 5
+        dev_width = available if not node else available - node_width
+        fm = self._ctx_node_value.fontMetrics()
+        self._ctx_node_value.setText(
+            fm.elidedText(node, Qt.TextElideMode.ElideRight, node_width))
+        self._ctx_dev_value.setText(
+            fm.elidedText(dev, Qt.TextElideMode.ElideRight, dev_width))
+
     def _update_ctx_bar(self, *_):
         """Refresh the sticky context bar to show Nod + Avvikelse of the topmost visible row."""
         if self._all_nodes or self._force_dev_column_visible or self._equipment_filter_id is not None:
@@ -6558,12 +6622,20 @@ class ScenarioTablePanel(QWidget):
             self._ctx_bar.hide()
             return
 
-        parts = []
-        if node_name:
-            parts.append(f"🏭 <b>{node_name}</b>")
-        if dev_desc:
-            parts.append(f"⬡ {dev_desc}")
-        self._ctx_bar.setText("   " + "     ›     ".join(parts))
+        self._ctx_node_full = str(node_name or '')
+        self._ctx_dev_full = str(dev_desc or '')
+        has_node = bool(self._ctx_node_full)
+        has_dev = bool(self._ctx_dev_full)
+        self._ctx_node_caption.setVisible(has_node)
+        self._ctx_node_value.setVisible(has_node)
+        self._ctx_dev_caption.setVisible(has_dev)
+        self._ctx_dev_value.setVisible(has_dev)
+        self._ctx_divider.setVisible(has_node and has_dev)
+        self._ctx_node_value.setToolTip(self._ctx_node_full)
+        self._ctx_dev_value.setToolTip(self._ctx_dev_full)
+        self._ctx_bar.setToolTip(' · '.join(
+            part for part in (self._ctx_node_full, self._ctx_dev_full) if part))
+        self._render_ctx_values()
         self._ctx_bar.show()
 
     def _update_lopa_risk(self, cons_id: int):

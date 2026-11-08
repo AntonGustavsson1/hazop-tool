@@ -286,8 +286,7 @@ class SmokeTests(unittest.TestCase):
         p = LopaPanel(self.db)
         try:
             p.activate_lopa(created['lopa_id'], created['revision_id'])
-            # A populated LOPA is a working sheet, not a dashboard wider or
-            # multiple screens taller than a normal desktop workspace.
+            # A populated LOPA is one document that scrolls as a page.
             # BERÄKNINGSÖVERSIKT/YTTERLIGARE ÅTGÄRDER OCH KRAV/KOMMENTARER
             # always stack as three rows now (2026-09-04, see NOTES.md)
             # instead of three side-by-side columns, so this legitimately
@@ -297,7 +296,9 @@ class SmokeTests(unittest.TestCase):
             self.app.processEvents()
             self.app.processEvents()
             self.assertEqual(0, p._detail_scroll.horizontalScrollBar().maximum())
-            self.assertLessEqual(p._detail_scroll.verticalScrollBar().maximum(), 320)
+            self.assertGreater(p._detail_scroll.verticalScrollBar().maximum(), 0)
+            self.assertTrue(all(table.verticalScrollBar().maximum() == 0
+                                for table in p._flow_tables))
             self.assertEqual(0, p._detail_scroll.verticalScrollBar().value())
             self.assertFalse(p._barrier_detail_area.isVisible())
             p._barrier_details_toggle.click()
@@ -332,9 +333,17 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(0, p._detail_scroll.horizontalScrollBar().maximum())
             p._analysis_toggle.click()
             p.resize(550, 1040)
-            self.app.processEvents()
-            self.app.processEvents()
+            for _ in range(6):
+                self.app.processEvents()
             self.assertEqual(1, p._header_columns)
+            self.assertTrue(p._hazop_compact_categories)
+            self.assertEqual(5, p._hazop_hierarchy.columnCount())
+            self.assertEqual(0, p._hazop_hierarchy.horizontalScrollBar().maximum())
+            self.assertTrue(all(table.verticalScrollBar().maximum() == 0
+                                for table in p._flow_tables))
+            p.resize(1720, 1040)
+            for _ in range(6):
+                self.app.processEvents()
             # One visual scenario row per consequence. Each HAZOP consequence
             # category is its own column, with numeric level and active toggle
             # in the same cell.

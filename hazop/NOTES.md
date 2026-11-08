@@ -1,5 +1,28 @@
 # NOTES.md — Beslut och kontext
 
+## LOPA: en vertikalt rullande sida (2026-11-08)
+
+Dokumenttabellerna i LOPA visar nu alla rader utan egna vertikala rullistor.
+Huvudsidan rullar i stället och mushjulet över en tabell följer sidan.
+Scenariotext, ytterligare åtgärder och säkerhetskrav växer med texten och
+radbrytningen; även mushjulet över de fälten går till sidan. Listan över
+LOPA-ark är fortsatt separat navigering.
+
+HAZOP-hierarkin visar alla konsekvenskategorier i en namngiven kolumn när
+bredden inte räcker för separata kategorikolumner. Redigerbara lokala nivåer
+och inkluderingsval fungerar i båda lägena. Byte av läge väntar tills en
+pågående scenarioredigering avslutas. Barriärdetaljens kolumner krymper och
+radbryts inom sidans bredd. Dess underlagsfält ligger i två kompakta rader så
+kontrollfrekvens och motivering fortfarande är skrivbara vid 600 px.
+Eskaleringsfaktorernas minsta styrbredd har ökats
+så etiketterna inte klipps.
+
+Riktade tester kontrollerar intern och global skrollning, mushjul, långa
+fritextfält, breddändring utan förlorad redigering samt lokala
+kategorikontroller. Tabellerna granskades som Qt-renderade widgets vid
+600–1500 px. En stor LOPA kräver fortfarande vertikal sidrullning;
+komplett manuellt Windows-GUI-flöde och ny installationsfil är inte verifierade.
+
 ## LOPA: eskalering inom fönsterbredden (2026-11-07)
 
 Eskalering visar varje konsekvens och kategori med TEL, dess redigerbara
@@ -8223,3 +8246,18 @@ IPS5-, migrerings- och smoke-tester passerar.
 Den synliga standardmallsknappen heter nu `IPS`. Den tidigare tekniska preset-
 konstanten `IPS5_RISK_MATRIX_PRESET` finns kvar som kompatibilitetsalias till
 `IPS_RISK_MATRIX_PRESET`, så befintliga importer påverkas inte.
+
+## 2026-11-08 — Tydligare och kompaktare HAZOP-scenarier
+
+Scenariotabellens rubrikrad visar nu antal unika orsaker i den aktuella vyn.
+De två smala riskkolumnerna heter synligt `Före` och `Efter`, medan deras
+fullständiga namn ligger kvar i verktygstips och den interna kolumnlistan.
+Nod och avvikelse visas i ett sammanhållet kontextfält med tydliga etiketter;
+långa namn förkortas visuellt efter tillgänglig bredd och finns alltid i
+verktygstips. Fältet använder ren text, så tecken som `<` och `>` i
+projektnamn kan inte tolkas som HTML. Visuellt granskad i offscreen-rendering
+vid 1350 och 800 px. Syntaxkontroll, smoke, design- och nya riktade
+regressionstester passerar. Ytterligare 17 relevanta scenario- och
+kolumnlayouttester passerar. Hela `tests.test_scenario_panel` försöktes men
+avbröts när offscreen-Qt fastnade i upprepade `QFontEngineFT`-fel;
+den körningen är därför inte godkänd som hel svit.

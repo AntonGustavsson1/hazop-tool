@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import json
 import re
+from math import ceil
 
-from PyQt6.QtCore import QDate, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QDate, QEvent, QPointF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QBoxLayout,
     QCheckBox,
     QComboBox,
@@ -219,6 +222,19 @@ class LopaPanel(QWidget):
         self._final_group_id = None
         self._loading = False
         self._hazop_category_column_layout = []
+        self._hazop_compact_categories = False
+        self._hierarchy_layout_timer = QTimer(self)
+        self._hierarchy_layout_timer.setSingleShot(True)
+        self._hierarchy_layout_timer.timeout.connect(self._adjust_hazop_hierarchy_layout)
+        self._flow_tables = {}
+        self._flow_table_dirty = set()
+        self._flow_table_timer = QTimer(self)
+        self._flow_table_timer.setSingleShot(True)
+        self._flow_table_timer.timeout.connect(self._fit_flow_tables)
+        self._flow_text_edits = {}
+        self._flow_text_timer = QTimer(self)
+        self._flow_text_timer.setSingleShot(True)
+        self._flow_text_timer.timeout.connect(self._fit_flow_text_edits)
         self._build()
         self.refresh()
 
@@ -228,18 +244,19 @@ class LopaPanel(QWidget):
         card.setStyleSheet(lopa_card_stylesheet())
         return card
 
-    @staticmethod
-    def _configure_compact_table(table, minimum_height: int, maximum_height: int):
-        """Bound each document table to the space its data actually needs."""
+    def _configure_flow_table(self, table, minimum_height: int):
+        """Let the document page scroll instead of each table's row list."""
         table.setMinimumHeight(minimum_height)
-        table.setMaximumHeight(maximum_height)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.viewport().installEventFilter(self)
+        self._flow_tables[table] = minimum_height
         table.horizontalHeader().setFixedHeight(22)
         table.verticalHeader().setDefaultSectionSize(22)
 
     @staticmethod
-    def _fit_table_height(table, minimum_height: int, maximum_height: int,
+    def _fit_table_height(table, minimum_height: int,
                           *, include_hidden_header: bool = True):
-        """Fit a table to its rows while retaining internal scrolling for long lists."""
+        """Show every row in the page's vertical flow."""
         header_height = max(22, table.horizontalHeader().height())
         if not include_hidden_header and not table.horizontalHeader().isVisible():
             # A hidden QHeaderView has no painted height. Counting its default
@@ -249,15 +266,41 @@ class LopaPanel(QWidget):
             header_height = 0
         row_height = sum(table.rowHeight(index) for index in range(table.rowCount()))
         frame = table.frameWidth() * 2 + 2
-        table.setFixedHeight(max(minimum_height, min(maximum_height,
-                                                     header_height + row_height + frame)))
+        horizontal_scroll = table.horizontalScrollBar()
+        scroll_height = (horizontal_scroll.sizeHint().height()
+                         if horizontal_scroll.maximum() > 0 else 0)
+        table.setFixedHeight(max(minimum_height,
+                                 header_height + row_height + frame + scroll_height))
+
+    def _configure_flow_text_edit(self, editor, minimum_height: int):
+        """Grow a multi-line document field with its content and page width."""
+        editor.setMinimumHeight(minimum_height)
+        editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        editor.viewport().installEventFilter(self)
+        editor.textChanged.connect(lambda: self._flow_text_timer.start(0))
+        self._flow_text_edits[editor] = minimum_height
+
+    def _fit_flow_text_edits(self):
+        for editor, minimum_height in self._flow_text_edits.items():
+            document = editor.document()
+            layout = document.documentLayout()
+            block = document.firstBlock()
+            content_height = 0
+            while block.isValid():
+                # QPlainTextDocumentLayout reports documentSize().height()
+                # in blocks, not pixels. Each block's bounding rect includes
+                # any visual lines introduced by word wrapping.
+                content_height += ceil(layout.blockBoundingRect(block).height())
+                block = block.next()
+            editor.setFixedHeight(max(minimum_height,
+                                      content_height + editor.frameWidth() * 2 + 6))
 
     @staticmethod
     def _allow_card_to_shrink(card):
         """Let side-by-side document cards share the available work area.
 
-        Table contents keep their own horizontal scrollbars; they must not
-        force the complete LOPA page wider than the current screen.
+        Tables and controls must not force the complete LOPA page wider than
+        the current screen.
         """
         card.setMinimumWidth(0)
         card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -350,9 +393,77 @@ class LopaPanel(QWidget):
         # Defer one event turn so QSplitter and QScrollArea have their final
         # width before cards are moved between responsive layouts.
         QTimer.singleShot(0, self._apply_responsive_layout)
-        QTimer.singleShot(
-            0, lambda: self._finalize_hazop_hierarchy_geometry(
-                self._hazop_category_column_layout))
+        self._hierarchy_layout_timer.start(0)
+
+    def eventFilter(self, watched, event):
+        table = getattr(self, '_hazop_hierarchy', None)
+        if (table is not None and watched is table.viewport() and
+                event.type() == QEvent.Type.Resize):
+            self._hierarchy_layout_timer.start(0)
+        flow_table = next((table for table in self._flow_tables
+                           if watched is table.viewport()), None)
+        is_text_viewport = any(watched is editor.viewport()
+                               for editor in self._flow_text_edits)
+        if flow_table is not None or is_text_viewport:
+            if event.type() == QEvent.Type.Resize:
+                if flow_table is not None:
+                    self._flow_table_dirty.add(flow_table)
+                    self._flow_table_timer.start(0)
+                else:
+                    self._flow_text_timer.start(0)
+            elif event.type() == QEvent.Type.Wheel:
+                page = getattr(self, '_detail_scroll', None)
+                if page is not None:
+                    local = watched.mapTo(page.viewport(), event.position().toPoint())
+                    forwarded = QWheelEvent(
+                        QPointF(local), event.globalPosition(), event.pixelDelta(),
+                        event.angleDelta(), event.buttons(), event.modifiers(),
+                        event.phase(), event.inverted())
+                    QApplication.sendEvent(page.viewport(), forwarded)
+                    if forwarded.isAccepted():
+                        event.accept()
+                        return True
+        return super().eventFilter(watched, event)
+
+    def _fit_flow_tables(self):
+        """Rewrap table rows after the available page width changes."""
+        dirty = tuple(self._flow_table_dirty)
+        self._flow_table_dirty.clear()
+        for table in dirty:
+            minimum_height = self._flow_tables[table]
+            if table is self._hazop_hierarchy:
+                if table.state() == QAbstractItemView.State.EditingState:
+                    continue
+                self._fit_hazop_hierarchy_rows()
+                self._fit_hazop_hierarchy_height()
+            elif table is self._barrier_matrix:
+                self._fit_barrier_matrix_geometry()
+            elif table is self._escalation:
+                self._fit_escalation_geometry()
+            else:
+                table.resizeRowsToContents()
+                self._fit_table_height(table, minimum_height)
+
+    def _adjust_hazop_hierarchy_layout(self):
+        if self._loading or not self._hazop_hierarchy.isVisible():
+            return
+        # Do not rebuild a live editor on resize; closeEditor schedules a new
+        # pass after the user has committed or cancelled the edit.
+        if self._hazop_hierarchy.state() == QAbstractItemView.State.EditingState:
+            return
+        categories = self._hazop_category_column_layout
+        header = self._hazop_hierarchy.horizontalHeader()
+        category_width = sum(max(80, header.fontMetrics().horizontalAdvance(name) + 16)
+                             for _key, name in categories)
+        needed = 86 + 85 + category_width + 320
+        if self._hazop_compact_categories:
+            needed += 20  # avoid oscillation when a vertical scrollbar appears
+        compact = bool(categories and self._hazop_hierarchy.viewport().width() < needed)
+        if compact != self._hazop_compact_categories:
+            self._hazop_compact_categories = compact
+            self._populate_hazop_hierarchy()
+        else:
+            self._finalize_hazop_hierarchy_geometry(categories)
 
     def _build(self):
         # LOPA is a dense, document-like worksheet (many small cards meant
@@ -567,8 +678,12 @@ class LopaPanel(QWidget):
             self._HAZOP_CAUSE_COL, self._hazop_hierarchy_delegate)
         self._hazop_hierarchy.setItemDelegateForColumn(
             self._HAZOP_CONSEQUENCE_COL, self._hazop_hierarchy_delegate)
+        self._hazop_hierarchy_delegate.closeEditor.connect(
+            lambda *_args: self._hierarchy_layout_timer.start(0))
+        self._hazop_hierarchy.itemDelegate().closeEditor.connect(
+            lambda *_args: self._hierarchy_layout_timer.start(0))
         self._configure_hazop_hierarchy_columns([])
-        self._configure_compact_table(self._hazop_hierarchy, 72, 192)
+        self._configure_flow_table(self._hazop_hierarchy, 72)
         self._hazop_hierarchy.currentCellChanged.connect(self._on_hazop_hierarchy_selection_changed)
         source_layout.addWidget(self._hazop_hierarchy)
         source_actions = QHBoxLayout()
@@ -606,7 +721,7 @@ class LopaPanel(QWidget):
         scenario_layout.addWidget(source_card)
         self._scenario_text = QPlainTextEdit()
         self._scenario_text.setPlaceholderText('Vad händer i processen?')
-        self._scenario_text.setFixedHeight(50)
+        self._configure_flow_text_edit(self._scenario_text, 50)
         scenario_layout.addWidget(self._scenario_text)
         scenario_actions = QHBoxLayout()
         scenario_actions.addStretch()
@@ -676,7 +791,7 @@ class LopaPanel(QWidget):
         self._sensor_members.horizontalHeader().setStretchLastSection(True)
         self._sensor_members.setStyleSheet(lopa_table_stylesheet())
         self._sensor_members.itemChanged.connect(self._on_sensor_member_item_changed)
-        self._configure_compact_table(self._sensor_members, 48, 92)
+        self._configure_flow_table(self._sensor_members, 48)
         sensor_layout.addWidget(self._sensor_members)
         sensor_add = QHBoxLayout()
         sensor_add.addWidget(QLabel('Lägg till givare'))
@@ -736,7 +851,7 @@ class LopaPanel(QWidget):
         self._final_members.setStyleSheet(lopa_table_stylesheet())
         self._final_members.itemChanged.connect(self._on_final_member_item_changed)
         self._final_members.cellDoubleClicked.connect(self._edit_final_member)
-        self._configure_compact_table(self._final_members, 48, 92)
+        self._configure_flow_table(self._final_members, 48)
         final_layout.addWidget(self._final_members)
         final_add = QHBoxLayout()
         final_add.addWidget(QLabel('Lägg till objekt'))
@@ -812,7 +927,7 @@ class LopaPanel(QWidget):
         self._barrier_matrix.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._barrier_matrix.setWordWrap(True)
         self._barrier_matrix.setStyleSheet(lopa_table_stylesheet())
-        self._configure_compact_table(self._barrier_matrix, 48, 320)
+        self._configure_flow_table(self._barrier_matrix, 48)
         self._barrier_layout_timer = QTimer(self)
         self._barrier_layout_timer.setSingleShot(True)
         self._barrier_layout_timer.timeout.connect(self._fit_barrier_matrix_geometry)
@@ -832,13 +947,15 @@ class LopaPanel(QWidget):
         self._barriers.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         barrier_header = self._barriers.horizontalHeader()
         barrier_header.setStretchLastSection(False)
-        barrier_header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        barrier_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        barrier_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        for column, width in ((0, 45), (1, 78), (3, 52)):
+            barrier_header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            self._barriers.setColumnWidth(column, width)
+        for column in (2, 4, 5):
+            barrier_header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         self._barriers.setWordWrap(True)
         self._barriers.setStyleSheet(lopa_table_stylesheet())
         self._barriers.itemChanged.connect(self._on_barrier_item_changed)
-        self._configure_compact_table(self._barriers, 48, 106)
+        self._configure_flow_table(self._barriers, 48)
         barrier_detail_layout.addWidget(self._barriers)
         barrier_actions = QHBoxLayout()
         self._add_barrier_btn = QPushButton('+ Manuell barriär')
@@ -861,23 +978,28 @@ class LopaPanel(QWidget):
         barrier_import_actions.addWidget(self._import_new_barriers_btn)
         barrier_import_actions.addStretch()
         barrier_detail_layout.addLayout(barrier_import_actions)
-        barrier_footer = QHBoxLayout()
-        barrier_footer.addWidget(QLabel('Kontrollfrekvens'))
+        barrier_footer = QGridLayout()
+        barrier_footer.setHorizontalSpacing(6)
+        barrier_footer.setVerticalSpacing(4)
+        barrier_footer.addWidget(QLabel('Kontrollfrekvens'), 0, 0)
         self._control_frequency = QLineEdit()
         self._control_frequency.setPlaceholderText('t.ex. 1 gång/år')
-        barrier_footer.addWidget(self._control_frequency, 1)
-        barrier_footer.addWidget(QLabel('Förutsättning %'))
+        barrier_footer.addWidget(self._control_frequency, 0, 1)
+        barrier_footer.addWidget(QLabel('Förutsättning %'), 0, 2)
         self._assumption_percent = QDoubleSpinBox()
         self._assumption_percent.setRange(0.0, 100000.0)
         self._assumption_percent.setDecimals(4)
         self._assumption_percent.setSuffix(' %')
-        barrier_footer.addWidget(self._assumption_percent)
+        barrier_footer.addWidget(self._assumption_percent, 0, 3)
+        barrier_footer.addWidget(QLabel('Motivering'), 1, 0)
         self._assumption_reason = QLineEdit()
         self._assumption_reason.setPlaceholderText('Motivering')
-        barrier_footer.addWidget(self._assumption_reason, 2)
+        barrier_footer.addWidget(self._assumption_reason, 1, 1, 1, 2)
         self._save_source_analysis_btn = QPushButton('Spara LOPA-underlag')
         self._save_source_analysis_btn.clicked.connect(self._save_source_analysis_details)
-        barrier_footer.addWidget(self._save_source_analysis_btn)
+        barrier_footer.addWidget(self._save_source_analysis_btn, 1, 3)
+        barrier_footer.setColumnStretch(1, 2)
+        barrier_footer.setColumnStretch(2, 1)
         barrier_detail_layout.addLayout(barrier_footer)
         barrier_layout.addWidget(self._barrier_detail_area)
         self._set_barrier_detail_visible(False)
@@ -913,7 +1035,7 @@ class LopaPanel(QWidget):
         self._escalation.setSizePolicy(QSizePolicy.Policy.Expanding,
                                        QSizePolicy.Policy.Preferred)
         self._escalation.itemChanged.connect(self._on_escalation_item_changed)
-        self._configure_compact_table(self._escalation, 48, 200)
+        self._configure_flow_table(self._escalation, 48)
         escalation_header = self._escalation.horizontalHeader()
         escalation_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         escalation_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -950,7 +1072,7 @@ class LopaPanel(QWidget):
         self._calculation.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._calculation.horizontalHeader().setStretchLastSection(True)
         self._calculation.setStyleSheet(lopa_table_stylesheet())
-        self._configure_compact_table(self._calculation, 48, 92)
+        self._configure_flow_table(self._calculation, 48)
         calculation_layout.addWidget(self._calculation)
         self._dimensioning_summary = QLabel('')
         self._dimensioning_summary.setWordWrap(True)
@@ -974,14 +1096,14 @@ class LopaPanel(QWidget):
         action_column.addWidget(QLabel('Ytterligare åtgärder'))
         self._additional_actions = QPlainTextEdit()
         self._additional_actions.setPlaceholderText('Åtgärder som behöver genomföras …')
-        self._additional_actions.setFixedHeight(52)
+        self._configure_flow_text_edit(self._additional_actions, 52)
         action_column.addWidget(self._additional_actions)
         document_row.addLayout(action_column, 1)
         requirement_column = QVBoxLayout()
         requirement_column.addWidget(QLabel('Ytterligare säkerhetskrav'))
         self._additional_requirements = QPlainTextEdit()
         self._additional_requirements.setPlaceholderText('Krav för konstruktion, drift eller SRS …')
-        self._additional_requirements.setFixedHeight(52)
+        self._configure_flow_text_edit(self._additional_requirements, 52)
         requirement_column.addWidget(self._additional_requirements)
         document_row.addLayout(requirement_column, 1)
         document_layout.addLayout(document_row)
@@ -1013,7 +1135,7 @@ class LopaPanel(QWidget):
         self._comments.horizontalHeader().setStretchLastSection(True)
         self._comments.setWordWrap(True)
         self._comments.setStyleSheet(lopa_table_stylesheet())
-        self._configure_compact_table(self._comments, 48, 82)
+        self._configure_flow_table(self._comments, 48)
         comments_layout.addWidget(self._comments)
         comment_add = QHBoxLayout()
         self._comment_author = QLineEdit()
@@ -1176,6 +1298,8 @@ class LopaPanel(QWidget):
         self._barrier_summary.clear()
         self._sync_note.setText('Skapa en tom LOPA eller koppla en HAZOP-barriär när den funktionen används.')
         self._sync_note.show()
+        self._flow_table_dirty.update(self._flow_tables)
+        self._flow_table_timer.start(0)
 
     def _on_lopa_selected(self, current, _previous):
         if self._loading:
@@ -1474,10 +1598,15 @@ class LopaPanel(QWidget):
 
     def _configure_hazop_hierarchy_columns(self, category_columns):
         """Set the stable source columns followed by the matrix categories."""
-        headers = ['HAZOP-hierarki', 'Orsak', 'Grundfrekvens', 'Konsekvens']
-        headers.extend(name for _key, name in category_columns)
+        headers = ['HAZOP-ref' if self._hazop_compact_categories else 'HAZOP-hierarki',
+                   'Orsak', 'Grundfrekvens', 'Konsekvens']
+        if self._hazop_compact_categories:
+            headers.append('Kategorier')
+        else:
+            headers.extend(name for _key, name in category_columns)
         self._hazop_hierarchy.setColumnCount(len(headers))
         self._hazop_hierarchy.setHorizontalHeaderLabels(headers)
+        self._hazop_hierarchy.horizontalHeaderItem(0).setToolTip('HAZOP-hierarki')
         hierarchy_header = self._hazop_hierarchy.horizontalHeader()
         hierarchy_header.setSectionResizeMode(
             self._HAZOP_REFERENCE_COL, QHeaderView.ResizeMode.ResizeToContents)
@@ -1496,6 +1625,19 @@ class LopaPanel(QWidget):
     def _fit_hazop_category_columns(self, category_columns):
         """Give every category enough stable room for its full-cell toggle."""
         header = self._hazop_hierarchy.horizontalHeader()
+        if self._hazop_compact_categories:
+            width = max(1, self._hazop_hierarchy.viewport().width() - 1)
+            reference = min(86, max(40, width // 6))
+            frequency = min(85, max(40, width // 6))
+            category = min(160, max(95, width * 28 // 100))
+            descriptions = max(48, width - reference - frequency - category)
+            widths = [reference, descriptions // 2, frequency,
+                      descriptions - descriptions // 2, category]
+            header.setMinimumSectionSize(24)
+            for column, column_width in enumerate(widths):
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+                self._hazop_hierarchy.setColumnWidth(column, column_width)
+            return
         for offset, (_category_key, category_name) in enumerate(category_columns):
             column = self._HAZOP_CATEGORY_START_COL + offset
             header_width = header.fontMetrics().horizontalAdvance(category_name) + 16
@@ -1507,9 +1649,9 @@ class LopaPanel(QWidget):
             self._hazop_hierarchy.setColumnWidth(
                 column, max(72, header_width, toggle_width))
 
-        # Preserve readable descriptions when the risk categories take more
-        # space than a narrow window can provide. The table scrolls locally;
-        # the whole LOPA page must not acquire a horizontal scrollbar.
+        # The compact category layout handles narrow widths. Keep a readable
+        # minimum for the expanded descriptions when the viewport is in
+        # transition between the two layouts.
         fixed_columns = [self._HAZOP_REFERENCE_COL, self._HAZOP_FREQUENCY_COL]
         fixed_columns.extend(range(self._HAZOP_CATEGORY_START_COL, self._hazop_hierarchy.columnCount()))
         required = sum(self._hazop_hierarchy.columnWidth(column) for column in fixed_columns) + 320
@@ -1519,14 +1661,29 @@ class LopaPanel(QWidget):
                 self._hazop_hierarchy.setColumnWidth(column, width)
 
     def _fit_hazop_hierarchy_height(self):
-        """Keep the table's horizontal scrollbar visible below its rows."""
+        """Fit every scenario row into the page's vertical scroll flow."""
         table = self._hazop_hierarchy
         scrollbar = table.horizontalScrollBar()
         scroll_height = scrollbar.sizeHint().height() if scrollbar.maximum() > 0 else 0
         height = (max(22, table.horizontalHeader().height()) +
                   sum(table.rowHeight(row) for row in range(table.rowCount())) +
                   table.frameWidth() * 2 + 2 + scroll_height)
-        table.setFixedHeight(max(72, min(192, height)))
+        table.setFixedHeight(max(72, height))
+
+    def _fit_hazop_hierarchy_rows(self):
+        self._hazop_hierarchy.resizeRowsToContents()
+        if not self._hazop_compact_categories:
+            return
+        width = self._hazop_hierarchy.columnWidth(self._HAZOP_CATEGORY_START_COL)
+        for row in range(self._hazop_hierarchy.rowCount()):
+            group = self._hazop_hierarchy.cellWidget(row, self._HAZOP_CATEGORY_START_COL)
+            if group is None:
+                continue
+            height = group.layout().heightForWidth(max(1, width - 2))
+            if height < 0:
+                height = group.layout().sizeHint().height()
+            self._hazop_hierarchy.setRowHeight(
+                row, max(self._hazop_hierarchy.rowHeight(row), height + 2))
 
     def _finalize_hazop_hierarchy_geometry(self, category_columns):
         """Reapply section sizing after the panel has received its real width."""
@@ -1537,7 +1694,7 @@ class LopaPanel(QWidget):
         self._hazop_hierarchy.resizeColumnsToContents()
         self._fit_hazop_category_columns(category_columns)
         self._hazop_hierarchy.doItemsLayout()
-        self._hazop_hierarchy.resizeRowsToContents()
+        self._fit_hazop_hierarchy_rows()
         self._fit_hazop_hierarchy_height()
         self._hazop_hierarchy.horizontalScrollBar().setValue(previous_scroll)
 
@@ -1656,6 +1813,12 @@ class LopaPanel(QWidget):
 
         old_loading = self._loading
         self._loading = True
+        for row in range(self._hazop_hierarchy.rowCount()):
+            for column in range(self._hazop_hierarchy.columnCount()):
+                old_widget = self._hazop_hierarchy.cellWidget(row, column)
+                if old_widget is not None:
+                    old_widget.hide()
+                    self._hazop_hierarchy.removeCellWidget(row, column)
         self._configure_hazop_hierarchy_columns(category_columns)
         self._hazop_hierarchy.clearContents()
         self._hazop_hierarchy.setRowCount(0)
@@ -1711,25 +1874,59 @@ class LopaPanel(QWidget):
                     assessment.get('category_key'): assessment
                     for assessment in assessments if assessment.get('category_key')
                 }
+                category_group = None
+                if self._hazop_compact_categories:
+                    category_group = QWidget()
+                    category_group.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                                 QSizePolicy.Policy.Preferred)
+                    category_layout = QGridLayout(category_group)
+                    category_layout.setContentsMargins(3, 2, 3, 2)
+                    category_layout.setHorizontalSpacing(4)
+                    category_layout.setVerticalSpacing(1)
                 for offset, (category_key, _category_name) in enumerate(category_columns):
                     assessment = assessments_by_category.get(category_key)
                     column = self._HAZOP_CATEGORY_START_COL + offset
                     if assessment:
-                        self._hazop_hierarchy.setCellWidget(
-                            row, column,
-                            self._hazop_category_toggle(
-                                severity=assessment.get('severity'),
-                                entity_id=assessment['id'], source_id=source['id'],
-                                active=assessment['active'], editable=editable,
-                                hazop_linked=consequence_id is not None))
+                        toggle = self._hazop_category_toggle(
+                            severity=assessment.get('severity'),
+                            entity_id=assessment['id'], source_id=source['id'],
+                            active=assessment['active'], editable=editable,
+                            hazop_linked=consequence_id is not None)
+                        toggle.setProperty('lopa_category_key', category_key)
+                        checkbox = (toggle if isinstance(toggle, QCheckBox)
+                                    else toggle.findChild(QCheckBox))
+                        checkbox.setAccessibleName(
+                            f'{_category_name}, konsekvensnivå '
+                            f"{assessment.get('severity') if assessment.get('severity') is not None else 'saknas'}")
+                        if not isinstance(toggle, QCheckBox):
+                            toggle.findChild(QSpinBox).setAccessibleName(
+                                f'Konsekvensnivå för {_category_name}')
+                        if category_group is None:
+                            self._hazop_hierarchy.setCellWidget(row, column, toggle)
                     else:
-                        self._hazop_hierarchy.setItem(
-                            row, column,
-                            self._make_hazop_table_item(
-                                '—', source_id=source['id'], cause_id=cause_id,
-                                consequence_id=consequence_id, enabled=False))
+                        if category_group is None:
+                            self._hazop_hierarchy.setItem(
+                                row, column,
+                                self._make_hazop_table_item(
+                                    '—', source_id=source['id'], cause_id=cause_id,
+                                    consequence_id=consequence_id, enabled=False))
+                        else:
+                            toggle = QLabel('—')
+                    if category_group is not None:
+                        label = QLabel(_category_name)
+                        label.setWordWrap(True)
+                        label.setToolTip(_category_name)
+                        label.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                            QSizePolicy.Policy.Preferred)
+                        category_layout.addWidget(label, offset, 0)
+                        category_layout.addWidget(toggle, offset, 1)
                     if assessment and assessment['id'] == select_consequence_id:
                         selected_row = row
+
+                if category_group is not None:
+                    category_layout.setColumnStretch(0, 1)
+                    self._hazop_hierarchy.setCellWidget(
+                        row, self._HAZOP_CATEGORY_START_COL, category_group)
 
                 if selected_row is None and source['id'] == selected_source:
                     selected_row = row
@@ -1749,7 +1946,7 @@ class LopaPanel(QWidget):
         else:
             self._hazop_hierarchy.resizeColumnsToContents()
             self._fit_hazop_category_columns(category_columns)
-            self._hazop_hierarchy.resizeRowsToContents()
+            self._fit_hazop_hierarchy_rows()
             self._fit_hazop_hierarchy_height()
         self._hazop_hierarchy.doItemsLayout()
         self._hazop_hierarchy.horizontalScrollBar().setValue(previous_scroll)
@@ -2317,7 +2514,7 @@ class LopaPanel(QWidget):
                       if member.get('origin_safeguard_id') else 'Lokal LOPA-givare')
             self._sensor_members.setItem(row_index, 3, self._readonly_cell(origin))
         self._sensor_members.resizeRowsToContents()
-        self._fit_table_height(self._sensor_members, 48, 92)
+        self._fit_table_height(self._sensor_members, 48)
         missing_sensor = any(source['active'] and self.db.lopa_source_sensor_membership_issue(source['id'])
                              for source in self.db.lopa_sources(self._revision_id)) if self._revision_id else False
         if group:
@@ -2478,7 +2675,7 @@ class LopaPanel(QWidget):
             origin = 'Objektdatabas' if member.get('equipment_id') else 'Lokalt LOPA-objekt'
             self._final_members.setItem(row_index, 3, self._readonly_cell(origin))
         self._final_members.resizeRowsToContents()
-        self._fit_table_height(self._final_members, 48, 92)
+        self._fit_table_height(self._final_members, 48)
         if group:
             self._final_voting.setCurrentText(group['voting'])
             issue = self.db.lopa_group_voting_issue('final', group)
@@ -2634,7 +2831,7 @@ class LopaPanel(QWidget):
             status_item.setToolTip(tooltip)
             self._barriers.setItem(row_index, 5, status_item)
         self._barriers.resizeRowsToContents()
-        self._fit_table_height(self._barriers, 48, 106)
+        self._fit_table_height(self._barriers, 48)
         enabled = bool(self._source_id) and self._revision_is_editable()
         self._add_barrier_btn.setEnabled(enabled)
         self._edit_barrier_btn.setEnabled(bool(rows) and enabled)
@@ -2745,7 +2942,7 @@ class LopaPanel(QWidget):
     def _fit_barrier_matrix_geometry(self):
         """Rewrap descriptions whenever the available table width changes."""
         self._barrier_matrix.resizeRowsToContents()
-        self._fit_table_height(self._barrier_matrix, 48, 320)
+        self._fit_table_height(self._barrier_matrix, 48)
 
     def _on_barrier_item_changed(self, item):
         if self._loading or item.column() != 0:
@@ -3015,7 +3212,7 @@ class LopaPanel(QWidget):
                     item.text()).height() + 8
                 height = max(height, text_height)
             self._escalation.setRowHeight(row, max(24, height + 4))
-        self._fit_table_height(self._escalation, 48, 200)
+        self._fit_table_height(self._escalation, 48)
 
     @staticmethod
     def _arrange_escalation_factors(group, width):
@@ -3100,7 +3297,7 @@ class LopaPanel(QWidget):
             self._calculation.setItem(index, 3, self._cell(result['sil'] if source['active'] else '—'))
             self._calculation.setItem(index, 4, self._cell(evidence))
         self._calculation.resizeRowsToContents()
-        self._fit_table_height(self._calculation, 48, 92)
+        self._fit_table_height(self._calculation, 48)
         governing = []
         incomplete = False
         for source in rows:
@@ -3139,7 +3336,7 @@ class LopaPanel(QWidget):
             self._comments.setItem(index, 1, self._readonly_cell(comment.get('author') or '—'))
             self._comments.setItem(index, 2, self._readonly_cell(comment.get('body') or ''))
         self._comments.resizeRowsToContents()
-        self._fit_table_height(self._comments, 48, 82)
+        self._fit_table_height(self._comments, 48)
         self._loading = old_loading
 
     def _save_document_details(self):

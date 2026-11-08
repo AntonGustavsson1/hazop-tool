@@ -82,7 +82,7 @@ LOPA_BREAKPOINT_SIDEBAR = 1024
 LOPA_BREAKPOINT_OVERVIEW = 1200
 LOPA_BREAKPOINT_TWO_COLUMN = 900
 LOPA_BREAKPOINT_HEADER_SINGLE = 600
-LOPA_FACTOR_MIN_WIDTH = 80
+LOPA_FACTOR_MIN_WIDTH = 100
 LOPA_FACTOR_EDITOR_WIDTH = 48
 
 
@@ -324,7 +324,27 @@ def scenario_table_stylesheet() -> str:
         f'color:{SCENARIO_SELECTION_FG};border:none;outline:none;}}'
         'QTableWidget::item:focus{border:none;outline:none;}'
         f'QHeaderView::section{{background:{SUBTLE_SURFACE};'
-        f'color:{TABLE_HEADER_TEXT};font-weight:600;padding:3px;border-radius:0px;}}'
+        f'color:{TABLE_HEADER_TEXT};font-weight:600;padding:3px;'
+        f'border:none;border-bottom:1px solid {SEPARATOR};border-radius:0px;}}'
+    )
+
+
+def scenario_header_stylesheet() -> str:
+    """Compact hierarchy for the Scenario/Worksheet toolbar and context."""
+    return (
+        f'QLabel#scenarioTitle{{color:{TEXT};font-size:10pt;font-weight:700;}}'
+        f'QLabel#scenarioCount{{background:{SUBTLE_SURFACE};color:{TABLE_HEADER_TEXT};'
+        f'border:1px solid {SEPARATOR};border-radius:9px;'
+        'padding:2px 7px;font-size:8pt;font-weight:600;}'
+        f'QLabel#scenarioTextSizeLabel{{color:{SECONDARY_TEXT};font-size:8pt;}}'
+        f'QFrame#scenarioContextBar{{background:{SUBTLE_SURFACE};'
+        f'border:1px solid {SEPARATOR};border-left:3px solid {ACCENT};'
+        'border-radius:3px;}'
+        'QFrame#scenarioContextBar QLabel{background:transparent;border:none;}'
+        f'QLabel#scenarioContextCaption{{color:{SECONDARY_TEXT};'
+        'font-size:8pt;font-weight:700;}'
+        f'QLabel#scenarioContextValue{{color:{TEXT};font-size:9pt;font-weight:600;}}'
+        f'QLabel#scenarioContextDivider{{color:{FIELD_BORDER};font-size:9pt;}}'
     )
 
 

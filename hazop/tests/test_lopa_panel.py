@@ -249,32 +249,164 @@ class LopaHierarchyTableTests(unittest.TestCase):
                       if row['category_key'] == category_key)
         self.assertEqual(25.5, json.loads(stored['factor_values_json'])[key])
 
-    def test_narrow_hazop_table_keeps_descriptions_readable_and_scrolls_locally(self):
+    def test_narrow_hazop_table_keeps_categories_visible_without_side_scrolling(self):
+        from PyQt6.QtWidgets import QCheckBox, QLabel
+
         self.panel.resize(600, 1000)
         self.panel.show()
-        for _ in range(3):
+        for _ in range(6):
             self.app.processEvents()
         table = self.panel._hazop_hierarchy
-        scroll = table.horizontalScrollBar()
-        self.assertGreaterEqual(table.columnWidth(self.panel._HAZOP_CAUSE_COL), 160)
-        self.assertGreaterEqual(table.columnWidth(self.panel._HAZOP_CONSEQUENCE_COL), 160)
-        self.assertGreater(scroll.maximum(), 0)
+        self.assertTrue(self.panel._hazop_compact_categories)
+        self.assertEqual(5, table.columnCount())
+        self.assertEqual(0, table.horizontalScrollBar().maximum())
         self.assertEqual(0, self.panel._detail_scroll.horizontalScrollBar().maximum())
-        scroll.setValue(scroll.maximum())
-        previous = scroll.value()
-        self.panel._populate_hazop_hierarchy()
-        for _ in range(3):
-            self.app.processEvents()
-        self.assertEqual(previous, scroll.value())
-        self.panel.activate_lopa(self.lopa_id, self.revision_id)
-        for _ in range(3):
-            self.app.processEvents()
-        self.assertEqual(0, scroll.value())
+        group = table.cellWidget(0, self.panel._HAZOP_CATEGORY_START_COL)
+        labels = [label.text() for label in group.findChildren(QLabel) if label.text() != '—']
+        self.assertEqual([name for _key, name in self.panel._category_options()], labels)
+        toggle = group.findChild(QCheckBox)
+        assessment_id = toggle.property('lopa_assessment_id')
+        self.panel._confirm_lopa_only = lambda _text: True
+        toggle.setChecked(False)
+        self.app.processEvents()
+        self.assertFalse(next(a for a in self.db.lopa_source_consequences(self.panel._source_id)
+                              if a['id'] == assessment_id)['active'])
+
         self.panel.resize(1500, 1000)
-        for _ in range(3):
+        for _ in range(6):
             self.app.processEvents()
-        self.assertEqual(0, scroll.maximum())
+        self.assertFalse(self.panel._hazop_compact_categories)
+        self.assertEqual(0, table.horizontalScrollBar().maximum())
+        self.assertGreater(table.columnCount(), 5)
         self.assertGreater(table.columnWidth(self.panel._HAZOP_CAUSE_COL), 160)
+        self.assertFalse(next(a for a in self.db.lopa_source_consequences(self.panel._source_id)
+                              if a['id'] == assessment_id)['active'])
+
+    def test_lopa_document_scrolls_as_one_page_over_tables(self):
+        from PyQt6.QtCore import QPoint, QPointF
+        from PyQt6.QtGui import QWheelEvent
+
+        for index in range(8):
+            self.db.add_lopa_comment(self.revision_id, f'Kommentar {index}', 'Testare')
+        self.panel._populate_comments()
+        self.panel.resize(600, 700)
+        self.panel.show()
+        self.panel._barrier_details_toggle.setChecked(True)
+        for _ in range(8):
+            self.app.processEvents()
+        long_note = '\n'.join(f'Rad {index}: kontrollera underlaget' for index in range(18))
+        for editor in self.panel._flow_text_edits:
+            editor.setPlainText(long_note)
+        for _ in range(4):
+            self.app.processEvents()
+
+        page = self.panel._detail_scroll
+        self.assertEqual(0, page.horizontalScrollBar().maximum())
+        self.assertGreater(page.verticalScrollBar().maximum(), 0)
+        self.assertGreaterEqual(self.panel._control_frequency.width(), 100)
+        self.assertGreaterEqual(self.panel._assumption_reason.width(), 150)
+        for table in self.panel._flow_tables:
+            self.assertEqual(0, table.verticalScrollBar().maximum(), table.objectName())
+            self.assertEqual(0, table.horizontalScrollBar().maximum(), table.objectName())
+            self.assertGreaterEqual(
+                table.height(), table.horizontalHeader().height() +
+                sum(table.rowHeight(row) for row in range(table.rowCount())),
+                table.objectName())
+        for editor in self.panel._flow_text_edits:
+            self.assertGreater(editor.height(), 52)
+            self.assertEqual(0, editor.verticalScrollBar().maximum())
+
+        scenario = self.panel._scenario_text
+        scenario.setPlainText('Ett längre processförlopp med flera följder. ' * 28)
+        for _ in range(4):
+            self.app.processEvents()
+        narrow_height = scenario.height()
+        self.panel.resize(1200, 700)
+        for _ in range(6):
+            self.app.processEvents()
+        self.assertLess(scenario.height(), narrow_height)
+        self.assertEqual(0, scenario.verticalScrollBar().maximum())
+        self.panel.resize(600, 700)
+        for _ in range(6):
+            self.app.processEvents()
+
+        page.verticalScrollBar().setValue(0)
+        wheel = QWheelEvent(
+            QPointF(15, 15), QPointF(15, 15), QPoint(0, 0), QPoint(0, -120),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase, False)
+        QApplication.sendEvent(self.panel._escalation.viewport(), wheel)
+        self.assertGreater(page.verticalScrollBar().value(), 0)
+        page.verticalScrollBar().setValue(0)
+        text_wheel = QWheelEvent(
+            QPointF(15, 15), QPointF(15, 15), QPoint(0, 0), QPoint(0, -120),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase, False)
+        QApplication.sendEvent(scenario.viewport(), text_wheel)
+        self.assertGreater(page.verticalScrollBar().value(), 0)
+        page.verticalScrollBar().setValue(page.verticalScrollBar().maximum())
+        self.assertLess(self.panel._comments.mapTo(page.viewport(), QPoint(0, 0)).y(),
+                        page.viewport().height())
+
+    def test_resize_keeps_unfinished_hierarchy_edit_until_editor_closes(self):
+        from PyQt6.QtTest import QTest
+        from ui_helpers import _BoldTagTextEdit
+
+        self.panel.resize(1500, 1000)
+        self.panel.show()
+        for _ in range(4):
+            self.app.processEvents()
+        self.panel._add_custom_consequence()
+        for _ in range(4):
+            self.app.processEvents()
+        table = self.panel._hazop_hierarchy
+        editor = next(editor for editor in table.viewport().findChildren(_BoldTagTextEdit)
+                      if editor.isVisibleTo(table.viewport()))
+        editor.setText('Pågående lokal konsekvens')
+        self.panel.resize(600, 1000)
+        for _ in range(6):
+            self.app.processEvents()
+        self.assertEqual('Pågående lokal konsekvens', editor.toPlainText())
+        self.assertFalse(self.panel._hazop_compact_categories)
+        QTest.keyClick(editor, Qt.Key.Key_Escape)
+        for _ in range(6):
+            self.app.processEvents()
+        self.assertTrue(self.panel._hazop_compact_categories)
+        self.assertEqual(0, table.horizontalScrollBar().maximum())
+
+    def test_compact_hierarchy_keeps_local_category_level_editable(self):
+        from PyQt6.QtTest import QTest
+        from PyQt6.QtWidgets import QCheckBox, QSpinBox
+        from ui_helpers import _BoldTagTextEdit
+
+        self.panel.resize(600, 900)
+        self.panel.show()
+        for _ in range(5):
+            self.app.processEvents()
+        self.panel._add_custom_consequence()
+        for _ in range(4):
+            self.app.processEvents()
+        editor = next(editor for editor in self.panel._hazop_hierarchy.viewport()
+                      .findChildren(_BoldTagTextEdit)
+                      if editor.isVisibleTo(self.panel._hazop_hierarchy.viewport()))
+        QTest.keyClick(editor, Qt.Key.Key_Escape)
+        for _ in range(4):
+            self.app.processEvents()
+
+        table = self.panel._hazop_hierarchy
+        group = table.cellWidget(table.currentRow(), self.panel._HAZOP_CATEGORY_START_COL)
+        toggle = group.findChild(QCheckBox)
+        spin = group.findChild(QSpinBox)
+        self.assertIn('konsekvensnivå', toggle.accessibleName())
+        self.assertIn('Konsekvensnivå', spin.accessibleName())
+        assessment_id = toggle.property('lopa_assessment_id')
+        spin.setValue(4)
+        spin.editingFinished.emit()
+        for _ in range(4):
+            self.app.processEvents()
+        self.assertEqual(4, next(row for row in self.db.lopa_source_consequences(
+            self.panel._source_id) if row['id'] == assessment_id)['severity'])
+        self.assertEqual(0, table.horizontalScrollBar().maximum())
 
     def test_dimensioning_summary_requires_all_active_sources(self):
         self.panel._populate_calculation()
