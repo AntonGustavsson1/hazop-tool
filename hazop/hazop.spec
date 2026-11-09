@@ -110,7 +110,13 @@ exe = EXE(
 
 coll = COLLECT(
     exe,
-    a.binaries,
+    # The developer PATH can contain Poppler's ICU 78 library. PyInstaller
+    # otherwise places that icuuc.dll at the bundle root, ahead of Windows'
+    # own ICU DLL. Qt6Core imports the Windows ICU functions without a version
+    # suffix; Poppler's DLL exports only suffixed names and QtCore.pyd then
+    # fails on startup with WinError 127. Qt's only static ICU dependency is
+    # Qt6Core.dll, and the Windows system DLL exports all functions it needs.
+    [entry for entry in a.binaries if entry[0].lower() != 'icuuc.dll'],
     a.zipfiles,
     a.datas,
     strip=False,

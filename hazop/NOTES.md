@@ -8302,3 +8302,23 @@ miljöproblem som den 8 november. En andra bred körning utan scenariomodulen
 stannade senare på samma Qt-fel. Räkna inte någon av de avbrutna breda
 körningarna som ett godkänt testresultat; de ovan namngivna modulerna har
 körts separat.
+
+## 2026-11-09 — Paketeringsfix för Qt och ICU
+
+Den nya fristående körfilen avslutades med kod 1 innan `hazop.py` hunnit
+starta kraschrapporteringen. En tillfällig konsolvariant visade
+`ImportError: DLL load failed while importing QtCore: The specified procedure
+could not be found`. PyInstaller hade plockat upp Popplers `icuuc.dll` version
+78 från utvecklingsmiljöns PATH och lagt den i paketets rot. Den filen
+exporterar versionssuffixerade ICU-funktioner, medan Qt6Core.dll importerar
+de osuffixerade Windows-funktionerna. Alla 20 importerade symboler finns i
+Windows system-ICU. `hazop.spec` filtrerar därför bort den konkurrerande
+`icuuc.dll` från paketets binärlista. En separat testkopia utan filen
+startade både i konsol- och fönsterläge och var igång efter 10 sekunder utan
+ny kraschrapport. Ett rent ombygge med det ändrade spec-skriptet saknar
+`icuuc.dll`, innehåller båda svenska `spylls`-ordboksfilerna och var igång
+efter 12 sekunder utan ny kraschrapport. Den äldre byggkatalogen innehåller
+en projektdatabas och har bevarats. En ren kopia med enbart `_internal` och
+`HazopTool.exe` paketerades till `packaging/output/HazopSetup_2026-11-09.exe`
+(120 516 099 byte); den tidigare installationsfilen är oförändrad. Själva
+installationsflödet är inte genomkört i denna ändring.
