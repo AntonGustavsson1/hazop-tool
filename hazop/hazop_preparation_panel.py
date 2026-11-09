@@ -3,6 +3,7 @@
 
 import re
 import json
+import math
 from pathlib import Path
 from functools import partial
 
@@ -19,11 +20,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QDate, QEvent, QMimeData, QPoint, QPointF, QTimer
 from PyQt6.QtGui import (
     QBrush, QColor, QDrag, QFont, QFontMetrics, QPainter, QPainterPath,
-    QPen, QPolygonF,
+    QPen, QPixmap, QPolygonF,
 )
 
 from constants import CONFIG, SEV_LABELS
-from design import readable_text_color
+from design import (TEL_DROP_PREVIEW, TEL_MARKER, TEL_MARKER_OUTLINE,
+                    readable_text_color)
 from database import (
     Database, DEFAULT_MATRIX, DEFAULT_FREQ_BOUNDARIES, DEFAULT_RISK_LEVEL_DEFINITIONS,
     _STD_OBJECTS,
@@ -40,8 +42,58 @@ import spellcheck
 
 _PALETTE_MIME = 'application/x-hazop-palette-color'
 _MATRIX_CELL_MIME = 'application/x-hazop-matrix-cell'
+_TEL_MARKER_MIME = 'application/x-hazop-tel-marker'
 _RISK_LEVEL_MIME = 'application/x-hazop-risk-level'
 _MATRIX_CELL_WIDTH_DEFAULT = 92
+
+
+def _tel_matrix_boundary(tel, boundaries):
+    """Return (boundary index, placement) for a schematic TEL cell border.
+
+    Frequency buckets are open ended.  An in-band TEL is drawn at the
+    nearest *actual* bucket border (log distance), never at a made-up
+    position inside a cell.  The exact stored value is displayed separately.
+    """
+    if tel is None:
+        return None, 'undefined'
+    try:
+        value = float(tel)
+        limits = [float(boundary) for boundary in boundaries]
+    except (TypeError, ValueError):
+        return None, 'invalid'
+    if (not math.isfinite(value) or value <= 0 or not limits or
+            any(not math.isfinite(limit) or limit <= 0 for limit in limits) or
+            any(left >= right for left, right in zip(limits, limits[1:]))):
+        return None, 'invalid'
+    if value < limits[0] and not math.isclose(value, limits[0], rel_tol=1e-12):
+        return -1, 'below'
+    if value > limits[-1] and not math.isclose(value, limits[-1], rel_tol=1e-12):
+        return len(limits), 'above'
+    for index, limit in enumerate(limits):
+        if math.isclose(value, limit, rel_tol=1e-12):
+            return index, 'exact'
+    for index, (lower, upper) in enumerate(zip(limits, limits[1:])):
+        if lower < value < upper:
+            nearest = (index if abs(math.log(value / lower)) <=
+                       abs(math.log(upper / value)) else index + 1)
+            return nearest, 'schematic'
+    return None, 'invalid'
+
+
+def _tel_internal_edges(frequency_index, frequency_count, freq_on_x,
+                        x_reversed=False, y_reversed=False):
+    """Map a displayed cell's real internal edges to numeric boundary indices."""
+    low_edge, high_edge = (
+        ('right', 'left') if x_reversed else ('left', 'right')
+    ) if freq_on_x else (
+        ('top', 'bottom') if y_reversed else ('bottom', 'top')
+    )
+    edges = {}
+    if frequency_index > 0:
+        edges[low_edge] = frequency_index - 1
+    if frequency_index < frequency_count - 1:
+        edges[high_edge] = frequency_index
+    return edges
 
 # ST1 Sverige AB risk matrix transcribed from
 # ej_programfiler/reference_material/St1/St1 SA 04 - Riskmatris#4_161189.pdf.
@@ -254,6 +306,8 @@ class DraggableColorSwatch(QLabel):
 class MatrixCellButton(QPushButton):
     """Risk matrix cell — collapsed-border grid (no double-lines between cells)."""
 
+    tel_boundary_dropped = pyqtSignal(str, int, int)  # category, consequence, boundary
+
     def __init__(self, row, col, color, label, fg_color='#ffffff',
                  is_top_row=False, is_left_col=False, parent=None):
         super().__init__(label, parent)
@@ -273,6 +327,13 @@ class MatrixCellButton(QPushButton):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._drag_start = None
         self._drag_in_progress = False
+        self._tel_drag_armed = False
+        self._tel_edge = None
+        self._tel_color = QColor(TEL_MARKER)
+        self._tel_category = None
+        self._tel_target_category = None
+        self._tel_target_edges = {}
+        self._tel_preview_edge = None
         self._apply_style()
 
     def _apply_style(self):
@@ -303,6 +364,97 @@ class MatrixCellButton(QPushButton):
     def label(self):    return self._label
     def fg_color(self): return self._fg_color
 
+    def set_tel_marker(self, edge=None, color=TEL_MARKER, tooltip='', category=None):
+        """Draw the selected category's TEL above all risk-cell styling."""
+        self._tel_edge = edge
+        self._tel_category = category if edge else None
+        candidate = QColor(color)
+        self._tel_color = candidate if candidate.isValid() else QColor(TEL_MARKER)
+        self.setToolTip(tooltip)
+        self.update()
+
+    def set_tel_drop_context(self, category, internal_edges):
+        self._tel_target_category = category
+        self._tel_target_edges = dict(internal_edges)
+        self._tel_preview_edge = None
+        self.update()
+
+    def _tel_edge_distance(self, edge, point):
+        return {
+            'left': point.x(), 'right': self.width() - 1 - point.x(),
+            'top': point.y(), 'bottom': self.height() - 1 - point.y(),
+        }[edge]
+
+    def _near_tel_marker(self, point):
+        return bool(
+            self._tel_category and self._tel_edge and
+            self._tel_edge_distance(self._tel_edge, point) <=
+            (20 if self._tel_edge in ('left', 'right') else 16))
+
+    def _tel_boundary_at(self, point):
+        if not self._tel_target_edges:
+            return None, None
+        edge = min(self._tel_target_edges,
+                   key=lambda candidate: self._tel_edge_distance(candidate, point))
+        return edge, self._tel_target_edges[edge]
+
+    def _tel_drag_payload(self, mime):
+        if not mime.hasFormat(_TEL_MARKER_MIME):
+            return None
+        try:
+            payload = json.loads(mime.data(_TEL_MARKER_MIME).data().decode())
+        except (ValueError, UnicodeDecodeError):
+            return None
+        if (not isinstance(payload, dict) or
+                payload.get('category') != self._tel_target_category or
+                payload.get('consequence') != self.row or
+                not self._tel_target_edges):
+            return None
+        return payload
+
+    def _paint_tel_line(self, painter, edge, color, handle=False):
+        inset = 3
+        if edge in ('left', 'right'):
+            x = inset if edge == 'left' else self.width() - inset - 1
+            start, end = QPoint(x, 2), QPoint(x, self.height() - 3)
+        else:
+            y = inset if edge == 'top' else self.height() - inset - 1
+            start, end = QPoint(2, y), QPoint(self.width() - 3, y)
+        painter.setPen(QPen(QColor(TEL_MARKER_OUTLINE), 9))
+        painter.drawLine(start, end)
+        painter.setPen(QPen(color, 5))
+        painter.drawLine(start, end)
+        if handle:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            line_midpoint = QPointF((start.x() + end.x()) / 2,
+                                    (start.y() + end.y()) / 2)
+            midpoint = QPointF(
+                13 if edge == 'left' else self.width() - 14 if edge == 'right'
+                else line_midpoint.x(),
+                13 if edge == 'top' else self.height() - 14 if edge == 'bottom'
+                else line_midpoint.y())
+            painter.setPen(QPen(color, 2))
+            painter.drawLine(line_midpoint, midpoint)
+            painter.setBrush(QBrush(QColor(TEL_MARKER_OUTLINE)))
+            painter.drawEllipse(midpoint, 7, 7)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(color))
+            painter.drawEllipse(midpoint, 3, 3)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if (self._tel_edge not in ('left', 'right', 'top', 'bottom') and
+                self._tel_preview_edge is None):
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        if self._tel_edge is not None:
+            self._paint_tel_line(painter, self._tel_edge, self._tel_color, handle=True)
+        if self._tel_preview_edge is not None:
+            self._paint_tel_line(painter, self._tel_preview_edge,
+                                 QColor(TEL_DROP_PREVIEW))
+        painter.end()
+
     def _matrix_cell_payload(self):
         """The complete visual value copied between matrix cells."""
         return {'color': self._color, 'label': self._label,
@@ -318,9 +470,16 @@ class MatrixCellButton(QPushButton):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.position().toPoint()
             self._drag_in_progress = False
+            self._tel_drag_armed = self._near_tel_marker(self._drag_start)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if not event.buttons() & Qt.MouseButton.LeftButton:
+            near_marker = self._near_tel_marker(event.position().toPoint())
+            self.setCursor(
+                (Qt.CursorShape.SizeHorCursor if self._tel_edge in ('left', 'right')
+                 else Qt.CursorShape.SizeVerCursor) if near_marker
+                else Qt.CursorShape.OpenHandCursor)
         if (self._drag_start is not None and
                 event.buttons() & Qt.MouseButton.LeftButton and
                 (event.position().toPoint() - self._drag_start).manhattanLength()
@@ -328,13 +487,33 @@ class MatrixCellButton(QPushButton):
             self._drag_in_progress = True
             drag = QDrag(self)
             mime = QMimeData()
-            mime.setData(_MATRIX_CELL_MIME,
-                         json.dumps(self._matrix_cell_payload()).encode())
+            if self._tel_drag_armed:
+                mime.setData(_TEL_MARKER_MIME, json.dumps({
+                    'category': self._tel_category,
+                    'consequence': self.row,
+                }).encode())
+                pixmap = QPixmap(92, 30)
+                pixmap.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(pixmap)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                painter.setBrush(QBrush(QColor(TEL_MARKER_OUTLINE)))
+                painter.setPen(QPen(QColor(TEL_MARKER), 2))
+                painter.drawRoundedRect(1, 1, 89, 27, 8, 8)
+                painter.setPen(QPen(QColor(TEL_MARKER)))
+                painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, 'TEL  ↔')
+                painter.end()
+                drag.setPixmap(pixmap)
+                drag.setHotSpot(QPoint(46, 15))
+            else:
+                mime.setData(_MATRIX_CELL_MIME,
+                             json.dumps(self._matrix_cell_payload()).encode())
+                drag.setPixmap(self.grab())
+                drag.setHotSpot(event.position().toPoint())
             drag.setMimeData(mime)
-            drag.setPixmap(self.grab())
-            drag.setHotSpot(event.position().toPoint())
-            drag.exec(Qt.DropAction.CopyAction)
+            drag.exec(Qt.DropAction.MoveAction if self._tel_drag_armed
+                      else Qt.DropAction.CopyAction)
             self._drag_start = None
+            self._tel_drag_armed = False
             self.setDown(False)
             event.accept()
             return
@@ -344,15 +523,31 @@ class MatrixCellButton(QPushButton):
         if self._drag_in_progress:
             self._drag_in_progress = False
             self._drag_start = None
+            self._tel_drag_armed = False
+            self.setDown(False)
+            event.accept()
+            return
+        if self._tel_drag_armed:
+            self._drag_start = None
+            self._tel_drag_armed = False
             self.setDown(False)
             event.accept()
             return
         self._drag_start = None
+        self._tel_drag_armed = False
         super().mouseReleaseEvent(event)
 
     # ── Drag-and-drop ─────────────────────────────────────────────────────────
     def dragEnterEvent(self, event):
-        if (event.mimeData().hasFormat(_PALETTE_MIME) or
+        if event.mimeData().hasFormat(_TEL_MARKER_MIME):
+            if self._tel_drag_payload(event.mimeData()) is None:
+                event.ignore()
+                return
+            self._tel_preview_edge, _index = self._tel_boundary_at(
+                event.position().toPoint())
+            self.update()
+            event.acceptProposedAction()
+        elif (event.mimeData().hasFormat(_PALETTE_MIME) or
                 event.mimeData().hasFormat(_MATRIX_CELL_MIME)):
             self.setStyleSheet(
                 f"background:{self._color}; color:white; font-weight:bold;"
@@ -361,11 +556,38 @@ class MatrixCellButton(QPushButton):
         else:
             event.ignore()
 
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(_TEL_MARKER_MIME):
+            if self._tel_drag_payload(event.mimeData()) is None:
+                event.ignore()
+                return
+            edge, _index = self._tel_boundary_at(event.position().toPoint())
+            if edge != self._tel_preview_edge:
+                self._tel_preview_edge = edge
+                self.update()
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
     def dragLeaveEvent(self, event):
-        self._apply_style()
+        if self._tel_preview_edge is not None:
+            self._tel_preview_edge = None
+            self.update()
+        else:
+            self._apply_style()
 
     def dropEvent(self, event):
-        if event.mimeData().hasFormat(_PALETTE_MIME):
+        if event.mimeData().hasFormat(_TEL_MARKER_MIME):
+            payload = self._tel_drag_payload(event.mimeData())
+            _edge, index = self._tel_boundary_at(event.position().toPoint())
+            self._tel_preview_edge = None
+            self.update()
+            if payload is None or index is None:
+                event.ignore()
+                return
+            self.tel_boundary_dropped.emit(payload['category'], self.row, index)
+            event.acceptProposedAction()
+        elif event.mimeData().hasFormat(_PALETTE_MIME):
             data = json.loads(
                 event.mimeData().data(_PALETTE_MIME).data().decode())
             self.set_cell(data['color'], data['name'], data.get('fg_color', '#ffffff'))
@@ -1731,7 +1953,12 @@ class HAZOPPreparationPanel(QWidget):
         self._matrix_cell_width = _MATRIX_CELL_WIDTH_DEFAULT
         self._axes_loading = False
         self._axes_dirty = False
+        self._lopa_loading = False
+        self._lopa_dirty = False
+        self._lopa_loaded = False
         self._axes_frequency_reversed = False
+        self._axes_boundary_invalid = False
+        self._grid_boundaries_dirty = False
 
         tabs = QTabWidget()
         self._tabs = tabs   # kept as an attribute for testability (tabText() lookups)
@@ -1930,6 +2157,17 @@ class HAZOPPreparationPanel(QWidget):
         size_row.addStretch()
         ml.addLayout(size_row)
 
+        tel_row = QHBoxLayout()
+        tel_row.addWidget(QLabel('TEL-linje för skadekriterium:'))
+        self._tel_category_combo = QComboBox()
+        self._tel_category_combo.setMinimumWidth(155)
+        self._tel_category_combo.currentIndexChanged.connect(self._refresh_tel_markers)
+        tel_row.addWidget(self._tel_category_combo)
+        self._tel_summary = QLabel()
+        self._tel_summary.setWordWrap(True)
+        tel_row.addWidget(self._tel_summary, 1)
+        ml.addLayout(tel_row)
+
         # ── Colour palette ────────────────────────────────────────────────────
         pal_box = QGroupBox("Färgpalett — dra en färg och släpp på en cell")
         pal_lay = QHBoxLayout(pal_box)
@@ -1968,12 +2206,6 @@ class HAZOPPreparationPanel(QWidget):
         self._risk_level_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._risk_level_table.itemChanged.connect(self._on_risk_level_item_changed)
         levels_lay.addWidget(self._risk_level_table)
-        levels_actions = QHBoxLayout()
-        save_levels_btn = QPushButton("Spara acceptanskriterier")
-        save_levels_btn.clicked.connect(self._save_acceptance_criteria)
-        levels_actions.addWidget(save_levels_btn)
-        levels_actions.addStretch()
-        levels_lay.addLayout(levels_actions)
 
         # ── Matrix grid ───────────────────────────────────────────────────────
         # Use a wrapper so matrix stays at natural size (top-left) while the
@@ -2094,9 +2326,8 @@ class HAZOPPreparationPanel(QWidget):
         preset_row.addWidget(QLabel("Standardmallar:"))
         st1_btn = QPushButton("ST1 Sverige AB")
         st1_btn.setToolTip(
-            "Läser in ST1:s 6×5-riskmatris med sannolikhet A–E.\n"
-            "Om studien redan har bedömningar granskas och migreras de först; "
-            "annars laddas mallen som en arbetskopia.")
+            "Förhandsgranska ST1:s 6×5-riskmatris med sannolikhet A–E.\n"
+            "Spara riskmatris för att använda den; befintliga bedömningar granskas då först.")
         st1_btn.clicked.connect(lambda: self._request_matrix_template(
             ST1_RISK_MATRIX_PRESET, "ST1 Sverige AB"))
         ips_btn = QPushButton("IPS")
@@ -2165,12 +2396,25 @@ class HAZOPPreparationPanel(QWidget):
         risk_lay.addWidget(self._risk_substack)
         save_row = QHBoxLayout()
         save_row.setContentsMargins(8, 0, 8, 6)
+        self._pending_template_note = QLabel()
+        self._pending_template_note.setWordWrap(True)
+        self._pending_template_note.hide()
+        save_row.addWidget(self._pending_template_note, 1)
         save_row.addStretch()
-        self._save_matrix_btn = QPushButton("Spara ändringar som mall…")
+        self._discard_template_btn = QPushButton('Avbryt mallbyte')
+        self._discard_template_btn.clicked.connect(self._discard_pending_template)
+        self._discard_template_btn.hide()
+        save_row.addWidget(self._discard_template_btn)
+        self._save_as_template_btn = QPushButton('Spara som mall…')
+        self._save_as_template_btn.setToolTip(
+            'Spara den aktuella riskmatrisen som en återanvändbar projektmall.')
+        self._save_as_template_btn.clicked.connect(self._save_matrix)
+        save_row.addWidget(self._save_as_template_btn)
+        self._save_matrix_btn = QPushButton("Spara riskmatris")
         self._save_matrix_btn.setIcon(_icon('save', 16, '#ffffff'))
         self._save_matrix_btn.setStyleSheet(
             "background:#2F5FD0; color:#fff; font-weight:bold; padding:4px 12px;")
-        self._save_matrix_btn.clicked.connect(self._save_matrix)
+        self._save_matrix_btn.clicked.connect(self._save_current_risk_profile)
         save_row.addWidget(self._save_matrix_btn)
         risk_lay.addLayout(save_row)
         self._risk_matrix_btn.clicked.connect(
@@ -2842,14 +3086,31 @@ class HAZOPPreparationPanel(QWidget):
         if not hasattr(self, '_risk_substack'):
             return
         index = max(0, min(3, int(index)))
-        if index == 1 and self._risk_substack.currentIndex() != 1:
+        if (index == 1 and self._risk_substack.currentIndex() != 1 and
+                not self._axes_dirty):
             # Bring unsaved matrix header/cell edits into the same working
             # configuration before showing the larger, spreadsheet-style
             # axis editor.  This is presentation only; Save remains explicit.
+            source = getattr(self, '_last_built_cfg', None) or self.db.get_risk_matrix() or DEFAULT_MATRIX
+            draft_boundaries = (self._grid_boundary_texts(source)
+                                if self._grid_boundaries_dirty else None)
             self._apply_size()
             self._reload_axes_tables()
-        if index == 3:
+            if draft_boundaries is not None:
+                table = self._frequency_axis_table
+                n_freq = table.rowCount()
+                for data_index, value in enumerate(draft_boundaries[:n_freq - 1]):
+                    row = n_freq - 1 - data_index if self._axes_frequency_reversed else data_index
+                    item = table.item(row, 2)
+                    if item is not None and item.text() != value:
+                        item.setText(value)
+        if (self._risk_substack.currentIndex() == 1 and index != 1 and
+                self._axes_dirty):
+            self._preview_axes_on_matrix()
+        if index == 3 and not self._lopa_loaded:
             self._load_lopa_settings()
+        if index == 0:
+            self._refresh_tel_markers()
         self._risk_substack.setCurrentIndex(index)
         self._risk_matrix_btn.setChecked(index == 0)
         self._risk_axes_btn.setChecked(index == 1)
@@ -2881,6 +3142,7 @@ class HAZOPPreparationPanel(QWidget):
         self._lopa_default_assumption.setRange(0.0, 100.0)
         self._lopa_default_assumption.setDecimals(3)
         self._lopa_default_assumption.setSuffix(' %')
+        self._lopa_default_assumption.valueChanged.connect(self._mark_lopa_dirty)
         assumption_row.addWidget(self._lopa_default_assumption)
         assumption_row.addStretch()
         layout.addLayout(assumption_row)
@@ -2904,6 +3166,7 @@ class HAZOPPreparationPanel(QWidget):
             3, QHeaderView.ResizeMode.ResizeToContents)
         self._lopa_tel_table.horizontalHeader().setSectionResizeMode(
             4, QHeaderView.ResizeMode.ResizeToContents)
+        self._lopa_tel_table.itemChanged.connect(self._mark_lopa_dirty)
         tel_layout.addWidget(self._lopa_tel_table)
         layout.addWidget(tel_box, 2)
 
@@ -2914,6 +3177,7 @@ class HAZOPPreparationPanel(QWidget):
         self._lopa_safeguard_types.setHorizontalHeaderLabels(['Typ'])
         self._lopa_safeguard_types.verticalHeader().setVisible(False)
         self._lopa_safeguard_types.horizontalHeader().setStretchLastSection(True)
+        self._lopa_safeguard_types.itemChanged.connect(self._mark_lopa_dirty)
         types_layout.addWidget(self._lopa_safeguard_types)
         type_buttons = QHBoxLayout()
         add_type = QPushButton('+')
@@ -2932,6 +3196,7 @@ class HAZOPPreparationPanel(QWidget):
         self._lopa_sil_bands.setHorizontalHeaderLabels(['Högsta RRF (inkl.)', 'Resultat'])
         self._lopa_sil_bands.verticalHeader().setVisible(False)
         self._lopa_sil_bands.horizontalHeader().setStretchLastSection(True)
+        self._lopa_sil_bands.itemChanged.connect(self._mark_lopa_dirty)
         sil_layout.addWidget(self._lopa_sil_bands)
         band_buttons = QHBoxLayout()
         add_band = QPushButton('+')
@@ -2945,15 +3210,12 @@ class HAZOPPreparationPanel(QWidget):
         lower.addWidget(sil_box, 1)
         layout.addLayout(lower, 1)
 
-        save_row = QHBoxLayout()
-        save_row.addStretch()
-        save = QPushButton('Spara LOPA-inställningar')
-        save.setIcon(_icon('save', 16, '#ffffff'))
-        save.setStyleSheet('background:#2F5FD0; color:#fff; font-weight:bold; padding:4px 12px;')
-        save.clicked.connect(self._save_lopa_settings)
-        save_row.addWidget(save)
-        layout.addLayout(save_row)
         return page
+
+    def _mark_lopa_dirty(self, *_args):
+        if not self._lopa_loading:
+            self._lopa_dirty = True
+            self._refresh_tel_markers()
 
     @staticmethod
     def _lopa_read_item(table, row, column):
@@ -2970,8 +3232,14 @@ class HAZOPPreparationPanel(QWidget):
     def _load_lopa_settings(self):
         if not hasattr(self, '_lopa_tel_table'):
             return
-        cfg = self.db.lopa_matrix_config()
-        matrix = _normalise_matrix(self.db.get_risk_matrix() or DEFAULT_MATRIX)
+        source = getattr(self, '_last_built_cfg', None) or self.db.get_risk_matrix() or DEFAULT_MATRIX
+        matrix = _normalise_matrix(json.loads(json.dumps(source)))
+        cfg = matrix['lopa']
+        self._lopa_loading = True
+        widgets = (self._lopa_default_assumption, self._lopa_tel_table,
+                   self._lopa_safeguard_types, self._lopa_sil_bands)
+        for widget in widgets:
+            widget.blockSignals(True)
         self._lopa_default_assumption.setValue(
             float(cfg.get('default_assumption_percent') or 0.0))
         self._lopa_tel_table.setRowCount(0)
@@ -2997,7 +3265,7 @@ class HAZOPPreparationPanel(QWidget):
                 self._lopa_tel_table.setItem(row, 2, self._lopa_static_item(description))
                 tel = tels[level] if level < len(tels) else None
                 self._lopa_tel_table.setItem(
-                    row, 3, QTableWidgetItem('' if tel is None else f'{float(tel):.6g}'))
+                    row, 3, QTableWidgetItem('' if tel is None else repr(float(tel))))
                 color = str(category.get('color') or '#64748b')
                 color_item = self._lopa_static_item(color)
                 qcolor = QColor(color)
@@ -3019,6 +3287,12 @@ class HAZOPPreparationPanel(QWidget):
             self._lopa_sil_bands.insertRow(row)
             self._lopa_sil_bands.setItem(row, 0, QTableWidgetItem(f"{float(band['max_rrf']):.6g}"))
             self._lopa_sil_bands.setItem(row, 1, QTableWidgetItem(str(band.get('label') or '')))
+        for widget in widgets:
+            widget.blockSignals(False)
+        self._lopa_loading = False
+        self._lopa_dirty = False
+        self._lopa_loaded = True
+        self._refresh_tel_markers()
 
     def _add_lopa_safeguard_type(self):
         row = self._lopa_safeguard_types.rowCount()
@@ -3026,11 +3300,13 @@ class HAZOPPreparationPanel(QWidget):
         self._lopa_safeguard_types.setItem(row, 0, QTableWidgetItem('Ny typ'))
         self._lopa_safeguard_types.setCurrentCell(row, 0)
         self._lopa_safeguard_types.editItem(self._lopa_safeguard_types.item(row, 0))
+        self._mark_lopa_dirty()
 
     def _remove_lopa_safeguard_type(self):
         row = self._lopa_safeguard_types.currentRow()
         if row >= 0:
             self._lopa_safeguard_types.removeRow(row)
+            self._mark_lopa_dirty()
 
     def _add_lopa_sil_band(self):
         row = self._lopa_sil_bands.rowCount()
@@ -3038,14 +3314,17 @@ class HAZOPPreparationPanel(QWidget):
         self._lopa_sil_bands.setItem(row, 0, QTableWidgetItem('1000000'))
         self._lopa_sil_bands.setItem(row, 1, QTableWidgetItem('SIL 5'))
         self._lopa_sil_bands.setCurrentCell(row, 0)
+        self._mark_lopa_dirty()
 
     def _remove_lopa_sil_band(self):
         row = self._lopa_sil_bands.currentRow()
         if row >= 0:
             self._lopa_sil_bands.removeRow(row)
+            self._mark_lopa_dirty()
 
-    def _save_lopa_settings(self):
-        cfg = self.db.lopa_matrix_config()
+    def _lopa_config_from_ui(self, matrix):
+        """Validate and collect the visible TEL/SIL editor without writing it."""
+        cfg = _normalise_matrix(json.loads(json.dumps(matrix)))['lopa']
         cfg['default_assumption_percent'] = self._lopa_default_assumption.value()
         for row in range(self._lopa_tel_table.rowCount()):
             anchor = self._lopa_tel_table.item(row, 0)
@@ -3060,7 +3339,7 @@ class HAZOPPreparationPanel(QWidget):
                 QMessageBox.warning(self, 'Ogiltig TEL',
                                     f'TEL på rad {row + 1} måste vara ett positivt tal eller tomt.')
                 return
-            if value is not None and value <= 0:
+            if value is not None and (not math.isfinite(value) or value <= 0):
                 QMessageBox.warning(self, 'Ogiltig TEL', 'TEL måste vara större än 0 eller tom.')
                 return
             setting = cfg.get('category_settings', {}).get(key)
@@ -3084,20 +3363,17 @@ class HAZOPPreparationPanel(QWidget):
                 QMessageBox.warning(self, 'Ogiltig RRF-gräns',
                                     f'RRF-gränsen på rad {row + 1} måste vara ett positivt tal.')
                 return
-            if maximum <= 0 or not label:
+            if not math.isfinite(maximum) or maximum <= 0 or not label:
                 QMessageBox.warning(self, 'Ogiltigt SIL-intervall',
                                     'Varje SIL-intervall behöver positiv RRF-gräns och resultattext.')
                 return
             bands.append({'max_rrf': maximum, 'label': label})
         cfg['sil_bands'] = bands
-        try:
-            self.db.set_lopa_matrix_config(cfg)
-        except Exception as exc:
-            QMessageBox.critical(self, 'LOPA-inställningar sparades inte', str(exc))
-            return
-        self._load_lopa_settings()
-        self.matrix_changed.emit()
-        QMessageBox.information(self, 'Sparat', 'LOPA-inställningarna sparades i riskmatrisen.')
+        return cfg
+
+    def _save_lopa_settings(self):
+        """Compatibility entry point; the risk profile has one primary save."""
+        return self._save_current_risk_profile()
 
     def _create_axes_page(self):
         """Build the large, paste-friendly editor for axes and categories."""
@@ -3216,6 +3492,22 @@ class HAZOPPreparationPanel(QWidget):
 
     def _set_axes_frequency_order(self, reversed_order):
         """Change only the editor display order; data remains low-to-high."""
+        if bool(reversed_order) == self._axes_frequency_reversed:
+            return
+        # Reorder the existing items when editing is in progress. Reloading
+        # the page here would silently erase unsaved codes, bounds and pasted
+        # category descriptions from the same shared Save action.
+        if self._axes_dirty:
+            table = self._frequency_axis_table
+            table.blockSignals(True)
+            rows = [
+                [table.takeItem(row, column) for column in range(table.columnCount())]
+                for row in range(table.rowCount())]
+            for row, items in enumerate(reversed(rows)):
+                for column, item in enumerate(items):
+                    if item is not None:
+                        table.setItem(row, column, item)
+            table.blockSignals(False)
         self._axes_frequency_reversed = bool(reversed_order)
         self._axes_frequency_order_btn.setText(
             "Högsta → lägsta" if reversed_order else "Lägsta → högsta")
@@ -3223,7 +3515,46 @@ class HAZOPPreparationPanel(QWidget):
             "Visar högsta frekvens överst; klicka för lägsta först."
             if reversed_order else
             "Visar lägsta frekvens överst; klicka för högsta först.")
-        self._reload_axes_tables()
+        if not self._axes_dirty:
+            self._reload_axes_tables()
+
+    def _preview_axes_on_matrix(self):
+        """Reflect valid unsaved axis edits in the matrix without committing them."""
+        frequency = self._frequency_axis_table
+        consequence = self._consequence_axis_table
+        n_freq, n_cons = frequency.rowCount(), consequence.rowCount()
+        boundaries = [None] * max(0, n_freq - 1)
+        codes = [''] * n_freq
+        labels = [''] * n_freq
+        for row in range(n_freq):
+            data_row = n_freq - 1 - row if self._axes_frequency_reversed else row
+            codes[data_row] = self._lopa_read_item(frequency, row, 0)
+            labels[data_row] = self._lopa_read_item(frequency, row, 1)
+            if data_row < n_freq - 1:
+                raw = self._lopa_read_item(frequency, row, 2)
+                try:
+                    value = float(raw)
+                except ValueError:
+                    value = None
+                boundaries[data_row] = value
+        valid = (
+            all(value is not None and math.isfinite(value) and value > 0
+                for value in boundaries) and
+            all(left < right for left, right in zip(boundaries, boundaries[1:])))
+        self._axes_boundary_invalid = not valid
+        if not valid:
+            self._refresh_tel_markers()
+            return
+        self._apply_size()
+        cfg = self._last_built_cfg
+        cfg['x_codes'] = codes
+        cfg['x_labels'] = labels
+        cfg['y_codes'] = [self._lopa_read_item(consequence, row, 0)
+                          for row in range(n_cons)]
+        cfg['y_labels'] = [self._lopa_read_item(consequence, row, 1)
+                           for row in range(n_cons)]
+        cfg['freq_boundaries'] = boundaries
+        self._build_matrix_grid(cfg)
 
     def _reload_axes_tables(self, cfg=None):
         """Reload the Axlar page from its current in-memory working copy."""
@@ -3238,8 +3569,18 @@ class HAZOPPreparationPanel(QWidget):
         freq_codes = list(cfg.get('x_codes', []))
         cons_codes = list(cfg.get('y_codes', []))
         boundaries = list(cfg.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES))
-        cats = self.db.consequence_categories()
-        definitions = self.db.get_severity_definitions()
+        pending_categories = getattr(self, '_pending_template_categories', None)
+        if pending_categories is not None:
+            cats = [dict(category, id=None) for category in cfg.get('consequence_categories', [])]
+            definitions = {}
+            for level in range(n_cons):
+                definitions[level + 1] = {
+                    index: ((category.get('descriptions') or [])[level]
+                            if level < len(category.get('descriptions') or []) else '')
+                    for index, category in enumerate(cats)}
+        else:
+            cats = self.db.consequence_categories()
+            definitions = self.db.get_severity_definitions()
 
         self._axes_loading = True
         try:
@@ -3249,7 +3590,7 @@ class HAZOPPreparationPanel(QWidget):
                 label = freq_labels[data_row] if data_row < len(freq_labels) else ''
                 code = freq_codes[data_row] if data_row < len(freq_codes) else f"F{data_row - 1}"
                 bound = '—' if data_row >= n_freq - 1 else (
-                    f"{float(boundaries[data_row]):.8g}" if data_row < len(boundaries) else '')
+                    repr(float(boundaries[data_row])) if data_row < len(boundaries) else '')
                 self._frequency_axis_table.setItem(row, 0, self._axes_item(code))
                 self._frequency_axis_table.setItem(row, 1, self._axes_item(label))
                 self._frequency_axis_table.setItem(
@@ -3271,9 +3612,12 @@ class HAZOPPreparationPanel(QWidget):
                 code = cons_codes[row] if row < len(cons_codes) else str(row + 1)
                 table.setItem(row, 0, self._axes_item(code, False))
                 for cat_col, cat in enumerate(cats, start=1):
-                    text = definitions.get(row + 1, {}).get(cat['id'], '')
+                    text = (definitions.get(row + 1, {}).get(cat_col - 1, '')
+                            if pending_categories is not None else
+                            definitions.get(row + 1, {}).get(cat['id'], ''))
                     item = self._axes_item(text)
-                    item.setData(Qt.ItemDataRole.UserRole, cat['id'])
+                    item.setData(Qt.ItemDataRole.UserRole,
+                                 cat_col - 1 if pending_categories is not None else cat['id'])
                     table.setItem(row, cat_col, item)
             table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
             for col in range(1, table.columnCount()):
@@ -3445,24 +3789,34 @@ class HAZOPPreparationPanel(QWidget):
             except ValueError:
                 QMessageBox.warning(self, "Ogiltig gräns",
                                     f"F{row + 1} har en ogiltig övre gräns: {raw or 'tom'}.")
-                return
-            if value <= 0:
+                return False
+            if not math.isfinite(value) or value <= 0:
                 QMessageBox.warning(self, "Ogiltig gräns",
                                     "Frekvensgränser måste vara större än noll.")
-                return
+                return False
             boundaries[data_row] = value
         if any(value is None for value in boundaries):
             QMessageBox.warning(self, "Ogiltiga gränser",
                                 "Alla frekvensgränser måste vara ifyllda.")
-            return
+            return False
         if any(right <= left for left, right in zip(boundaries, boundaries[1:])):
             QMessageBox.warning(self, "Ogiltiga gränser",
                                 "Frekvensgränserna måste öka rad för rad.")
-            return
+            return False
         cfg['freq_boundaries'] = boundaries
         pending_categories = getattr(self, '_pending_template_categories', None)
         if pending_categories is not None:
-            cfg['consequence_categories'] = json.loads(json.dumps(pending_categories))
+            categories = json.loads(json.dumps(pending_categories))
+            table = self._category_definition_table
+            for row in range(min(n_cons, table.rowCount())):
+                for col in range(1, min(len(categories) + 1, table.columnCount())):
+                    item = table.item(row, col)
+                    if item is not None:
+                        descriptions = categories[col - 1].setdefault('descriptions', [])
+                        while len(descriptions) <= row:
+                            descriptions.append('')
+                        descriptions[row] = item.text().strip()
+            cfg['consequence_categories'] = categories
         cfg = _normalise_matrix(cfg)
         if pending_categories is not None:
             return self._apply_pending_matrix_template(
@@ -3472,7 +3826,7 @@ class HAZOPPreparationPanel(QWidget):
             self.db.set_risk_matrix(cfg)
         except Exception as exc:
             QMessageBox.critical(self, "Axlar sparades inte", str(exc))
-            return
+            return False
 
         table = self._category_definition_table
         for row in range(table.rowCount()):
@@ -3497,6 +3851,7 @@ class HAZOPPreparationPanel(QWidget):
         if show_confirmation:
             QMessageBox.information(self, "Sparat", "Axlar och konsekvenskategorier sparade.")
         self.matrix_changed.emit()
+        return True
 
     def _on_matrix_cell_width_changed(self, value):
         """Keep every visual matrix column equally wide at a chosen width."""
@@ -3563,7 +3918,37 @@ class HAZOPPreparationPanel(QWidget):
             button.setFixedWidth(width)
 
     def _load_matrix_ui(self):
+        self._axes_boundary_invalid = False
+        self._grid_boundaries_dirty = False
         cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        self._load_risk_levels_from_cfg(cfg)
+        self._last_built_cfg = None   # reset before blocking so _apply_size sees None
+        # Block all signals that would trigger _apply_size while we populate controls
+        _senders = (self._rows_spin, self._cols_spin, self._axis_combo,
+                    self._x_rev_chk, self._y_rev_chk,
+                    self._matrix_cell_width_spin)
+        for w in _senders:
+            w.blockSignals(True)
+        self._rows_spin.setValue(cfg.get('rows', 5))
+        self._cols_spin.setValue(cfg.get('cols', 7))
+        x_axis = cfg.get('x_axis', 'frequency')
+        idx = self._axis_combo.findData(x_axis)
+        if idx >= 0:
+            self._axis_combo.setCurrentIndex(idx)
+        self._x_rev_chk.setChecked(bool(cfg.get('x_reversed', False)))
+        self._y_rev_chk.setChecked(bool(cfg.get('y_reversed', False)))
+        try:
+            cell_width = int(self.db.get_config(
+                'risk_matrix_cell_width', str(_MATRIX_CELL_WIDTH_DEFAULT)))
+        except (TypeError, ValueError):
+            cell_width = _MATRIX_CELL_WIDTH_DEFAULT
+        self._matrix_cell_width = max(48, min(260, cell_width))
+        self._matrix_cell_width_spin.setValue(self._matrix_cell_width)
+        for w in _senders:
+            w.blockSignals(False)
+        self._build_matrix_grid(cfg)
+
+    def _load_risk_levels_from_cfg(self, cfg):
         level_defs = cfg.get('risk_level_definitions') or []
         if not level_defs:
             # Older matrices stored the colour and label only on each cell.
@@ -3594,31 +3979,6 @@ class HAZOPPreparationPanel(QWidget):
                 self._risk_level_table.setItem(row, col, table_item)
         self._risk_level_table.blockSignals(False)
         self._matrix_levels_dirty = False
-        self._last_built_cfg = None   # reset before blocking so _apply_size sees None
-        # Block all signals that would trigger _apply_size while we populate controls
-        _senders = (self._rows_spin, self._cols_spin, self._axis_combo,
-                    self._x_rev_chk, self._y_rev_chk,
-                    self._matrix_cell_width_spin)
-        for w in _senders:
-            w.blockSignals(True)
-        self._rows_spin.setValue(cfg.get('rows', 5))
-        self._cols_spin.setValue(cfg.get('cols', 7))
-        x_axis = cfg.get('x_axis', 'frequency')
-        idx = self._axis_combo.findData(x_axis)
-        if idx >= 0:
-            self._axis_combo.setCurrentIndex(idx)
-        self._x_rev_chk.setChecked(bool(cfg.get('x_reversed', False)))
-        self._y_rev_chk.setChecked(bool(cfg.get('y_reversed', False)))
-        try:
-            cell_width = int(self.db.get_config(
-                'risk_matrix_cell_width', str(_MATRIX_CELL_WIDTH_DEFAULT)))
-        except (TypeError, ValueError):
-            cell_width = _MATRIX_CELL_WIDTH_DEFAULT
-        self._matrix_cell_width = max(48, min(260, cell_width))
-        self._matrix_cell_width_spin.setValue(self._matrix_cell_width)
-        for w in _senders:
-            w.blockSignals(False)
-        self._build_matrix_grid(cfg)
 
     def _apply_size(self):
         """Rebuild the matrix grid. Handles axis swap without losing data."""
@@ -3636,6 +3996,7 @@ class HAZOPPreparationPanel(QWidget):
         disp_freq_on_x = disp.get('x_axis', 'frequency') == 'frequency'
         disp_x_rev    = disp.get('x_reversed', False)
         disp_y_rev    = disp.get('y_reversed', False)
+        raw_boundaries = self._grid_boundary_texts(disp)
 
         freq_codes = list(disp.get('x_codes', old.get(
             'x_codes', [f'F{i - 1}' for i in range(n_freq)])))
@@ -3690,10 +4051,10 @@ class HAZOPPreparationPanel(QWidget):
         colors    = [['' for _ in range(n_freq)] for _ in range(n_cons)]
         lbl2d     = [['' for _ in range(n_freq)] for _ in range(n_cons)]
         fg_colors = [['' for _ in range(n_freq)] for _ in range(n_cons)]
-        # 1. Fill from DB
-        old_c  = old.get('cell_colors', [])
-        old_l  = old.get('cell_labels', [])
-        old_fg = old.get('cell_fg_colors', [])
+        # 1. Fill from the current working copy, including a pending template.
+        old_c  = disp.get('cell_colors', [])
+        old_l  = disp.get('cell_labels', [])
+        old_fg = disp.get('cell_fg_colors', [])
         for ci in range(n_cons):
             for fi in range(n_freq):
                 try:    colors[ci][fi]    = old_c[ci][fi]  or '#27ae60'
@@ -3725,11 +4086,39 @@ class HAZOPPreparationPanel(QWidget):
             'cell_colors':    colors,
             'cell_labels':    lbl2d,
             'cell_fg_colors': fg_colors,
-            'freq_boundaries': old.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES),
+            'freq_boundaries': list(disp.get('freq_boundaries', DEFAULT_FREQ_BOUNDARIES)),
+            'consequence_categories': json.loads(json.dumps(
+                disp.get('consequence_categories', old.get('consequence_categories', [])))),
+            'lopa': json.loads(json.dumps(disp.get('lopa', old.get('lopa', {})))),
         }
+        if raw_boundaries is not None and len(raw_boundaries) == n_freq - 1:
+            try:
+                edited_boundaries = [float(value) for value in raw_boundaries]
+            except ValueError:
+                edited_boundaries = []
+            if (len(edited_boundaries) == n_freq - 1 and
+                    all(math.isfinite(value) and value > 0
+                        for value in edited_boundaries) and
+                    all(left < right for left, right in
+                        zip(edited_boundaries, edited_boundaries[1:]))):
+                new_cfg['freq_boundaries'] = edited_boundaries
         self._last_built_cfg = new_cfg
-        new_cfg['risk_level_definitions'] = json.loads(json.dumps(old.get('risk_level_definitions', [])))
+        new_cfg['risk_level_definitions'] = self._risk_level_definitions_from_ui()
         self._build_matrix_grid(new_cfg)
+        if self._grid_boundaries_dirty and raw_boundaries is not None:
+            # Keep even an invalid draft visible so Save can reject it and
+            # the user can correct the same field rather than losing it.
+            semantic = self._grid_boundary_texts(new_cfg) or []
+            for index, value in enumerate(raw_boundaries[:len(semantic)]):
+                semantic[index] = value
+            freq_on_x = new_cfg.get('x_axis', 'frequency') == 'frequency'
+            reversed_display = (
+                (freq_on_x and new_cfg.get('x_reversed', False)) or
+                (not freq_on_x and not new_cfg.get('y_reversed', False)))
+            display = list(reversed(semantic)) if reversed_display else semantic
+            for edit, value in zip(self._freq_boundary_edits, display):
+                if edit.text() != value:
+                    edit.setText(value)
 
     def _build_matrix_grid(self, cfg):
         """Build the matrix grid respecting axis orientation and intervals."""
@@ -3875,6 +4264,7 @@ class HAZOPPreparationPanel(QWidget):
                                        is_top_row=(r == 0),
                                        is_left_col=(c == 0))
                 btn.clicked.connect(partial(self._edit_cell, btn))
+                btn.tel_boundary_dropped.connect(self._move_tel_to_boundary)
                 self._matrix_grid.addWidget(btn, r + 1, c + 1)
                 row_btns.append(btn)
             self._cell_buttons.append((disp_r, row_btns))
@@ -3903,7 +4293,7 @@ class HAZOPPreparationPanel(QWidget):
                     # Map display col → data freq index to pick the correct boundary
                     bval_idx = (n_dcols - 1 - c) if x_rev else c
                     bval  = boundaries[bval_idx] if bval_idx < len(boundaries) else ''
-                    btext = f"{float(bval):.4g}" if bval != '' else ''
+                    btext = repr(float(bval)) if bval != '' else ''
                     e = QLineEdit(btext)
                     e.setPlaceholderText("—")
                     e.setFixedHeight(22)
@@ -3928,18 +4318,19 @@ class HAZOPPreparationPanel(QWidget):
             while len(boundaries) < n_freq - 1:
                 boundaries.append(10 ** (len(boundaries) - 5))
 
-            # Last row always gets ">allt" (the extreme bucket with no further boundary).
-            # bval_idx depends on y_rev: y_rev=False → high-at-top, reversed boundary order.
+            # The highest-frequency bucket has no upper boundary. Its visual
+            # row depends on the frequency-axis direction.
+            highest_row = n_drows - 1 if y_rev else 0
             for r in range(n_drows):
-                if r == n_drows - 1:
+                if r == highest_row:
                     lbl = QLabel(">allt")
                     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     lbl.setStyleSheet("font-size:8px; color:#aaa;")
                     self._matrix_grid.addWidget(lbl, r + 1, n_dcols + 1)
                 else:
-                    bval_idx = r if y_rev else (n_drows - 2 - r)
+                    bval_idx = r if y_rev else (n_drows - 1 - r)
                     bval  = boundaries[bval_idx] if bval_idx < len(boundaries) else ''
-                    btext = f"{float(bval):.4g}" if bval != '' else ''
+                    btext = repr(float(bval)) if bval != '' else ''
                     e = QLineEdit(btext)
                     e.setPlaceholderText("—")
                     e.setFixedHeight(40)
@@ -4051,7 +4442,175 @@ class HAZOPPreparationPanel(QWidget):
             self._resize_category_rows()
 
         self._apply_matrix_column_widths()
+        self._populate_tel_category_combo(cfg)
+        for edit in self._freq_boundary_edits:
+            edit.textChanged.connect(self._on_matrix_boundary_changed)
+        self._refresh_tel_markers()
         QTimer.singleShot(0, self._sync_x_axis_button_width)
+
+    def _populate_tel_category_combo(self, cfg):
+        combo = getattr(self, '_tel_category_combo', None)
+        if combo is None:
+            return
+        previous = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        for category in cfg.get('consequence_categories') or []:
+            key = str(category.get('key') or category.get('name') or '')
+            combo.addItem(str(category.get('name') or key), key)
+        index = combo.findData(previous)
+        combo.setCurrentIndex(index if index >= 0 else (0 if combo.count() else -1))
+        combo.blockSignals(False)
+
+    def _grid_boundary_texts(self, cfg):
+        """Read boundary-field text in semantic low-to-high order."""
+        edits = getattr(self, '_freq_boundary_edits', [])
+        if len(edits) != max(0, int(cfg.get('cols', 0)) - 1):
+            return None
+        values = [edit.text().strip() for edit in edits]
+        freq_on_x = cfg.get('x_axis', 'frequency') == 'frequency'
+        reversed_display = ((freq_on_x and cfg.get('x_reversed', False)) or
+                            (not freq_on_x and not cfg.get('y_reversed', False)))
+        return list(reversed(values)) if reversed_display else values
+
+    def _working_frequency_boundaries(self, cfg):
+        """Read the live boundary editor in semantic low-to-high order."""
+        raw = self._grid_boundary_texts(cfg)
+        if raw is None:
+            return list(cfg.get('freq_boundaries') or [])
+        try:
+            return [float(value) for value in raw]
+        except ValueError:
+            return []
+
+    def _on_matrix_boundary_changed(self, _value):
+        self._grid_boundaries_dirty = True
+        self._refresh_tel_markers()
+
+    def _refresh_tel_markers(self, *_args):
+        """Show one selected criterion's TEL along real frequency cell borders."""
+        combo = getattr(self, '_tel_category_combo', None)
+        summary = getattr(self, '_tel_summary', None)
+        if combo is None or summary is None:
+            return
+        for _row, buttons in getattr(self, '_cell_buttons', []):
+            for button in buttons:
+                button.set_tel_marker()
+        source = getattr(self, '_last_built_cfg', None) or self.db.get_risk_matrix() or DEFAULT_MATRIX
+        cfg = _normalise_matrix(json.loads(json.dumps(source)))
+        key = combo.currentData()
+        setting = cfg.get('lopa', {}).get('category_settings', {}).get(key, {})
+        if not key or not setting:
+            summary.setText('Välj ett skadekriterium för att visa TEL.')
+            return
+        if self._axes_boundary_invalid:
+            summary.setText('Rätta frekvensgränserna i Axlar innan TEL flyttas.')
+            for _row, buttons in self._cell_buttons:
+                for button in buttons:
+                    button.set_tel_drop_context(key, {})
+            return
+        tels = list(setting.get('tel') or [])
+        while len(tels) < int(cfg.get('rows') or 0):
+            tels.append(None)
+        if self._lopa_dirty and self._lopa_loaded:
+            for row in range(self._lopa_tel_table.rowCount()):
+                anchor = self._lopa_tel_table.item(row, 0)
+                if anchor is None or anchor.data(Qt.ItemDataRole.UserRole) != key:
+                    continue
+                level = int(anchor.data(Qt.ItemDataRole.UserRole + 1) or 0)
+                raw = self._lopa_read_item(self._lopa_tel_table, row, 3)
+                try:
+                    tels[level] = float(raw) if raw else None
+                except ValueError:
+                    tels[level] = float('nan')
+        boundaries = self._working_frequency_boundaries(cfg)
+        n_freq = int(cfg.get('cols') or 0)
+        cons_codes = cfg.get('y_codes') or []
+        freq_on_x = cfg.get('x_axis', 'frequency') == 'frequency'
+        boundaries_valid = (
+            len(boundaries) == n_freq - 1 and
+            all(math.isfinite(value) and value > 0 for value in boundaries) and
+            all(left < right for left, right in zip(boundaries, boundaries[1:])))
+        for _row, buttons in self._cell_buttons:
+            for button in buttons:
+                button.set_tel_drop_context(
+                    key, _tel_internal_edges(button.col, n_freq, freq_on_x,
+                                             cfg.get('x_reversed', False),
+                                             cfg.get('y_reversed', False))
+                    if boundaries_valid else {})
+        low_edge = ('right' if cfg.get('x_reversed') else 'left') if freq_on_x else (
+            'top' if cfg.get('y_reversed') else 'bottom')
+        high_edge = ('left' if cfg.get('x_reversed') else 'right') if freq_on_x else (
+            'bottom' if cfg.get('y_reversed') else 'top')
+        category_name = combo.currentText()
+        notes = []
+        for cons_idx in range(int(cfg.get('rows') or 0)):
+            tel = tels[cons_idx] if cons_idx < len(tels) else None
+            boundary_index, placement = _tel_matrix_boundary(tel, boundaries)
+            level_name = str(cons_codes[cons_idx]) if cons_idx < len(cons_codes) else f'C{cons_idx + 1}'
+            if placement == 'undefined':
+                notes.append(f'{level_name}: inget TEL')
+                continue
+            if placement == 'invalid' or len(boundaries) != n_freq - 1:
+                notes.append(f'{level_name}: ogiltigt TEL eller frekvensgräns')
+                continue
+            exact_value = repr(float(tel))
+            if placement == 'below':
+                frequency_idx, edge = 0, low_edge
+                location = 'i lägsta öppna frekvensklassen, under lägsta angivna gräns'
+            elif placement == 'above':
+                frequency_idx, edge = n_freq - 1, high_edge
+                location = 'i högsta öppna frekvensklassen, över högsta angivna gräns'
+            else:
+                frequency_idx, edge = boundary_index + 1, low_edge
+                if placement == 'exact':
+                    location = 'exakt på cellgränsen'
+                else:
+                    location = (f'schematisk linje vid {repr(boundaries[boundary_index])}/år; '
+                                'TEL ligger mellan två frekvensgränser')
+            tooltip = (f'{category_name} · {level_name}\nTEL: {exact_value}/år\n'
+                       f'{location}.\nDra i den runda markören för att flytta '
+                       'TEL till en numerisk frekvensgräns.')
+            for _row, buttons in self._cell_buttons:
+                for button in buttons:
+                    if button.row == cons_idx and button.col == frequency_idx:
+                        button.set_tel_marker(edge, TEL_MARKER, tooltip, key)
+                        break
+            notes.append(f'{level_name}: {exact_value}/år' +
+                         (' (≈ cellgräns)' if placement == 'schematic' else
+                          ' (yttersta klassen)' if placement in ('below', 'above') else ''))
+        prefix = ('Osparad TEL-ändring. ' if self._lopa_dirty else '') + (
+            'Dra i linjens runda markör för att välja en frekvensgräns. ')
+        if ('ST1' in str(getattr(self, '_pending_template_name', '')) or
+                (cfg.get('x_codes') == ST1_RISK_MATRIX_PRESET['x_codes'] and
+                 cfg.get('x_labels') == ST1_RISK_MATRIX_PRESET['x_labels'])):
+            prefix += 'ST1:s numeriska frekvensgränser är tekniska riktvärden. '
+        summary.setText(prefix + ' · '.join(notes))
+
+    def _move_tel_to_boundary(self, category_key, consequence_index,
+                              boundary_index):
+        """Snap a dragged TEL to an existing numeric boundary in the working copy."""
+        if (self._axes_boundary_invalid or
+                category_key != self._tel_category_combo.currentData()):
+            return
+        cfg = _normalise_matrix(json.loads(json.dumps(
+            getattr(self, '_last_built_cfg', None) or self.db.get_risk_matrix() or DEFAULT_MATRIX)))
+        boundaries = self._working_frequency_boundaries(cfg)
+        if (not 0 <= consequence_index < int(cfg.get('rows') or 0) or
+                not 0 <= boundary_index < len(boundaries) or
+                len(boundaries) != int(cfg.get('cols') or 0) - 1 or
+                any(not math.isfinite(value) or value <= 0 for value in boundaries) or
+                any(left >= right for left, right in zip(boundaries, boundaries[1:]))):
+            return
+        if not self._lopa_loaded:
+            self._load_lopa_settings()
+        for row in range(self._lopa_tel_table.rowCount()):
+            anchor = self._lopa_tel_table.item(row, 0)
+            if (anchor is not None and
+                    anchor.data(Qt.ItemDataRole.UserRole) == category_key and
+                    int(anchor.data(Qt.ItemDataRole.UserRole + 1) or 0) == consequence_index):
+                self._lopa_tel_table.item(row, 3).setText(repr(boundaries[boundary_index]))
+                return
 
     def _schedule_category_row_resize(self):
         """Resize matrix rows after wrapped category text changes.
@@ -4187,10 +4746,8 @@ class HAZOPPreparationPanel(QWidget):
         self._matrix_grid.activate()
 
     def _save_acceptance_criteria(self):
-        """Persist definitions and renamed matrix-cell labels together."""
-        if self._save_matrix_values(show_confirmation=False):
-            QMessageBox.information(
-                self, "Sparat", "Acceptanskriterierna har sparats med riskmatrisen.")
+        """Compatibility entry point for the shared risk-profile save."""
+        return self._save_current_risk_profile()
 
     def _save_matrix_values(self, show_confirmation=True):
         n_cons = self._rows_spin.value()   # consequence levels (rows in data)
@@ -4263,24 +4820,34 @@ class HAZOPPreparationPanel(QWidget):
             # LOPA settings are part of the same reusable risk-matrix
             # template.  Matrix-grid/axis editing must therefore carry them
             # forward instead of resetting user-entered TEL/SIL values.
-            # The LOPA page can have saved TEL changes since this grid was
-            # first built. Prefer the latest persisted LOPA block so a later
-            # matrix-cell save never rolls those changes back.
+            # A selected template or unsaved TEL editor is the current
+            # working copy. Ordinary edits use the latest persisted block.
             'lopa': json.loads(json.dumps(
-                (self.db.get_risk_matrix() or {}).get('lopa') or
+                (working.get('lopa') if (
+                    getattr(self, '_pending_template_categories', None) is not None or
+                    self._lopa_dirty) else
+                 (self.db.get_risk_matrix() or {}).get('lopa')) or
                 working.get('lopa') or {})),
+            'consequence_categories': json.loads(json.dumps(
+                working.get('consequence_categories', []))),
         }
         # Read frequency boundaries from editable row/column (display order)
         freq_boundaries = []
-        for e in getattr(self, '_freq_boundary_edits', []):
+        edits = getattr(self, '_freq_boundary_edits', [])
+        if len(edits) != n_freq - 1:
+            QMessageBox.warning(self, 'Ogiltiga gränser',
+                                'Alla frekvensgränser måste vara ifyllda.')
+            return False
+        for e in edits:
             try:
                 v = float(e.text().strip())
-                if v > 0:
-                    freq_boundaries.append(v)
+                if not math.isfinite(v) or v <= 0:
+                    raise ValueError
+                freq_boundaries.append(v)
             except ValueError:
-                pass
-        if not freq_boundaries:
-            freq_boundaries = list(DEFAULT_FREQ_BOUNDARIES)
+                QMessageBox.warning(self, 'Ogiltig gräns',
+                                    'Frekvensgränser måste vara positiva, ändliga tal.')
+                return False
         # Boundary edits were laid out in display order; convert back to data order
         # (lowest freq level first) by reversing when the display was reversed:
         #   freq_on_x + x_rev: highest-freq col is leftmost → edits stored high-to-low
@@ -4289,6 +4856,10 @@ class HAZOPPreparationPanel(QWidget):
                                (not freq_on_x and not self._y_rev_chk.isChecked())
         if _is_reversed_display:
             freq_boundaries = list(reversed(freq_boundaries))
+        if any(left >= right for left, right in zip(freq_boundaries, freq_boundaries[1:])):
+            QMessageBox.warning(self, 'Ogiltiga gränser',
+                                'Frekvensgränserna måste öka från lägst till högst.')
+            return False
         cfg['freq_boundaries'] = freq_boundaries
 
         pending_categories = getattr(self, '_pending_template_categories', None)
@@ -4314,12 +4885,9 @@ class HAZOPPreparationPanel(QWidget):
                                        error_title="Riskmatrisen sparades inte"):
         """Apply a loaded template, opening the review wizard when needed.
 
-        Preset/template buttons normally route assessed projects through the
-        migration dialog immediately.  The Axlar and Riskmatris save buttons
-        can also be reached after a working-copy preset was loaded directly,
-        though.  Do not turn that legitimate route into the misleading
-        ``Mallen innehåller bedömningar`` error: use the same reviewed,
-        backed-up migration flow here as the template buttons do.
+        Template selection changes only the working copy. The shared Save
+        action uses the reviewed, backed-up migration flow for projects that
+        already contain HAZOP assessments.
         """
         source = self.db.get_risk_matrix() or DEFAULT_MATRIX
         template_name = getattr(self, '_pending_template_name', '') or 'den nya mallen'
@@ -4346,6 +4914,10 @@ class HAZOPPreparationPanel(QWidget):
 
         self._pending_template_categories = None
         self._pending_template_name = ''
+        self._pending_template_note.hide()
+        self._discard_template_btn.hide()
+        self._save_matrix_btn.setText('Spara riskmatris')
+        self._lopa_loaded = False
         self._load_categories()
         saved = self.db.get_risk_matrix() or cfg
         self._last_built_cfg = saved
@@ -4415,18 +4987,46 @@ class HAZOPPreparationPanel(QWidget):
             self, "Spara egen riskmatrismall", "Mallnamn:",
             text="Egen riskmatris")
 
-    def _save_matrix(self):
-        """Save the complete risk profile once and retain it as a named template."""
-        # Bring matrix cell/header changes into the same working copy before
-        # deciding whether Axlar also needs to be saved.
-        self._apply_size()
-        has_axes_edits = self._axes_dirty
-        has_matrix_edits = not self._working_matrix_matches_saved()
-        if not has_axes_edits and not has_matrix_edits and \
-                getattr(self, '_pending_template_categories', None) is None:
-            QMessageBox.information(self, "Inga ändringar", "Det finns inga riskmatrisändringar att spara.")
-            return
+    def _has_unsaved_risk_profile(self):
+        return (self._axes_dirty or self._grid_boundaries_dirty or
+                self._matrix_levels_dirty or self._lopa_dirty or
+                getattr(self, '_pending_template_categories', None) is not None or
+                not self._working_matrix_matches_saved())
 
+    def _save_current_risk_profile(self, show_confirmation=True):
+        """Persist all risk subviews in one action, including pending TEL."""
+        self._apply_size()
+        if not self._has_unsaved_risk_profile():
+            if show_confirmation:
+                QMessageBox.information(self, 'Inga ändringar',
+                                        'Det finns inga riskmatrisändringar att spara.')
+            return True
+        if self._lopa_dirty:
+            lopa = self._lopa_config_from_ui(self._last_built_cfg)
+            if lopa is None:
+                return False
+            self._last_built_cfg['lopa'] = lopa
+        if self._axes_dirty:
+            saved = self._save_axes_and_categories_values(show_confirmation=False)
+        else:
+            saved = self._save_matrix_values(show_confirmation=False)
+        if not saved:
+            return False
+        self._axes_dirty = False
+        self._grid_boundaries_dirty = False
+        self._matrix_levels_dirty = False
+        self._lopa_dirty = False
+        self._lopa_loaded = False
+        self._last_built_cfg = self.db.get_risk_matrix() or DEFAULT_MATRIX
+        self._load_matrix_ui()
+        self._reload_axes_tables()
+        self._load_lopa_settings()
+        if show_confirmation:
+            QMessageBox.information(self, 'Sparat', 'Riskmatris, acceptanskriterier och TEL sparade.')
+        return True
+
+    def _save_matrix(self):
+        """Optional named template export of the complete current profile."""
         name, ok = self._ask_custom_matrix_template_name()
         name = name.strip()
         if not ok:
@@ -4434,20 +5034,9 @@ class HAZOPPreparationPanel(QWidget):
         if not name:
             QMessageBox.warning(self, "Mallnamn saknas", "Ange ett namn för den egna riskmatrismallen.")
             return
-
-        before = json.dumps(_normalise_matrix(json.loads(json.dumps(
-            self.db.get_risk_matrix() or DEFAULT_MATRIX))), sort_keys=True)
-        if has_axes_edits:
-            self._save_axes_and_categories_values(show_confirmation=False)
-        else:
-            self._save_matrix_values(show_confirmation=False)
-        saved = self.db.get_risk_matrix() or DEFAULT_MATRIX
-        after = json.dumps(_normalise_matrix(json.loads(json.dumps(saved))), sort_keys=True)
-        if after == before:
-            # Validation errors in the delegated save routines leave the
-            # database untouched; in that case never create a misleading
-            # named template.
+        if not self._save_current_risk_profile(show_confirmation=False):
             return
+        saved = self.db.get_risk_matrix() or DEFAULT_MATRIX
         try:
             self.db.save_custom_risk_matrix_template(name, saved)
         except Exception as exc:
@@ -4466,7 +5055,27 @@ class HAZOPPreparationPanel(QWidget):
             self.db.get_risk_matrix() or DEFAULT_MATRIX)))
         working = _normalise_matrix(json.loads(json.dumps(
             getattr(self, '_last_built_cfg', None) or saved)))
+        # Legacy/default profiles omit these presentation keys. Rebuilding
+        # an untouched grid fills them in, which is not a user edit.
+        for cfg in (saved, working):
+            cfg.setdefault('x_reversed', False)
+            cfg.setdefault('y_reversed', False)
+            cfg.setdefault('freq_boundaries', list(DEFAULT_FREQ_BOUNDARIES))
         return json.dumps(saved, sort_keys=True) == json.dumps(working, sort_keys=True)
+
+    def _discard_pending_template(self):
+        """Explicitly restore the persisted profile after previewing a template."""
+        self._pending_template_categories = None
+        self._pending_template_name = ''
+        self._pending_template_note.hide()
+        self._discard_template_btn.hide()
+        self._save_matrix_btn.setText('Spara riskmatris')
+        self._axes_dirty = False
+        self._lopa_dirty = False
+        self._lopa_loaded = False
+        self._load_matrix_ui()
+        self._reload_axes_tables()
+        self._load_lopa_settings()
 
     def _load_matrix_template_working_copy(self, cfg, template_name=''):
         """Show a candidate template without writing data or database config."""
@@ -4489,7 +5098,17 @@ class HAZOPPreparationPanel(QWidget):
         self._pending_template_categories = json.loads(json.dumps(
             cfg.get('consequence_categories', [])))
         self._pending_template_name = str(template_name or '')
+        self._load_risk_levels_from_cfg(cfg)
         self._build_matrix_grid(cfg)
+        self._reload_axes_tables(cfg)
+        self._lopa_loaded = False
+        self._load_lopa_settings()
+        self._pending_template_note.setText(
+            f'Förhandsgranskning: {self._pending_template_name}. '
+            'Spara riskmatris för att använda mallen. Befintliga bedömningar granskas före byte.')
+        self._pending_template_note.show()
+        self._discard_template_btn.show()
+        self._save_matrix_btn.setText('Använd vald mall')
 
     def _request_frequency_template(self, labels, bounds, name, codes=None):
         """Build a complete, reusable template for a frequency standard."""
@@ -4504,36 +5123,16 @@ class HAZOPPreparationPanel(QWidget):
         self._request_matrix_template(candidate, name)
 
     def _request_matrix_template(self, candidate, name):
-        """Open a safe migration when an existing study has assessed data."""
-        if not self._working_matrix_matches_saved():
+        """Preview a template; applying it remains one explicit save action."""
+        self._apply_size()
+        if self._has_unsaved_risk_profile():
             QMessageBox.warning(
                 self, "Osparade ändringar",
                 "Spara eller ladda om den pågående riskmatrisredigeringen först. "
-                "Mallbytet jämför alltid med den senast sparade matrisen.")
+                "Avbryt ett pågående mallbyte innan du väljer en annan mall.")
             return
-        source = self.db.get_risk_matrix() or DEFAULT_MATRIX
         candidate = _normalise_matrix(json.loads(json.dumps(candidate)))
-        preview = self.db.risk_matrix_migration_preview(source, candidate)
-        has_assessments = bool(preview['frequency_records'] or preview['severity_records'])
-        if not has_assessments:
-            self._load_matrix_template_working_copy(candidate, name)
-            return
-        dialog = RiskMatrixMigrationDialog(self.db, source, candidate, name, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        try:
-            result = self.db.apply_risk_matrix_migration(dialog.plan)
-        except Exception as exc:
-            QMessageBox.critical(self, "Mallbytet genomfördes inte", str(exc))
-            return
-        self._load_matrix_ui()
-        self._reload_axes_tables()
-        self._pending_template_categories = None
-        QMessageBox.information(
-            self, "Riskmatris migrerad",
-            f"{result['frequency_count']} frekvens- och {result['severity_count']} "
-            f"konsekvensbedömningar migrerades.\n\nBackup:\n{result['backup_path']}")
-        self.matrix_changed.emit()
+        self._load_matrix_template_working_copy(candidate, name)
 
     def _apply_st1_preset(self):
         """Load the ST1 Sverige AB matrix into the editable matrix UI.

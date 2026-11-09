@@ -8261,3 +8261,44 @@ regressionstester passerar. Ytterligare 17 relevanta scenario- och
 kolumnlayouttester passerar. Hela `tests.test_scenario_panel` försöktes men
 avbröts när offscreen-Qt fastnade i upprepade `QFontEngineFT`-fel;
 den körningen är därför inte godkänd som hel svit.
+
+## 2026-11-09 — TEL direkt i riskmatrisen och ett samlat sparflöde
+
+Riskmatrisen visar TEL som en tjock mörk linje med vit kant per konsekvensnivå
+för valt skadekriterium. Exakt numeriskt TEL står i verktygstips och en kort
+översikt. Om TEL ligger mellan numeriska frekvensgränser placeras linjen
+schematiskt vid närmaste verkliga cellgräns och märks med `≈`; öppna ytterklasser
+markeras vid matrisens ytterkant. ST1:s numeriska gränser anges som tekniska
+riktvärden även efter att mallen sparats.
+
+Linjen har ett runt draghandtag. Användaren kan dra den till en annan intern
+frekvensgräns på samma konsekvensnivå; ett släpp väljer just gränsens numeriska
+värde som TEL i arbetskopian. En förhandsmarkering visar målkanten. Andra
+skadekriterier och nivåer kan inte ta emot släppet. Manuell inmatning i LOPA-vyn
+finns kvar för TEL-värden mellan gränserna. Osparade ändringar visas i
+riskmatrisen tills `Spara riskmatris` används.
+
+Riskmatris, Axlar, Acceptanskriterier och LOPA delar nu en primär sparknapp.
+`Spara som mall…` är en separat valfri åtgärd. Ett mallval förhandsgranskas utan
+databasändring; `Avbryt mallbyte` återställer aktiv matris. När projektet har
+bedömningar används den befintliga granskningsdialogen vid sparande. Byte
+mellan Axlar och matrisen visar giltiga osparade frekvensgränser i matrisen;
+ogiltiga gränser stoppar TEL-dragning tills de rättas. Byte av visningsordning
+i Axlar bevarar osparade texter och gränser. Direkt ändring av ett gränsvärde
+i matrisrutnätet överlever också ombyggnad av vyn; ett ogiltigt utkast lämnas
+kvar i fältet och stoppar sparandet i stället för att försvinna.
+
+Visuellt granskat i offscreen-rendering vid 1200 och 1400 px. Separata
+regressionstester omfattar TEL-placering, drag/släpp, axelriktning, validering,
+mallbyte, enhetlig sparning och befintlig färg-/cellkopiering.
+Syntaxkontroll och `git diff --check` passerar. De nya TEL-testerna (16),
+hela inställningssviten (117), LOPA-panel/modell (99) samt smoke/design (31)
+och databasen (149) passerar. Visuell kontroll av den byggda Windows-appen är inte
+utförd i denna ändring.
+Den föreskrivna samlade regressionskörningen försöktes men avbröts i
+`tests.test_scenario_panel` när offscreen-Qt upprepade
+`QFontEngineFT: Failed to create FreeType font engine` utan framsteg, samma
+miljöproblem som den 8 november. En andra bred körning utan scenariomodulen
+stannade senare på samma Qt-fel. Räkna inte någon av de avbrutna breda
+körningarna som ett godkänt testresultat; de ovan namngivna modulerna har
+körts separat.
