@@ -1,5 +1,52 @@
 # NOTES.md — Beslut och kontext
 
+## 2026-11-11 — Studiehantering: tydligare flikar och säker P&ID-rensning
+
+Statistik visar nu en synlig förklaring av F, C och risknivå före barriärer,
+sökning i översiktsraderna, radantal och vägledning vid tomt resultat. Ett
+lagrat F- eller C-värde utanför den aktiva matrisens nivåer visas som
+`Utanför matrisen` i stället för att tyst klippas till en riskfärg. Sökfilter
+återställs vid projektbyte. Administrationsytans färger hämtas från `design.py`.
+
+P&ID-hantering har inte längre en extra flikrad med en ensam flik. Listan
+heter `Importhistorik` och förklarar att den loggar importer och anteckningar,
+men inte innehåller äldre PDF-revisionskopior; programmet behåller endast den
+aktuella arbets-PDF:en. Tabellens filnamnkolumn har tagits bort eftersom varje
+historikpost pekade mot samma arbetsfil. Långa anteckningar finns i
+verktygstips. En tom lista har vägledning, och `Ta bort P&ID ur studien` är
+inaktiv när inget ritningsunderlag finns.
+
+Rensningen kräver först en lyckad databaskopia. Den tar i en transaktion bort
+revisioner, blad, samtliga markörer inklusive utrustning, nodkonturer,
+redmarkeringar, kopplingar, sidrotationer, brädanteckningar och P&ID-layout.
+Äldre nodkonturer och sidreferenser nollställs; HAZOP-struktur och
+utrustningsregister bevaras. Ett SQL-fel rullar tillbaka hela rensningen.
+Den lokala arbets-PDF:en ligger kvar för återställning. Nästa import känner
+inte igen den som aktiv P&ID och tar en separat kopia i `hazop_backups` innan
+arbetsfilen ersätts. P&ID-vyns fördröjda lägessparning stoppas när underlaget
+rensas, så gammal vyinformation inte skrivs tillbaka.
+
+## 2026-11-11 — TEL kan dras till riskmatrisens ytterkant
+
+TEL-handtaget accepterar nu även matrisens två yttre frekvenskanter. Vid en
+öppen ytterklass efterfrågas ett exakt positivt TEL/år som ligger på rätt
+sida om den närmaste numeriska gränsen; inget ungefärligt värde gissas.
+Avbruten eller ogiltig inmatning ändrar inte TEL. Detta gör den nedersta
+kanten användbar när frekvensen visas vertikalt. Samma beteende gäller om
+axeln vänds eller frekvensen visas horisontellt.
+
+Verifiering: syntaxkontroll, 151 databastester, 119 inställningstester,
+18 TEL-tester, 17 designtester, 15 smoke-tester samt riktade P&ID-tester
+passerade headless. Administrationsflikarna granskades som renderade widgets
+vid 1200 px; Qt-miljön saknar fungerande textfont i offscreen-läget, så det
+är en kontroll av struktur och geometri, inte en full visuell kontroll av
+text eller ett manuellt arbetsflöde i Windows-programmet. En fristående
+Windows-byggnad i en separat katalog startade och var igång efter 12 sekunder;
+svensk stavningsordbok fanns med och konkurrerande ICU-DLL saknades.
+En ren kopia utan testdatabas paketerades till
+`packaging/output/HazopSetup_2026-11-11.exe` (120 522 277 byte). Själva
+installationsflödet har inte körts igenom.
+
 ## LOPA: en vertikalt rullande sida (2026-11-08)
 
 Dokumenttabellerna i LOPA visar nu alla rader utan egna vertikala rullistor.

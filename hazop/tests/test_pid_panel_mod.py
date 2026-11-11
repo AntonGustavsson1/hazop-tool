@@ -109,6 +109,25 @@ class PIDViewStatePersistenceTests(unittest.TestCase):
         self.db.conn.close()
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
+    def test_cleared_study_does_not_reuse_leftover_working_pdf(self):
+        from pid_viewer import PIDPanel
+
+        panel = PIDPanel(self.db)
+        try:
+            self.assertTrue(panel._has_active_working_pdf())
+            panel.try_reload_pdf()
+            self.db.clear_all_pid_data()
+            panel.try_reload_pdf()
+            self.app.processEvents()
+            self.assertTrue(Path(self.pdf_path).exists())
+            self.assertFalse(panel._has_active_working_pdf())
+            self.assertFalse(self.db.has_pid_data())
+            preserved = panel._preserve_unlinked_working_pdf(Path(self.pdf_path))
+            self.assertTrue(preserved.exists())
+            self.assertEqual(preserved.read_bytes(), Path(self.pdf_path).read_bytes())
+        finally:
+            panel.deleteLater()
+
     def test_try_reload_restores_active_page_and_zoom(self):
         from pid_viewer import PIDPanel
         from PyQt6.QtGui import QTransform

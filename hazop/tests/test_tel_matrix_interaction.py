@@ -67,6 +67,13 @@ class TelMatrixInteractionTests(unittest.TestCase):
                          {'bottom': 1, 'top': 2})
         self.assertEqual(_tel_internal_edges(0, 5, True), {'right': 0})
         self.assertEqual(_tel_internal_edges(4, 5, True), {'left': 3})
+        self.assertEqual(_tel_internal_edges(0, 5, False, include_outer=True),
+                         {'bottom': -1, 'top': 0})
+        self.assertEqual(_tel_internal_edges(4, 5, False, include_outer=True),
+                         {'bottom': 3, 'top': 4})
+        self.assertEqual(_tel_internal_edges(0, 5, False, y_reversed=True,
+                                             include_outer=True),
+                         {'top': -1, 'bottom': 0})
 
     def test_displayed_tel_edge_follows_axis_orientation(self):
         panel = self.panel
@@ -127,6 +134,59 @@ class TelMatrixInteractionTests(unittest.TestCase):
         self.assertEqual(self.db.get_risk_matrix()['lopa']['category_settings'][key]['tel'][2],
                          expected)
         self.assertNotIn('Osparad TEL-ändring', panel._tel_summary.text())
+
+    def test_tel_can_be_dropped_at_bottom_of_vertical_frequency_axis(self):
+        panel = self.panel
+        key = panel._tel_category_combo.currentData()
+        panel._axis_combo.setCurrentIndex(panel._axis_combo.findData('consequence'))
+        panel._load_lopa_settings()
+        self._tel_item(key, 2).setText('0.001')
+        target = self._button(2, 0)
+        target.resize(92, 40)
+        self.assertEqual(target._tel_target_edges['bottom'], -1)
+        mime = QMimeData()
+        mime.setData(_TEL_MARKER_MIME, json.dumps({
+            'category': key, 'consequence': 2,
+        }).encode())
+        enter = QDragEnterEvent(QPoint(46, 38), Qt.DropAction.MoveAction, mime,
+                                Qt.MouseButton.LeftButton,
+                                Qt.KeyboardModifier.NoModifier)
+        target.dragEnterEvent(enter)
+        self.assertTrue(enter.isAccepted())
+        self.assertEqual(target._tel_preview_edge, 'bottom')
+        drop = QDropEvent(QPointF(46, 38), Qt.DropAction.MoveAction, mime,
+                          Qt.MouseButton.LeftButton,
+                          Qt.KeyboardModifier.NoModifier)
+        with patch('hazop_preparation_panel.QInputDialog.getText',
+                   return_value=('1e-7', True)) as prompt:
+            target.dropEvent(drop)
+        self.assertTrue(drop.isAccepted())
+        self.assertTrue(prompt.called)
+        self.assertEqual(float(self._tel_item(key, 2).text()), 1e-7)
+        self.assertEqual(target._tel_edge, 'bottom')
+        with patch.object(QMessageBox, 'information'):
+            self.assertTrue(panel._save_current_risk_profile())
+        self.assertEqual(self.db.get_risk_matrix()['lopa']['category_settings'][key]['tel'][2],
+                         1e-7)
+
+    def test_outer_tel_drop_requires_an_exact_value_in_the_open_class(self):
+        panel = self.panel
+        key = panel._tel_category_combo.currentData()
+        panel._load_lopa_settings()
+        original = self._tel_item(key, 2).text()
+        with patch('hazop_preparation_panel.QInputDialog.getText',
+                   side_effect=[('0.1', True), ('1e-7', True)]) as prompt, \
+             patch.object(QMessageBox, 'warning') as warning:
+            panel._move_tel_to_boundary(key, 2, -1)
+        self.assertEqual(prompt.call_count, 2)
+        self.assertEqual(warning.call_count, 1)
+        self.assertEqual(float(self._tel_item(key, 2).text()), 1e-7)
+        with patch('hazop_preparation_panel.QInputDialog.getText',
+                   return_value=('', False)):
+            panel._move_tel_to_boundary(key, 2, len(panel._working_frequency_boundaries(
+                panel._last_built_cfg)))
+        self.assertEqual(float(self._tel_item(key, 2).text()), 1e-7)
+        self.assertNotEqual(original, self._tel_item(key, 2).text())
 
     def test_marker_handle_arms_tel_drag_without_opening_cell_editor(self):
         panel = self.panel

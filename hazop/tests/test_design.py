@@ -147,6 +147,24 @@ class DesignSystemTests(unittest.TestCase):
         self.assertIn('#2457A6', layer_button)
         self.assertIn('#FFFFFF', layer_button)
 
+    def test_admin_styles_use_shared_surfaces_and_distinct_danger_states(self):
+        from design import (
+            ADMIN_SUMMARY_BG, ADMIN_SUMMARY_BORDER, DANGER,
+            DANGER_HOVER, DANGER_PRESSED, SECONDARY_TEXT, SURFACE,
+            admin_danger_button_stylesheet, admin_summary_stylesheet,
+        )
+
+        summary = admin_summary_stylesheet()
+        danger = admin_danger_button_stylesheet()
+        self.assertIn(ADMIN_SUMMARY_BG, summary)
+        self.assertIn(ADMIN_SUMMARY_BORDER, summary)
+        self.assertIn(f'color:{SURFACE}', danger)
+        self.assertIn(DANGER, danger)
+        self.assertIn(DANGER_HOVER, danger)
+        self.assertIn(DANGER_PRESSED, danger)
+        self.assertIn('QPushButton:disabled', danger)
+        self.assertIn(SECONDARY_TEXT, danger)
+
     def test_lopa_document_builders_share_the_neutral_design_tokens(self):
         from design import (
             ACCENT_SELECTION, MUTED_TEXT, SECONDARY_TEXT, SEPARATOR, SURFACE, TEXT,

@@ -81,8 +81,12 @@ def _tel_matrix_boundary(tel, boundaries):
 
 
 def _tel_internal_edges(frequency_index, frequency_count, freq_on_x,
-                        x_reversed=False, y_reversed=False):
-    """Map a displayed cell's real internal edges to numeric boundary indices."""
+                        x_reversed=False, y_reversed=False, include_outer=False):
+    """Map a cell's frequency edges to boundary indices.
+
+    The outer edges have no numeric boundary.  They are drag targets only
+    when ``include_outer`` is requested; the drop then asks for an exact TEL.
+    """
     low_edge, high_edge = (
         ('right', 'left') if x_reversed else ('left', 'right')
     ) if freq_on_x else (
@@ -91,8 +95,12 @@ def _tel_internal_edges(frequency_index, frequency_count, freq_on_x,
     edges = {}
     if frequency_index > 0:
         edges[low_edge] = frequency_index - 1
+    elif include_outer:
+        edges[low_edge] = -1
     if frequency_index < frequency_count - 1:
         edges[high_edge] = frequency_index
+    elif include_outer:
+        edges[high_edge] = frequency_count - 1
     return edges
 
 # ST1 Sverige AB risk matrix transcribed from
@@ -4536,7 +4544,8 @@ class HAZOPPreparationPanel(QWidget):
                 button.set_tel_drop_context(
                     key, _tel_internal_edges(button.col, n_freq, freq_on_x,
                                              cfg.get('x_reversed', False),
-                                             cfg.get('y_reversed', False))
+                                             cfg.get('y_reversed', False),
+                                             include_outer=True)
                     if boundaries_valid else {})
         low_edge = ('right' if cfg.get('x_reversed') else 'left') if freq_on_x else (
             'top' if cfg.get('y_reversed') else 'bottom')
@@ -4570,7 +4579,8 @@ class HAZOPPreparationPanel(QWidget):
                                 'TEL ligger mellan två frekvensgränser')
             tooltip = (f'{category_name} · {level_name}\nTEL: {exact_value}/år\n'
                        f'{location}.\nDra i den runda markören för att flytta '
-                       'TEL till en numerisk frekvensgräns.')
+                       'TEL till en frekvensgräns eller matrisens ytterkant. '
+                       'Vid ytterkanten anges ett exakt värde.')
             for _row, buttons in self._cell_buttons:
                 for button in buttons:
                     if button.row == cons_idx and button.col == frequency_idx:
@@ -4580,7 +4590,7 @@ class HAZOPPreparationPanel(QWidget):
                          (' (≈ cellgräns)' if placement == 'schematic' else
                           ' (yttersta klassen)' if placement in ('below', 'above') else ''))
         prefix = ('Osparad TEL-ändring. ' if self._lopa_dirty else '') + (
-            'Dra i linjens runda markör för att välja en frekvensgräns. ')
+            'Dra i linjens runda markör till en frekvensgräns eller ytterkant. ')
         if ('ST1' in str(getattr(self, '_pending_template_name', '')) or
                 (cfg.get('x_codes') == ST1_RISK_MATRIX_PRESET['x_codes'] and
                  cfg.get('x_labels') == ST1_RISK_MATRIX_PRESET['x_labels'])):
@@ -4597,11 +4607,37 @@ class HAZOPPreparationPanel(QWidget):
             getattr(self, '_last_built_cfg', None) or self.db.get_risk_matrix() or DEFAULT_MATRIX)))
         boundaries = self._working_frequency_boundaries(cfg)
         if (not 0 <= consequence_index < int(cfg.get('rows') or 0) or
-                not 0 <= boundary_index < len(boundaries) or
+                not -1 <= boundary_index <= len(boundaries) or
                 len(boundaries) != int(cfg.get('cols') or 0) - 1 or
                 any(not math.isfinite(value) or value <= 0 for value in boundaries) or
                 any(left >= right for left, right in zip(boundaries, boundaries[1:]))):
             return
+        if boundary_index in (-1, len(boundaries)):
+            below = boundary_index == -1
+            limit = boundaries[0] if below else boundaries[-1]
+            relation = 'lägre' if below else 'högre'
+            entered = ''
+            while True:
+                entered, accepted = QInputDialog.getText(
+                    self, 'TEL i öppen frekvensklass',
+                    f'Den yttre kanten har ingen numerisk gräns. Ange exakt TEL '
+                    f'(händelser/år), {relation} än {repr(limit)}:',
+                    text=entered)
+                if not accepted:
+                    return
+                try:
+                    tel_value = float(entered.strip().replace(',', '.'))
+                except ValueError:
+                    tel_value = float('nan')
+                if (math.isfinite(tel_value) and tel_value > 0 and
+                        (tel_value < limit if below else tel_value > limit)):
+                    break
+                QMessageBox.warning(
+                    self, 'Ogiltig TEL',
+                    f'Ange ett positivt tal {relation} än {repr(limit)}/år '
+                    'för den öppna frekvensklassen.')
+        else:
+            tel_value = boundaries[boundary_index]
         if not self._lopa_loaded:
             self._load_lopa_settings()
         for row in range(self._lopa_tel_table.rowCount()):
@@ -4609,7 +4645,7 @@ class HAZOPPreparationPanel(QWidget):
             if (anchor is not None and
                     anchor.data(Qt.ItemDataRole.UserRole) == category_key and
                     int(anchor.data(Qt.ItemDataRole.UserRole + 1) or 0) == consequence_index):
-                self._lopa_tel_table.item(row, 3).setText(repr(boundaries[boundary_index]))
+                self._lopa_tel_table.item(row, 3).setText(repr(tel_value))
                 return
 
     def _schedule_category_row_resize(self):

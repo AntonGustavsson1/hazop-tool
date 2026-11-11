@@ -38,6 +38,14 @@ TEL_DROP_PREVIEW = ACCENT
 POPUP_BORDER = '#4B5563'
 INPUT_BORDER = '#B8BDC4'
 
+# Administration uses the same neutral surfaces as the rest of the app. The
+# destructive P&ID action keeps a distinct colour even beside ordinary buttons.
+ADMIN_SUMMARY_BG = SUBTLE_SURFACE
+ADMIN_SUMMARY_BORDER = SEPARATOR
+DANGER = '#C62828'
+DANGER_HOVER = '#B71C1C'
+DANGER_PRESSED = '#8E1616'
+
 # HAZOP's deliberately neutral, flat selected-cell overlay.  Custom-painted
 # delegates use the same values, so a selected cell does not turn into a
 # second blue edit widget.
@@ -727,6 +735,29 @@ def dialog_primary_button_stylesheet() -> str:
         f'QPushButton{{background:{ACCENT};color:{SURFACE};border:none;'
         f'border-radius:4px;padding:4px 16px;}}'
         f'QPushButton:hover{{background:{ACCENT_HOVER};}}'
+    )
+
+
+def admin_summary_stylesheet() -> str:
+    """Return the calm summary card style for the study overview."""
+    return (
+        f'background:{ADMIN_SUMMARY_BG};color:{TEXT};'
+        f'border:1px solid {ADMIN_SUMMARY_BORDER};'
+        'border-radius:6px;padding:10px 12px;'
+    )
+
+
+def admin_danger_button_stylesheet() -> str:
+    """Return the destructive-action style, including hover and disabled states."""
+    return (
+        f'QPushButton{{color:{SURFACE};background:{DANGER};'
+        f'border:1px solid {DANGER};border-radius:4px;padding:4px 10px;}}'
+        f'QPushButton:hover:!disabled{{background:{DANGER_HOVER};'
+        f'border-color:{DANGER_HOVER};}}'
+        f'QPushButton:pressed:!disabled{{background:{DANGER_PRESSED};'
+        f'border-color:{DANGER_PRESSED};}}'
+        f'QPushButton:disabled{{background:{SUBTLE_SURFACE};'
+        f'color:{SECONDARY_TEXT};border-color:{SEPARATOR};}}'
     )
 
 

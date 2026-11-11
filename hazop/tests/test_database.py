@@ -2743,5 +2743,76 @@ class RiskMatrixTemplateMigrationTests(unittest.TestCase):
             empty.conn.close()
 
 
+class PIDClearIntegrityTests(unittest.TestCase):
+    """Removing drawings must leave no stale placements on a future PDF."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix='hazop_pid_clear_')
+        self.db = Database(path=os.path.join(self.tmpdir, 'study.db'))
+        self.node_id = self.db.nodes()[0]['id']
+        self.db.conn.execute(
+            "UPDATE nodes SET markup_points='[[1,2],[3,4]]', "
+            "markup_style='old', pid_page=0 WHERE id=?", (self.node_id,))
+        equipment_id = self.db.conn.execute(
+            "INSERT INTO equipment_catalog(tag,pid_page,is_ocr) VALUES ('P-101',0,1)"
+        ).lastrowid
+        self.db.conn.execute(
+            "INSERT INTO equipment_markers(equipment_id,pid_page,x,y) "
+            "VALUES (?,?,10,20)", (equipment_id, 0))
+        self.db.conn.execute(
+            "INSERT INTO board_annotations(x,y,text) VALUES (1,2,'Note')")
+        self.db.conn.execute(
+            "INSERT INTO pid_revisions(revision,pdf_path) VALUES ('A','study_pid.pdf')")
+        self.db.conn.execute(
+            "INSERT INTO pid_sheets(display_order,physical_page) VALUES (0,0)")
+        self.db.conn.execute(
+            "INSERT INTO pid_config(key,value) VALUES ('path','study_pid.pdf')")
+        self.db.conn.execute(
+            "INSERT INTO pid_config(key,value) VALUES ('board_layout','{}')")
+        self.db.conn.commit()
+
+    def tearDown(self):
+        self.db.conn.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_clear_removes_all_pid_state_but_preserves_analysis_and_equipment(self):
+        self.assertTrue(self.db.has_pid_data())
+        self.db.clear_all_pid_data()
+        for table in (
+                'pid_sheets', 'pid_revisions', 'cause_markers',
+                'consequence_markers', 'safeguard_markers', 'equipment_markers',
+                'node_markups', 'node_red_markups', 'off_page_connector',
+                'pid_connection', 'pid_page_rotation', 'board_annotations',
+                'pid_config'):
+            with self.subTest(table=table):
+                count = self.db.conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
+                self.assertEqual(count, 0)
+        node = self.db.conn.execute(
+            'SELECT markup_points,markup_style,pid_page FROM nodes WHERE id=?',
+            (self.node_id,)).fetchone()
+        self.assertEqual((node['markup_points'], node['markup_style'], node['pid_page']),
+                         ('', '', None))
+        self.assertEqual(self.db.conn.execute(
+            'SELECT COUNT(*) FROM equipment_catalog').fetchone()[0], 1)
+        self.assertIsNone(self.db.conn.execute(
+            'SELECT pid_page FROM equipment_catalog').fetchone()[0])
+        self.assertEqual(len(self.db.nodes()), 1)
+        self.assertFalse(self.db.has_pid_data())
+
+    def test_failed_clear_rolls_back_before_later_unrelated_commit(self):
+        self.db.conn.execute(
+            "CREATE TRIGGER prevent_revision_delete BEFORE DELETE ON pid_revisions "
+            "BEGIN SELECT RAISE(ABORT, 'blocked'); END")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.clear_all_pid_data()
+        self.db.set_config('unrelated', 'saved')
+        self.assertEqual(self.db.conn.execute(
+            'SELECT COUNT(*) FROM pid_sheets').fetchone()[0], 1)
+        self.assertEqual(self.db.conn.execute(
+            'SELECT COUNT(*) FROM pid_revisions').fetchone()[0], 1)
+        self.assertEqual(self.db.conn.execute(
+            'SELECT COUNT(*) FROM equipment_markers').fetchone()[0], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

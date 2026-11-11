@@ -202,6 +202,42 @@ class ManualBackupButtonTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
+    def test_study_overview_filters_rows_and_marks_levels_outside_matrix(self):
+        from hazop import StudyManagementPanel
+        from database import load_matrix
+
+        node = self.db.add_node()
+        cause = self.db.add_cause(self.db.deviations(node)[0]['id'])
+        self.db.update_cause(cause, description='Unik pumporsak',
+                             likelihood=99, frequency_override=99,
+                             frequency_cleared=False)
+        consequence = self.db.add_consequence(cause)
+        self.db.update_consequence(consequence, 'Unik tryckföljd', 2)
+        category = self.db.consequence_categories()[0]
+        self.db.set_consequence_severity(consequence, category['id'], 2)
+        load_matrix(self.db)
+        panel = StudyManagementPanel(self.db)
+        try:
+            self.assertEqual(panel._table.item(0, 5).text(), 'Utanför matrisen')
+            panel._stats_search.setText('pumporsak')
+            self.assertFalse(panel._table.isRowHidden(0))
+            self.assertEqual(panel._stats_result.text(), '1 av 1 rader')
+            panel._stats_search.setText('saknas')
+            self.assertTrue(panel._table.isRowHidden(0))
+            self.assertFalse(panel._stats_empty.isHidden())
+            panel._stats_search.clear()
+            self.assertFalse(panel._table.isRowHidden(0))
+            panel._stats_search.setText('gammalt filter')
+            new_db = Database(path=os.path.join(self._tmpdir, 'new_study.db'))
+            try:
+                panel.db = new_db
+                panel.refresh()
+                self.assertEqual(panel._stats_search.text(), '')
+            finally:
+                new_db.conn.close()
+        finally:
+            panel.deleteLater()
+
     def test_barrier_picker_and_project_settings_use_the_same_term(self):
         from PyQt6.QtWidgets import QGroupBox
         from hazop import HAZOPPreparationPanel
@@ -926,14 +962,57 @@ class PIDManagementPanelRevisionRefreshTests(unittest.TestCase):
         finally:
             panel.deleteLater()
 
-    def test_revision_row_shows_filename_not_full_path(self):
+    def test_empty_project_shows_guidance_without_danger_action(self):
         from hazop import PIDManagementPanel
+
+        panel = PIDManagementPanel(self.db)
+        try:
+            self.assertEqual(panel._rev_table.rowCount(), 0)
+            self.assertFalse(panel._rev_empty.isHidden())
+            self.assertFalse(panel._clear_all_btn.isEnabled())
+        finally:
+            panel.deleteLater()
+
+    def test_import_log_does_not_promise_historic_pdf_copies(self):
+        from hazop import PIDManagementPanel
+        from PyQt6.QtWidgets import QTabWidget
         self.db.add_revision('A', '', pdf_path='C:/some/real/path.pdf')
         panel = PIDManagementPanel(self.db)
         try:
             panel.refresh()
-            # Column 3 ("PDF-fil") holds Path(rev['pdf_path']).name, not the full path.
-            self.assertEqual(panel._rev_table.item(0, 3).text(), 'path.pdf')
+            self.assertEqual(panel._rev_table.columnCount(), 3)
+            self.assertEqual(panel._rev_table.item(0, 0).text(), 'A')
+            self.assertEqual(panel._rev_table.horizontalHeaderItem(2).text(), 'Registrerad')
+            self.assertEqual(len(panel.findChildren(QTabWidget)), 0)
+            self.assertTrue(panel._clear_all_btn.isEnabled())
+        finally:
+            panel.deleteLater()
+
+    def test_remove_pid_requires_backup_and_refreshes_only_after_success(self):
+        from hazop import PIDManagementPanel
+
+        self.db.add_revision('A', 'Importerad ritning', pdf_path='study_pid.pdf')
+        panel = PIDManagementPanel(self.db)
+        try:
+            with unittest.mock.patch.object(QMessageBox, 'exec',
+                    return_value=QMessageBox.StandardButton.Yes), \
+                 unittest.mock.patch.object(Database, '_write_backup', return_value=None), \
+                 unittest.mock.patch.object(QMessageBox, 'warning') as warning:
+                panel._clear_all_pid()
+            self.assertEqual(len(self.db.get_revisions()), 1)
+            self.assertEqual(warning.call_count, 1)
+
+            signals = []
+            panel.sheets_changed.connect(lambda: signals.append(True))
+            with unittest.mock.patch.object(QMessageBox, 'exec',
+                    return_value=QMessageBox.StandardButton.Yes), \
+                 unittest.mock.patch.object(Database, '_write_backup',
+                    return_value=Path(self._tmpdir) / 'backup.db'), \
+                 unittest.mock.patch.object(QMessageBox, 'information'):
+                panel._clear_all_pid()
+            self.assertEqual(len(self.db.get_revisions()), 0)
+            self.assertEqual(signals, [True])
+            self.assertFalse(panel._clear_all_btn.isEnabled())
         finally:
             panel.deleteLater()
 

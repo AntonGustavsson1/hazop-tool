@@ -7896,17 +7896,69 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         self.conn.execute("DELETE FROM pid_sheets")
         self.commit()
 
-    def clear_all_pid_data(self):
-        """Remove all P&ID revisions, sheets, placements, markups and connectors."""
+    def has_pid_data(self):
+        """Whether the study still has a P&ID document, layout or placement."""
         for table in (
-            "pid_sheets", "pid_revisions",
-            "cause_markers", "consequence_markers", "safeguard_markers",
-            "node_markups", "node_red_markups",
-            "off_page_connector", "pid_connection", "pid_page_rotation",
+            "pid_sheets", "pid_revisions", "cause_markers",
+            "consequence_markers", "safeguard_markers", "equipment_markers",
+            "node_markups", "node_red_markups", "off_page_connector",
+            "pid_connection", "pid_page_rotation", "board_annotations",
+            "pid_config",
         ):
-            self.conn.execute(f"DELETE FROM {table}")
-        self.conn.execute("DELETE FROM pid_config WHERE key='path'")
-        self.commit()
+            if self.conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                return True
+        if self.conn.execute(
+                "SELECT 1 FROM nodes WHERE COALESCE(markup_points, '')<>'' "
+                "OR COALESCE(markup_style, '')<>'' OR pid_page NOT IN (0) "
+                "LIMIT 1").fetchone():
+            return True
+        return self.conn.execute(
+            "SELECT 1 FROM equipment_catalog WHERE pid_page NOT IN (0) "
+            "OR (pid_page=0 AND is_ocr=1) "
+            "LIMIT 1").fetchone() is not None
+
+    def clear_all_pid_data(self):
+        """Remove P&ID documents and placements while retaining HAZOP records.
+
+        A failed statement must not leave half of the clear pending for a later
+        unrelated edit to commit.  The working PDF on disk is deliberately not
+        touched here; it can be recovered even after the database is cleared.
+        """
+        started_transaction = not self.conn.in_transaction
+        savepoint_open = False
+        try:
+            if started_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
+            self.conn.execute("SAVEPOINT clear_all_pid_data")
+            savepoint_open = True
+            for table in (
+                "pid_sheets", "pid_revisions",
+                "cause_markers", "consequence_markers", "safeguard_markers",
+                "equipment_markers", "node_markups", "node_red_markups",
+                "off_page_connector", "pid_connection", "pid_page_rotation",
+                "board_annotations", "pid_config",
+            ):
+                self.conn.execute(f"DELETE FROM {table}")
+            # Older node outlines live on nodes rather than in node_markups.
+            # Keep the node and its analysis, but remove the old page anchor.
+            self.conn.execute(
+                "UPDATE nodes SET markup_points='', markup_style='', pid_page=NULL "
+                "WHERE COALESCE(markup_points, '')<>'' "
+                "OR COALESCE(markup_style, '')<>'' OR pid_page IS NOT NULL")
+            # Equipment records and their HAZOP links remain useful; the page
+            # number is provenance from the now detached drawing.
+            self.conn.execute(
+                "UPDATE equipment_catalog SET pid_page=NULL WHERE pid_page IS NOT NULL")
+            self.conn.execute("RELEASE SAVEPOINT clear_all_pid_data")
+            savepoint_open = False
+            self.commit_strict()
+        except Exception:
+            if savepoint_open:
+                self.conn.execute("ROLLBACK TO SAVEPOINT clear_all_pid_data")
+                self.conn.execute("RELEASE SAVEPOINT clear_all_pid_data")
+            if started_transaction and self.conn.in_transaction:
+                self.conn.rollback()
+            raise
 
     # ── Manuell sidrotation (2026-08-12, see NOTES.md) ──────────────────────
 

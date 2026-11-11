@@ -1771,6 +1771,21 @@ class PIDPanel(QWidget):
         db_path = Path(self.db.path)
         return db_path.with_name(db_path.stem + '_pid.pdf')
 
+    def _has_active_working_pdf(self):
+        """A leftover PDF file alone must not revive a cleared P&ID study."""
+        active_path = self.db.get_pid_path()
+        return bool(active_path and Path(active_path).exists()
+                    and self._working_pdf_path().exists())
+
+    def _preserve_unlinked_working_pdf(self, working):
+        """Copy a detached working PDF before a new first import replaces it."""
+        if not working.exists():
+            return None
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%dT%H-%M-%S-%f')
+        destination = self.db._backup_dir() / f'{working.stem}_before_import_{timestamp}.pdf'
+        shutil.copy2(working, destination)
+        return destination
+
     def _rebuild_sheet_map(self):
         sheets = self.db.get_sheets()
         self._sheet_map = {i: int(s['physical_page']) for i, s in enumerate(sheets)}
@@ -2103,7 +2118,8 @@ class PIDPanel(QWidget):
         first_new_physical = 0
 
         working      = self._working_pdf_path()
-        has_existing = working.exists()
+        has_existing = self._has_active_working_pdf()
+        preserved_working_pdf = None
         created_at   = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
 
         # Import always starts with a fresh (sequential) layout so that
@@ -2225,6 +2241,7 @@ class PIDPanel(QWidget):
         else:
             # First import — merge all selected files into working copy
             try:
+                preserved_working_pdf = self._preserve_unlinked_working_pdf(working)
                 base_doc = fitz.open(paths[0])
                 for p in paths[1:]:
                     ext = fitz.open(p)
@@ -2297,6 +2314,11 @@ class PIDPanel(QWidget):
         prog.close()
         self.analyze_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
+        if preserved_working_pdf is not None:
+            QMessageBox.information(
+                self, "Tidigare arbets-PDF sparad",
+                "Den tidigare P&ID-filen var inte längre kopplad till studien. "
+                f"En kopia sparades före importen:\n{preserved_working_pdf}")
 
     def _goto_page(self, display_n):
         if self.viewer.pdf_doc is None:
@@ -4326,6 +4348,7 @@ class PIDPanel(QWidget):
                 self.analyze_btn.setEnabled(True)
         else:
             # No P&ID in database — clear the canvas completely
+            self._pdf_view_save_timer.stop()
             if self.viewer.pdf_doc is not None:
                 try:
                     self.viewer.pdf_doc.close()
@@ -4349,4 +4372,7 @@ class PIDPanel(QWidget):
             self.viewer._show_placeholder(
                 "Ingen P&ID inläst.\nImportera en PDF-fil med knappen ovan.")
             self.analyze_btn.setEnabled(False)
+            # Clearing the scene changes scrollbars and can arm the debounce
+            # timer again.  No view state belongs in a study without a P&ID.
+            self._pdf_view_save_timer.stop()
         self.export_btn.setEnabled(True)

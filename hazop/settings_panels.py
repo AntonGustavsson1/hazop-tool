@@ -9,7 +9,6 @@ this codebase)."""
 
 import re
 from contextlib import ExitStack
-from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QHBoxLayout,
@@ -21,7 +20,8 @@ from PyQt6.QtGui import QBrush, QColor, QFont
 
 from constants import (TAG_SEARCH_TIMEOUT_MIN_MS, TAG_SEARCH_TIMEOUT_MAX_MS,
                        TAG_SEARCH_TIMEOUT_DEFAULT_MS, normalize_tag_search_timeout_ms)
-from database import Database, risk_info
+from database import Database, get_matrix, risk_info
+from design import admin_danger_button_stylesheet, admin_summary_stylesheet
 from pid_viewer import _icon, FREQ_LABELS, ocr_status
 from ui_helpers import freq_axis_label
 from equipment_panel import TagDatabasePanel, PIDAnalysisPanel
@@ -546,7 +546,7 @@ class SettingsPanel(QWidget):
 
 
 class PIDManagementPanel(QWidget):
-    """PID revision history and sheet reordering panel."""
+    """P&ID import log and study-level document removal."""
     sheets_changed = pyqtSignal()
 
     def __init__(self, db: Database, parent=None):
@@ -557,87 +557,111 @@ class PIDManagementPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        tabs = QTabWidget()
-        layout.addWidget(tabs)
+        heading = QLabel("Importhistorik")
+        heading_font = QFont(heading.font())
+        heading_font.setBold(True)
+        heading.setFont(heading_font)
+        layout.addWidget(heading)
+        intro = QLabel(
+            "Här visas registrerade P&ID-importer och deras anteckningar. "
+            "Endast den aktuella arbets-PDF:en finns i studien; listan innehåller "
+            "inte kopior av tidigare PDF-revisioner.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
 
-        # ── Tab 0: Revision history ───────────────────────────────────────────
-        rev_widget = QWidget()
-        rev_layout = QVBoxLayout(rev_widget)
-        rev_layout.setContentsMargins(8, 8, 8, 8)
-        rev_layout.setSpacing(6)
-
-        rev_hdr = QHBoxLayout()
-        rev_hdr.addWidget(QLabel("Revisionshistorik:"))
-        rev_hdr.addStretch()
-        clear_all_btn = QPushButton("Rensa samtliga P&ID och all data")
-        clear_all_btn.setIcon(_icon('delete'))
-        clear_all_btn.setStyleSheet(
-            "QPushButton{color:#fff;background:#C62828;border-radius:4px;padding:4px 10px;}"
-            "QPushButton:hover{background:#B71C1C;}")
-        clear_all_btn.clicked.connect(self._clear_all_pid)
-        rev_hdr.addWidget(clear_all_btn)
-        rev_layout.addLayout(rev_hdr)
-
-        self._rev_table = QTableWidget(0, 4)
-        self._rev_table.setHorizontalHeaderLabels(['Revision', 'Anteckningar', 'Datum', 'PDF-fil'])
+        self._rev_table = QTableWidget(0, 3)
+        self._rev_table.setHorizontalHeaderLabels(['Revision', 'Anteckningar', 'Registrerad'])
         self._rev_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         self._rev_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._rev_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-        self._rev_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         self._rev_table.setColumnWidth(0, 120)
-        self._rev_table.setColumnWidth(2, 130)
-        self._rev_table.setColumnWidth(3, 180)
+        self._rev_table.setColumnWidth(2, 150)
         self._rev_table.verticalHeader().setVisible(False)
         self._rev_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._rev_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._rev_table.setAlternatingRowColors(True)
-        self._rev_table.setStyleSheet(
-            "QHeaderView::section{background:#F5F5F3;color:#8D9299;font-weight:600;padding:4px;}")
-        rev_layout.addWidget(self._rev_table)
-        tabs.addTab(rev_widget, "Revisioner")
+        layout.addWidget(self._rev_table, 1)
 
-        # "Blad" (sheet ordering/rename/delete) moved out to
-        # HAZOPPreparationPanel (2026-08-17, see NOTES.md) — this panel now
-        # only manages revision history. sheets_changed is still emitted
-        # from here by _clear_all_pid (which also wipes sheets), so the
-        # moved Blad list can still react to a full-clear from this tab.
+        self._rev_empty = QLabel("Inga P&ID-importer registrerade. Importera en PDF i P&ID-vyn.")
+        self._rev_empty.setWordWrap(True)
+        self._rev_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._rev_empty, 1)
+
+        footer = QHBoxLayout()
+        self._rev_status = QLabel()
+        footer.addWidget(self._rev_status)
+        footer.addStretch()
+        self._clear_all_btn = QPushButton("Ta bort P&ID ur studien")
+        self._clear_all_btn.setIcon(_icon('delete', 16, '#ffffff'))
+        self._clear_all_btn.setStyleSheet(admin_danger_button_stylesheet())
+        self._clear_all_btn.setToolTip(
+            "Tar bort P&ID-importer, blad, markeringar och ritningslayout ur studien. "
+            "En säkerhetskopia av databasen skapas först.")
+        self._clear_all_btn.clicked.connect(self._clear_all_pid)
+        footer.addWidget(self._clear_all_btn)
+        layout.addLayout(footer)
         self.refresh()
 
     def refresh(self):
-        self._rev_table.setRowCount(0)
-        for rev in self.db.get_revisions():
-            r = self._rev_table.rowCount()
-            self._rev_table.insertRow(r)
-            self._rev_table.setItem(r, 0, QTableWidgetItem(rev['revision'] or ''))
-            self._rev_table.setItem(r, 1, QTableWidgetItem(rev['notes'] or ''))
-            self._rev_table.setItem(r, 2, QTableWidgetItem(rev['created_at'] or ''))
-            fname = Path(rev['pdf_path']).name if rev['pdf_path'] else ''
-            self._rev_table.setItem(r, 3, QTableWidgetItem(fname))
-            self._rev_table.setRowHeight(r, 24)
+        revisions = self.db.get_revisions()
+        self._rev_table.setRowCount(len(revisions))
+        for r, rev in enumerate(revisions):
+            for col, value in enumerate((rev['revision'], rev['notes'], rev['created_at'])):
+                item = QTableWidgetItem(value or '')
+                item.setToolTip(value or '')
+                self._rev_table.setItem(r, col, item)
+            self._rev_table.setRowHeight(r, max(32, self._rev_table.fontMetrics().lineSpacing() + 12))
+        self._rev_table.setVisible(bool(revisions))
+        self._rev_empty.setVisible(not revisions)
+        count = len(revisions)
+        self._rev_status.setText(f"{count} registrerad import" + ("" if count == 1 else "er"))
+        self._clear_all_btn.setEnabled(self.db.has_pid_data())
 
     def _clear_all_pid(self):
+        if not self.db.has_pid_data():
+            return
         count = len(self.db.get_revisions())
         n_sheets = self.db.conn.execute("SELECT COUNT(*) FROM pid_sheets").fetchone()[0]
         box = QMessageBox(self)
-        box.setWindowTitle("Rensa samtliga P&ID och all data")
+        box.setWindowTitle("Ta bort P&ID ur studien")
         box.setIcon(QMessageBox.Icon.Warning)
         box.setText(
-            f"Det finns <b>{count} P&ID-revision{'er' if count != 1 else ''}</b> "
-            f"och <b>{n_sheets} blad</b> inlagda.\n\n"
-            f"Vill du permanent ta bort <b>alla</b> P&ID, blad, markeringar och kopplingar?")
+            f"Studien har <b>{count} registrerade P&ID-importer</b> "
+            f"och <b>{n_sheets} blad</b>. "
+            "Vill du ta bort P&ID-underlaget och alla ritningsmarkeringar ur studien?")
         box.setInformativeText(
-            "Denna åtgärd kan inte ångras. HAZOP-analysen (noder, orsaker, konsekvenser) "
-            "berörs inte, men alla positioner på P&ID-vyn raderas.")
+            "Noder, orsaker, konsekvenser och utrustningsregister behålls. "
+            "En säkerhetskopia av databasen skapas före rensningen. "
+            "Den lokala arbets-PDF:en ligger kvar på disk; vid nästa import "
+            "sparas en separat kopia av den.")
         box.setStandardButtons(
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         box.setDefaultButton(QMessageBox.StandardButton.No)
-        box.button(QMessageBox.StandardButton.Yes).setText("Rensa allt")
+        box.button(QMessageBox.StandardButton.Yes).setText("Ta bort ur studien")
         box.button(QMessageBox.StandardButton.No).setText("Avbryt")
         if box.exec() != QMessageBox.StandardButton.Yes:
             return
-        self.db.clear_all_pid_data()
+        backup = self.db._write_backup(startup=True)
+        if backup is None:
+            QMessageBox.warning(self, "Rensning avbruten",
+                "Säkerhetskopian kunde inte skapas. P&ID-underlaget har inte ändrats.")
+            return
+        try:
+            self.db.clear_all_pid_data()
+        except Exception as exc:
+            self.refresh()
+            if not self.db.has_pid_data():
+                self.sheets_changed.emit()
+            QMessageBox.critical(self, "Rensning misslyckades",
+                "P&ID-rensningen kunde inte slutföras. Kontrollera studiens "
+                f"status innan du fortsätter. Databaskopia: {backup}\nFel: {exc}")
+            return
         self.refresh()
         self.sheets_changed.emit()
+        QMessageBox.information(self, "P&ID borttagen ur studien",
+            f"P&ID-underlaget och ritningsmarkeringarna har tagits bort.\n"
+            f"Databaskopia: {backup}\n"
+            "Den lokala arbets-PDF:en finns kvar på disk tills en ny import görs.")
 
 
 class StudyManagementPanel(QWidget):
@@ -665,9 +689,15 @@ class StudyManagementPanel(QWidget):
 
         self._stats_lbl = QLabel()
         self._stats_lbl.setWordWrap(True)
-        self._stats_lbl.setStyleSheet(
-            "background:#f0f4f8; border:1px solid #ccc; border-radius:6px; padding:10px;")
+        self._stats_lbl.setStyleSheet(admin_summary_stylesheet())
         stats_layout.addWidget(self._stats_lbl)
+
+        stats_intro = QLabel(
+            "Varje konsekvens visas per bedömt skadekriterium; obedömda "
+            "konsekvenser visas också. "
+            "F är frekvensklass, C är konsekvensnivå och risknivån gäller före barriärer.")
+        stats_intro.setWordWrap(True)
+        stats_layout.addWidget(stats_intro)
 
         bar = QHBoxLayout()
         refresh_btn = QPushButton("Uppdatera")
@@ -683,6 +713,16 @@ class StudyManagementPanel(QWidget):
         bar.addWidget(backup_btn)
         bar.addStretch()
         stats_layout.addLayout(bar)
+
+        search_row = QHBoxLayout()
+        self._stats_search = QLineEdit()
+        self._stats_search.setPlaceholderText("Sök i nod, orsak, konsekvens eller kategori…")
+        self._stats_search.setClearButtonEnabled(True)
+        self._stats_search.textChanged.connect(self._filter_stats)
+        search_row.addWidget(self._stats_search, 1)
+        self._stats_result = QLabel()
+        search_row.addWidget(self._stats_result)
+        stats_layout.addLayout(search_row)
 
         self._table = QTableWidget(0, 8)
         self._table.setHorizontalHeaderLabels(
@@ -706,7 +746,12 @@ class StudyManagementPanel(QWidget):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
-        stats_layout.addWidget(self._table)
+        stats_layout.addWidget(self._table, 1)
+        self._stats_empty = QLabel(
+            "Inga konsekvensbedömningar finns ännu. Lägg till en orsak och konsekvens i HAZOP-vyn.")
+        self._stats_empty.setWordWrap(True)
+        self._stats_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        stats_layout.addWidget(self._stats_empty, 1)
         tabs.addTab(stats_widget, "Statistik")
 
         # ── Tab 1: PID management ─────────────────────────────────────────────
@@ -726,6 +771,9 @@ class StudyManagementPanel(QWidget):
                 "diskutrymme och skrivbehörighet i projektmappen.")
 
     def refresh(self):
+        if getattr(self, '_stats_db', None) is not self.db:
+            self._stats_db = self.db
+            self._stats_search.clear()
         s = self.db.stats()
         self._stats_lbl.setText(
             f"  Noder: <b>{s['nodes']}</b>   |   Orsaker: <b>{s['causes']}</b>   |   "
@@ -741,6 +789,10 @@ class StudyManagementPanel(QWidget):
             return item
 
         rows = self.db.all_data()
+        matrix = get_matrix()
+        min_frequency = -1
+        max_frequency = int(matrix.get('cols', 7)) - 2
+        max_severity = int(matrix.get('rows', 5))
         severities = self.db.get_consequence_severities_for_consequences(
             {row['consequence_id'] for row in rows})
         excluded_by_severity = self.db.get_severity_excluded_sgs_for_severities(
@@ -769,6 +821,12 @@ class StudyManagementPanel(QWidget):
                         missing.append('konsekvensnivå för en kategori')
                     risk_item = _c('Ej bedömd', True)
                     risk_item.setToolTip(f"Ange {' och '.join(missing)} i HAZOP Scenario.")
+                elif not (min_frequency <= int(frequency) <= max_frequency
+                          and 1 <= int(severity) <= max_severity):
+                    risk_item = _c('Utanför matrisen', True)
+                    risk_item.setToolTip(
+                        f"F={frequency}, C={severity} ligger utanför den aktiva "
+                        "riskmatrisens nivåer. Granska bedömningen i HAZOP Scenario.")
                 else:
                     level, bg, fg = risk_info(frequency, severity)
                     risk_item = _c(f"{level}\nF={frequency} C={severity}", True)
@@ -799,6 +857,29 @@ class StudyManagementPanel(QWidget):
                 sg_text = '; '.join(sg_labels) or '—'
                 self._table.setItem(r, 7, _c(sg_text))
                 self._table.setRowHeight(r, max(44, 2 * self._table.fontMetrics().lineSpacing() + 8))
+        self._table.setVisible(bool(self._table.rowCount()))
+        self._stats_empty.setVisible(not self._table.rowCount())
+        self._filter_stats()
+
+    def _filter_stats(self, *_args):
+        query = self._stats_search.text().strip().casefold()
+        visible = 0
+        for row in range(self._table.rowCount()):
+            matches = not query or any(
+                query in (self._table.item(row, col).text().casefold()
+                          if self._table.item(row, col) else '')
+                for col in (0, 1, 3, 6, 7))
+            self._table.setRowHidden(row, not matches)
+            visible += matches
+        total = self._table.rowCount()
+        self._stats_result.setText(f"{visible} av {total} rader" if query
+                                   else f"{total} rader")
+        self._stats_empty.setVisible(visible == 0)
+        self._stats_empty.setText(
+            "Inga rader matchar sökningen." if query and total
+            else "Inga konsekvensbedömningar finns ännu. "
+                 "Lägg till en orsak och konsekvens i HAZOP-vyn.")
+        self._table.setVisible(visible > 0)
 
     def refresh_pid(self):
         self._pid_mgmt.refresh()
