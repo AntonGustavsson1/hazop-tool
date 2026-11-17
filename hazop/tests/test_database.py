@@ -2666,6 +2666,9 @@ class RiskMatrixTemplateMigrationTests(unittest.TestCase):
     def test_conflicting_category_descriptions_abort_without_changes(self):
         self.db.set_severity_definition(1, self.category_id, 'Liten skada')
         plan = self.db.risk_matrix_migration_preview(self.source, self.target)
+        # Conflict protection applies when the target leaves this text blank.
+        for category in plan['target_categories']:
+            category['descriptions'] = [''] * self.target['rows']
         for row in plan['definition_records']:
             row['target'] = 1
         with self.assertRaisesRegex(ValueError, 'Två olika konsekvensbeskrivningar'):

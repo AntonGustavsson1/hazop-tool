@@ -1580,11 +1580,11 @@ class SettingsPanelMergedRiskmatrisKategorierTests(unittest.TestCase):
             self.assertIn(('frequency', 0), dialog._link_field.old_chips)
             self.assertIn(('frequency', 0), dialog._matrix_against_matrix.old_chips)
 
-            # Changing the display axis deliberately starts a fresh mapping
-            # session, per the migration handoff specification.
+            # Orientation changes preserve the reviewed mapping and overrides.
+            mappings = dict(dialog._mapping)
             dialog._swap_target_axes()
-            self.assertEqual(dialog.plan['frequency_map'], {})
-            self.assertEqual(dialog._mapping, {})
+            self.assertEqual(dialog.plan['frequency_map']['0'], -1)
+            self.assertEqual(dialog._mapping, mappings)
             self.assertEqual(dialog.display_x_axis, 'severity')
         finally:
             dialog.deleteLater()

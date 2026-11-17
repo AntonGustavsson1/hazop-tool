@@ -1,5 +1,29 @@
 # NOTES.md — Beslut och kontext
 
+## 2026-11-17 — Sammanhängande riskmatrismigrering
+
+Kategorivyns kopplingslinjer använder nu samma heltalsnycklar som nivåknapparna.
+Globala ändringar uppdaterar ärvda nivåer; kategoriundantag återställs också i
+migreringsposterna, så visad koppling och sparad bedömning överensstämmer.
+Byte av kategori uppdaterar målbeskrivningarna. Axelrotation bevarar kopplingar
+och individuella undantag. Globala verktyg döljs vid kategorikalibrering.
+
+Förhandsgranskning och genomförande normaliserar nu kategori- och LOPA-metadata
+i samma ordning. Det undviker falska meddelanden om ändrad riskmatris när en
+mall har andra kategorinycklar än projektet. Verkliga matris- och frekvensändringar
+avvisas fortfarande. Befintliga
+beskrivningar ger endast kollisionsfel när målmallens beskrivning är tom.
+
+Regressioner täcker ritade linjer för varje kategori, kategoriundantag ända
+till sparad databas, kategoribyte, falsk/verklig ändringskonflikt
+och sammanslagna nivåer med mallbeskrivningar. Projektdatabasen migrerades
+inte under utvecklingen. Slutkontrollen passerar med 35 tester mot en isolerad
+kopia av commitinnehållet: migreringsdatabas, migreringsdialog, nya regressioner
+och smoke. Syntaxkontroll och diffkontroll passerar. En renderad kategorivy
+har granskats visuellt med Windows-typsnitt i offscreen-läge; hela flödet i en
+öppen Windows-applikation har inte körts manuellt.
+
+
 ## 2026-11-17 — Förenklad LOPA-barriäröversikt
 
 Barriäröversikten visar nu en kolumn per skyddstyp, efter upplägget i

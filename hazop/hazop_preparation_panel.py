@@ -910,7 +910,7 @@ class CategorySeverityLinkField(_AxisMappingCanvas):
 
     def iter_mappings(self):
         return [
-            (('severity', source), target)
+            (('severity', int(source)), int(target))
             for source, target in self.dialog.category_severity_mappings(
                 self.source_id).items()
         ]
@@ -1194,7 +1194,9 @@ class RiskMatrixMigrationDialog(QDialog):
         clear_button = QPushButton("Rensa")
         clear_button.clicked.connect(self.clear_axis_mappings)
         toolbar.addWidget(auto_button); toolbar.addWidget(clear_button)
-        outer.addLayout(toolbar)
+        self._global_mapping_toolbar = QWidget()
+        self._global_mapping_toolbar.setLayout(toolbar)
+        outer.addWidget(self._global_mapping_toolbar)
 
         self._progress = QLabel()
         self._progress.setStyleSheet("background:#f3f4f6; border:1px solid #9ca3af; padding:5px 7px;")
@@ -1334,7 +1336,8 @@ class RiskMatrixMigrationDialog(QDialog):
             target = self.target_category(source_id)
             target_name = target.get('name') if target else 'ej kopplad'
             button = QToolButton()
-            button.setText(f"{category['name']} → {target_name}")
+            button.setText(category['name'])
+            button.setToolTip(f"{category['name']} → {target_name}")
             button.setCheckable(True)
             button.setEnabled(bool(target))
             self._style_scope_button(button)
@@ -1382,6 +1385,7 @@ class RiskMatrixMigrationDialog(QDialog):
         self._category_scope_current = None
         self.category_severity_armed = None
         self._global_scope_button.setChecked(True)
+        self._global_mapping_toolbar.setVisible(True)
         for button in self._category_scope_buttons.values():
             button.setChecked(False)
         self._category_scope_stack.setVisible(False)
@@ -1404,6 +1408,7 @@ class RiskMatrixMigrationDialog(QDialog):
         self._category_scope_current = source_id
         self.category_severity_armed = None
         self._global_scope_button.setChecked(False)
+        self._global_mapping_toolbar.setVisible(False)
         for sid, button in self._category_scope_buttons.items():
             button.setChecked(sid == source_id)
         self._category_scope_stack.setCurrentIndex(
@@ -1445,7 +1450,8 @@ class RiskMatrixMigrationDialog(QDialog):
                 continue
             target = self.target_category(source_id)
             target_name = target.get('name') if target else 'ej kopplad'
-            button.setText(f"{category['name']} → {target_name}")
+            button.setText(category['name'])
+            button.setToolTip(f"{category['name']} → {target_name}")
             button.setEnabled(target is not None)
             if source_id == self._category_scope_current and target is None:
                 self._select_global_scope()
@@ -1460,6 +1466,8 @@ class RiskMatrixMigrationDialog(QDialog):
         for source_id in self._category_severity_maps:
             self._sync_category_record_targets(source_id)
         self._category_panel.rebuild()
+        for field in self._category_scope_fields.values():
+            field.rebuild()
         self._refresh_category_scope_buttons()
         self._refresh_visuals()
 
@@ -1471,6 +1479,8 @@ class RiskMatrixMigrationDialog(QDialog):
         for source_id in self._category_severity_maps:
             self._sync_category_record_targets(source_id)
         self._category_panel.rebuild()
+        for field in self._category_scope_fields.values():
+            field.rebuild()
         self._refresh_category_scope_buttons()
         self._refresh_visuals()
 
@@ -1642,6 +1652,8 @@ class RiskMatrixMigrationDialog(QDialog):
         if previous_source:
             self._sync_category_record_targets(previous_source)
         self._category_panel.rebuild()
+        for field in self._category_scope_fields.values():
+            field.rebuild()
         self._refresh_category_scope_buttons()
         self._refresh_visuals()
 
@@ -1650,6 +1662,8 @@ class RiskMatrixMigrationDialog(QDialog):
         self.plan['category_map'] = dict(self._category_mapping)
         self.category_armed = None
         self._category_panel.rebuild()
+        for field in self._category_scope_fields.values():
+            field.rebuild()
         self._refresh_category_scope_buttons()
         self._refresh_visuals()
 
@@ -1701,6 +1715,9 @@ class RiskMatrixMigrationDialog(QDialog):
         source_key = str(source)
         for source_id, mapping in self._category_severity_maps.items():
             if source_key in self._category_severity_overrides.get(source_id, {}):
+                # Global edits update record targets first; restore the
+                # category's effective targets even when its link is pinned.
+                self._sync_category_record_targets(source_id)
                 continue
             if target is None:
                 mapping.pop(source_key, None)
@@ -1785,6 +1802,8 @@ class RiskMatrixMigrationDialog(QDialog):
                 record['target'] = None
                 record['target_category_key'] = None
         self._category_panel.rebuild()
+        for field in self._category_scope_fields.values():
+            field.rebuild()
         self._refresh_category_scope_buttons()
         self._refresh_visuals()
 
@@ -1809,9 +1828,8 @@ class RiskMatrixMigrationDialog(QDialog):
         self._display_x_axis = kind
         self._x_frequency.setChecked(kind == 'frequency')
         self._x_consequence.setChecked(kind == 'severity')
-        # Switching the display axis is a new mapping session.  This avoids
-        # carrying an interpretation made in the other orientation.
-        self.clear_axis_mappings()
+        # Orientation is only a view preference. Ordinal mappings and
+        # reviewed category exceptions retain exactly the same meaning.
         self._matrix_against_matrix.rebuild()
         self._refresh_visuals()
 

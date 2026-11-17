@@ -6010,6 +6010,17 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             result[str(source_index + source_offset)] = target_index + target_offset
         return result
 
+    def _risk_matrix_migration_source(self, cfg):
+        """Canonical snapshot of the matrix and the live category definitions.
+
+        Rebinding categories also changes derived LOPA metadata. Normalise
+        after rebinding on both preview and apply to avoid a false conflict.
+        """
+        source = self._risk_matrix_copy(cfg)
+        source['consequence_categories'] = self._project_category_template(
+            source['rows'], source.get('consequence_categories'))
+        return self._risk_matrix_copy(source)
+
     def risk_matrix_migration_preview(self, source_cfg, target_cfg):
         """Build a pure-data, editable template-conversion plan.
 
@@ -6017,13 +6028,11 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         mapping/record targets in the returned dict and later hand that exact
         reviewed plan to :meth:`apply_risk_matrix_migration`.
         """
-        source = self._risk_matrix_copy(source_cfg)
+        source = self._risk_matrix_migration_source(source_cfg)
         target = self._risk_matrix_copy(target_cfg)
         # The database owns the active category ids and is consequently the
         # source of truth for the source template.  Old saved matrices did
         # not include this snapshot, so build it here without changing data.
-        source['consequence_categories'] = self._project_category_template(
-            source['rows'], source.get('consequence_categories'))
         # Backwards compatible candidates (for example older user-created
         # files) retain the active categories.  Built-in templates always
         # provide their own category profile.
@@ -6232,8 +6241,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         target = self._risk_matrix_copy(plan.get('target_matrix'))
         current = self._risk_matrix_copy(self.get_risk_matrix())
         if plan.get('version') == 2:
-            current['consequence_categories'] = self._project_category_template(
-                current['rows'], current.get('consequence_categories'))
+            current = self._risk_matrix_migration_source(self.get_risk_matrix())
         if json.dumps(current, sort_keys=True) != json.dumps(source, sort_keys=True):
             raise RuntimeError(
                 "Riskmatrisen ändrades medan migreringen granskades. Öppna förhandsgranskningen igen.")
@@ -6254,7 +6262,8 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             'target_categories', target.get('consequence_categories', [])) if row.get('key')}
         source_categories = list(plan.get('source_categories', []))
         if plan.get('version') == 2:
-            if len(source_categories) != len(self.consequence_categories()):
+            if {row['source_id'] for row in source_categories} != {
+                    row['id'] for row in self.consequence_categories()}:
                 raise RuntimeError("Konsekvenskategorier ändrades medan migreringen granskades.")
             targets = []
             for source_category in source_categories:
@@ -6275,6 +6284,11 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             target_key = record.get('target_category_key') or category_map.get(
                 str(record.get('category_id')))
             if target_key not in target_categories:
+                continue
+            descriptions = target_categories[target_key].get('descriptions') or []
+            if target_value <= len(descriptions) and descriptions[target_value - 1]:
+                # A supplied template definition supersedes old descriptions;
+                # merging old levels cannot conflict with text we will not use.
                 continue
             key = (target_key, target_value)
             text = (record.get('description') or '').strip()
