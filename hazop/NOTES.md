@@ -1,5 +1,46 @@
 # NOTES.md — Beslut och kontext
 
+## 2026-11-17 — Förenklad LOPA-barriäröversikt
+
+Barriäröversikten visar nu en kolumn per skyddstyp, efter upplägget i
+användarens Excelark: BPCS, annan SIF, mekanisk barriär, manuell/admin.
+åtgärd och annat skyddssystem. Varje cell håller beskrivning och RRF ihop;
+status visar när en barriär är inaktiv, inte oberoende eller behöver granskas.
+Kategorier som finns i projektets inställningar och äldre LOPA-underlag
+behålls synliga. Ingen beräkningslogik ändrades.
+
+Detaljredigeringen växlar med översikten, så samma barriärer inte visas i två
+tabeller samtidigt. Den fristående barriärsammanfattningen togs bort eftersom
+återstående frekvens och dimensionerande RRF redan visas i matrisen och
+beräkningsöversikten. Layouten inspirerades även av AIChE:s RAST LOPA-worksheet,
+som grupperar skyddslager efter typ:
+https://www.aiche.org/sites/default/files/docs/book-pages/rast_user_manual_version_3.pdf
+
+Verifiering: `py_compile`, `git diff --check` och 50 tester från
+`tests.test_lopa_panel` samt `tests.test_smoke` passerar. Tester täcker alla
+skyddstyper, växling mellan översikt och redigering samt fönsterbredder
+600–1560 px. Windows-GUI:t har inte granskats manuellt.
+
+## 2026-11-17 — TEL-linjen lämnar cellinnehållet fritt
+
+TEL-markeringen är nu en smal mörk linje med ljus kontur placerad vid
+cellkanten. Den stora cirkeln och anslutningsstrecket är borttagna eftersom
+de täckte en del av cellen. Dragningen använder fortfarande en 10 px
+träffzon längs kanten och storleksändringspekare; hjälptexterna beskriver nu
+att man drar i TEL-linjen. Regressionstäckning kontrollerar både dragstart
+nära kanten och att markeringen lämnar cellens innehållsyta fri.
+
+Kraschkontrollen hittade en rapport från 2026-11-12 om ett ogiltigt
+`QMenuBar.setIconSize`-anrop. Det anropet finns inte längre i aktuell kod;
+endast giltiga verktygsknappar sätter ikonstorlek.
+
+Verifiering: syntaxkontroll och `git diff --check` passerar. Samtliga 21
+TEL-interaktionstester och 15 smoke-tester passerar headless. Smoke-testets
+förväntan för saknad grundfrekvens uppdaterades till tom cell, i linje med
+gränssnittets blankcellsregel. Pixelkontrollen bekräftar att cellens
+innehållsyta inte täcks; full Windows-GUI-granskning har inte körts.
+
+
 ## 2026-11-11 — Studiehantering: tydligare flikar och säker P&ID-rensning
 
 Statistik visar nu en synlig förklaring av F, C och risknivå före barriärer,

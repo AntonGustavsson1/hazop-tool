@@ -20,6 +20,12 @@ SURFACE = '#FFFFFF'
 SUBTLE_SURFACE = '#F5F5F3'
 HOVER_SURFACE = '#E8E9E6'
 PRESSED_SURFACE = '#E8E9E6'
+# Read-only content uses a slightly deeper neutral than editable fields. The
+# difference should be visible at a glance without making dense tables look
+# disabled or competing with risk colours.
+READONLY_SURFACE = '#E9EBE8'
+READONLY_HOVER = '#DDE1DC'
+READONLY_BORDER = '#AEB4AE'
 TEXT = '#17191C'
 MUTED_TEXT = '#8D9299'
 SECONDARY_TEXT = '#6B7280'
@@ -35,6 +41,10 @@ ACCENT_SELECTION = '#E6ECFA'
 TEL_MARKER = '#172554'
 TEL_MARKER_OUTLINE = SURFACE
 TEL_DROP_PREVIEW = ACCENT
+TEL_MARKER_EDGE_INSET = 1
+TEL_MARKER_LINE_WIDTH = 2
+TEL_MARKER_OUTLINE_WIDTH = 5
+TEL_MARKER_HIT_RADIUS = 10
 POPUP_BORDER = '#4B5563'
 INPUT_BORDER = '#B8BDC4'
 

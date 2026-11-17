@@ -262,7 +262,8 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.assertEqual(0, table.horizontalScrollBar().maximum())
         self.assertEqual(0, self.panel._detail_scroll.horizontalScrollBar().maximum())
         group = table.cellWidget(0, self.panel._HAZOP_CATEGORY_START_COL)
-        labels = [label.text() for label in group.findChildren(QLabel) if label.text() != '—']
+        labels = [label.text() for label in group.findChildren(QLabel)
+                  if label.text() and label.text() != '—']
         self.assertEqual([name for _key, name in self.panel._category_options()], labels)
         toggle = group.findChild(QCheckBox)
         assessment_id = toggle.property('lopa_assessment_id')
@@ -426,14 +427,14 @@ class LopaHierarchyTableTests(unittest.TestCase):
         table = self.panel._barrier_matrix
         final_column = table.columnCount() - 1
         self.assertEqual('Ofullständig', table.item(1, final_column).text())
-        self.assertEqual('—', table.item(2, final_column).text())
+        self.assertEqual('', table.item(2, final_column).text())
         self.db.set_lopa_source_active(local, False)
         self.panel._populate_barrier_matrix()
         self.assertEqual('Exkluderad', table.item(1, final_column).text())
         self.assertEqual('0.1 /år', table.item(2, final_column).text())
         self.assertIn('inte överlappar', table.item(2, 0).toolTip())
 
-    def test_barrier_summary_uses_governing_consequence_not_first_same_category(self):
+    def test_dimensioning_summary_uses_governing_consequence_not_first_same_category(self):
         source = self.db.lopa_sources(self.revision_id)[0]
         selected_safeguard = source['origin_safeguard_id']
         first = self.db.get_safeguard(selected_safeguard)['consequence_id']
@@ -450,10 +451,12 @@ class LopaHierarchyTableTests(unittest.TestCase):
         result = self.db.lopa_source_calculation(imported['source_id'])
         governing = result['categories'][result['governing_category_index']]
         self.assertEqual(second, governing['hazop_consequence_id'])
-        self.assertIn(f"{governing['remaining_frequency']:.6g} /år", self.panel._barrier_summary.text())
-        self.assertIn(f"{result['required_rrf']:.6g}", self.panel._barrier_summary.text())
-        self.assertIn('Annan konsekvens', self.panel._barrier_summary.text())
         self.assertIn('Annan konsekvens', self.panel._dimensioning_summary.text())
+        self.assertIn(f"{result['required_rrf']:.6g}",
+                      self.panel._dimensioning_summary.text())
+        matrix_result = self.panel._barrier_matrix.item(
+            0, self.panel._barrier_matrix.columnCount() - 1).text()
+        self.assertIn(f"{governing['remaining_frequency']:.6g} /år", matrix_result)
         self.assertIn('Konsekvens: UI-konsekvens', self.panel._barriers.item(0, 4).toolTip())
 
     def test_shared_object_can_be_reviewed_from_barrier_table(self):

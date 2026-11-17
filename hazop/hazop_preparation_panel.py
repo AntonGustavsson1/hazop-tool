@@ -24,8 +24,11 @@ from PyQt6.QtGui import (
 )
 
 from constants import CONFIG, SEV_LABELS
-from design import (TEL_DROP_PREVIEW, TEL_MARKER, TEL_MARKER_OUTLINE,
-                    readable_text_color)
+from design import (
+    TEL_DROP_PREVIEW, TEL_MARKER, TEL_MARKER_EDGE_INSET,
+    TEL_MARKER_HIT_RADIUS, TEL_MARKER_LINE_WIDTH, TEL_MARKER_OUTLINE,
+    TEL_MARKER_OUTLINE_WIDTH, readable_text_color,
+)
 from database import (
     Database, DEFAULT_MATRIX, DEFAULT_FREQ_BOUNDARIES, DEFAULT_RISK_LEVEL_DEFINITIONS,
     _STD_OBJECTS,
@@ -396,8 +399,7 @@ class MatrixCellButton(QPushButton):
     def _near_tel_marker(self, point):
         return bool(
             self._tel_category and self._tel_edge and
-            self._tel_edge_distance(self._tel_edge, point) <=
-            (20 if self._tel_edge in ('left', 'right') else 16))
+            self._tel_edge_distance(self._tel_edge, point) <= TEL_MARKER_HIT_RADIUS)
 
     def _tel_boundary_at(self, point):
         if not self._tel_target_edges:
@@ -420,34 +422,22 @@ class MatrixCellButton(QPushButton):
             return None
         return payload
 
-    def _paint_tel_line(self, painter, edge, color, handle=False):
-        inset = 3
+    def _paint_tel_line(self, painter, edge, color):
+        inset = TEL_MARKER_EDGE_INSET
         if edge in ('left', 'right'):
             x = inset if edge == 'left' else self.width() - inset - 1
             start, end = QPoint(x, 2), QPoint(x, self.height() - 3)
         else:
             y = inset if edge == 'top' else self.height() - inset - 1
             start, end = QPoint(2, y), QPoint(self.width() - 3, y)
-        painter.setPen(QPen(QColor(TEL_MARKER_OUTLINE), 9))
+        # Keep the TEL at the cell boundary: the light halo separates it from
+        # risk colours while the narrow dark stroke avoids covering labels.
+        # The boundary itself is the drag handle; there is no floating circle
+        # over the cell content.
+        painter.setPen(QPen(QColor(TEL_MARKER_OUTLINE), TEL_MARKER_OUTLINE_WIDTH))
         painter.drawLine(start, end)
-        painter.setPen(QPen(color, 5))
+        painter.setPen(QPen(color, TEL_MARKER_LINE_WIDTH))
         painter.drawLine(start, end)
-        if handle:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            line_midpoint = QPointF((start.x() + end.x()) / 2,
-                                    (start.y() + end.y()) / 2)
-            midpoint = QPointF(
-                13 if edge == 'left' else self.width() - 14 if edge == 'right'
-                else line_midpoint.x(),
-                13 if edge == 'top' else self.height() - 14 if edge == 'bottom'
-                else line_midpoint.y())
-            painter.setPen(QPen(color, 2))
-            painter.drawLine(line_midpoint, midpoint)
-            painter.setBrush(QBrush(QColor(TEL_MARKER_OUTLINE)))
-            painter.drawEllipse(midpoint, 7, 7)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(color))
-            painter.drawEllipse(midpoint, 3, 3)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -457,7 +447,7 @@ class MatrixCellButton(QPushButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         if self._tel_edge is not None:
-            self._paint_tel_line(painter, self._tel_edge, self._tel_color, handle=True)
+            self._paint_tel_line(painter, self._tel_edge, self._tel_color)
         if self._tel_preview_edge is not None:
             self._paint_tel_line(painter, self._tel_preview_edge,
                                  QColor(TEL_DROP_PREVIEW))
@@ -4578,7 +4568,7 @@ class HAZOPPreparationPanel(QWidget):
                     location = (f'schematisk linje vid {repr(boundaries[boundary_index])}/år; '
                                 'TEL ligger mellan två frekvensgränser')
             tooltip = (f'{category_name} · {level_name}\nTEL: {exact_value}/år\n'
-                       f'{location}.\nDra i den runda markören för att flytta '
+                       f'{location}.\nDra i TEL-linjen för att flytta '
                        'TEL till en frekvensgräns eller matrisens ytterkant. '
                        'Vid ytterkanten anges ett exakt värde.')
             for _row, buttons in self._cell_buttons:
@@ -4590,7 +4580,7 @@ class HAZOPPreparationPanel(QWidget):
                          (' (≈ cellgräns)' if placement == 'schematic' else
                           ' (yttersta klassen)' if placement in ('below', 'above') else ''))
         prefix = ('Osparad TEL-ändring. ' if self._lopa_dirty else '') + (
-            'Dra i linjens runda markör till en frekvensgräns eller ytterkant. ')
+            'Dra i TEL-linjen till en frekvensgräns eller ytterkant. ')
         if ('ST1' in str(getattr(self, '_pending_template_name', '')) or
                 (cfg.get('x_codes') == ST1_RISK_MATRIX_PRESET['x_codes'] and
                  cfg.get('x_labels') == ST1_RISK_MATRIX_PRESET['x_labels'])):

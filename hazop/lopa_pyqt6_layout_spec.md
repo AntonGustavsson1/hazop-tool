@@ -19,9 +19,9 @@ fler rader inom sin cell utan att pågående inmatning förloras.
 | --- | --- |
 | LOPA-ark | Sidomeny vid bred vy; öppnas via `LOPA-ark` vid smal vy. |
 | Huvud och revision | Fält i fyra, två eller en kolumn efter fönsterbredd. |
+| Scenario och konsekvens | En rad per konsekvens i HAZOP-hierarkin, redigering på plats och scenariotext som växer med innehållet. Visas före SIF-arkitekturen för att följa arbetsbladets analysordning. |
 | Givardel och manöverdel | Sida vid sida på bred skärm; staplade under 900 px. Medlemsrader visas i sin helhet. |
-| Scenario | En rad per konsekvens i HAZOP-hierarkin, redigering på plats och scenariotext som växer med innehållet. |
-| Oberoende barriärer | Fyra kolumner med sammanhållen barriärtext per källa. Detaljredigering kan fällas ut, med rader i samma sidflöde. |
+| Oberoende barriärer | En Excel-liknande kolumn per barriärtyp; beskrivning och RRF står tillsammans i cellen. Detaljredigering växlar med översikten så barriärerna inte visas dubbelt. Alla typer hålls synliga utan sidrullning. |
 | Eskalering | Kategori, konsekvens, TEL, redigerbara faktorer och beräknat resultat. Faktorer radbryts vid behov. |
 | Beräkningsöversikt, dokumentuppgifter och kommentarer | Tre staplade avsnitt. Tabellrader och längre dokumenttexter får sin faktiska höjd. |
 

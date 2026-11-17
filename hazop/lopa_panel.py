@@ -13,7 +13,7 @@ import re
 from math import ceil
 
 from PyQt6.QtCore import QDate, QEvent, QPointF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QWheelEvent
+from PyQt6.QtGui import QBrush, QColor, QWheelEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -67,6 +67,7 @@ from design import (
     LOPA_SIDEBAR_MAX_WIDTH,
     LOPA_SIDEBAR_MIN_WIDTH,
     MUTED_TEXT,
+    READONLY_SURFACE,
     SECONDARY_TEXT,
     TEXT,
     lopa_card_stylesheet,
@@ -358,10 +359,11 @@ class LopaPanel(QWidget):
             self._splitter.setSizes([LOPA_SIDEBAR_MAX_WIDTH, LOPA_MAIN_MAX_WIDTH])
 
     def _set_barrier_detail_visible(self, visible: bool):
-        """Keep the full barrier matrix compact until local editing is needed."""
+        """Switch between the Excel-like overview and the detailed editor."""
         self._barrier_detail_area.setVisible(visible)
+        self._barrier_matrix_container.setVisible(not visible)
         self._barrier_details_toggle.setText(
-            'Dölj detaljredigering' if visible else 'Visa detaljredigering')
+            'Visa barriäröversikt' if visible else 'Redigera barriärer')
 
     def _apply_responsive_layout(self):
         """Apply the breakpoint contract in ``lopa_pyqt6_layout_spec.md``."""
@@ -894,35 +896,22 @@ class LopaPanel(QWidget):
         barrier_heading = QHBoxLayout()
         barrier_heading.addWidget(barrier_title)
         barrier_heading.addStretch(1)
-        self._barrier_details_toggle = QPushButton('Visa detaljredigering')
+        self._barrier_details_toggle = QPushButton('Redigera barriärer')
         self._barrier_details_toggle.setCheckable(True)
         self._barrier_details_toggle.toggled.connect(self._set_barrier_detail_visible)
         barrier_heading.addWidget(self._barrier_details_toggle)
         barrier_layout.addLayout(barrier_heading)
-        self._barrier_note = QLabel('HAZOP-barriärer speglas som underlag. Lokala ändringar påverkar inte HAZOP.')
-        self._barrier_note.setWordWrap(False)
-        self._barrier_note.setMaximumHeight(18)
-        self._barrier_note.setStyleSheet(lopa_note_stylesheet())
-        self._barrier_note.setToolTip(self._barrier_note.text())
-        self._barrier_note.hide()
         self._barrier_matrix_container = QWidget()
         self._barrier_container_layout = QVBoxLayout(self._barrier_matrix_container)
         self._barrier_container_layout.setContentsMargins(0, 0, 0, 0)
         self._barrier_container_layout.setSpacing(0)
         barrier_layout.addWidget(self._barrier_matrix_container)
-        self._barrier_matrix = QTableWidget(0, 4)
-        self._barrier_matrix.setHorizontalHeaderLabels(
-            ['Källscenario', 'Grundfrekvens', 'Barriärer och RRF', 'Återstående frekvens'])
+        self._barrier_matrix = QTableWidget(0, 0)
         self._barrier_matrix.verticalHeader().setVisible(False)
         matrix_header = self._barrier_matrix.horizontalHeader()
-        matrix_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        matrix_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        matrix_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        matrix_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self._barrier_matrix.setColumnWidth(1, 100)
-        self._barrier_matrix.setColumnWidth(3, 130)
-        self._barrier_matrix.horizontalHeaderItem(3).setToolTip(
-            'Största återstående frekvens för källscenariots aktiva konsekvenser')
+        matrix_header.setStretchLastSection(False)
+        self._barrier_matrix.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._barrier_matrix.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._barrier_matrix.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._barrier_matrix.setWordWrap(True)
@@ -984,6 +973,7 @@ class LopaPanel(QWidget):
         barrier_footer.addWidget(QLabel('Kontrollfrekvens'), 0, 0)
         self._control_frequency = QLineEdit()
         self._control_frequency.setPlaceholderText('t.ex. 1 gång/år')
+        self._control_frequency.setMinimumWidth(100)
         barrier_footer.addWidget(self._control_frequency, 0, 1)
         barrier_footer.addWidget(QLabel('Förutsättning %'), 0, 2)
         self._assumption_percent = QDoubleSpinBox()
@@ -994,6 +984,7 @@ class LopaPanel(QWidget):
         barrier_footer.addWidget(QLabel('Motivering'), 1, 0)
         self._assumption_reason = QLineEdit()
         self._assumption_reason.setPlaceholderText('Motivering')
+        self._assumption_reason.setMinimumWidth(150)
         barrier_footer.addWidget(self._assumption_reason, 1, 1, 1, 2)
         self._save_source_analysis_btn = QPushButton('Spara LOPA-underlag')
         self._save_source_analysis_btn.clicked.connect(self._save_source_analysis_details)
@@ -1003,12 +994,6 @@ class LopaPanel(QWidget):
         barrier_detail_layout.addLayout(barrier_footer)
         barrier_layout.addWidget(self._barrier_detail_area)
         self._set_barrier_detail_visible(False)
-        self._barrier_summary = QLabel('')
-        self._barrier_summary.setWordWrap(True)
-        self._barrier_summary.setMinimumWidth(0)
-        self._barrier_summary.setMaximumHeight(34)
-        self._barrier_summary.setStyleSheet(lopa_note_stylesheet())
-        barrier_layout.addWidget(self._barrier_summary)
         detail_layout.addWidget(barrier_card)
 
         escalation_card = self._card()
@@ -1295,7 +1280,6 @@ class LopaPanel(QWidget):
         self._assumption_reason.clear()
         self._assumption_reason.setEnabled(False)
         self._save_source_analysis_btn.setEnabled(False)
-        self._barrier_summary.clear()
         self._sync_note.setText('Skapa en tom LOPA eller koppla en HAZOP-barriär när den funktionen används.')
         self._sync_note.show()
         self._flow_table_dirty.update(self._flow_tables)
@@ -1434,21 +1418,37 @@ class LopaPanel(QWidget):
         return item
 
     @staticmethod
-    def _barrier_matrix_cell(text, *, numeric=False, empty=False):
+    def _barrier_matrix_cell(text, *, numeric=False, empty=False, top=False):
         """Create one consistently aligned, read-only barrier-matrix cell."""
-        value = '' if empty else str(text or '—')
+        value = '' if empty or text is None else str(text)
         item = QTableWidgetItem(value)
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        if value == '—':
+        item.setBackground(QBrush(QColor(READONLY_SURFACE)))
+        if not value:
             alignment = Qt.AlignmentFlag.AlignCenter
         elif numeric:
             alignment = (Qt.AlignmentFlag.AlignRight |
                          Qt.AlignmentFlag.AlignVCenter)
+        elif top:
+            alignment = (Qt.AlignmentFlag.AlignLeft |
+                         Qt.AlignmentFlag.AlignTop)
         else:
             alignment = (Qt.AlignmentFlag.AlignLeft |
                          Qt.AlignmentFlag.AlignVCenter)
         item.setTextAlignment(alignment)
         return item
+
+    @staticmethod
+    def _barrier_type_header(kind):
+        """Use short worksheet labels while preserving configured type names."""
+        labels = {
+            'bpcs': 'BPCS',
+            'sis': 'Annan SIF',
+            'mekanisk': 'Mekanisk barriär',
+            'administrativ': 'Manuell/admin. åtgärd',
+            'övrigt': 'Annat skyddssystem',
+        }
+        return labels.get(str(kind or '').strip().casefold(), str(kind or 'Övrigt'))
 
     @staticmethod
     def _category_badge_widget(text):
@@ -2271,7 +2271,6 @@ class LopaPanel(QWidget):
             self._assumption_reason.clear()
             self._assumption_reason.setEnabled(False)
             self._save_source_analysis_btn.setEnabled(False)
-            self._barrier_summary.clear()
             self._loading = old_loading
             return
         self._scenario_text.setPlainText(source.get('scenario_text') or '')
@@ -2842,34 +2841,50 @@ class LopaPanel(QWidget):
         self._import_new_barriers_btn.setEnabled(bool(
             enabled and selected_source and selected_source.get('hazop_cause_id')
             and selected_source.get('origin_safeguard_id')))
-        if self._source_id:
-            result = self.db.lopa_source_calculation(self._source_id)
-            index = result.get('governing_category_index')
-            governing = result['categories'][index] if index is not None else None
-            if governing and governing['remaining_frequency'] is not None:
-                required = ('—' if governing['required_rrf'] is None
-                            else f"{governing['required_rrf']:.6g}")
-                self._barrier_summary.setText(
-                    f"Återstående frekvens efter oberoende barriärer för "
-                    f"{governing['description'] or 'vald konsekvens'}: "
-                    f"{governing['remaining_frequency']:.6g} /år. "
-                    f"Dimensionerande behov: "
-                    f"{required} "
-                    f"({governing['sil'] or 'SIL saknas'}).")
-            else:
-                details = '; '.join(result['messages']) or 'Underlag saknas.'
-                self._barrier_summary.setText(f'Underlaget är ofullständigt: {details}')
-            self._barrier_summary.setToolTip(self._barrier_summary.text())
-        else:
-            self._barrier_summary.clear()
         self._loading = old_loading
 
     def _populate_barrier_matrix(self):
-        """Show each source's barriers and result together within the page."""
+        """Render barriers by type in a compact, worksheet-like matrix."""
         sources = self.db.lopa_sources(self._revision_id) if self._revision_id else []
-        types = self.db.safeguard_types()
+        barriers_by_source = {
+            source['id']: self.db.lopa_barriers(self._revision_id, source['id'])
+            for source in sources
+        }
+        types = list(self.db.safeguard_types())
+        known = {str(kind).casefold() for kind in types}
+        # Keep legacy or project-specific types visible even if they were
+        # removed from today's picker settings.
+        for barriers in barriers_by_source.values():
+            for barrier in barriers:
+                kind = str(barrier.get('sg_type') or 'Övrigt').strip() or 'Övrigt'
+                if kind.casefold() not in known:
+                    types.append(kind)
+                    known.add(kind.casefold())
+
+        headers = (['Källscenario', 'Grundfrekvens']
+                   + [self._barrier_type_header(kind) for kind in types]
+                   + ['Återstående (/år)'])
+        self._barrier_matrix.setColumnCount(len(headers))
+        self._barrier_matrix.setHorizontalHeaderLabels(headers)
+        header = self._barrier_matrix.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self._barrier_matrix.setColumnWidth(1, 84)
+        for column in range(2, 2 + len(types)):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+            kind = types[column - 2]
+            header_item = self._barrier_matrix.horizontalHeaderItem(column)
+            header_item.setToolTip(
+                f'{kind}: barriärbeskrivning och RRF. Statusen visar om barriären '
+                'räknas i beräkningen.')
+        result_column = len(headers) - 1
+        header.setSectionResizeMode(result_column, QHeaderView.ResizeMode.Fixed)
+        self._barrier_matrix.setColumnWidth(result_column, 112)
+        self._barrier_matrix.horizontalHeaderItem(result_column).setToolTip(
+            'Största återstående frekvens för källscenariots aktiva konsekvenser')
         old_loading = self._loading
         self._loading = True
+        self._barrier_matrix.clearSpans()
         self._barrier_matrix.setRowCount(len(sources) + 1 if sources else 0)
         total_remaining = 0.0
         any_remaining = False
@@ -2880,26 +2895,40 @@ class LopaPanel(QWidget):
             frequency = source.get('base_frequency')
             self._barrier_matrix.setItem(
                 row_index, 1, self._barrier_matrix_cell(
-                    '—' if frequency is None else f'{frequency:.6g} /år', numeric=True))
+                    '' if frequency is None else f'{frequency:.6g} /år', numeric=True))
+            canonical_type = {kind.casefold(): kind for kind in types}
             by_type = {kind: [] for kind in types}
-            for barrier in self.db.lopa_barriers(self._revision_id, source['id']):
-                if not barrier['active'] or not barrier['independent']:
-                    continue
-                kind = barrier.get('sg_type') or 'Övrigt'
-                by_type.setdefault(kind, []).append(barrier)
-            barrier_lines = []
-            for kind, barriers in by_type.items():
-                for barrier in barriers:
+            for barrier in barriers_by_source[source['id']]:
+                kind = str(barrier.get('sg_type') or 'Övrigt').strip() or 'Övrigt'
+                by_type.setdefault(canonical_type.get(kind.casefold(), kind), []).append(barrier)
+            for type_index, kind in enumerate(types, start=2):
+                lines = []
+                tooltips = []
+                for barrier in by_type.get(kind, []):
                     identity = self.db.lopa_barrier_identity_status(barrier)
-                    rrf = (f"{barrier['rrf']:.6g}" if identity['state'] not in
-                           ('same', 'needs_review', 'unknown', 'changed') else '—')
-                    barrier_lines.append(
-                        f"{kind}: {barrier.get('description') or 'Namnlös'} (RRF {rrf}) — "
-                        f"{self.db.lopa_barrier_scope_label(barrier)} — {identity['label']}")
-            barrier_text = '\n'.join(barrier_lines) or '—'
-            description_item = self._barrier_matrix_cell(barrier_text)
-            description_item.setToolTip(barrier_text)
-            self._barrier_matrix.setItem(row_index, 2, description_item)
+                    description = barrier.get('description') or 'Namnlös barriär'
+                    if barrier.get('source_missing'):
+                        state = 'Källa saknas'
+                    elif not barrier['active']:
+                        state = 'Inaktiv'
+                    elif not barrier['independent']:
+                        state = 'Ej oberoende'
+                    elif identity['state'] == 'same':
+                        state = 'Samma SIF · ej medräknad'
+                    elif identity['state'] in ('needs_review', 'unknown', 'changed'):
+                        state = 'Granska · ej medräknad'
+                    else:
+                        state = f"RRF {barrier['rrf']:.6g}"
+                    lines.append(f'{description} · {state}')
+                    tooltip = (f"{kind}: {description}\n{self.db.lopa_barrier_scope_label(barrier)}\n"
+                               f"{identity['label']}\n{state}")
+                    if identity.get('reason'):
+                        tooltip += f"\nMotivering: {identity['reason']}"
+                    tooltips.append(tooltip)
+                barrier_text = '\n'.join(lines)
+                item = self._barrier_matrix_cell(barrier_text, top=True)
+                item.setToolTip('\n\n'.join(tooltips))
+                self._barrier_matrix.setItem(row_index, type_index, item)
             result = self.db.lopa_source_calculation(source['id'])
             remaining = [item['remaining_frequency'] for item in result['categories']
                          if item['active'] and item['remaining_frequency'] is not None]
@@ -2914,7 +2943,7 @@ class LopaPanel(QWidget):
                 any_remaining = True
                 text = f'{row_remaining:.6g} /år'
             self._barrier_matrix.setItem(
-                row_index, 3,
+                row_index, result_column,
                 self._barrier_matrix_cell(text, numeric=True))
         if sources:
             total_row = len(sources)
@@ -2925,16 +2954,14 @@ class LopaPanel(QWidget):
                                    'programmet kontrollerar inte detta.')
             total_label.setFont(bold_font)
             self._barrier_matrix.setItem(total_row, 0, total_label)
-            for column in range(1, 3):
-                self._barrier_matrix.setItem(
-                    total_row, column, self._barrier_matrix_cell('', empty=True))
+            self._barrier_matrix.setSpan(total_row, 0, 1, result_column)
             total_text = (f'{total_remaining:.6g} /år'
-                          if any_remaining and not incomplete_active_source else '—')
+                          if any_remaining and not incomplete_active_source else '')
             total_cell = self._barrier_matrix_cell(total_text, numeric=True)
             if incomplete_active_source:
                 total_cell.setToolTip('Summan kan inte visas när ett aktivt källscenario är ofullständigt.')
             total_cell.setFont(bold_font)
-            self._barrier_matrix.setItem(total_row, 3, total_cell)
+            self._barrier_matrix.setItem(total_row, result_column, total_cell)
         self._fit_barrier_matrix_geometry()
 
         self._loading = old_loading

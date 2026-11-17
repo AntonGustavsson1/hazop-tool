@@ -201,13 +201,19 @@ class SmokeTests(unittest.TestCase):
 
                 matrix = p._barrier_matrix
                 self.assertEqual(
-                    ['Källscenario', 'Grundfrekvens', 'Barriärer och RRF',
-                     'Återstående frekvens'],
+                    ['Källscenario', 'Grundfrekvens', 'BPCS', 'Annan SIF',
+                     'Mekanisk barriär', 'Manuell/admin. åtgärd',
+                     'Annat skyddssystem', 'Återstående (/år)'],
                     [matrix.horizontalHeaderItem(column).text()
                      for column in range(matrix.columnCount())])
 
                 for row in range(matrix.rowCount()):
                     for column in range(matrix.columnCount()):
+                        if (row == matrix.rowCount() - 1 and
+                                0 < column < matrix.columnCount() - 1):
+                            # The total label intentionally spans the empty
+                            # barrier columns, like the Excel worksheet.
+                            continue
                         self.assertIsNotNone(matrix.item(row, column))
                 left = int(Qt.AlignmentFlag.AlignLeft |
                            Qt.AlignmentFlag.AlignVCenter)
@@ -215,28 +221,48 @@ class SmokeTests(unittest.TestCase):
                             Qt.AlignmentFlag.AlignVCenter)
                 center = int(Qt.AlignmentFlag.AlignCenter)
                 self.assertEqual(left, matrix.item(0, 0).textAlignment())
-                # A source without an explicitly selected HAZOP frequency is
-                # intentionally shown as a centred no-data marker.
-                self.assertEqual('—', matrix.item(0, 1).text())
+                # A missing frequency is intentionally a blank cell, matching
+                # the rest of the HAZOP interface's empty-cell convention.
+                self.assertEqual('', matrix.item(0, 1).text())
                 self.assertEqual(center, matrix.item(0, 1).textAlignment())
-                self.assertEqual(left, matrix.item(0, 2).textAlignment())
-                barriers = matrix.item(0, 2).text()
-                for text in ('BPCS: BPCS med lång, läsbar beskrivning (RRF 10)',
-                             'Mekanisk: PSV med utblåsning till säkert område (RRF 100)',
-                             'Administrativ: Dokumenterad operatörsrond enligt instruktion (RRF 3)',
-                             'Övrigt: Lång beskrivning av skyddsbarriär som kräver flera rader (RRF 30)'):
-                    self.assertIn(text, barriers)
-                self.assertEqual(right, matrix.item(0, 3).textAlignment())
+                barrier_cells = {
+                    matrix.horizontalHeaderItem(column).text(): matrix.item(0, column).text()
+                    for column in range(2, matrix.columnCount() - 1)
+                }
+                self.assertIn('BPCS med lång, läsbar beskrivning · RRF 10',
+                              barrier_cells['BPCS'])
+                self.assertIn('PSV med utblåsning till säkert område · RRF 100',
+                              barrier_cells['Mekanisk barriär'])
+                self.assertIn('Dokumenterad operatörsrond enligt instruktion · RRF 3',
+                              barrier_cells['Manuell/admin. åtgärd'])
+                self.assertIn('Lång beskrivning av skyddsbarriär som kräver flera rader · RRF 30',
+                              barrier_cells['Annat skyddssystem'])
+                result_column = matrix.columnCount() - 1
+                self.assertEqual(right, matrix.item(0, result_column).textAlignment())
                 self.assertEqual('Summa (max per aktiv källa)', matrix.item(1, 0).text())
                 self.assertTrue(matrix.item(1, 0).font().bold())
-                self.assertEqual('', matrix.item(1, 1).text())
+                self.assertEqual(result_column, matrix.columnSpan(1, 0))
+
+                self.assertTrue(matrix.isVisible())
+                p._barrier_details_toggle.setChecked(True)
+                self.app.processEvents()
+                self.assertFalse(matrix.isVisible())
+                self.assertTrue(p._barriers.isVisible())
+                self.assertEqual('Visa barriäröversikt',
+                                 p._barrier_details_toggle.text())
+                p._barrier_details_toggle.setChecked(False)
+                self.app.processEvents()
+                self.assertTrue(matrix.isVisible())
+                self.assertFalse(p._barriers.isVisible())
 
                 for width in (1560, 1200, 800, 600):
                     p.resize(width, 1080)
                     for _ in range(4):
                         self.app.processEvents()
                     self.assertEqual(0, matrix.horizontalScrollBar().maximum(), width)
-                    self.assertEqual(barriers, matrix.item(0, 2).text())
+                    self.assertEqual(
+                        'BPCS med lång, läsbar beskrivning · RRF 10',
+                        barrier_cells['BPCS'])
             finally:
                 p.deleteLater()
         finally:
@@ -458,12 +484,14 @@ class SmokeTests(unittest.TestCase):
             # NOTES.md) summing the Återstående frekvens column.
             self.assertEqual(2, p._barrier_matrix.rowCount())
             self.assertEqual('Summa (max per aktiv källa)', p._barrier_matrix.item(1, 0).text())
-            self.assertIn('Oklassificerad följd saknar bedömning', p._barrier_summary.text())
+            self.assertIn('Oklassificerad följd saknar bedömning',
+                          p._calculation.item(0, 4).text())
             self.db.set_lopa_unassessed_exclusion(imported['source_id'], unassessed_cons_id,
                                                    'Utanför smoke-scenariot')
             p._populate_barriers()
             p._populate_calculation()
-            self.assertIn('Återstående frekvens', p._barrier_summary.text())
+            self.assertTrue(p._barrier_matrix.item(
+                0, p._barrier_matrix.columnCount() - 1).text().endswith('/år'))
             self.assertIn('Dimensionerande kriterium', p._dimensioning_summary.text())
             self.assertEqual('2026-09-02', p._document_date.text())
             self.assertIn('Verifiera ventilen', p._additional_actions.toPlainText())

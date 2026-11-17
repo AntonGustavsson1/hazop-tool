@@ -11,7 +11,7 @@ from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QImage, QPainter
 from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
 from PyQt6.QtTest import QTest
 
@@ -188,12 +188,15 @@ class TelMatrixInteractionTests(unittest.TestCase):
         self.assertEqual(float(self._tel_item(key, 2).text()), 1e-7)
         self.assertNotEqual(original, self._tel_item(key, 2).text())
 
-    def test_marker_handle_arms_tel_drag_without_opening_cell_editor(self):
+    def test_tel_line_arms_drag_without_intercepting_cell_content(self):
         panel = self.panel
         source = next(button for _row, buttons in panel._cell_buttons
                       for button in buttons if button._tel_edge)
         source.resize(92, 40)
-        point = QPoint(13, 20) if source._tel_edge == 'left' else QPoint(79, 20)
+        self.assertFalse(source._near_tel_marker(
+            QPoint(source.width() // 2, source.height() // 2)))
+        point = (QPoint(4, 20) if source._tel_edge == 'left'
+                 else QPoint(source.width() - 5, 20))
         source.clicked.disconnect()
         clicks = []
         source.clicked.connect(lambda: clicks.append(True))
@@ -201,6 +204,22 @@ class TelMatrixInteractionTests(unittest.TestCase):
         self.assertTrue(source._tel_drag_armed)
         QTest.mouseRelease(source, Qt.MouseButton.LeftButton, pos=point)
         self.assertEqual(clicks, [])
+
+    def test_tel_edge_marker_does_not_cover_cell_content(self):
+        source = next(button for _row, buttons in self.panel._cell_buttons
+                      for button in buttons if button._tel_edge)
+        source.resize(92, 40)
+        source.set_cell('#00ff00', '', '#000000')
+        source.set_tel_marker('left', category='Person')
+        image = QImage(source.size(), QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        source.render(painter)
+        painter.end()
+        # The former circle and connector occupied this point 13 px into the
+        # cell. The slim TEL line now stays against the edge, leaving content
+        # space clear.
+        self.assertEqual(image.pixelColor(13, 20).name(), '#00ff00')
 
     def test_existing_colour_and_cell_copy_drops_still_work(self):
         target = self._button(2, 3)
