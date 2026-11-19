@@ -4234,7 +4234,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                  not math.isclose(float(live_frequency), float(stored_frequency), rel_tol=1e-9))):
             changes.append('grundfrekvens')
         assessments = self.lopa_source_consequences(source_id)
-        live_consequences = {row['id']: dict(row) for row in self.consequences(source['hazop_cause_id'])}
+        scope = self._lopa_source_scope(source_id)
+        live_consequences = {row['id']: dict(row) for row in self.consequences(source['hazop_cause_id'])
+                             if scope is None or row['id'] in scope}
         severities = self.get_consequence_severities_for_consequences(live_consequences.keys())
         current_assessments = {
             (consequence_id, row['category_id']): dict(row)
@@ -4287,7 +4289,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         """Find new safeguards only on consequences already assessed in this LOPA."""
         if not source.get('hazop_cause_id'):
             return []
-        return [dict(row) for row in self.conn.execute(
+        rows = [dict(row) for row in self.conn.execute(
             'SELECT s.* FROM safeguards s JOIN consequences c ON c.id=s.consequence_id '
             'WHERE c.cause_id=? AND s.id!=COALESCE(?, -1) '
             'AND EXISTS (SELECT 1 FROM lopa_source_consequences lc '
@@ -4297,6 +4299,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             'ORDER BY c.sort_order,c.id,s.sort_order,s.id',
             (source['hazop_cause_id'], source.get('origin_safeguard_id'),
              source['id'], source['id'])).fetchall()]
+
+        scope = self._lopa_source_scope(source['id'])
+        return [row for row in rows if scope is None or row['consequence_id'] in scope]
 
     def import_lopa_new_barriers(self, source_id):
         """Copy newly added HAZOP safeguards without changing existing LOPA rows."""
@@ -4339,8 +4344,57 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 raise
         return len(safeguards)
 
+    def _lopa_hazop_scope(self, safeguard_id):
+        """Consequences protected by this instrument AND trigger on one cause."""
+        origin = self.get_safeguard(safeguard_id)
+        if not origin:
+            return None
+        consequence = self.get_consequence(origin['consequence_id'])
+        scope = {origin['consequence_id']}
+        def identities(sg_id):
+            result = set()
+            for link in self.safeguard_equipment_links(sg_id):
+                identity = self._lopa_identity(link)
+                trigger = self._lopa_trigger_identity(identity)
+                if identity['equipment_id'] is not None and trigger is not None:
+                    result.add((identity['equipment_id'], trigger))
+            return result
+        selected = identities(safeguard_id)
+        if selected:
+            for row in self.consequences(consequence['cause_id']):
+                if any(selected & identities(sg['id']) for sg in self.safeguards(row['id'])):
+                    scope.add(row['id'])
+        return scope
+
+    def _lopa_source_scope(self, source_id):
+        source = self.conn.execute(
+            'SELECT ls.origin_safeguard_id,ls.origin_equipment_snapshot_json,lr.status FROM lopa_source_scenarios ls '
+            'JOIN lopa_revisions lr ON lr.id=ls.revision_id WHERE ls.id=?',
+            (source_id,)).fetchone()
+        if not source or source['status'] in ('Låst', 'Godkänd', 'Arkiverad'):
+            return None
+        scope = self._lopa_hazop_scope(source['origin_safeguard_id'])
+        if scope is None:
+            return None
+        # Retain previously protected consequences when a mirrored function
+        # is removed or changed; existing missing/changed-source checks must
+        # then block the result instead of silently dropping that risk.
+        try:
+            selected = json.loads(source['origin_equipment_snapshot_json'] or '[]')
+            selected = {(r.get('equipment_id'), self._lopa_trigger_identity(r)) for r in selected}
+            selected = {r for r in selected if r[0] is not None and r[1] is not None}
+            for row in self.conn.execute(
+                    'SELECT hazop_consequence_snapshot_id,equipment_identity_snapshot_json '
+                    'FROM lopa_barriers WHERE source_id=? AND manual=0', (source_id,)):
+                links = json.loads(row['equipment_identity_snapshot_json'] or '[]')
+                if any((r.get('equipment_id'), self._lopa_trigger_identity(r)) in selected for r in links):
+                    scope.add(row['hazop_consequence_snapshot_id'])
+        except (TypeError, ValueError, AttributeError):
+            pass  # Identity validation separately marks malformed snapshots incomplete.
+        return scope
+
     def lopa_source_consequences(self, source_id):
-        return [dict(row) for row in self.conn.execute(
+        rows = [dict(row) for row in self.conn.execute(
             "SELECT lc.* FROM lopa_source_consequences lc "
             "LEFT JOIN consequences co ON co.id=lc.hazop_consequence_id "
             "LEFT JOIN consequence_categories cc ON cc.id=lc.hazop_category_id "
@@ -4348,6 +4402,11 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             "ORDER BY COALESCE(co.sort_order,2147483647),COALESCE(co.id,2147483647),"
             "COALESCE(cc.sort_order,2147483647),lc.category_name,lc.category_key,lc.id",
             (source_id,)).fetchall()]
+
+        scope = self._lopa_source_scope(source_id)
+        return [row for row in rows if scope is None or
+                (row.get('hazop_consequence_snapshot_id') or row.get('hazop_consequence_id')) in scope
+                or not (row.get('hazop_consequence_snapshot_id') or row.get('hazop_consequence_id'))]
 
     def lopa_source_consequence_groups(self, source_id):
         """Return actual HAZOP consequences with their LOPA assessments.
@@ -4392,8 +4451,11 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 exclusions = []
         except (TypeError, ValueError, json.JSONDecodeError):
             exclusions = []
+        scope = self._lopa_source_scope(source_id)
         if cause_id is not None:
             for consequence in self.consequences(cause_id):
+                if scope is not None and consequence['id'] not in scope:
+                    continue
                 consequence = dict(consequence)
                 consequence_id = consequence['id']
                 assessments = by_hazop_id.pop(consequence_id, [])
@@ -4583,9 +4645,14 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         where = 'lb.revision_id=?'
         if source_id is not None:
             where += ' AND lb.source_id=?'; values.append(source_id)
-        return [dict(row) for row in self.conn.execute(
+        rows = [dict(row) for row in self.conn.execute(
             "SELECT lb.* FROM lopa_barriers lb WHERE " + where + " ORDER BY lb.sort_order,lb.id",
             values).fetchall()]
+
+        scopes = {sid: self._lopa_source_scope(sid) for sid in {row['source_id'] for row in rows}}
+        return [row for row in rows if row['manual'] or scopes[row['source_id']] is None
+                or row.get('hazop_consequence_snapshot_id') is None
+                or row['hazop_consequence_snapshot_id'] in scopes[row['source_id']]]
 
     def lopa_barrier_categories(self, barrier_id):
         return [dict(row) for row in self.conn.execute(
@@ -4910,8 +4977,8 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                 percent = float(str(assumption_percent).replace(',', '.'))
             except (TypeError, ValueError):
                 raise ValueError('Förutsättning måste vara ett procenttal.')
-            if percent < 0:
-                raise ValueError('Förutsättning får inte vara negativ.')
+            if not math.isfinite(percent) or not 0 <= percent <= 100:
+                raise ValueError('Förutsättning måste vara mellan 0 och 100 procent.')
             assignments.append('assumption_percent=?')
             values.append(percent)
         if assumption_reason is not None:
@@ -5199,6 +5266,16 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         """Persist local escalation factors for one source/category pair."""
         source = self._lopa_source_revision(source_id)
         values = factor_values if isinstance(factor_values, dict) else {}
+        checked = {}
+        for key, value in values.items():
+            try:
+                percent = float(str(value).replace(',', '.'))
+            except (TypeError, ValueError):
+                raise ValueError('Eskaleringsfaktorer ska vara procenttal mellan 0 och 100.')
+            if not math.isfinite(percent) or not 0 <= percent <= 100:
+                raise ValueError('Eskaleringsfaktorer ska vara procenttal mellan 0 och 100.')
+            checked[key] = percent
+        values = checked
         self.conn.execute(
             "INSERT INTO lopa_escalation_rows(source_id,category_key,factor_values_json,reason,active) "
             "VALUES (?,?,?,?,?) ON CONFLICT(source_id,category_key) DO UPDATE SET "
@@ -5541,7 +5618,7 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
         """Import one HAZOP safeguard as a LOPA sensor path and source scenario.
 
         The selected safeguard is deliberately *not* copied as an independent
-        barrier. Other safeguards under the same HAZOP cause are copied with
+        barrier. Other safeguards on the protected consequences are copied with
         their per-category applicability, while the selected safeguard's
         object+trigger becomes a sensor member.
         """
@@ -5565,6 +5642,15 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
             return {'source_id': existing['id'], 'created': False}
 
         links = self.safeguard_equipment_links(safeguard_id)
+        # One cause/function pair is one source even when its safeguard is
+        # repeated under multiple protected consequences in HAZOP.
+        identity = self._lopa_safeguard_identity_snapshot(safeguard_id)
+        if links and all(self._lopa_trigger_identity(self._lopa_identity(link)) for link in links):
+            for candidate in self.lopa_sources(revision['id']):
+                if (candidate.get('hazop_cause_id') == source_row['cause_id']
+                        and candidate.get('origin_safeguard_id')
+                        and identity == self._lopa_safeguard_identity_snapshot(candidate['origin_safeguard_id'])):
+                    return {'source_id': candidate['id'], 'created': False}
         if equipment_id is not None:
             links = [link for link in links if link.get('equipment_id') == equipment_id] or links
         if not links and equipment_id is not None:
@@ -5602,10 +5688,10 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                      primary_link.get('tag') or '',
                      self._lopa_safeguard_identity_snapshot(safeguard_id))).lastrowid
 
-                # A cause can produce several HAZOP consequences. Import each
-                # assessed category, not just the consequence where the user
-                # happened to click the safeguard.
-                cause_consequences = self.consequences(source_row['cause_id'])
+                # Sharing a cause does not establish protection by this SIF.
+                scope = self._lopa_hazop_scope(safeguard_id)
+                cause_consequences = [row for row in self.consequences(source_row['cause_id'])
+                                      if row['id'] in scope]
                 category_applicability = {}
                 for consequence in cause_consequences:
                     consequence = dict(consequence)

@@ -158,6 +158,8 @@ class LopaExportTests(unittest.TestCase):
         self.db.set_consequence_severity(assessed, self.db.consequence_categories()[0]['id'], 3)
         sensor = self.db.add_safeguard(assessed)
         unassessed = self.db.add_consequence(cause)
+        from tests.lopa_scope_fixtures import protect_with_same_function
+        protect_with_same_function(self.db, sensor, unassessed)
         self.db.update_consequence(unassessed, 'Obedömd', 0, '')
         created = self.db.create_lopa()
         source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']

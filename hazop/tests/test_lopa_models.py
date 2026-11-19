@@ -19,6 +19,7 @@ for _path in (_HAZOP_DIR, _TEST_DIR):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+from tests.lopa_scope_fixtures import protect_with_same_function
 from database import Database
 from lopa_models import calculate_lopa, normalise_lopa_config
 
@@ -161,6 +162,7 @@ class LopaDatabaseTests(unittest.TestCase):
     def _lopa_with_shared_object(self, barrier_trigger):
         cause, sensor, _other, equipment = self._hazop_chain()
         consequence = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, consequence)
         self.db.update_consequence(consequence, 'Annan konsekvens', 3, '')
         category = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(consequence, category['id'], 3)
@@ -577,6 +579,7 @@ class LopaDatabaseTests(unittest.TestCase):
         cause, sensor, _barrier, _equipment = self._hazop_chain()
         first = self.db.get_safeguard(sensor)['consequence_id']
         second = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, second)
         self.db.update_consequence(second, 'Annan konsekvens', 3, '')
         category = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(second, category['id'], 3)
@@ -600,6 +603,7 @@ class LopaDatabaseTests(unittest.TestCase):
         cause, sensor, _barrier, _equipment = self._hazop_chain()
         first = self.db.get_safeguard(sensor)['consequence_id']
         second = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, second)
         self.db.update_consequence(second, 'Annan konsekvens', 3, '')
         category = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(second, category['id'], 3)
@@ -649,6 +653,7 @@ class LopaDatabaseTests(unittest.TestCase):
         cause, sensor, _barrier, _equipment = self._hazop_chain()
         first = self.db.get_safeguard(sensor)['consequence_id']
         second = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, second)
         self.db.update_consequence(second, 'Annan konsekvens', 3, '')
         category = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(second, category['id'], 3)
@@ -686,6 +691,7 @@ class LopaDatabaseTests(unittest.TestCase):
         cause, sensor, _barrier, _equipment = self._hazop_chain()
         first = self.db.get_safeguard(sensor)['consequence_id']
         second = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, second)
         self.db.update_consequence(second, 'Annan konsekvens', 3, '')
         category = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(second, category['id'], 3)
@@ -716,10 +722,12 @@ class LopaDatabaseTests(unittest.TestCase):
         categories = self.db.consequence_categories()
         self.db.set_consequence_severity(first_consequence_id, categories[1]['id'], 2)
         second_consequence_id = self.db.add_consequence(cause_id)
+        protect_with_same_function(self.db, sensor_sg, second_consequence_id)
         self.db.update_consequence(second_consequence_id, 'Sekundärt utsläpp', 4, '')
         self.db.set_consequence_severity(second_consequence_id, categories[0]['id'], 4)
         self.db.set_consequence_severity(second_consequence_id, categories[1]['id'], 1)
         unassessed_consequence_id = self.db.add_consequence(cause_id)
+        protect_with_same_function(self.db, sensor_sg, unassessed_consequence_id)
         self.db.update_consequence(unassessed_consequence_id, 'Oklassificerad följd', 0, '')
 
         created = self.db.create_lopa()
@@ -759,6 +767,7 @@ class LopaDatabaseTests(unittest.TestCase):
     def test_unassessed_consequence_requires_a_revisioned_decision(self):
         cause, sensor, _barrier, _equipment = self._hazop_chain()
         consequence = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, consequence)
         self.db.update_consequence(consequence, 'Obedömt utsläpp', 0, '')
         created = self.db.create_lopa()
         revision = created['revision_id']
@@ -786,6 +795,7 @@ class LopaDatabaseTests(unittest.TestCase):
     def test_new_hazop_assessment_reopens_exclusion_and_can_be_imported(self):
         cause, sensor, _barrier, _equipment = self._hazop_chain()
         consequence = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, consequence)
         self.db.update_consequence(consequence, 'Tidigare obedömd', 0, '')
         created = self.db.create_lopa()
         source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
@@ -805,6 +815,7 @@ class LopaDatabaseTests(unittest.TestCase):
     def test_changed_unassessed_consequence_requires_new_exclusion_decision(self):
         cause, sensor, _barrier, _equipment = self._hazop_chain()
         consequence = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, consequence)
         self.db.update_consequence(consequence, 'Ursprunglig konsekvens', 0, '')
         created = self.db.create_lopa()
         source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
@@ -822,6 +833,7 @@ class LopaDatabaseTests(unittest.TestCase):
         existing = self.db.lopa_barriers(created['revision_id'], source)[0]
         self.db.set_lopa_barrier_category_keys(existing['id'], [])
         consequence = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, consequence)
         self.db.update_consequence(consequence, 'Senare konsekvens', 3, '')
         self.db.set_consequence_severity(consequence, self.db.consequence_categories()[0]['id'], 3)
         new_barrier = self.db.add_safeguard(consequence)
@@ -843,6 +855,7 @@ class LopaDatabaseTests(unittest.TestCase):
     def test_old_project_migration_does_not_assume_unassessed_consequence_was_excluded(self):
         cause, sensor, _barrier, _equipment = self._hazop_chain()
         consequence = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, consequence)
         self.db.update_consequence(consequence, 'Obedömd sedan tidigare', 0, '')
         created = self.db.create_lopa()
         source = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor)['source_id']
@@ -1056,6 +1069,7 @@ class LopaDatabaseTests(unittest.TestCase):
         cause, sensor, barrier, _equipment = self._hazop_chain()
         first = self.db.get_safeguard(sensor)['consequence_id']
         second = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, second)
         self.db.update_consequence(second, 'Annan konsekvens', 3, '')
         category = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(second, category['id'], 3)
@@ -1084,6 +1098,7 @@ class LopaDatabaseTests(unittest.TestCase):
     def test_deleted_imported_consequence_cannot_remain_a_complete_draft(self):
         cause, sensor, _barrier, _equipment = self._hazop_chain()
         consequence = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, consequence)
         self.db.update_consequence(consequence, 'Ytterligare konsekvens', 2, '')
         category = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(consequence, category['id'], 2)
@@ -1240,6 +1255,7 @@ class LopaDatabaseTests(unittest.TestCase):
     def test_locked_revision_retains_header_and_visible_consequence_groups(self):
         cause, sensor, _other, _equipment = self._hazop_chain()
         extra = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, extra)
         self.db.update_consequence(extra, 'Oklassificerad följd', 0, '')
         created = self.db.create_lopa(sif_number='SIF-1', sif_name='Tidigare namn', sis_name='SIS-A')
         revision = created['revision_id']
@@ -1254,6 +1270,7 @@ class LopaDatabaseTests(unittest.TestCase):
         self.db.update_lopa_record(created['lopa_id'], sif_name='Nytt namn')
         self.db.update_consequence(extra, 'Ändrad följd', 0, '')
         later = self.db.add_consequence(cause)
+        protect_with_same_function(self.db, sensor, later)
         self.db.update_consequence(later, 'Ny följd efter låsning', 0, '')
         self.assertEqual('Tidigare namn', self.db.lopa_record_for_revision(revision)['sif_name'])
         self.assertEqual(original_groups, self.db.lopa_source_consequence_groups(source))

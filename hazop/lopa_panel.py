@@ -659,6 +659,10 @@ class LopaPanel(QWidget):
         source_layout = QVBoxLayout(source_card)
         source_layout.setContentsMargins(0, 2, 0, 2)
         source_label = QLabel('HAZOP-SCENARIER')
+        source_label.setToolTip(
+            'Omfattar konsekvenser där den valda instrumentfunktionen är barriär. '
+            'Samma orsak räcker inte: instrument och anrop måste stämma. '
+            'Egna LOPA-konsekvenser läggs till uttryckligen.')
         source_label.setStyleSheet(lopa_section_title_stylesheet())
         source_layout.addWidget(source_label)
         self._hazop_hierarchy = QTableWidget(0, self._HAZOP_CATEGORY_START_COL)
@@ -974,12 +978,14 @@ class LopaPanel(QWidget):
         self._control_frequency = QLineEdit()
         self._control_frequency.setPlaceholderText('t.ex. 1 gång/år')
         self._control_frequency.setMinimumWidth(100)
+        self._control_frequency.setToolTip('Dokumenterad kontroll-/provningsfrekvens. Ingår inte som grundfrekvens i beräkningen.')
         barrier_footer.addWidget(self._control_frequency, 0, 1)
         barrier_footer.addWidget(QLabel('Förutsättning %'), 0, 2)
         self._assumption_percent = QDoubleSpinBox()
-        self._assumption_percent.setRange(0.0, 100000.0)
+        self._assumption_percent.setRange(0.0, 100.0)
         self._assumption_percent.setDecimals(4)
         self._assumption_percent.setSuffix(' %')
+        self._assumption_percent.setToolTip('Andel av tiden som scenariots förutsättning gäller. 10 % multiplicerar grundfrekvensen med 0,10.')
         barrier_footer.addWidget(self._assumption_percent, 0, 3)
         barrier_footer.addWidget(QLabel('Motivering'), 1, 0)
         self._assumption_reason = QLineEdit()
@@ -991,8 +997,8 @@ class LopaPanel(QWidget):
         barrier_footer.addWidget(self._save_source_analysis_btn, 1, 3)
         barrier_footer.setColumnStretch(1, 2)
         barrier_footer.setColumnStretch(2, 1)
-        barrier_detail_layout.addLayout(barrier_footer)
         barrier_layout.addWidget(self._barrier_detail_area)
+        barrier_layout.addLayout(barrier_footer)
         self._set_barrier_detail_visible(False)
         detail_layout.addWidget(barrier_card)
 
@@ -1032,7 +1038,7 @@ class LopaPanel(QWidget):
         self._escalation.horizontalHeaderItem(0).setToolTip(
             'Aktivera eller avaktivera eskaleringen för kategorin. C anger konsekvensnivå.')
         self._escalation.horizontalHeaderItem(4).setToolTip(
-            'Eskaleringsfaktor, olycksfrekvens och erforderlig RRF.')
+            'Olycksfrekvens = grundfrekvens × förutsättning / barriärernas RRF-produkt × eskaleringsfaktorer. Behov av RRF = olycksfrekvens / TEL. Procent divideras med 100.')
         self._escalation_layout_timer = QTimer(self)
         self._escalation_layout_timer.setSingleShot(True)
         self._escalation_layout_timer.timeout.connect(self._fit_escalation_geometry)
@@ -2869,7 +2875,7 @@ class LopaPanel(QWidget):
         header = self._barrier_matrix.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        self._barrier_matrix.setColumnWidth(1, 84)
+        self._barrier_matrix.setColumnWidth(1, 110)
         for column in range(2, 2 + len(types)):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
             kind = types[column - 2]
@@ -2947,6 +2953,9 @@ class LopaPanel(QWidget):
                 self._barrier_matrix_cell(text, numeric=True))
         if sources:
             total_row = len(sources)
+            cause_ids = [source['hazop_cause_id'] for source in sources
+                         if source['active'] and source.get('hazop_cause_id') is not None]
+            overlapping_causes = len(cause_ids) != len(set(cause_ids))
             bold_font = self._barrier_matrix.font()
             bold_font.setBold(True)
             total_label = self._barrier_matrix_cell('Summa (max per aktiv källa)')
@@ -2956,9 +2965,13 @@ class LopaPanel(QWidget):
             self._barrier_matrix.setItem(total_row, 0, total_label)
             self._barrier_matrix.setSpan(total_row, 0, 1, result_column)
             total_text = (f'{total_remaining:.6g} /år'
-                          if any_remaining and not incomplete_active_source else '')
+                          if any_remaining and not incomplete_active_source
+                          and not overlapping_causes else '')
             total_cell = self._barrier_matrix_cell(total_text, numeric=True)
-            if incomplete_active_source:
+            if overlapping_causes:
+                total_cell.setToolTip('Flera källscenarier delar samma HAZOP-orsak. '
+                                     'Frekvenserna summeras inte eftersom det kan dubbelräkna händelsen.')
+            elif incomplete_active_source:
                 total_cell.setToolTip('Summan kan inte visas när ett aktivt källscenario är ofullständigt.')
             total_cell.setFont(bold_font)
             self._barrier_matrix.setItem(total_row, result_column, total_cell)
@@ -3343,7 +3356,7 @@ class LopaPanel(QWidget):
             governing_row = result['categories'][result['governing_category_index']]
             consequence = governing_row.get('description') or 'beskrivning saknas'
             self._dimensioning_summary.setText(
-                f"Dimensionerande kriterium: {result['governing_category_name']} från "
+                f"Dimensionerande kriterium per scenario: {result['governing_category_name']} från "
                 f"{source.get('cause_text') or 'källscenario'}, konsekvens {consequence}. Beräknat behov: "
                 f"RRF {result['required_rrf']:.6g} ({result['sil'] or 'SIL saknas'}).")
         elif rows:

@@ -28,6 +28,7 @@ for _p in (_HAZOP_DIR, _TEST_DIR):
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
+from tests.lopa_scope_fixtures import protect_with_same_function
 from database import Database
 from lopa_panel import LopaPanel
 
@@ -170,6 +171,9 @@ class LopaHierarchyTableTests(unittest.TestCase):
         self.db.set_consequence_severity(cons_id, category['id'], 3)
         sg_id = self.db.add_safeguard(cons_id)
         self.db.update_safeguard(sg_id, description='LSHH', rrf=10, sg_type='SIS')
+        self.sensor_sg = sg_id
+        equipment = self.db.add_equipment_item('UI-LT', 'UI-LT', 'LT', 0, '', '', 0)
+        self.db.add_safeguard_equipment_link(sg_id, equipment, 'HH')
         created = self.db.create_lopa(sif_name='UI test')
         self.lopa_id = created['lopa_id']
         self.revision_id = created['revision_id']
@@ -185,6 +189,30 @@ class LopaHierarchyTableTests(unittest.TestCase):
 
     def test_add_scenario_button_removed(self):
         self.assertFalse(hasattr(self.panel, '_add_scenario_btn'))
+
+    def test_shared_hazop_cause_is_not_summed_twice(self):
+        consequence = self.db.get_safeguard(self.sensor_sg)['consequence_id']
+        other = self.db.add_safeguard(consequence)
+        equipment = self.db.add_equipment_item('OTHER-LT', 'OTHER-LT', 'LT', 0, '', '', 0)
+        self.db.add_safeguard_equipment_link(other, equipment, 'HH')
+        self.db.add_lopa_source_from_safeguard(self.lopa_id, other)
+        sources = self.db.lopa_sources(self.revision_id)
+        self.assertEqual(2, len(sources))
+        self.assertTrue(all(self.db.lopa_source_calculation(row['id'])['complete']
+                            for row in sources))
+        self.panel._populate_barrier_matrix()
+        matrix = self.panel._barrier_matrix
+        total = matrix.item(matrix.rowCount() - 1, matrix.columnCount() - 1)
+        self.assertEqual('', total.text())
+        self.assertIn('dubbelräkna', total.toolTip())
+
+    def test_assumptions_are_visible_in_overview_with_percentage_bounds(self):
+        self.panel.show()
+        self.app.processEvents()
+        self.assertTrue(self.panel._assumption_percent.isVisible())
+        self.assertTrue(self.panel._assumption_reason.isVisible())
+        self.assertFalse(self.panel._barrier_detail_area.isVisible())
+        self.assertEqual(100, self.panel._assumption_percent.maximum())
 
     def test_escalation_factors_fit_and_can_still_be_edited(self):
         import json
@@ -441,6 +469,7 @@ class LopaHierarchyTableTests(unittest.TestCase):
         barrier = self.db.add_safeguard(first)
         self.db.update_safeguard(barrier, description='Tryckavlastning', rrf=10, sg_type='Mekanisk')
         second = self.db.add_consequence(self.cause_id)
+        protect_with_same_function(self.db, self.sensor_sg, second)
         self.db.update_consequence(second, 'Annan konsekvens', 3, '')
         category = self.db.consequence_categories()[0]
         self.db.set_consequence_severity(second, category['id'], 3)
@@ -600,6 +629,7 @@ class LopaHierarchyTableTests(unittest.TestCase):
 
     def test_unassessed_consequence_can_be_excluded_and_later_imported(self):
         consequence = self.db.add_consequence(self.cause_id)
+        protect_with_same_function(self.db, self.sensor_sg, consequence)
         self.db.update_consequence(consequence, 'Obedömd konsekvens', 0, '')
         source = self.db.lopa_sources(self.revision_id)[0]['id']
         self.panel._populate_hazop_hierarchy()
@@ -631,6 +661,7 @@ class LopaHierarchyTableTests(unittest.TestCase):
         category = self.db.consequence_categories()[0]
         self.db.add_lopa_custom_consequence(original_source['id'], 'person', category['name'], 2, 'Lokal')
         consequence = self.db.add_consequence(self.cause_id)
+        protect_with_same_function(self.db, self.sensor_sg, consequence)
         self.db.update_consequence(consequence, 'Andra följden', 3, '')
         self.db.set_consequence_severity(consequence, category['id'], 3)
         created = self.db.create_lopa()

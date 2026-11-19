@@ -233,7 +233,7 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
     assumption_valid = assumption is not None and 0 <= assumption <= 100
     if not assumption_valid:
         messages.append('Förutsättning måste vara ett procenttal mellan 0 och 100.')
-    effective_frequency = (frequency * assumption / 100.0
+    effective_frequency = (frequency * (assumption / 100.0)
                            if frequency_valid and assumption_valid else None)
 
     barriers = [item for item in source.get('barriers', [])
@@ -298,8 +298,11 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
                 'percent': percent,
                 'fraction': fraction,
             })
+        if not math.isfinite(applicable_rrf):
+            inputs_valid = False
+            messages.append('Barriärernas RRF-produkt ligger utanför tillåtet numeriskt intervall.')
         remaining_frequency = (effective_frequency / applicable_rrf
-                               if effective_frequency is not None else None)
+                               if effective_frequency is not None and inputs_valid else None)
         accident_frequency = (remaining_frequency * factor_product
                               if remaining_frequency is not None else None)
         complete = (active and frequency_valid and assumption_valid and inputs_valid
@@ -322,10 +325,10 @@ def calculate_lopa(source: dict[str, Any], config: dict[str, Any]) -> dict[str, 
             'severity': severity,
             'active': active,
             'tel': tel,
-            'barrier_rrf': applicable_rrf,
+            'barrier_rrf': applicable_rrf if inputs_valid else None,
             'barriers': used_barriers,
             'factors': factors,
-            'escalation_factor': factor_product,
+            'escalation_factor': factor_product if inputs_valid else None,
             'remaining_frequency': remaining_frequency,
             'accident_frequency': accident_frequency,
             'required_rrf': required_rrf,

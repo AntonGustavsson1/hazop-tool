@@ -295,6 +295,9 @@ class SmokeTests(unittest.TestCase):
         self.db.update_safeguard(other_sg, description='PSV', rrf=10, sg_type='Mekanisk')
         equipment_id = self.db.add_equipment_item('LSHH-SMOKE', 'LSHH-SMOKE', 'LS', 0, 'Nivågivare', '', 0)
         self.db.add_safeguard_equipment_link(sensor_sg, equipment_id, 'HH')
+        from tests.lopa_scope_fixtures import protect_with_same_function
+        protect_with_same_function(self.db, sensor_sg, second_cons_id)
+        protect_with_same_function(self.db, sensor_sg, unassessed_cons_id)
         created = self.db.create_lopa(sif_name='Detaljerad smoke')
         imported = self.db.add_lopa_source_from_safeguard(created['lopa_id'], sensor_sg)
         self.db.update_lopa_source_analysis_details(
@@ -469,7 +472,9 @@ class SmokeTests(unittest.TestCase):
                 for row in range(p._hazop_hierarchy.rowCount())])
             self.assertTrue(self.db.lopa_sources(created['revision_id'])[0]['active'])
             self.assertEqual(1, p._sensor_members.rowCount())
-            self.assertEqual(1, p._barriers.rowCount())
+            # PSV plus the two explicit mirrors of the selected SIF. The
+            # latter keep the other consequences in scope but earn no RRF.
+            self.assertEqual(3, p._barriers.rowCount())
             # Every actual consequence/category pair has its own risk row.
             self.assertEqual(4, p._escalation.rowCount())
             self.assertEqual(QHeaderView.ResizeMode.Stretch,

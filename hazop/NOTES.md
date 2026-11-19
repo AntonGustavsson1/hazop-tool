@@ -1,5 +1,41 @@
 # NOTES.md — Beslut och kontext
 
+## 2026-11-19 — LOPA avgränsas till skyddad konsekvens och instrumentfunktion
+
+Import tar bara med vald barriärs konsekvens samt andra konsekvenser under
+samma orsak med samma strukturerade instrument/anrop. HH och LL är olika
+funktioner. Samma orsak/funktion återanvänder befintlig LOPA-källa vid import.
+Öppna äldre ark filtrerar bort orelaterade tidigare importerade bedömningar
+och barriärer vid visning, beräkning, synkkontroll och export; lagrade rader
+raderas inte. Lokala bedömningar behålls. Låsta/godkända/arkiverade revisioner
+använder sin historik. Sparade instrumentkopplingar behåller tidigare skyddade
+konsekvenser om en speglad barriär försvinner, så saknat underlag fortfarande
+blockerar ett komplett resultat.
+
+Beräkning: grundfrekvens × (förutsättning/100) ÷ tillämplig RRF-produkt ×
+produkten av (eskaleringsprocent/100); erforderlig RRF är olycksfrekvens/TEL. Referens:
+https://www.aiche.org/sites/default/files/media/document/rast_manual_v4.1-wm.pdf
+Ogiltiga procentsatser avvisas före sparning. Ogiltig eller överflödande
+RRF-produkt visar inget numeriskt frekvensresultat. Förutsättningsfältet har
+intervallet 0–100 % och visas tillsammans med motivering även i översikten.
+Kontrollfrekvensens hjälptext klargör att den är dokumentation, inte en
+grundfrekvens. Källor med samma HAZOP-orsak summeras inte automatiskt;
+dimensionerande sammanfattning anger uttryckligen att den gäller per scenario.
+
+Regressioner omfattar orelaterade konsekvenser, samma respektive annat anrop,
+äldre öppna ark, dubblettimport, exakta mellanresultat och ogiltiga indata.
+Äldre flerkonsekvenstester har fått uttryckliga instrumentkopplingar som
+förklarar varför konsekvenserna ska ingå.
+
+Verifiering: 127 modell-, databas-, panel-, export- och smoketester passerar
+mot en isolerad kopia av commitinnehållet. Två ytterligare paneltester för
+delad HAZOP-orsak och synliga förutsättningar passerar också där, totalt 129
+unika tester. Sista rubrikbredden kontrollerades med testet för alla barriärtyper
+utan sidrullning. Syntax- och diffkontroll passerar. Barriärkortet har granskats
+som offscreen-rendering med Segoe UI; hela Windows-flödet är inte manuellt
+genomgånget. Ingen projektdatabas användes för dessa kontroller.
+
+
 ## 2026-11-17 — Sammanhängande riskmatrismigrering
 
 Kategorivyns kopplingslinjer använder nu samma heltalsnycklar som nivåknapparna.
