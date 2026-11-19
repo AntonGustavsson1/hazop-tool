@@ -1,5 +1,26 @@
 # NOTES.md — Beslut och kontext
 
+## 2026-11-19 — Skapa objekt utan P&ID vid LOPA-koppling
+
+Dialogen Koppla barriär till LOPA har nu knappen Nytt objekt utan P&ID.
+Användaren anger tagg/objektnamn och valfri objekttyp/beskrivning. Skapa objekt
+sparar ett vanligt, återanvändbart objekt med pid_page=NULL, utan markering.
+Det blir direkt valt i kopplingsdialogen. Att avbryta objektdialogen sparar
+ingenting; att avbryta den efterföljande LOPA-kopplingen behåller det uttryckligen
+skapade registerobjektet. Tomma namn och dubbletter avvisas. Skapandet kan ångras.
+
+Valt objekt prioriteras som primärt vid ny import, medan övriga strukturerade
+givarkopplingar behålls. Egna utlösare återställs när dialogen öppnas igen.
+En låst LOPA avvisas före ändring av HAZOP-kopplingen. Dialogens introduktion
+beskriver nu korrekt att skyddade konsekvenser, inte hela orsaken, importeras.
+
+Verifiering: 86 tester godkända (test_lopa_manual_equipment, test_lopa_models
+och test_smoke) i en isolerad kopia av det stagade innehållet. Syntaxkontroll
+godkänd. De 7 nya regressionstesterna kördes även efter sista knapptextjusteringen.
+Båda dialogerna granskades som offscreen-renderade förhandsvisningar; hela
+arbetsflödet har inte manuellt provats i det körande Windows-programmet.
+
+
 ## 2026-11-19 — LOPA avgränsas till skyddad konsekvens och instrumentfunktion
 
 Import tar bara med vald barriärs konsekvens samt andra konsekvenser under

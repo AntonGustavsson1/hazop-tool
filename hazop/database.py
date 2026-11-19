@@ -5652,7 +5652,9 @@ CREATE TABLE IF NOT EXISTS standard_cause_group_members (
                         and identity == self._lopa_safeguard_identity_snapshot(candidate['origin_safeguard_id'])):
                     return {'source_id': candidate['id'], 'created': False}
         if equipment_id is not None:
-            links = [link for link in links if link.get('equipment_id') == equipment_id] or links
+            # Prefer the object chosen in the bridge while retaining all
+            # structured sensor links required by this safeguard's identity.
+            links.sort(key=lambda link: link.get('equipment_id') != equipment_id)
         if not links and equipment_id is not None:
             equipment = self.get_equipment_by_id(equipment_id)
             if equipment:

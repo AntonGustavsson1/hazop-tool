@@ -3718,6 +3718,60 @@ class LopaExportDialog(QDialog):
                 if self._items.item(index).checkState() == Qt.CheckState.Checked]
 
 
+class LopaEquipmentDialog(QDialog):
+    """Create a reusable catalogue object without inventing a drawing location."""
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.result_equipment_id = None
+        self.setWindowTitle('Nytt objekt utan P&ID')
+        self.setMinimumWidth(390)
+        layout = QVBoxLayout(self)
+        note = QLabel('Objektet sparas i objektregistret och kan återanvändas. '
+                      'Ingen placering på P&ID behövs.')
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        form = QFormLayout()
+        self._tag = QLineEdit()
+        self._tag.setPlaceholderText('Exempel: LT-201 eller Nivågivare i tank')
+        self._type = QLineEdit()
+        self._type.setPlaceholderText('Valfritt, exempelvis nivågivare')
+        self._description = QLineEdit()
+        self._description.setPlaceholderText('Valfri beskrivning')
+        form.addRow('Tagg / objektnamn', self._tag)
+        form.addRow('Objekttyp', self._type)
+        form.addRow('Beskrivning', self._description)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText('Skapa objekt')
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('Avbryt')
+        buttons.accepted.connect(self._create_object)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _create_object(self):
+        tag = self._tag.text().strip()
+        if not tag:
+            QMessageBox.warning(self, 'Objektnamn saknas', 'Ange en tagg eller ett objektnamn.')
+            self._tag.setFocus()
+            return
+        if any(str(row['tag'] or '').strip().casefold() == tag.casefold()
+               for row in self.db.equipment_items()):
+            QMessageBox.warning(self, 'Objektet finns redan',
+                                'Välj det befintliga objektet i objektlistan för LOPA-kopplingen.')
+            return
+        try:
+            self.result_equipment_id = self.db.add_equipment_item(
+                tag, tag, '', None, self._type.text().strip(),
+                self._description.text().strip(), 0)
+        except Exception as exc:
+            QMessageBox.warning(self, 'Kunde inte skapa objekt', str(exc))
+            return
+        self.accept()
+
+
 class LopaLinkDialog(QDialog):
     """Small, explicit bridge from one HAZOP safeguard to a LOPA source.
 
@@ -3740,7 +3794,7 @@ class LopaLinkDialog(QDialog):
         layout = QVBoxLayout(self)
         intro = QLabel(
             'Barriären blir givardel i LOPA:n. Övriga HAZOP-barriärer på '
-            'samma orsak importeras som oberoende skydd.')
+            'de skyddade konsekvenserna följer med som underlag för oberoende skydd.')
         intro.setWordWrap(True)
         intro.setStyleSheet(f'color:{SECONDARY_TEXT};')
         layout.addWidget(intro)
@@ -3761,6 +3815,8 @@ class LopaLinkDialog(QDialog):
             if equipment['equipment_type']:
                 label += f" – {equipment['equipment_type']}"
             self._equipment.addItem(label, equipment['id'])
+        self._new_equipment = QPushButton('Nytt objekt utan P&&ID…')
+        self._new_equipment.clicked.connect(self._create_equipment)
         linked = db.safeguard_equipment_links(safeguard_id)
         preferred_id = linked[0]['equipment_id'] if linked else None
         if preferred_id is None and safeguard.get('comp_tag'):
@@ -3781,18 +3837,36 @@ class LopaLinkDialog(QDialog):
         self._custom_trigger.setVisible(False)
         self._trigger.currentTextChanged.connect(
             lambda text: self._custom_trigger.setVisible(text == 'Eget…'))
+        if linked and linked[0].get('trigger_custom'):
+            self._trigger.setCurrentText('Eget…')
+            self._custom_trigger.setText(linked[0]['trigger_custom'])
         form.addRow('LOPA', self._lopa)
         form.addRow('Namn vid ny LOPA', self._new_name)
         form.addRow('Objekt', self._equipment)
+        form.addRow('', self._new_equipment)
         form.addRow('Utlösare', self._trigger)
         form.addRow('', self._custom_trigger)
         layout.addLayout(form)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText('Koppla')
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('Avbryt')
         buttons.accepted.connect(self._accept_link)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _create_equipment(self):
+        dialog = LopaEquipmentDialog(self.db, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        equipment = self.db.get_equipment_by_id(dialog.result_equipment_id)
+        if equipment is None:
+            return
+        label = equipment['tag']
+        if equipment.get('equipment_type'):
+            label += f" – {equipment['equipment_type']}"
+        self._equipment.addItem(label, equipment['id'])
+        self._equipment.setCurrentIndex(self._equipment.count() - 1)
 
     def _accept_link(self):
         equipment_id = self._equipment.currentData()
@@ -3802,6 +3876,11 @@ class LopaLinkDialog(QDialog):
             return
         selected = self._lopa.currentData()
         try:
+            if selected != self._NEW_LOPA:
+                revision = self.db.current_lopa_revision(int(selected))
+                if not revision:
+                    raise ValueError('LOPA:n saknar en aktiv revision.')
+                self.db._assert_lopa_revision_editable(revision['id'])
             if selected == self._NEW_LOPA:
                 created = self.db.create_lopa(sif_name=self._new_name.text())
                 lopa_id = created['lopa_id']
@@ -3813,7 +3892,8 @@ class LopaLinkDialog(QDialog):
                 trigger = ''
             self.db.add_safeguard_equipment_link(
                 self.safeguard_id, equipment_id, trigger, custom)
-            imported = self.db.add_lopa_source_from_safeguard(lopa_id, self.safeguard_id)
+            imported = self.db.add_lopa_source_from_safeguard(
+                lopa_id, self.safeguard_id, equipment_id=equipment_id)
             revision = self.db.current_lopa_revision(lopa_id)
         except Exception as exc:
             QMessageBox.warning(self, 'Kunde inte koppla till LOPA', str(exc))
